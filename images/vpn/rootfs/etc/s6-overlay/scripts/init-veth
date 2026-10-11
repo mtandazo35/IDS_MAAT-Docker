@@ -7,6 +7,6 @@ if ! ip link show ids-in >/dev/null 2>&1; then
 fi
 ip link set ids-in  up mtu 65535 arp off
 ip link set ids-mon up mtu 65535 promisc on arp off
-ethtool -K ids-mon gro off lro off tso off gso off rx-gro-hw off 2>/dev/null || true
-ethtool -K ids-in  gro off tso off gso off 2>/dev/null || true
+ethtool -K ids-mon sg off gro off lro off tso off gso off rx-gro-hw off 2>/dev/null || true
+ethtool -K ids-in  sg off gro off tso off gso off 2>/dev/null || true
 echo "init-veth: ids-in/ids-mon listos (mtu 65535)" >&2

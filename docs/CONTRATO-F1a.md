@@ -603,8 +603,8 @@ Con `"dev": false`, el orquestador **rechaza** cualquier referencia que no sea `
 ip link add ids-in type veth peer name ids-mon
 ip link set ids-in  up mtu 65535 arp off
 ip link set ids-mon up mtu 65535 promisc on arp off
-ethtool -K ids-mon gro off lro off tso off gso off rx-gro-hw off 2>/dev/null || true
-ethtool -K ids-in  gro off tso off gso off 2>/dev/null || true
+ethtool -K ids-mon sg off gro off lro off tso off gso off rx-gro-hw off 2>/dev/null || true
+ethtool -K ids-in  sg off gro off tso off gso off 2>/dev/null || true
 ```
 
 - Los longrun escriben en stdout/stderr del contenedor (sin `s6-log`): de ahí van a journald con

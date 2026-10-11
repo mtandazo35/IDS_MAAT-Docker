@@ -268,7 +268,7 @@ ip_sesion_ssh() {
 
 comprobar_acceso_ssh() {
   local ip
-  if ! claves_ssh_presentes && ! sshd -T 2>/dev/null | grep -qi '^passwordauthentication no'; then
+  if ! claves_ssh_presentes && ! sshd -T 2>/dev/null | grep -i '^passwordauthentication no' >/dev/null; then
     fallar "no hay claves en authorized_keys: con PasswordAuthentication no te quedarías fuera"
   fi
   if ! ip=$(ip_sesion_ssh); then
@@ -313,7 +313,7 @@ respaldo() {
 paquetes() {
   local pkg
   for pkg in iptables-persistent netfilter-persistent ufw; do
-    if dpkg-query -W -f='${Status}' "$pkg" 2>/dev/null | grep -q 'install ok installed'; then
+    if dpkg-query -W -f='${Status}' "$pkg" 2>/dev/null | grep 'install ok installed' >/dev/null; then
       fallar "$pkg está instalado: restaura reglas viejas o filtra aparte y pisa a Docker. Quítalo (apt purge $pkg; revisa /etc/iptables/rules.v4) y vuelve a ejecutar"
     fi
   done
@@ -388,7 +388,7 @@ PY
   fi
   systemctl enable --now docker >/dev/null
   docker info >/dev/null || fallar "dockerd no responde"
-  update-alternatives --query iptables 2>/dev/null | grep -q '^Value: /usr/sbin/iptables-nft$' \
+  update-alternatives --query iptables 2>/dev/null | grep '^Value: /usr/sbin/iptables-nft$' >/dev/null \
     || fallar "iptables no es iptables-nft (update-alternatives --set iptables /usr/sbin/iptables-nft)"
 }
 
@@ -642,7 +642,7 @@ ssh_endurecer() {
     fallar "sshd -t falló con 10-ids.conf: retirado"
   fi
   systemctl reload ssh
-  sshd -T 2>/dev/null | grep -qi '^passwordauthentication no$' \
+  sshd -T 2>/dev/null | grep -i '^passwordauthentication no$' >/dev/null \
     || fallar "sshd -T no muestra «passwordauthentication no» (otro fichero de sshd_config.d lo pisa)"
   log "sshd: PasswordAuthentication no"
 }
