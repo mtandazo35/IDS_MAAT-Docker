@@ -8221,11 +8221,50 @@ def informe_diario_hilo():
             os.replace(tmp, INFORME_ESTADO)
         except OSError:
             pass
+
+import puntos_web   # noqa: E402  (apartado Puntos; importa nodos y idspanel, no el dashboard)
+
 _NAV_LINKS = [("/", "En vivo"), ("/top", "Top origenes"), ("/detalle", "Detalle"),
               ("/cuarentena", "Cuarentena"), ("/reputacion", "Consultar IP"),
               ("/historico", "Historico"), ("/conducta", "Reporte"),
+              ("/eventos", "Eventos"),
               ("/exclusiones", "Exclusiones"),
+              ("/puntos", "Puntos"),
               ("/ajustes", "Ajustes")]   # Log y Documentacion viven dentro de Ajustes
+_NAV_SOLO_ADMIN = ("/exclusiones", "/puntos")
+# paginas que no dependen del nodo: no llevan selector (CONTRATO-F2 §10, inv_B §2)
+_NAV_SIN_NODO = ("/ajustes", "/puntos", "/log", "/bitacora", "/documentacion")
+
+def qs_nodo(prefijo="&"):
+    """"&nodo=pNNN" del nodo que se mira, para los enlaces que se comparten o se abren en otra
+    pestana (no dependen de la sesion). Vacio si no hay contexto."""
+    if not nodos.hay_nodo():
+        return ""
+    return prefijo + "nodo=" + _up.quote(nodos.nodo_actual(), safe="")
+
+def _selector_nodo(active):
+    """Selector de nodo de la barra: «Todos los nodos (acumulado)» y cada punto con el estado de
+    su salud por etapas. Formulario GET con name=nodo: el servidor valida (400/404) y lo guarda."""
+    if not active or active in _NAV_SIN_NODO or active.startswith("/puntos") or not nodos.hay_nodo():
+        return ""
+    actual = nodos.nodo_actual()
+    fn = globals().get("salud_punto")
+    ops = ['<option value="%s"%s>Todos los nodos (acumulado)</option>'
+           % (nodos.TODOS, " selected" if actual == nodos.TODOS else "")]
+    color = ""
+    for p in nodos.puntos():
+        sal = puntos_web.salud(fn, p["pid"])
+        if p["pid"] == actual:
+            color = puntos_web.SALUD_COLOR.get(sal["estado"], "#9a9a95")
+        ops.append('<option value="%s"%s>%s (%s) &middot; %s</option>'
+                   % (html.escape(p["pid"]), " selected" if p["pid"] == actual else "",
+                      html.escape(p.get("nombre") or p["pid"]), html.escape(p["pid"]),
+                      html.escape(puntos_web.SALUD_TXT.get(sal["estado"], sal["estado"]))))
+    punto = ('<span class=nsdot style="background:%s" title="Salud del nodo"></span>' % color) if color else ""
+    return ('<form method=get action="%s" class=nodosel>%s<label for=nodosel>Nodo</label>'
+            '<select id=nodosel name=nodo onchange="this.form.submit()">%s</select>'
+            '<noscript><button type=submit>Ver</button></noscript></form>'
+            % (html.escape(active), punto, "".join(ops)))
 _NAV_CSS = """<style>
 html{scrollbar-gutter:stable}  /* reservar el hueco del scroll: paginas cortas (Exclusiones) y largas (Ajustes) no desplazan el contenido */
 .nav{position:sticky;top:0;z-index:20;background:linear-gradient(180deg,#12161c,#0b0b0b);color:#fff;
@@ -8272,30 +8311,15 @@ box-shadow:0 10px 32px rgba(0,0,0,.22);padding:6px 0;font:14px system-ui,-apple-
 .umenu .ufin{border-top:1px solid #efeeea;margin-top:4px;padding:8px 16px 4px;font-size:12px;color:#6b6a66}
 .umenu .ufin b{font-variant-numeric:tabular-nums;color:#33322f}
 @media(max-width:1440px){.nav .ubtn .un{display:none}}  /* sin sitio: solo la foto y la flecha */
-.nav .updbtn{display:inline-flex;align-items:center;gap:7px;margin-left:14px;cursor:pointer;background:#e67e22;color:#fff;
 border:0;padding:9px 15px;border-radius:8px;font:600 14px system-ui;box-shadow:0 2px 8px rgba(230,126,34,.4)}
-.nav .updbtn:hover{background:#d3691a}
-.nav .updbtn .uddot{width:9px;height:9px;border-radius:50%;background:#fff;animation:udpulse 1.6s infinite}
-@keyframes udpulse{0%{box-shadow:0 0 0 0 rgba(255,255,255,.6)}70%{box-shadow:0 0 0 8px rgba(255,255,255,0)}100%{box-shadow:0 0 0 0 rgba(255,255,255,0)}}
-.updov{display:none;position:fixed;inset:0;background:rgba(11,11,11,.5);z-index:120;align-items:center;justify-content:center;padding:24px}
-.updov .updbox{position:relative;background:#fff;color:#0b0b0b;border-radius:14px;max-width:560px;width:100%;max-height:calc(100vh - 48px);overflow:auto;padding:22px 24px;box-shadow:0 14px 50px rgba(0,0,0,.4)}
-.updov .updx{position:absolute;top:8px;right:8px;border:0;background:#eceae6;width:30px;height:30px;border-radius:50%;font-size:19px;line-height:1;cursor:pointer;z-index:3}
-.updov h3{margin:2px 0 6px;font-size:20px}
-.updov .updsub{color:#52514e;margin:0 0 14px;font-size:14px;line-height:1.5}
-.updov .updlist{margin:0 0 18px;padding-left:20px;max-height:44vh;overflow:auto}
-.updov .updlist li{margin:5px 0;font-size:14px;line-height:1.45}
-.updov .updgo{background:#2a78d6;color:#fff;border:0;padding:11px 18px;border-radius:9px;font:600 15px system-ui;cursor:pointer}
-.updov .updgo:hover{background:#1c5cab}
-.updask{display:none;position:fixed;inset:0;background:rgba(11,11,11,.55);z-index:150;align-items:center;justify-content:center;padding:24px}
-.updask .updaskbox{background:#fff;color:#0b0b0b;border-radius:14px;max-width:440px;width:100%;padding:22px 24px;box-shadow:0 16px 54px rgba(0,0,0,.45)}
-.updask h3{margin:0 0 8px;font-size:19px}
-.updask p{margin:0 0 18px;color:#52514e;font-size:14px;line-height:1.5}
-.updask .updaskacts{display:flex;gap:10px;justify-content:flex-end}
-.updask .updaskno{background:#eef0f2;color:#33322f;border:1px solid #d7d6d2;padding:10px 16px;border-radius:9px;font:600 14px system-ui;cursor:pointer}
-.updask .updaskno:hover{background:#e2e5e8}
-.updask .updaskok{background:#2a78d6;color:#fff;border:0;padding:10px 18px;border-radius:9px;font:600 14px system-ui;cursor:pointer}
-.updask .updaskok:hover{background:#1c5cab}
 .askov{display:none;position:fixed;inset:0;background:rgba(11,11,11,.55);z-index:160;align-items:center;justify-content:center;padding:24px}.askov .askbox{background:#fff;color:#0b0b0b;border-radius:14px;max-width:460px;width:100%;padding:22px 24px;box-shadow:0 16px 54px rgba(0,0,0,.45)}.askov h3{margin:0 0 8px;font-size:19px}.askov p{margin:0 0 18px;color:#52514e;font-size:14px;line-height:1.5}.askov .askacts{display:flex;gap:10px;justify-content:flex-end}.askov .askno{background:#eef0f2;color:#33322f;border:1px solid #d7d6d2;padding:10px 16px;border-radius:9px;font:600 14px system-ui;cursor:pointer}.askov .askno:hover{background:#e2e5e8}.askov .askok{background:#2a78d6;color:#fff;border:0;padding:10px 18px;border-radius:9px;font:600 14px system-ui;cursor:pointer}.askov .askok:hover{background:#1c5cab}.askov .askok.danger{background:#c0392b}.askov .askok.danger:hover{background:#9c2f22}
+.nav .nodosel{display:flex;align-items:center;gap:7px;margin:0 6px 0 10px;flex:0 0 auto}
+.nav .nodosel label{color:#c9d2dd;font-size:13px;font-weight:600}
+.nav .nodosel select{max-width:240px;padding:6px 9px;border-radius:8px;border:1px solid rgba(255,255,255,.25);
+background:#1b222c;color:#fff;font:13px system-ui;cursor:pointer}
+.nav .nodosel .nsdot{width:9px;height:9px;border-radius:50%;flex:none}
+.nodochip{display:inline-block;margin-left:6px;padding:1px 8px;border-radius:20px;background:#eef2f7;
+color:#33322f;font:600 11px system-ui;vertical-align:middle}
 .empbar{background:#fff;border-bottom:1px solid #ececec}
 .empbar .empwrap{max-width:1360px;margin:0 auto;padding:7px 28px;display:flex;justify-content:flex-end;align-items:center;gap:10px}
 .empbar .elogo{height:30px;width:auto;max-width:150px;object-fit:contain;display:block}
@@ -8313,8 +8337,7 @@ border:0;padding:9px 15px;border-radius:8px;font:600 14px system-ui;box-shadow:0
 @media(prefers-color-scheme:dark){.wpend{background:#2e2712;border-color:#5c4d1c;color:#f0d78c}}
  .nav .out{margin-left:8px;padding:7px 12px;font-size:14px}
  .nav .ubtn{margin-left:8px}
- .nav .updbtn{margin-left:8px;padding:7px 11px;font-size:13px}
- .updov,.updask,.askov{padding:14px}
+ .askov{padding:14px}
  .empbar .empwrap{padding:6px 14px}
  /* base compartida: margen lateral comodo en movil para TODOS los apartados
     (_NAV_CSS se inyecta despues del <style> de cada pagina, asi que manda) */
@@ -8419,66 +8442,20 @@ BASE_CSS = (
 
 def nav(active=""):
     _rl = getattr(CTX, "role", None)
-    es_admin_nav = _rl in (None, "admin")   # exclusiones/tuning: solo admin (ni operador ni lectura)
+    es_admin_nav = _rl == "admin"   # exclusiones/tuning y Puntos: solo admin (ni operador ni lectura)
     parts = []
     for h, t in _NAV_LINKS:
-        if h == "/exclusiones" and not es_admin_nav:
-            continue   # exclusiones (ajuste de deteccion) es solo de admin
+        if h in _NAV_SOLO_ADMIN and not es_admin_nav:
+            continue   # exclusiones (ajuste de deteccion) y Puntos son solo de admin
         cls = "tab on" if h == active else "tab"
         parts.append(f'<a href="{h}" class="{cls}">{t}</a>')
     brand = '<span class="brand"><img class="applogo" src="/logo.png" alt="Suricata">Estadisticas Suricata</span>'
-    # boton + modal de 'actualizacion disponible' (solo admin y solo si el chequeo lo marca)
-    upd_btn = ""; upd_modal = ""
-    if getattr(CTX, "role", None) == "admin":
-        # si el cache esta viejo/ausente, consultar GitHub EN EL MOMENTO (timeout corto)
-        # para que el aviso salga en el primer load; como mucho 1 vez cada 10 min por caja
-        # (un chequeo fallido tambien actualiza 'checked', asi no repite la espera).
-        _info = update_info()
-        if (not _info) or (time.time() - _info.get("checked", 0) > 600):
-            try: chequear_update(timeout=6)
-            except Exception: pass
-        ue = update_estado()
-        if ue:
-            mej = ue.get("mejoras") or []
-            if mej:
-                items = "".join(f"<li>{html.escape(m)}</li>" for m in mej)
-            else:
-                items = "<li>Varias mejoras acumuladas del panel y los reportes.</li>"
-            upd_btn = ('<button type=button class=updbtn '
-                       "onclick=\"document.getElementById('updov').style.display='flex'\">"
-                       '<span class=uddot></span>Actualizacion</button>')
-            upd_modal = (
-                "<div id=updov class=updov onmousedown=\"this._dn=event.target\" onclick=\"if(event.target===this&&this._dn===this){this.style.display='none'}\">"
-                "<div class=updbox>"
-                "<button type=button class=updx onclick=\"document.getElementById('updov').style.display='none'\">&times;</button>"
-                "<h3>Actualizacion disponible</h3>"
-                "<p class=updsub>Hay una version nueva del panel en GitHub. Solo se actualiza el codigo "
-                "(no toca tu configuracion). Mejoras incluidas:</p>"
-                f"<ul class=updlist>{items}</ul>"
-                "<form id=updform_nav method=post action=/update-panel>"
-                "<button class=updgo type=button onclick=\"updaskShow('updform_nav')\">&#8681; Actualizar ahora</button>"
-                "</form></div></div>")
-    # modal propio de confirmacion (reemplaza el confirm() del navegador); solo admin
-    updask = ""
-    if getattr(CTX, "role", None) == "admin":
-        updask = (
-            "<div id=updask class=updask onmousedown=\"this._dn=event.target\" onclick=\"if(event.target===this&&this._dn===this){updaskHide()}\">"
-            "<div class=updaskbox><h3>Actualizar el panel</h3>"
-            "<p>Se bajara y aplicara la ultima version del panel desde GitHub. "
-            "El panel se reiniciara en unos segundos.</p>"
-            "<div class=updaskacts>"
-            "<button type=button class=updaskno onclick=updaskHide()>Cancelar</button>"
-            "<button type=button class=updaskok id=updaskok>&#8681; Actualizar</button>"
-            "</div></div></div>"
-            "<script>function updaskShow(f){var m=document.getElementById('updask');m.dataset.f=f;m.style.display='flex';}"
-            "function updaskHide(){var m=document.getElementById('updask');if(m)m.style.display='none';}"
-            "document.getElementById('updaskok').addEventListener('click',function(){"
-            "var m=document.getElementById('updask');var f=document.getElementById(m.dataset.f||'');if(f)f.submit();});"
-            "document.addEventListener('keydown',function(e){if(e.key==='Escape')updaskHide();});</script>")
+    # la version es la de la imagen (Ajustes la ensena): se actualiza desde el servidor, no aqui
+    selector = _selector_nodo(active)
     _ubtn, _upanel = _menu_usuario()
-    navbar = ('<div class="nav"><div class="navwrap">' + brand + '<span class="push"></span>'
-              + "".join(parts) + '<span class="push"></span>' + upd_btn
-              + _ubtn + '</div></div>' + _upanel + upd_modal + updask
+    navbar = ('<div class="nav"><div class="navwrap">' + brand + selector + '<span class="push"></span>'
+              + "".join(parts) + '<span class="push"></span>'
+              + _ubtn + '</div></div>' + _upanel
               # el modal de confirmacion/aviso: sustituye a confirm() y alert() del navegador
               + _ASK)
     # marca de la empresa (logo + nombre) en una franja debajo, alineada a la derecha (bajo Salir)
@@ -9087,85 +9064,11 @@ def _card_politicas(m):
             "nada (usa los botones a mano). El barrido rapido (~60 s) de infecciones confirmadas "
             "sigue la politica de <b>Botnet / CnC</b>.</div></div></div>")
 
-def _form_nodo(r, nuevo=False):
-    """Formulario compacto de un nodo. La clave nunca se devuelve al navegador: si se
-    deja vacia se conserva la que ya estaba."""
-    esc = html.escape
-    rid = r.get("id", "")
-    tit = ("Nuevo nodo" if nuevo else esc(r.get("nombre", "") or r.get("HOST", "") or rid))
-    return (
-        "<form method=post action='/routers/guardar' class=nodoform>"
-        f"<input type=hidden name=rid value='{esc(rid)}'>"
-        f"<div class=nodohd><b>{tit}</b>"
-        + ("" if nuevo else f"<span class=nodoif title='Interfaz por la que entra su espejo'>{esc(r.get('iface',''))}</span>")
-        + "</div>"
-        "<div class=grid2>"
-        f"<div class=field><label>Nombre del nodo</label>"
-        f"<input type=text name=nombre maxlength=40 value=\"{esc(r.get('nombre',''))}\" placeholder='Nodo Centro'></div>"
-        f"<div class=field><label>IP del MikroTik</label>"
-        f"<input type=text name=host value=\"{esc(r.get('HOST',''))}\" placeholder='192.168.88.1'></div>"
-        f"<div class=field><label>Puerto API</label>"
-        f"<input type=text name=port value=\"{esc(r.get('PORT','8728'))}\" placeholder='8728 (8729 si TLS)'></div>"
-        f"<div class=field><label>Usuario API</label>"
-        f"<input type=text name=user value=\"{esc(r.get('USER',''))}\" autocomplete=off></div>"
-        f"<div class=field><label>Clave API</label>"
-        f"<input type=password name=pass autocomplete=new-password placeholder=\""
-        + ("dejar vacio para no cambiarla" if r.get("PASS") else "clave del usuario API") + "\"></div>"
-        f"<div class=field><label>Address-list de infectados</label>"
-        f"<input type=text name=list value=\"{esc(r.get('LIST','suricata-cuarentena'))}\"></div>"
-        f"<div class=field><label>Address-list de DNS sospechoso</label>"
-        f"<input type=text name=list_dns value=\"{esc(r.get('LIST_DNS','suricata-dns-sospechoso'))}\"></div>"
-        f"<div class=field><label>Caducidad (infectados / DNS)</label>"
-        f"<input type=text name=ttl value=\"{esc(r.get('TTL','1h'))}\" style='width:48%' placeholder='1h'> "
-        f"<input type=text name=ttl_dns value=\"{esc(r.get('TTL_DNS','1d'))}\" style='width:48%' placeholder='1d'></div>"
-        "</div>"
-        "<label class=chk><input type=checkbox name=tls" + (" checked" if r.get("TLS") == "1" else "") + "> API-SSL (TLS)</label>"
-        "<label class=chk><input type=checkbox name=enabled" + (" checked" if r.get("ENABLED") == "1" else "") + "> Permitir enviar a este nodo</label>"
-        "<div class=nodoacts><button class=savebtn type=submit>Guardar nodo</button>"
-        + ("" if nuevo else
-           "<button class=cancelbtn type=submit formaction='/routers/quitar' "
-           "onclick=\"return ask(this,'Quitar el nodo',"
-           "'El nodo sale del panel. Sus CPEs en cuarentena SIGUEN bloqueados en ese "
-           "MikroTik: el panel deja de verlos, el router no los suelta.',"
-           "'Quitar nodo','danger')\">Quitar nodo</button>")
-        + "</div></form>")
-
-def _card_nodos():
-    """Tarjeta para gestionar VARIOS MikroTik. Solo aparece cuando tiene sentido: con un
-    unico nodo la tarjeta de arriba ya lo configura todo."""
-    esc = html.escape
-    rs = cargar_routers()
-    filas = "".join(
-        f"<tr><td class=mono>{esc(r.get('nombre','') or r.get('HOST',''))}</td>"
-        f"<td class=mono>{esc(r.get('HOST',''))}</td>"
-        f"<td class=mono>{esc(r.get('iface',''))}</td>"
-        f"<td>{'envia' if r.get('ENABLED') == '1' else 'solo observa'}</td></tr>" for r in rs)
-    otros = "".join(_form_nodo(r) for r in rs[1:])
-    return (
-        "<section class=card><h2>Varios MikroTik (multi-nodo)</h2>"
-        "<p class=sub2>Un sensor puede vigilar <b>varios routers</b>. Cada uno espeja por "
-        "<b>su propia interfaz</b>, y de ahi sale de que nodo es cada CPE: por eso dos nodos que "
-        "usan el mismo rango privado (10.0.0.x en los dos) no se confunden, y cada bloqueo sale "
-        "hacia el router que corresponde.</p>"
-        "<div class=twrap><table class=nodost><thead><tr><th>Nodo</th><th>MikroTik</th>"
-        "<th>Interfaz del espejo</th><th>Cuarentena</th></tr></thead>"
-        f"<tbody>{filas}</tbody></table></div>"
-        "<p class=sub2 style='margin-top:10px'><b>Importante:</b> dar de alta el nodo aqui solo "
-        "configura la conexion para bloquear. Para que su trafico se <b>capture</b> hay que "
-        "re-ejecutar el instalador incluyendo su IP en <code>-m</code> "
-        "(ej. <code>-m 10.0.0.1,10.9.9.1</code>), que es lo que crea su interfaz. Si llega por la "
-        "VPN, eso lo hace la web: <b>Ajustes &rarr; VPN &rarr; Recibir el espejo por la VPN</b>.</p>"
-        "<p class=sub2>El <b>primer nodo</b> se configura en la tarjeta de arriba.</p>"
-        + otros +
-        "<details class=nodonew><summary>Agregar otro MikroTik</summary>"
-        + _form_nodo(_router_vacio(len(rs) + 1), nuevo=True) +
-        "</details></section>")
-
 def perfil_page(msg="", ok=False, edit_user=None):
     esc = html.escape
     yo = getattr(CTX, "user", None)
     mirol = getattr(CTX, "role", None)
-    es_admin = mirol in (None, "admin")   # operador NO ve tarjetas de admin (usuarios/mikrotik/updates/bitacora)
+    es_admin = mirol == "admin"   # operador NO ve tarjetas de admin (usuarios/mikrotik/puntos/bitacora)
     mi = buscar_usuario(yo) if yo else None
     mi_foto = (mi or {}).get("avatar", "")
     big_av = (f'<img class=avatar src="{esc(mi_foto)}" alt="">' if mi_foto.startswith("data:image/")
@@ -9196,8 +9099,6 @@ def perfil_page(msg="", ok=False, edit_user=None):
             "<input type=password name=nueva2 autocomplete=new-password required></div></div>"
             "<div class=actions><button class=primary type=submit>Actualizar mi clave</button></div>"
             "</form></section>")
-    elif not yo:
-        card_pw = "<section class=card><p>Autenticacion desactivada (sin usuarios configurados en el servidor).</p></section>"
     else:
         card_pw = ""   # admin: cambia su clave con el lapiz de su fila
     usuarios = cargar_usuarios() if (es_admin and yo) else []
@@ -9221,114 +9122,24 @@ def perfil_page(msg="", ok=False, edit_user=None):
             "<input type=hidden name=logo id=lavatar></div></div>"
             "<div class=actions><button class=primary type=submit>Guardar</button></div>"
             "</form></section>")
-    # --- tarjeta: actualizar el panel desde GitHub (solo codigo, no config; solo admin) ---
+    # --- tarjeta: version (la de la imagen, solo lectura) -----------------------------
+    # El panel ya no se actualiza a si mismo: la version es la de la imagen del contenedor y
+    # se cambia en el servidor (instalador / ids-orq), con su respaldo y su vuelta atras.
     card_update = ""
     if es_admin and yo:
-        info = update_info()
-        local = _sha_local()
-        disp = bool(info.get("disponible"))
-        upd_err = info.get("error") if not disp else None
-        try:
-            _ures = json.load(open("/var/log/suricata-update-result.json", encoding="utf-8"))
-        except Exception:
-            _ures = {}
-        rollback_aviso = ("<div style='background:#fdecec;border:1px solid #f3c4c4;color:#b52a2a;"
-                          "border-radius:9px;padding:10px 13px;margin:0 0 12px;font-size:13px'>"
-                          "&#9888; La ultima actualizacion se <b>revirtio automaticamente</b>: el codigo nuevo no "
-                          "levanto y se restauro la version previa. Reintenta mas tarde o revisa el cambio."
-                          "</div>") if (_ures and not _ures.get("ok") and _ures.get("rollback")) else ""
-        sha_corto = (local[:7] if local else None)
-        ultimo = info.get("ultimo") or ""
-        mejoras = info.get("mejoras") or []
-        changelog = info.get("changelog") or []
-        last = update_last()
-        _vcss = ("<style>"
-                 ".verhead{display:flex;justify-content:space-between;align-items:flex-start;gap:14px;flex-wrap:wrap;margin:4px 0 14px}"
-                 ".verlbl{font-size:12px;color:#8a8a86;font-weight:600}"
-                 ".versha{font:700 20px ui-monospace,Menlo,Consolas,monospace;color:#0b0b0b;margin-top:2px}"
-                 ".verbadge{padding:5px 12px;border-radius:20px;font-size:12.5px;font-weight:700;white-space:nowrap}"
-                 ".verbadge.new{background:#1a7f37;color:#fff}.verbadge.ok{background:#e8ece9;color:#4a4a46}"
-                 ".verblk{margin:0 0 12px}.vermsg{font-size:14px;color:#33322f;margin-top:3px}"
-                 ".versep{border:0;border-top:1px solid #ececea;margin:14px 0}"
-                 ".verstatus{display:flex;align-items:center;justify-content:center;gap:8px;font-weight:700;font-size:15px;margin:2px 0 14px}"
-                 ".vermej{list-style:none;margin:0 auto 14px;padding:0;max-width:640px;display:flex;flex-direction:column;gap:6px}"
-                 ".vermej li{background:#eef7f1;border:1px solid #cfe8d9;border-radius:8px;padding:8px 12px 8px 32px;position:relative;font-size:13.5px;color:#245c3c;line-height:1.4}"
-                 ".vermej li::before{content:'\\2713';position:absolute;left:12px;top:8px;color:#1a7f37;font-weight:700}"
-                 ".verstatus.new{color:#1a7f37}.verstatus.ok{color:#52514e}.verstatus.warn{color:#b06a00}"
-                 ".verbadge.warn{background:#fdf1dc;color:#8a5a00}"
-                 ".veractions{display:flex;gap:10px;justify-content:center;flex-wrap:wrap;margin-bottom:12px}.veractions form{margin:0}"
-                 ".verbtn2{background:#eef0f2;color:#33322f;border:1px solid #d7d6d2;padding:11px 16px;border-radius:9px;font:600 14px system-ui;cursor:pointer}"
-                 ".verbtn2:hover{background:#e2e5e8}"
-                 ".verlast{text-align:center;color:#3f7d55;font-size:13px;margin:0 0 16px}"
-                 ".verchg{border:1px solid #e7e6e2;border-radius:10px;overflow:hidden}"
-                 ".verchgh{background:#12161c;color:#fff;text-align:center;font-weight:700;font-size:13.5px;padding:8px}"
-                 ".verchgt{width:100%;border-collapse:collapse;font-size:13.5px}"
-                 ".verchgt td{padding:9px 12px;border-top:1px solid #f0efec;vertical-align:top}"
-                 ".verchgt td.c1{width:66px}.verchgt td.c3{width:94px;color:#8a8a86;white-space:nowrap;text-align:right}"
-                 ".vnew{color:#1a7f37;font-weight:700}"
-                 ".verbuild{font:12px ui-monospace,Consolas,monospace;color:#9a9a95;margin-top:3px}"
-                 "</style>")
-        if disp:
-            badge = "<span class='verbadge new'>hay una version nueva</span>"
-            estado = "<div class='verstatus new'>&#9432; Hay actualizaciones disponibles</div>"
-        elif upd_err:
-            badge = "<span class='verbadge warn'>sin verificar</span>"
-            estado = f"<div class='verstatus warn'>&#9888; No se pudo consultar GitHub: {esc(upd_err)}</div>"
-        else:
-            badge = "<span class='verbadge ok'>estas al dia</span>"
-            estado = "<div class='verstatus ok'>&#10003; Estas en la ultima version</div>"
-        # el boton de aplicar esta SIEMPRE disponible (para poder forzar la actualizacion a
-        # mano), no solo cuando el chequeo marca 'disponible': primario si hay update,
-        # secundario ('Actualizar de todos modos') si ya se esta al dia.
-        _lbl = "&#8681; Actualizar ahora" if disp else "&#8681; Actualizar de todos modos"
-        _cls = "primary" if disp else "verbtn2"
-        btn_upd = ("<form id=updform_hub method=post action='/update-panel'>"
-                   f"<button class={_cls} type=button onclick=\"updaskShow('updform_hub')\">{_lbl}</button></form>")
-        btn_buscar = ("<form method=post action='/buscar-update'>"
-                      "<button class=verbtn2 type=submit>Buscar actualizaciones</button></form>")
-        btn_hist = ("<button type=button class=verbtn2 "
-                    "onclick=\"var e=document.getElementById('histwrap');e.hidden=!e.hidden\">Historial de cambios</button>")
-        acciones = "<div class=veractions>" + btn_upd + btn_buscar + btn_hist + "</div>"
-        linea_last = ""
-        _cuando = panel_actualizado_txt()
-        if last.get("from") and local:
-            linea_last = (f"<div class=verlast>&#10003; Actualizado de <b>{esc(last['from'][:7])}</b> a "
-                          f"<b>{esc(local[:7])}</b>"
-                          + (f" por {esc(last.get('by',''))}" if last.get("by") else "")
-                          + (f" el <b>{esc(_cuando)}</b>" if _cuando else "") + ".</div>")
-        elif _cuando:
-            # actualizado por SSH o por el cron: no hay registro de quien ni de que version,
-            # pero la fecha si, y es lo que hace falta para saber si esto esta al dia
-            linea_last = (f"<div class=verlast>&#10003; Ultima actualizacion: "
-                          f"<b>{esc(_cuando)}</b>.</div>")
-        # historial de cambios (colapsable, se abre con el boton 'Historial de cambios')
-        if changelog:
-            filas = ""
-            for c in changelog:
-                et = "<span class=vnew>Nuevo</span>" if c.get("nuevo") else ""
-                filas += (f"<tr><td class=c1>{et}</td><td>{esc(c.get('subject',''))}</td>"
-                          f"<td class=c3>{esc(c.get('fecha',''))}</td></tr>")
-            cuerpo_hist = f"<table class=verchgt><tbody>{filas}</tbody></table>"
-        else:
-            cuerpo_hist = ("<p class=sub2 style='padding:12px;margin:0'>Sin historial cargado todavia. "
-                           "Pulsa <b>Buscar actualizaciones</b> para traerlo desde GitHub.</p>")
-        tabla = ("<div id=histwrap hidden style='margin-top:12px'>"
-                 "<div class=verchg><div class=verchgh>Registro de cambios</div>"
-                 f"{cuerpo_hist}</div></div>")
+        _est_v = nodos.leer_estado() or {}
         card_update = (
-            _vcss + "<section class=card><h2>Version y actualizaciones</h2>" + rollback_aviso +
-            "<div class=verhead><div><div class=verlbl>Version desplegada</div>"
-            f"<div class=versha>{PANEL_VERSION}</div>"
-            f"<div class=verbuild>build {esc(sha_corto) if sha_corto else '&mdash;'}</div></div>{badge}</div>"
-            f"<div class=verblk><div class=verlbl>Ultimo cambio</div>"
-            f"<div class=vermsg>{esc(ultimo) if ultimo else 'Pulsa <b>Buscar actualizaciones</b> para consultar GitHub.'}</div></div>"
-            "<hr class=versep>" + estado
-            + (("<ul class=vermej>" + "".join(f"<li>{esc(m)}</li>" for m in mejoras) + "</ul>")
-               if (disp and mejoras) else "")
-            + acciones + linea_last + tabla +
-            "<p class=sub2 style='margin-top:14px;color:#8a8a86'>Solo actualiza el codigo del panel y de los reportes; "
-            "no toca tu configuracion (usuarios, exclusiones, empresa, IPs de confianza, clave, ni HOME_NET/Suricata).</p>"
-            "</section>")
+            "<section class=card><h2>Version</h2>"
+            "<p class=sub2>Version de IDS_MAAT que corre en este servidor. El panel no se actualiza "
+            "desde aqui: lo hace el administrador del servidor con el instalador (imagenes nuevas, "
+            "con respaldo y vuelta atras). Tu configuracion no depende de la version.</p>"
+            "<div class=grid2><div class=field><label>Version de la imagen del panel</label>"
+            f"<div class=mono>{esc(os.environ.get('IDS_MAAT_VERSION', '') or 'sin dato')}</div></div>"
+            "<div class=field><label>Version del orquestador</label>"
+            f"<div class=mono>{esc(str(_est_v.get('version') or _est_v.get('orq_version') or 'sin dato'))}</div></div>"
+            "<div class=field><label>Reglas en uso</label>"
+            f"<div class=mono>{esc(str((_est_v.get('reglas') or {}).get('current') or 'sin dato'))}</div></div>"
+            "</div></section>")
     # --- tarjeta: reputacion / feeds (Auth-Key abuse.ch + estado por fuente; solo admin) ---
     card_feeds = ""
     if es_admin and yo:
@@ -9457,8 +9268,7 @@ def perfil_page(msg="", ok=False, edit_user=None):
             "<th class=num>Indicadores</th><th>Ultima valida</th><th>Caduca</th></tr></thead>"
             f"<tbody>{filas}</tbody></table></section>")
     # --- tarjeta: conexion al MikroTik para la cuarentena (solo admin) ---
-    # --- VPN: el tunel de los MikroTik (solo admin) ------------------------------------
-    card_vpn = _card_vpn() if (es_admin and yo) else ""
+    # --- la VPN de cada MikroTik es la de su punto: se gestiona en Puntos (solo admin) ---
     # --- DNS: a que resolutores preguntan tus CPEs -------------------------------------
     card_dns = ""
     if es_admin and yo:
@@ -9488,35 +9298,45 @@ def perfil_page(msg="", ok=False, edit_user=None):
     card_mk = ""
     if es_admin and yo:
         m = cargar_mk()
-        tiene_pass = bool(m.get("PASS"))
-        en = m.get("ENABLED") == "1"
-        tls = m.get("TLS") == "1"
+        # la conexion es por punto (el router del nodo elegido aqui, por el tunel); listas,
+        # acciones y politicas son globales. Sin HOST ni puerto: el router se alcanza por el
+        # rele API-SSL de su punto, que da de alta el apartado Puntos.
+        rs_mk = [r for r in cargar_routers() if nodos.pid_valido(r.get("id", ""))]
+        r0 = rs_mk[0] if rs_mk else {}
+        tiene_pass = bool(r0.get("PASS"))
+        en = r0.get("ENABLED") == "1"
+        opts_mk = "".join(
+            f"<option value='{esc(r.get('id', ''))}' data-user=\"{esc(r.get('USER', ''))}\" "
+            f"data-pass='{'1' if r.get('PASS') else ''}' data-en='{esc(r.get('ENABLED', '0'))}'>"
+            f"{esc(r.get('nombre') or r.get('id', ''))} ({esc(r.get('id', ''))})</option>" for r in rs_mk)
+        conexion_mk = (
+            "<div class=grid2>"
+            "<div class=field><label>Nodo (MikroTik)</label>"
+            f"<select name=nodo id=mknodo onchange='mknodo(this)'>{opts_mk}</select>"
+            "<div class=hint>La conexion va por el tunel del punto (API-SSL). El alta del router, su "
+            "VPN y su espejo estan en <a href='/puntos'>Puntos</a>.</div></div>"
+            f"<div class=field><label>Usuario API</label>"
+            f"<input id=mkuser type=text name=user value=\"{esc(r0.get('USER',''))}\" autocomplete=off></div>"
+            f"<div class=field><label>Clave API <span id=mkpassok style=color:#3a9d5d>{'(guardada)' if tiene_pass else ''}</span></label>"
+            "<input id=mkpass type=password name=pass autocomplete=new-password placeholder='"
+            + ("dejar vacio para conservar" if tiene_pass else "clave del usuario API") + "'></div>"
+            "</div>"
+            "<div class=field><label class=chk>"
+            f"<input id=mken type=checkbox name=enabled value=1 {'checked' if en else ''}> "
+            "Permitir enviar IPs a este MikroTik</label>"
+            "<div class=hint>Activado: aparece el boton para poner CPEs en cuarentena (el panel escribe en el router). "
+            "Apagado: la pestana Cuarentena solo muestra sugerencias y no toca ese MikroTik.</div></div>"
+        ) if rs_mk else (
+            "<p class=sub2><b>Todavia no hay puntos.</b> Da de alta el primer MikroTik en "
+            "<a href='/puntos'>Puntos</a>; despues su conexion se configura aqui o en su ficha.</p>")
         card_mk = (
             "<section class=card><h2>MikroTik &mdash; conexion</h2>"
             "<p class=sub2>Conexion por <b>API</b> para enviar las IPs de CPEs infectados a una "
             "<b>address-list</b> del MikroTik. El MikroTik decide que hacer con esa lista (drop, limitar) "
-            "con <b>tus</b> reglas de firewall. La clave se guarda solo en este servidor (permisos 600).</p>"
+            "con <b>tus</b> reglas de firewall. La clave se guarda cifrada con la clave maestra del servidor "
+            "y no se vuelve a mostrar.</p>"
             "<form method=post action='/mikrotik'>"
-            "<div class=grid2>"
-            f"<div class=field><label>Host / IP del MikroTik</label>"
-            f"<input type=text name=host value=\"{esc(m.get('HOST',''))}\" placeholder='192.168.88.1'></div>"
-            f"<div class=field><label>Puerto API</label>"
-            f"<input id=mkport type=text name=port value=\"{esc(m.get('PORT','8728'))}\" placeholder='8728 (8729 si TLS)'></div>"
-            f"<div class=field><label>Usuario API</label>"
-            f"<input type=text name=user value=\"{esc(m.get('USER',''))}\" autocomplete=off></div>"
-            f"<div class=field><label>Clave API {'<span style=color:#3a9d5d>(guardada)</span>' if tiene_pass else ''}</label>"
-            "<input type=password name=pass autocomplete=new-password placeholder='"
-            + ("dejar vacio para conservar" if tiene_pass else "clave del usuario API") + "'></div>"
-            "</div>"
-            "<div class=field style='margin-top:6px'><label class=chk>"
-            f"<input type=checkbox name=tls value=1 {'checked' if tls else ''} "
-            "onchange=\"var p=document.getElementById('mkport');if(this.checked){if(!p.value||p.value=='8728')p.value='8729';}else{if(!p.value||p.value=='8729')p.value='8728';}\">"
-            " Usar API-SSL (TLS, puerto 8729)</label></div>"
-            "<div class=field><label class=chk>"
-            f"<input type=checkbox name=enabled value=1 {'checked' if en else ''}> "
-            "Permitir enviar IPs al MikroTik</label>"
-            "<div class=hint>Activado: aparece el boton para poner CPEs en cuarentena (el panel escribe en el router). "
-            "Apagado: la pestana Cuarentena solo muestra sugerencias y no toca el MikroTik.</div></div>"
+            + conexion_mk
             + _card_listas(m) +
             "<div class=field><label class=chk>"
             f"<input type=checkbox name=auto value=1 {'checked' if m.get('AUTO_MANTENER') == '1' else ''}> "
@@ -9545,17 +9365,15 @@ def perfil_page(msg="", ok=False, edit_user=None):
             "align-items:center;justify-content:center}"
             ".mkwait .mkbox{background:#fff;border-radius:14px;padding:24px 28px;display:flex;align-items:center;gap:16px;"
             "max-width:440px;box-shadow:0 10px 40px rgba(0,0,0,.3)}"
-            ".nodoform{border:1px solid #e7e6e2;border-radius:10px;padding:12px 14px;margin:12px 0;background:#fbfcfe}"
-            ".nodohd{display:flex;align-items:center;gap:10px;margin:0 0 8px;font-size:14px}"
-            ".nodoif{font:11px ui-monospace,Consolas,monospace;background:#eef2f7;color:#33322f;border-radius:5px;padding:2px 7px}"
-            ".nodoacts{display:flex;gap:8px;margin-top:10px;flex-wrap:wrap}"
-            ".nodost td,.nodost th{font-size:13px}"
-            ".nodonew{margin-top:10px}"
-            ".nodonew summary{cursor:pointer;font-weight:700;font-size:13.5px;color:#2a5fa0}"
             ".mkwait .mkspin{width:30px;height:30px;flex:0 0 auto;border:3px solid #e7e6e2;border-top-color:#2a78d6;"
             "border-radius:50%;animation:mkspin .8s linear infinite}"
             "@keyframes mkspin{to{transform:rotate(360deg)}}</style>"
-            "<script>function mkclose(){document.getElementById('mkwait').style.display='none';}"
+            "<script>function mknodo(s){var o=s.options[s.selectedIndex];if(!o)return;"
+            "document.getElementById('mkuser').value=o.getAttribute('data-user')||'';"
+            "document.getElementById('mkpass').value='';"
+            "document.getElementById('mkpassok').textContent=o.getAttribute('data-pass')?'(guardada)':'';"
+            "document.getElementById('mken').checked=o.getAttribute('data-en')==='1';}"
+            "function mkclose(){document.getElementById('mkwait').style.display='none';}"
             "function mktest(btn){var f=btn.form,mo=document.getElementById('mkwait'),bx=mo.querySelector('.mkbox');"
             "bx.innerHTML=\"<div class='mkspin'></div><div><b>Probando conexion&hellip;</b><br><span style='color:#52514e;font-size:13px'>Espera unos segundos.</span></div>\";"
             "mo.style.display='flex';"
@@ -9822,10 +9640,11 @@ def perfil_page(msg="", ok=False, edit_user=None):
              + _tile("usuarios", "Usuarios y roles", _IC_USERS, bool(card_users))
              + _tile("acceso", "IPs de confianza", _IC_SHIELD, bool(card_acceso))
              + _tile("mikrotik", "MikroTik", _IC_RTR, bool(card_mk))
-             + _tile("vpn", "VPN", _IC_VPN, bool(card_vpn))
+             + (f"<a class=hubt href='/puntos'><span class=hubc>{_IC_VPN}</span>"
+                f"<span class=hubl>Puntos</span></a>" if es_admin else "")
              + _tile("dns", "DNS", _IC_DNS, bool(card_dns))
              + _tile("feeds", "Reputacion", _IC_FEED, bool(card_feeds))
-             + _tile("update", "Actualizaciones", _IC_DL, bool(card_update))
+             + _tile("update", "Version", _IC_DL, bool(card_update))
              + _tile("log", "Accesos", _IC_LOG, es_admin)
              + _tile("bitacora", "Bitacora", _IC_AUDIT, es_admin)
              + _tile("doc", "Documentacion", _IC_BOOK, True))
@@ -9837,8 +9656,7 @@ def perfil_page(msg="", ok=False, edit_user=None):
     def _mcard(sid, card):
         return _modal(sid, card) if card else ""
     modals = (_mcard("perfil", card_pw) + _mcard("empresa", card_empresa) + _mcard("usuarios", card_users)
-              + _mcard("acceso", card_acceso) + _mcard("mikrotik", card_mk + (_card_nodos() if card_mk else ""))
-              + _mcard("vpn", card_vpn)
+              + _mcard("acceso", card_acceso) + _mcard("mikrotik", card_mk)
               + _mcard("dns", card_dns) + _mcard("feeds", card_feeds)
               + _mcard("update", card_update))
     if es_admin:
@@ -9949,11 +9767,15 @@ def exclusiones_page(msg="", ok=False, edit_idx=None):
                       f'<input type=hidden name=accion value=del><input type=hidden name=idx value="{i}">'
                       f'<button class="del" type=submit>Eliminar</button></form></div>')
         resalta = ' style="background:#eef4fd"' if (ed is not None and i == edit_idx) else ''
+        _nod = r.get("nodo") or ""
+        nod_html = (f'<span class="nodochip">{html.escape(nodos.nombre(_nod))}</span>' if _nod
+                    else '<span class="muted">todos</span>')
         filas.append(f'<tr{resalta}><td>{tipo}</td><td class="mono">{html.escape(r["ip"])}</td>'
+                     f'<td>{nod_html}</td>'
                      f'<td>{html.escape(pts)}</td><td class="mono">{firma}</td><td>{vig_html}</td>'
                      f'<td>{mot}</td><td>{accion}</td></tr>')
     tabla = ("".join(filas) if filas else
-             '<tr><td colspan=7 class="muted">No hay exclusiones. Todo el trafico se analiza.</td></tr>')
+             '<tr><td colspan=8 class="muted">No hay exclusiones. Todo el trafico se analiza.</td></tr>')
     titulo_form = "Editar exclusion" if ed else "Agregar exclusion"
     val_ip = html.escape(ed["ip"]) if ed else ""
     val_pts = ", ".join(str(p) for p in ed["puertos"]) if ed else ""
@@ -9972,6 +9794,12 @@ def exclusiones_page(msg="", ok=False, edit_idx=None):
                       + "".join(f'<option value="{v}"{" selected" if v == "0" else ""}>{t}</option>' for v, t in _vig_opts)
                       + "</select>")
     hid_edit = f'<input type=hidden name=editar value="{edit_idx}">' if ed else ""
+    # nodo de la exclusion: vacio = todos (las IPs privadas se repiten entre puntos)
+    _val_nodo = (ed or {}).get("nodo") or ""
+    sel_nodo = ("<select name=nodo><option value=''>Todos los nodos</option>"
+                + "".join(f'<option value="{html.escape(pt["pid"])}"{" selected" if pt["pid"] == _val_nodo else ""}>'
+                          f'{html.escape(pt.get("nombre") or pt["pid"])} ({html.escape(pt["pid"])})</option>'
+                          for pt in nodos.puntos()) + "</select>")
     es_edit = "1" if ed else "0"       # con esto el modal se abre solo al pulsar Editar
     btn_txt = "Guardar cambios" if ed else "Agregar"
     body = f"""<!doctype html><html lang=es><head><meta charset=utf-8><link rel=icon type=image/png href=/favicon.ico>
@@ -10033,7 +9861,7 @@ padding:5px 10px 5px 5px;background:#fafbfc;cursor:pointer;max-width:100%}}
 {banner}
 <div class=exhead><h2>Exclusiones activas</h2>
 <button type=button class=primary onclick="abrirEx()">+ Agregar exclusion</button></div>
-<div class=card><table><thead><tr><th>Tipo</th><th>IP</th><th>Puertos</th><th>Firma (SID)</th><th>Vigencia</th><th>Motivo</th><th></th></tr></thead>
+<div class=card><table><thead><tr><th>Tipo</th><th>IP</th><th>Nodo</th><th>Puertos</th><th>Firma (SID)</th><th>Vigencia</th><th>Motivo</th><th></th></tr></thead>
 <tbody>{tabla}</tbody></table></div>
 
 <div class=exmodal id=exmodal data-edit="{es_edit}" onmousedown="this._dn=event.target" onclick="if(event.target===this&&this._dn===this){{cerrarEx()}}">
@@ -10046,7 +9874,9 @@ pase por ella.</p>
 <form class=add method=post action="/exclusiones">
 <input type=hidden name=accion value=add>{hid_edit}
 <label>Tipo</label><select name=tipo><option value=dst {sel_dst}>Destino (a donde va)</option><option value=src {sel_src}>Origen (de donde sale)</option></select>
-<label>IP</label><input name=ip placeholder="10.66.66.2" value="{val_ip}" required>
+<label>IP</label><input name=ip placeholder="10.0.0.2" value="{val_ip}" required>
+<label>Nodo</label>{sel_nodo}
+<div class=hint>A que punto se aplica. Vacio = todos los nodos (la misma IP privada puede ser de otro abonado en otro nodo).</div>
 <label>Puertos</label><input name=puertos placeholder="53, 161  (vacio = todos)" value="{val_pts}">
 <div class=hint>Para un DNS suele ser 53; para monitoreo SNMP, 161. Deja vacio para ignorar toda la IP.</div>
 <label>Firma (SID)</label><input name=sid placeholder="p.ej. 2027865  (vacio = cualquier firma)" value="{val_sid}">
@@ -10143,35 +9973,59 @@ font-size:13px;margin-bottom:8px}}
 <div class="foot">Acceso restringido</div>
 </div></div></body></html>"""
 
-RULES_FILE = "/var/lib/suricata/rules/suricata.rules"
-UPDATE = {"running": False, "started": 0.0, "msg": ""}   # estado del boton "actualizar reglas"
+RULES_FILE = ""   # ya no hay reglas locales: las publica el orquestador (estado.json -> reglas.current)
+UPDATE = {"running": False, "started": 0.0, "msg": "", "op_id": ""}   # estado del boton "actualizar reglas"
 
 def ultima_actualizacion_reglas():
-    """Cuando se escribio por ultima vez el archivo de reglas (= ultima actualizacion)."""
+    """Cuando se publico la version de reglas en uso (reglas.current de estado.json, AAAAMMDDTHHMMSSZ)."""
+    cur = ((nodos.leer_estado() or {}).get("reglas") or {}).get("current") or ""
     try:
-        return datetime.fromtimestamp(os.path.getmtime(RULES_FILE), TZ_EC)
-    except OSError:
+        return datetime.strptime(cur, "%Y%m%dT%H%M%SZ").replace(tzinfo=timezone.utc).astimezone(TZ_EC)
+    except (ValueError, TypeError):
         return None
 
-def _run_rules_update():
+def _run_rules_update(quien="panel", ip=""):
+    """Encola reglas.actualizar en el orquestador y sigue su avance (op.estado) hasta que termina.
+    Las reglas son compartidas por todos los puntos: el orquestador valida (-T) y reinicia en serie."""
+    import uuid as _uuid
+    op_id = str(_uuid.uuid4())
+    UPDATE["op_id"] = op_id
     try:
-        r = subprocess.run(["/usr/local/bin/suricata-rules-update"], timeout=600,
-                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        UPDATE["msg"] = "ok" if r.returncode == 0 else "err"
+        cli = puntos_web.cliente()
+        r = cli.pedir("reglas.actualizar", {}, quien="panel:%s" % quien, ip=ip, op_id=op_id)
+        bitacora("ACTUALIZAR-REGLAS", "resultado=%s op=%s" % (r.get("codigo"), op_id), quien=quien, ip=ip)
+        if r.get("codigo") not in ("ACEPTADA", "OK"):
+            UPDATE["msg"] = "err"
+            return
+        fin = time.time() + 1800
+        while time.time() < fin:
+            e = cli.pedir("op.estado", {"op_id": op_id}, quien="panel:%s" % quien, ip=ip)
+            d = e.get("datos") or {}
+            if e.get("codigo") == "OK" and d.get("estado") == "terminada":
+                UPDATE["msg"] = "ok" if d.get("codigo") == "OK" else "err"
+                bitacora("ACTUALIZAR-REGLAS-FIN", "resultado=%s op=%s" % (d.get("codigo"), op_id),
+                         quien=quien, ip=ip)
+                return
+            if e.get("codigo") == "NO_EXISTE":
+                break
+            time.sleep(5)
+        UPDATE["msg"] = "err"
     except Exception:
         UPDATE["msg"] = "err"
     finally:
         UPDATE["running"] = False
 
 def update_box():
-    """Recuadro con el estado de las reglas y el boton de actualizacion manual."""
+    """Recuadro con el estado de las reglas y el boton de actualizacion manual (solo admin)."""
     ult = ultima_actualizacion_reglas()
     ult_txt = ult.strftime("%d/%m/%Y %H:%M") if ult else "desconocida"
+    es_admin = getattr(CTX, "role", None) == "admin"
     if UPDATE["running"]:
         h = datetime.fromtimestamp(UPDATE["started"], TZ_EC).strftime("%H:%M:%S")
         estado = (f'<div style="background:#eda100;color:#fff;padding:9px 13px;border-radius:8px;'
                   f'font-size:13px;margin:0 0 10px">Actualizacion en curso desde las {h}&hellip; '
-                  f'esta pagina se refresca sola; termina en ~1 min.</div>')
+                  f'esta pagina se refresca sola; el orquestador valida las reglas y reinicia los '
+                  f'Suricata de uno en uno.</div>')
         boton = ('<button type="button" disabled style="background:#9aa;color:#fff;border:0;'
                  'padding:10px 16px;border-radius:8px;font:600 14px system-ui;cursor:default">'
                  'Actualizando&hellip;</button>')
@@ -10182,24 +10036,24 @@ def update_box():
                       'font-size:13px;margin:0 0 10px">Base de conocimiento actualizada correctamente.</div>')
         elif UPDATE["msg"] == "err":
             estado = ('<div style="background:#e34948;color:#fff;padding:9px 13px;border-radius:8px;'
-                      'font-size:13px;margin:0 0 10px">La actualizacion fallo. Revisa '
-                      '<code>/tmp/suricata-update.log</code> en el servidor.</div>')
+                      'font-size:13px;margin:0 0 10px">La actualizacion fallo y se conservan las reglas '
+                      'anteriores. El detalle esta en la Bitacora y en el registro del orquestador '
+                      '(<code>ids-orq</code> en el servidor).</div>')
         boton = ('<form method="post" action="/update-reglas" style="display:inline">'
                  '<button type="submit" style="background:#2a78d6;color:#fff;border:0;'
                  'padding:10px 16px;border-radius:8px;font:600 14px system-ui;cursor:pointer">'
-                 '&#8635; Actualizar base de conocimiento</button></form>')
+                 '&#8635; Actualizar base de conocimiento</button></form>') if es_admin else ""
     return (
         '<div id="reglas" style="border:1px solid #e7e6e2;border-radius:10px;background:#fff;padding:16px;margin:6px 0 14px;scroll-margin-top:70px">'
         f'{estado}'
-        f'<p style="margin:0 0 4px"><b>Ultima actualizacion de reglas:</b> {ult_txt} '
-        '<span style="color:#52514e">(hora de Ecuador)</span></p>'
-        '<p style="margin:0 0 12px;color:#52514e;font-size:13px">Es <b>automatica cada dia a las 04:30</b>. '
-        'Con este boton la fuerzas ahora sin esperar; descarga ET Open y recarga en caliente.</p>'
+        f'<p style="margin:0 0 4px"><b>Version de reglas en uso:</b> {ult_txt} '
+        '<span style="color:#52514e">(hora local)</span></p>'
+        '<p style="margin:0 0 12px;color:#52514e;font-size:13px">Es <b>automatica cada dia</b> (la hace el '
+        'orquestador para todos los puntos). Con este boton la fuerzas ahora sin esperar; descarga ET Open, '
+        'la valida y, si falla, se quedan las reglas anteriores.</p>'
         f'{boton}</div>')
 
 def documentacion_page(embed=False, pagina=""):
-    port = CFG.get("PORT", "5637")
-    ip_sensor = ip_del_sensor()       # para que las lineas se puedan copiar tal cual
     ubox = update_box()
     refresh_meta = "<meta http-equiv=refresh content='15;url=/documentacion#reglas'>" if UPDATE["running"] else ""
     art = f"""<!--CAT:Primeros pasos--><h2>Las pestañas del menu</h2>
@@ -10226,14 +10080,29 @@ por hora, mas el mas reciente), cada uno abrible. Los mas viejos se borran solos
 3 dias: alertas, firmas, destinos, puertos, dominios consultados, dias en los que estuvo
 activo y cuando se le vio por ultima vez. Se descarga en <b>CSV</b> para mandarselo al
 cliente. Se explica mas abajo.</td></tr>
+<tr><td><b>Eventos</b></td><td>Buscador de los <b>eventos de Suricata</b> del nodo elegido (o de
+todos): por fecha y hora, firma (texto o SID), severidad, IP origen o destino, puerto, protocolo y tipo de
+evento. Salen los mas recientes primero, paginados, y cada fila abre el <b>JSON completo</b> del evento.
+En «Todos» lleva la columna <b>Nodo</b>. Si una busqueda llega a su limite de lectura lo dice (parcial,
+hasta donde llego); nunca lo da por «sin coincidencias».</td></tr>
 <tr><td><b>Exclusiones</b></td><td>Gestiona las IPs/firmas que NO quieres que cuenten (tus DNS,
 tu monitoreo SNMP, un falso positivo puntual). Permite exclusiones <b>temporales</b> y por
-<b>firma (SID)</b>. Se explica mas abajo. Solo <b>administrador</b>.</td></tr>
+<b>firma (SID)</b> y por <b>nodo</b>. Se explica mas abajo. Solo <b>administrador</b>.</td></tr>
+<tr><td><b>Puntos</b></td><td>Solo <b>administrador</b>. Alta, ficha y baja de cada MikroTik: un punto es
+un MikroTik con su propia VPN y su propio Suricata. Se explica en "Puntos: un MikroTik, su VPN y su
+Suricata".</td></tr>
 <tr><td><b>Ajustes</b></td><td>Tu cuenta (clave y foto). Si eres <b>administrador</b>, ademas: <b>usuarios</b>
 (crear/editar/borrar/rol), <b>datos de la empresa</b> (nombre y logo de la barra), <b>MikroTik</b>
-(conexion y politicas de cuarentena), <b>Reputacion/feeds</b> (Auth-Key de abuse.ch), <b>Bitacora</b>,
-<b>Documentacion</b> y <b>Actualizaciones</b> del panel.</td></tr>
+(conexion por nodo y politicas de cuarentena), <b>Puntos</b>, <b>Reputacion/feeds</b> (Auth-Key de
+abuse.ch), <b>Bitacora</b>, <b>Documentacion</b> y la <b>Version</b> instalada (solo lectura).</td></tr>
 <tr><td><b>Documentacion</b></td><td>Esta pagina.</td></tr>
+<tr><td><b>Selector de nodo</b> (en la barra)</td><td>Elige que se mira: <b>Todos los nodos
+(acumulado)</b> o un punto concreto, con el color de su salud. Con un nodo elegido cada pantalla
+muestra solo sus datos. En «Todos» se ve todo junto y una IP repetida en dos nodos sale en <b>dos
+filas</b>, cada una con la etiqueta de su nodo: son dos abonados distintos y nunca se suman. El nodo
+va en la direccion (<code>?nodo=</code>), asi que un enlace copiado abre lo mismo en otra pestana; sin
+elegir, vale el ultimo de tu sesion y, si no hay, «Todos». Un nodo mal escrito da error (no se cambia
+por «Todos»). No sale en Ajustes, Puntos, Accesos, Bitacora ni Documentacion.</td></tr>
 <tr><td><b>Tu usuario</b> (arriba a la derecha)</td><td>Tu foto (o tus iniciales) y tu nombre; al tocarlo se
 abre un menu con tu rol y: <b>Mi cuenta</b> (nombre, correo, foto), <b>Cambiar contrase&ntilde;a</b>,
 <b>Cerrar sesi&oacute;n</b> y <b>Desconectar en</b>, el tiempo que le queda a tu sesion (dura 12 horas desde
@@ -10256,46 +10125,40 @@ con el resumen (cada 5 min), pero hay un <b>barrido rapido cada ~60 s</b> que en
 con <b>infeccion confirmada</b> (no esperan los 5 min). Ver "Cuarentena automatica" mas abajo.</li>
 <li><b>Ventana del resumen</b>: por defecto <b>24 h</b>. Se puede acortar para ver solo la
 <b>actividad reciente</b> (asi una IP ya atendida se cae sola del top al no tener alertas
-nuevas). Se ajusta con <code>VENTANA_MIN</code> en <code>/etc/suricata-dashboard.conf</code>
-(en minutos; p.ej. <code>VENTANA_MIN=30</code> = ultimos 30 min) y <code>systemctl restart suricata-dashboard</code>.</li>
-<li><b>Reglas ET</b>: se actualizan solas cada dia a las 04:30. <b>Informe por Telegram</b>: 07:30.</li>
-<li>Todas las horas del panel estan en <b>hora de Ecuador</b> (UTC-5).</li>
+nuevas). Se cambia en <b>En vivo</b> con el selector <b>Ventana</b> (solo administrador).</li>
+<li><b>Reglas ET</b>: las actualiza el orquestador cada dia para todos los puntos. <b>Informe por
+Telegram</b>: 07:30.</li>
+<li>Todas las horas del panel estan en la <b>hora local</b> configurada en el servidor.</li>
 </ul>
 
 <!--CAT:Deteccion--><h2>De donde saca Suricata para confirmar (reglas) y como se actualiza</h2>
 <p>Suricata no "adivina": compara cada paquete/flujo contra un conjunto de <b>reglas</b>
 (firmas). Una alerta existe solo si algo coincide con una regla. Aqui las reglas vienen de
 dos fuentes:</p>
-<table><tr><th>Fuente</th><th>Que trae</th><th>Archivo en disco</th></tr>
+<table><tr><th>Fuente</th><th>Que trae</th><th>Donde vive</th></tr>
 <tr><td><b>ET Open</b> (Emerging Threats, de Proofpoint)</td>
 <td>El grueso: ~40&nbsp;000 firmas gratuitas de malware, CnC/botnets, troyanos, exploits,
 escaneos, dominios de mala fama, etc. Es el catalogo publico estandar de la industria.</td>
-<td><code>/var/lib/suricata/rules/suricata.rules</code></td></tr>
-<tr><td><b>Reglas propias</b> (las crea este instalador)</td>
+<td>La version de reglas del servidor (<code>/srv/ids/reglas/current/</code>), compartida por
+todos los puntos</td></tr>
+<tr><td><b>Reglas propias</b> (vienen con la imagen de Suricata)</td>
 <td>Deteccion de <b>escaneo/ataque saliente</b> de tus CPEs (port-scan, fuerza bruta SSH),
 que ET Open no cubre. SIDs en rango local 90000xx.</td>
-<td><code>/var/lib/suricata/rules/local.rules</code></td></tr>
+<td>La misma version de reglas</td></tr>
 </table>
-<p>Quien las descarga es la herramienta <code>suricata-update</code>: baja el paquete de
-ET Open desde los servidores de Emerging Threats por HTTPS, lo combina con tus reglas
-propias y con la lista de reglas desactivadas (<code>/etc/suricata/disable.conf</code>,
-que quita el ruido de stream/app-layer cuando el trafico llega por espejo TZSP), y escribe
-el <code>suricata.rules</code> final.</p>
+<p>Quien las descarga es el <b>orquestador</b> del servidor, en un contenedor de un solo uso: baja ET
+Open por HTTPS, le aplica las reglas desactivadas (el ruido de stream/app-layer que mete el espejo
+TZSP), anade las propias y los dominios de los feeds, <b>valida</b> el resultado con Suricata y lo
+publica como una version nueva. Despues reinicia el Suricata de cada punto <b>de uno en uno</b>.</p>
 <p><b>Como se actualiza (automatico):</b></p>
 <ul>
-<li>Un <b>timer</b> de systemd (<code>suricata-rules-update.timer</code>) corre
-<b>todos los dias a las 04:30</b> (con un retardo aleatorio de hasta 30&nbsp;min para no
-consultar al servidor a la misma hora que todos).</li>
-<li>Ejecuta <code>suricata-update</code> &rarr; descarga la ultima version de ET Open y
-recarga las reglas <b>en caliente</b> (<code>reload-rules</code>), sin reiniciar Suricata
-ni perder trafico.</li>
-<li>El registro de cada descarga queda en <code>/tmp/suricata-update.log</code>.</li>
+<li>El orquestador lo hace <b>una vez al dia</b> para todos los puntos.</li>
+<li>Si la validacion falla, <b>se quedan las reglas anteriores</b> y el aviso queda en la Bitacora:
+ningun punto se queda sin reglas por una descarga mala.</li>
 </ul>
 {ubox}
-<p><b>Forzar una actualizacion ahora</b> (sin esperar a las 04:30), tambien desde el servidor:</p>
-<pre style="background:#f4f4f2;border:1px solid #e7e6e2;border-radius:8px;padding:10px 12px;overflow:auto"><code>suricata-rules-update        # descarga ET Open + recarga en caliente
-systemctl start suricata-rules-update.service   # equivalente por systemd
-suricata-update list-sources # ver catalogos disponibles</code></pre>
+<p><b>Forzar una actualizacion ahora</b>: el boton de arriba (administrador) o, en el servidor,
+<code>ids-orq reglas actualizar</code>.</p>
 
 <h2>Colores de gravedad</h2>
 <p>Cada alerta se clasifica por el texto de su firma. Se evalua de arriba hacia abajo y
@@ -10348,6 +10211,8 @@ positivo puntual de un CPE). <b>Vacio = cualquier firma</b>. El SID sale en la f
 <tr><td>Vigencia</td><td>Exclusion <b>temporal</b>: se ignora hasta que venza (24 h / 7 d / 30 d)
 y luego el trafico vuelve a analizarse solo. <b>Permanente</b> no vence. Queda registrado quien la creo.</td></tr>
 <tr><td>Motivo</td><td>Una nota para acordarte por que (p. ej. "DNS interno").</td></tr>
+<tr><td>Nodo</td><td>A que punto se aplica. <b>Vacio = todos los nodos</b>. Hace falta porque las IPs
+privadas se repiten entre puntos: el <code>10.0.0.5</code> de un nodo no es el del otro.</td></tr>
 </table>
 <p><b>Ejemplos utiles:</b></p>
 <ul>
@@ -10361,42 +10226,48 @@ servidor que sondea tus equipos.</li>
 53, sigues viendo si ese mismo equipo hace algo raro en otro puerto (un escaneo, una conexion
 a un CnC). Silenciar la IP completa te dejaria ciego a eso.</p>
 <p><b>Para eliminar</b> una exclusion, usa el boton Eliminar en la lista del apartado.</p>
-<p>Se guardan en <code>/etc/suricata-exclusiones.json</code>. Tambien se respetan lineas
-antiguas <code>IGNORAR_DESTINOS=</code>/<code>IGNORAR_ORIGENES=</code> del
-<code>/etc/suricata-report.conf</code>, pero lo recomendado es usar el apartado.</p>
+<p>Se guardan en la configuracion del panel (<code>/srv/ids/panel/conf/exclusiones.json</code>). Las
+que se pueden expresar exactas pasan ademas al Suricata de cada nodo afectado, que deja de generar esa
+alerta (lo aplica el orquestador sin cortar el espejo).</p>
 <p><b>Ojo con el criterio:</b> al excluir tu DNS dejas de ver en el panel que un cliente
-consulto un dominio malicioso. Esa senal sigue disponible en EveBox filtrando por IP de
-origen, si quieres cazar clientes infectados por sus consultas.</p>
+consulto un dominio malicioso. Esa senal sigue disponible en <b>Eventos</b> filtrando por IP de
+origen y tipo de evento, si quieres cazar clientes infectados por sus consultas.</p>
 
 <!--CAT:Operacion diaria--><h2>Usuarios, roles y clave</h2>
 <p>El panel soporta <b>varios usuarios</b> con tres roles:</p>
 <ul>
-<li><b>Administrador</b>: acceso total (exclusiones, MikroTik y politicas, feeds, actualizar
-reglas y panel, gestionar usuarios, bitacora).</li>
+<li><b>Administrador</b>: acceso total (Puntos, exclusiones, MikroTik y politicas, feeds, actualizar
+reglas, gestionar usuarios, accesos y bitacora).</li>
 <li><b>Operador</b>: opera el dia a dia &mdash; ve todo y <b>gestiona la cuarentena</b> (enviar/quitar
-CPEs, excluir un destino de falso positivo). <b>No</b> toca usuarios, conexion MikroTik,
-exclusiones de deteccion ni actualizaciones. Cada accion suya queda en la <b>bitacora</b>.</li>
+CPEs, excluir un destino de falso positivo, consultar o denunciar reputacion). <b>No</b> toca
+Puntos, usuarios, conexion MikroTik, exclusiones de deteccion ni reglas. Cada accion suya queda en la
+<b>bitacora</b>.</li>
 <li><b>Solo lectura</b>: ve los paneles y reportes y cambia su propia clave; no opera cuarentena
 ni edita nada.</li>
 </ul>
-<p>Todo se maneja en el apartado <b>Perfil</b>: cualquiera cambia su clave; un administrador
-ademas crea/borra usuarios y cambia roles.</p>
+<p>Todo se maneja en <b>Ajustes</b>: cualquiera cambia su clave; un administrador
+ademas crea/borra usuarios y cambia roles. Todos los usuarios ven todos los nodos de la empresa, pero
+<b>cada accion exige su rol y se comprueba en el servidor</b>: no basta con ocultar un boton, y cambiar
+el nodo en la direccion no da mas permisos.</p>
 <p><b>El usuario no se cambia nunca</b>, tampoco el <code>admin</code> que deja el instalador:
 de una cuenta se cambia la clave, el <b>nombre a mostrar</b>, el correo, el rol y la foto, o se
 elimina. El nombre a mostrar es el que sale arriba a la derecha y en la tabla, pero para entrar
 vale el <b>usuario</b> (el menu de arriba lo ensena debajo del nombre). Si hace falta otro
 usuario, crea uno nuevo y elimina el viejo (sin quedarte sin ningun administrador).</p>
 <p> Las claves se guardan <b>hasheadas</b> (PBKDF2 con sal)
-en <code>/etc/suricata-dashboard-users.json</code>; nunca en texto plano. El primer admin sale del
-<code>USER</code>/<code>PASS</code> de <code>/etc/suricata-dashboard.conf</code> la primera vez.</p>
+en <code>/srv/ids/panel/conf/usuarios.json</code>; nunca en texto plano. El primer administrador lo crea
+el instalador del servidor (<code>ids-orq panel crear-admin</code>, que imprime su clave una sola vez).
+Si alguien olvida la suya, <code>ids-orq panel restablecer &lt;usuario&gt;</code> le da una nueva y
+cierra sus sesiones abiertas.</p>
 <p><b>Formularios de otra web.</b> Todo POST que traiga <code>Origin</code> o <code>Referer</code> de otro
 sitio se rechaza (403), haya usuarios o no: una pagina ajena abierta en tu navegador no puede mandar
 acciones al panel. Tambien se rechaza si el navegador dice <code>Sec-Fetch-Site: cross-site</code> o
 <code>same-site</code>; si dice <code>same-origin</code>, pasa siempre (lo certifica el navegador). Las
 peticiones sin esas cabeceras (curl, scripts) siguen entrando. Detras de un proxy, el origen se compara con
 el <code>Host</code>, con <code>X-Forwarded-Host</code>, con el <code>host=</code> de <code>Forwarded</code>
-y con <code>PANEL_URL</code> de <code>/etc/suricata-dashboard.conf</code>: basta con que el proxy pase
-uno de ellos (Nginx Proxy Manager pasa el Host) o con poner <code>PANEL_URL</code> con la URL publica.
+y con la URL publica del panel (<code>IDS_PANEL_URL</code> del servidor); las cabeceras que pone un
+proxy solo cuentan si llegan de un proxy de confianza. Basta con que el proxy pase el Host (Nginx Proxy
+Manager lo hace) o con declarar la URL publica.
 Si el proxy anade <code>Referrer-Policy: no-referrer</code>, el navegador manda <code>Origin: null</code>:
 se acepta solo con <code>Sec-Fetch-Site: same-origin</code> (o <code>none</code>); un <code>null</code>
 sin esa cabecera se rechaza, porque no se distingue de un iframe con sandbox de otra web.</p>
@@ -10443,7 +10314,8 @@ salen</b>, que es justo lo que hay que mirar para decidir la regla de salida que
 <h3>De donde salen esos numeros</h3>
 <ul>
 <li>Los reportes HTML se podan a los <b>3 dias</b>, asi que la tendencia <b>no</b> sale de ellos: se
-acumula aparte en <code>/var/log/suricata-metricas.json</code> y se guarda <b>400 dias</b>.</li>
+acumula aparte, por nodo (<code>/srv/ids/panel/nodos/&lt;punto&gt;/</code>), y se guarda <b>400 dias</b>.
+En «Todos» se ven los nodos juntos.</li>
 <li>Se cuenta de forma <b>incremental</b> (solo lo posterior a la corrida anterior), no recontando la
 ventana. Importa: si bajas la ventana a 30 minutos, recontar daria un "hoy" ridiculamente bajo y sin
 avisar de nada. Asi el total del dia es correcto sea cual sea la ventana.</li>
@@ -10517,17 +10389,17 @@ la <b>WAN</b>. Entonces el sensor ve el trafico <b>ya traducido</b> y el origen 
 es exactamente lo que ve -y denuncia- el resto de internet.</p>
 <p>Los dos se complementan: el de la LAN dice <b>quien</b>, el de la WAN dice <b>que sale por cada
 publica</b>. En el de la WAN, <b>HOME_NET son tus rangos PUBLICOS</b>, no los privados.</p>
-<pre><code>curl -fsSL .../install-suricata.sh | sudo bash -s --   -t -m IP_DEL_ROUTER_EN_EL_TUNEL   -n TUS_RANGOS_PUBLICOS</code></pre>
-<p>Y en el MikroTik, <code>filter-interface</code> apuntando a la <b>WAN</b>, no al bridge.</p>
+<p>Se monta como un <b>punto aparte</b> en <b>Puntos</b>, con tus rangos <b>publicos</b> como prefijos
+del espejo, y en el MikroTik el espejo apunta a la <b>WAN</b>, no al bridge.</p>
 <h3>Tres avisos que hay que leer antes</h3>
 <ul>
 <li><b>Tu propia publica NO puede ir a la cuarentena.</b> Como HOME_NET son las publicas, el panel
 las trata como si fueran CPEs; mandar tu IP de NAT a la address-list dejaria <b>sin internet a todos
 los abonados que salen por ella</b>. El panel lo <b>impide</b> si esas IPs estan declaradas en
 <b>Consultar IP &rarr; Tus IPs publicas</b>. Declararlas ahi no es opcional en este modo.</li>
-<li><b>Por VPN, el origen es la IP del TUNEL</b>, no la LAN del router. Si en <code>-m</code> pones la
-LAN, el receptor descarta todos los paquetes y solo se ve en su contador
-<code>rechazados_origen</code>: un fallo perfectamente silencioso.</li>
+<li><b>El espejo tiene que salir por el tunel del punto</b>, desde la IP del MikroTik dentro del
+tunel. El receptor de cada punto descarta lo que llega por otro lado, y eso solo se ve en la salud por
+etapas (<b>TZSP recibido</b>): por eso conviene mirarla tras cualquier cambio.</li>
 <li><b>El espejo duplica el trafico dentro del tunel</b> y va por UDP sin retransmision: con perdida
 el IDS ve trafico incompleto <b>y no avisa</b>. Para un sensor remoto conviene <b>filtrar en el
 propio MikroTik</b> (<code>filter-port</code>, <code>filter-protocol</code>): con 25, 22, 23, 445,
@@ -10579,8 +10451,8 @@ router no resuelve, el cliente se queda <b>sin DNS</b> y parece que le cortaste 
 habilitas <code>/ip dns set allow-remote-requests=yes</code>, o usas
 <code>action=dst-nat to-addresses=&lt;tu resolutor&gt; to-ports=53</code>.</li>
 </ul>
-<p>Los nombres se pueden cambiar en <code>/etc/suricata-mikrotik.conf</code> con
-<code>LISTA_BOTNET=</code>, <code>LISTA_P2P=</code> y demas, por si ya tienes tu propia
+<p>Los nombres se pueden cambiar en <b>Ajustes &rarr; MikroTik</b> (un campo por lista), por si ya
+tienes tu propia
 nomenclatura. Y al enviar se <b>guarda en que lista quedo</b>: si manana cambia su categoria o
 renombras la lista, el panel lo saca de donde esta de verdad y no de donde tocaria hoy.</p>
 
@@ -10662,10 +10534,10 @@ que tus abonados visitan.</p>
 esas IPs. Sin ese matcher &mdash;o cortando en <code>raw</code>&mdash; se tiran tambien las
 <b>respuestas</b> a lo que pidio tu abonado, y el cliente se queda sin poder entrar a un sitio
 legitimo sin que nadie entienda por que.</li>
-<li><b>El router se baja la lista solo</b> con <code>/tool fetch</code> cada hora, y la importa.
-Meterle miles de entradas una a una por la API tardaria horas. La URL <code>/blocklist.rsc</code>
-responde <b>unicamente</b> a las IPs de los routers dados de alta, asi que no hace falta poner
-ninguna contraseña en la configuracion del router.</li>
+<li><b>La lista se descarga del panel</b> (<code>/blocklist.rsc</code>, con sesion de
+administrador; en «Todos» o por nodo) y se importa en el router con <code>/import</code>. El MikroTik
+no llega al panel por el tunel (por el solo pasan el espejo y la API), asi que ya no se la baja solo.
+Meterle miles de entradas una a una por la API tardaria horas.</li>
 </ul>
 <p>Nunca entran en la lista tus propias redes ni las de <b>Nunca bloquear</b>, y cada importacion
 <b>reemplaza</b> la lista entera, asi que lo que deja de atacar desaparece solo.</p>
@@ -10708,95 +10580,90 @@ atacando.</p>
 
 <h2>Reportes e informe diario</h2>
 <ul>
-<li>Reporte grafico a mano: <code>suricata-html-report</code> (queda en <code>/var/log/suricata/</code>).</li>
-<li>Informe de texto por Telegram: rellena <code>TELEGRAM_TOKEN</code> y <code>TELEGRAM_CHAT_ID</code>
-en <code>/etc/suricata-report.conf</code>. Se envia cada dia a las 07:30.</li>
-<li>Las reglas ET se actualizan solas cada dia a las 04:30.</li>
+<li>El reporte grafico de cada nodo (y el de «Todos») lo genera el panel cada 5 minutos, de un
+nodo en uno; los guardados estan en <b>Historico</b>.</li>
+<li>Informe de texto por Telegram: <code>TELEGRAM_TOKEN</code> y <code>TELEGRAM_CHAT_ID</code> en la
+configuracion del panel (el token se guarda cifrado). Se envia cada dia a las 07:30 (hora local), con
+una seccion por nodo.</li>
+<li>Las reglas ET las actualiza el orquestador cada dia.</li>
 </ul>
 
 <h2>Archivos y comandos utiles</h2>
+<p>Todo corre en contenedores: el panel, y por cada punto su VPN y su Suricata. Los comandos van en el
+servidor, como root.</p>
 <table><tr><th>Que</th><th>Donde / como</th></tr>
-<tr><td>Config del panel</td><td><code>/etc/suricata-dashboard.conf</code> (puerto {port}, usuario, clave)</td></tr>
-<tr><td>Config de reportes / exclusiones</td><td><code>/etc/suricata-report.conf</code></td></tr>
-<tr><td>Reglas propias de escaneo</td><td><code>/var/lib/suricata/rules/local.rules</code></td></tr>
-<tr><td>Alertas / logs</td><td><code>/var/log/suricata/fast.log</code>, <code>eve.json</code></td></tr>
-<tr><td>Estado de servicios</td><td><code>systemctl status suricata evebox tzsp-decap suricata-dashboard</code></td></tr>
-<tr><td>Ver logs en vivo</td><td><code>journalctl -u suricata-dashboard -f</code></td></tr>
-<tr><td>Base GeoIP del mapa</td><td><code>/var/lib/suricata-geoip/ipv4.bin</code> (IP&rarr;pais, offline)</td></tr>
-<tr><td>Assets del mapa</td><td><code>/var/lib/suricata-mapa/</code> (TopoJSON + topojson-client)</td></tr>
+<tr><td>Datos del panel</td><td><code>/srv/ids/panel/</code> (<code>conf/</code> configuracion,
+<code>estado/</code> registros, <code>log/</code>, <code>nodos/&lt;punto&gt;/</code> reportes de cada nodo)</td></tr>
+<tr><td>Eventos de cada punto</td><td><code>/srv/ids/datos/&lt;punto&gt;/eve.json</code> y
+<code>dns.json</code> (y sus rotados); el panel solo los lee</td></tr>
+<tr><td>Estado de los puntos</td><td><code>/srv/ids/run/estado.json</code> (lo escribe el orquestador cada 15 s)
+o <code>ids-orq estado</code></td></tr>
+<tr><td>Contenedores</td><td><code>docker ps</code>: <code>ids-core-panel</code>, y por punto
+<code>ids-&lt;punto&gt;-vpn</code> e <code>ids-&lt;punto&gt;-suricata</code></td></tr>
+<tr><td>Logs</td><td><code>docker logs ids-core-panel</code>; los de un punto, en su ficha (Logs) o con
+<code>ids-orq punto logs</code></td></tr>
+<tr><td>Reglas</td><td><code>/srv/ids/reglas/current/</code>; actualizar: <code>ids-orq reglas actualizar</code></td></tr>
+<tr><td>Base GeoIP del mapa</td><td><code>/srv/ids/panel/geo/</code> (IP&rarr;pais, offline)</td></tr>
 </table>
 
-<!--CAT:Cuarentena y MikroTik--><h2>Las dos lineas del MikroTik</h2>
-<p>Lo minimo para que este sensor reciba trafico, si ya tienes una <code>address-list</code>
-con las redes de tus abonados (aqui <code>Cliente</code>). La IP que aparece es la de este
-servidor, asi que se copia tal cual:</p>
-<pre><code>/ip firewall mangle
-add action=sniff-tzsp chain=forward comment=IDS connection-bytes=0-10000 \
-    sniff-target={ip_sensor} sniff-target-port=37008 src-address-list=Cliente
-add action=sniff-tzsp chain=forward comment=IDS connection-bytes=0-10000 \
-    sniff-target={ip_sensor} sniff-target-port=37008 dst-address-list=Cliente</code></pre>
-<p>Y una tercera que <b>no es opcional</b>, aunque se olvide siempre:</p>
-<pre><code>/ip firewall filter set [find action=fasttrack-connection] src-address-list=!Cliente</code></pre>
-<p>Sin ella, con fasttrack activo mangle deja de ver la conexion en cuanto se establece:
-capturarias el SYN y <b>te perderias el handshake TLS con su SNI</b>, que es donde se
-detecta botnet y C2. El espejo parece funcionar &mdash;hay trafico, hay alertas&mdash; y
-estas ciego a lo que importa.</p>
-<p>Por que son asi:</p>
+<!--CAT:Cuarentena y MikroTik--><h2>El espejo del MikroTik</h2>
+<p>El espejo ya no se pega a mano: lo monta el panel desde la ficha del punto (<b>Puntos &rarr; ficha
+&rarr; Espejo</b>), por la API y el tunel del punto, siempre con <b>vista previa</b> y <b>respaldo</b>
+(export en el router y copia en el panel). Es equivalente a esto (con los prefijos del punto, la IP del
+sensor dentro de su tunel y el comentario de su punto):</p>
+<pre><code>/ip firewall address-list add list=ids-vigilados address=10.0.0.0/24 comment="IDS ids-maat:p003"
+/ip firewall mangle add chain=forward src-address-list=ids-vigilados connection-bytes=0-10000 \
+    action=sniff-tzsp sniff-target=&lt;sensor del punto&gt; sniff-target-port=37008 comment="IDS ids-maat:p003"
+/ip firewall mangle add chain=forward dst-address-list=ids-vigilados connection-bytes=0-10000 \
+    action=sniff-tzsp sniff-target=&lt;sensor del punto&gt; sniff-target-port=37008 comment="IDS ids-maat:p003"</code></pre>
+<p><b>Nunca se anade una regla <code>accept</code></b>: en RouterOS un accept termina la cadena y los
+paquetes se saltarian los <code>drop</code> de detras (incluida la cuarentena). Montar, pausar o retirar
+el espejo no autoriza nada que tu firewall rechazaba; si el plan trajera un accept, el panel no lo aplica.</p>
+<p><b>FastTrack.</b> Los paquetes acelerados no pasan por mangle: sin tocarlo el espejo solo veria el
+primer paquete y te perderias el handshake TLS con su SNI, que es donde se detecta botnet y C2. Solo se
+cambian <b>condiciones</b> de las reglas <code>fasttrack-connection</code> (que deciden que se acelera,
+nunca que pasa): la existente deja fuera a <code>ids-vigilados</code> y se anaden dos fasttrack con sus
+mismas condiciones para los vigilados a partir de los 10 KB. Si tu regla fasttrack ya usa
+address-lists, el panel no la toca y lo dice en la vista previa.</p>
 <ul>
-<li><b><code>chain=forward</code> en las dos</b>, tambien en la de vuelta. En
-<code>prerouting</code> el des-NAT del retorno todavia no se aplico, asi que el destino
-sigue siendo tu IP publica y <code>dst-address-list</code> <b>no coincidiria</b>.</li>
-<li><b><code>connection-bytes=0-10000</code></b> espeja solo el arranque de cada conexion,
-que es donde Suricata detecta casi todo. Quitalo si el sensor esta en la misma LAN.</li>
-<li><b><code>comment=IDS</code></b> es lo que te deja encontrarlas despues:
-<code>/ip firewall mangle print where comment=IDS</code>.</li>
+<li><b><code>chain=forward</code> en las dos</b>, tambien en la de vuelta: en <code>prerouting</code>
+el des-NAT del retorno todavia no se aplico y <code>dst-address-list</code> no coincidiria.</li>
+<li><b><code>connection-bytes=0-10000</code></b>: captura reducida, el arranque de cada conexion, que es
+donde Suricata detecta casi todo. La salud del punto lo muestra como tal.</li>
+<li><b>Idempotente</b>: aplicar dos veces no duplica nada. <b>Pausar</b> deshabilita los dos mangle;
+<b>Retirar</b> borra lo del comentario del punto y devuelve al fasttrack sus valores del respaldo.</li>
 </ul>
-<p>Comprueba que suben los contadores con clientes activos
-(<code>/ip firewall mangle print stats where comment=IDS</code>) y, en el servidor,
-que esta llegando de verdad con <b><code>suricata-espejo</code></b>.</p>
-<p>Todo esto lo puede hacer el sensor solo, sin entrar al router:
-<code>suricata-mikrotik-init -k /root/mk.conf -s &lt;IP_IDS&gt; -e vpn -r &lt;redes&gt;</code>.</p>
+<p>Comprueba que llega mirando la salud por etapas del punto (<b>TZSP recibido</b> y <b>Trafico
+procesado</b>) o, en el router, <code>/ip firewall mangle print stats where comment~"ids-maat"</code>.</p>
 
-<h2>Espejo MikroTik y HOME_NET (por que a veces no se ven datos)</h2>
-<p>Con espejo TZSP desde el MikroTik, el flujo llega al receptor (<code>tzsp-decap</code>)
-y Suricata lo inspecciona. Pero el panel muestra <b>alertas</b>, no trafico normal, y las
-reglas de <b>ataque saliente</b> (escaneo de puertos, Telnet/Mirai, fuerza bruta SSH de un
-CPE) solo disparan si la IP de origen esta dentro de <code>HOME_NET</code>.</p>
-<p><b>Sintoma tipico:</b> el espejo llega (<code>journalctl -u tzsp-decap</code> muestra
-<code>rx/tx</code> subiendo) pero el panel se ve casi vacio. Casi siempre es que
-<code>HOME_NET</code> no incluye las redes de tus clientes.</p>
-<p>En un ISP los CPE suelen estar repartidos en varias redes privadas (10.6.x, 10.69.x,
-172.16.x...), asi que lo mas seguro es cubrir <b>todas las redes privadas (RFC1918)</b>:</p>
-<pre><code># en la instalacion (flag -n):
-... -t -m &lt;IP_MikroTik&gt; -n 10.0.0.0/8,172.16.0.0/12,192.168.0.0/16
-
-# o cambiarlo despues sin reinstalar:
-sed -i 's#^\\s*HOME_NET:.*#    HOME_NET: "[10.0.0.0/8,172.16.0.0/12,192.168.0.0/16]"#' /etc/suricata/suricata.yaml
-suricata -T -c /etc/suricata/suricata.yaml   # validar
-systemctl restart suricata</code></pre>
-<p><code>EXTERNAL_NET</code> se ajusta solo (<code>!$HOME_NET</code>).</p>
+<h2>Espejo y prefijos (por que a veces no se ven datos)</h2>
+<p>El espejo de cada punto llega a su receptor TZSP (en su contenedor VPN) y su Suricata lo inspecciona.
+Pero el panel muestra <b>alertas</b>, no trafico normal, y las reglas de <b>ataque saliente</b> (escaneo
+de puertos, Telnet/Mirai, fuerza bruta SSH de un CPE) solo disparan si la IP de origen esta dentro de
+los <b>prefijos del punto</b> (su <code>HOME_NET</code>).</p>
+<p><b>Sintoma tipico:</b> la salud del punto dice <b>TZSP recibido</b> pero el panel se ve casi vacio.
+Casi siempre es que los prefijos no incluyen las redes de tus clientes.</p>
+<p>Los prefijos se eligen al dar de alta el punto y se cambian en su ficha (<b>Prefijos</b>): el
+Suricata del punto se recrea con los nuevos y despues hay que <b>volver a aplicar el espejo</b> para
+llevarlos a la address-list <code>ids-vigilados</code> del router (con la misma vista previa).</p>
 
 <h2>Cuarentena: enviar CPEs infectados al MikroTik (API v6 y v7)</h2>
 <p>La pestana <b>Cuarentena</b> lista los CPE con <b>infeccion confirmada</b> (por repeticion y
 contexto, no por una sola firma). Desde ahi, con un boton, el panel empuja la IP a una
 <b>address-list</b> del MikroTik por su <b>API</b>. El panel <b>solo mete y saca IPs de la lista</b>;
 <b>que se hace con esa lista lo decides tu</b> con una regla de firewall. Es compatible con
-<b>RouterOS v6</b> (incluye login antiguo &lt;6.43 por reto MD5) y <b>v7</b>, en API plano (8728) o
-API-SSL (8729).</p>
+<b>RouterOS v6</b> (incluye login antiguo &lt;6.43 por reto MD5) y <b>v7</b>, por <b>API-SSL</b>
+(8729) a traves del tunel de su punto.</p>
 
-<h3>1) Habilitar el servicio API (igual en v6 y v7)</h3>
-<pre><code># API plano (puerto 8728)
-/ip service enable api
-# o API-SSL (puerto 8729) si vas a usar TLS
-/ip service enable api-ssl
-# recomendado: limitar desde donde se conecta (IP del servidor Suricata)
-/ip service set api address=IP_DEL_SERVIDOR_SURICATA</code></pre>
+<h3>1) La API del router y su usuario</h3>
+<p>Los comandos de la ficha del punto (bloque VPN) ya dejan la <b>API-SSL</b> con el certificado
+<code>ids-promax</code> y el usuario <code>ids-api</code>, que solo puede entrar desde el sensor y por el
+tunel. La API no se abre a internet ni a tu LAN.</p>
 
-<h3>2) Usuario API dedicado con permisos minimos (igual en v6 y v7)</h3>
-<pre><code>/user group add name=suricata policy=api,read,write,test
-/user add name=suricata-api group=suricata password=UNA_CLAVE_FUERTE</code></pre>
-<p>Ese <b>usuario</b> y <b>clave</b> son los que pones en <b>Ajustes &rarr; MikroTik</b>. La clave se
-guarda solo en este servidor, en <code>/etc/suricata-mikrotik.conf</code> con permisos 600.</p>
+<h3>2) La clave del usuario API</h3>
+<p>La eliges tu (<code>&lt;CLAVE-API&gt;</code> en los comandos) y la pones en la ficha del punto
+(<b>API</b>) o en <b>Ajustes &rarr; MikroTik</b> eligiendo el nodo. Se guarda cifrada con la clave
+maestra del servidor y no se vuelve a mostrar.</p>
 
 <h3>3) La regla que DECIDE que hacer con la lista (tu la defines)</h3>
 <p>Ejemplo: cortar el trafico saliente de los CPE en cuarentena (misma sintaxis en v6 y v7):</p>
@@ -10809,12 +10676,13 @@ con el boton <b>Quitar</b> de la pestana.</p>
 
 <h3>4) Configurar y probar en el panel</h3>
 <ol>
-<li><b>Ajustes &rarr; MikroTik</b>: host, puerto (8728 / 8729 si TLS), usuario, clave, nombre de la
-address-list y TTL. Marca <b>Habilitar</b>.</li>
-<li>Pulsa <b>Probar conexion</b>: si conecta, muestra el nombre (identity) del router.</li>
+<li><b>Ficha del punto &rarr; API</b> (o <b>Ajustes &rarr; MikroTik</b> con el nodo elegido): usuario,
+clave y <b>Permitir enviar</b>. Los nombres de las address-list y el TTL estan en Ajustes &rarr; MikroTik.</li>
+<li>Pulsa <b>Probar conexion</b>: si conecta, muestra el nombre (identity) del router. La primera vez
+se fija la huella de su certificado; si un dia cambia, la conexion se rechaza hasta que lo revises.</li>
 <li>En <b>Cuarentena</b>, cada CPE infectado confirmado muestra <b>Enviar a cuarentena</b>
-(lo agrega a la lista) y luego <b>Quitar</b> (lo saca). Todo queda en
-<code>/var/log/suricata-cuarentena.log</code>.</li>
+(lo agrega a la lista de <b>su</b> nodo) y luego <b>Quitar</b> (lo saca). Todo queda en el registro de
+cuarentena del panel y en la <b>Bitacora</b>.</li>
 </ol>
 <p>En la tabla <b>Enviados manualmente</b> puedes <b>ordenar por cualquier columna</b>: haz
 clic en la cabecera (CPE, Lista, Por, Enviado, Ultima revision&hellip;) para ordenar de forma
@@ -10826,47 +10694,51 @@ arriba del todo (tambien en el refresco automatico de cada 5 min).</p>
 <b>seleccionar todas</b>). Al marcar alguna se activa <b>Quitar seleccionados (N)</b>, que abre
 una <b>ventana de confirmacion</b> con la lista de IPs antes de tocar nada; las de la lista de
 DNS salen marcadas como tal. Puedes mezclar IPs de <b>ambas listas</b>: cada una se saca de la
-suya. Es reversible (puedes volver a enviarlas) y queda todo en
-<code>/var/log/suricata-cuarentena.log</code>. Si el router falla con alguna, se te dice
+suya, en el MikroTik de su nodo. Es reversible (puedes volver a enviarlas) y queda todo en la
+Bitacora. Si el router falla con alguna, se te dice
 <b>cual y por que</b>, y esa IP <b>se queda</b> en el registro para reintentarla.</p>
 <p>Las IPs se sacan <b>una por una y se ve el avance</b> (barra + cada IP marcada &#10003; o
 &#10007; segun sale), porque cada una es una llamada al MikroTik y en bloque la pantalla se
 quedaba parada sin decir nada. Si una falla <b>no se detiene el resto</b>. Mientras corre, la
 ventana no se cierra, para no perder de vista el avance.</p>
-<p><b>Seguridad:</b> usa un usuario API solo con <code>api,read,write,test</code> (no full), limita el
-servicio API a la IP del servidor Suricata, y si el enlace no es de confianza usa <b>API-SSL</b>. Si
-dejas el envio <b>deshabilitado</b>, la pestana Cuarentena solo <b>sugiere</b> (no toca el router).</p>
+<p><b>Seguridad:</b> el usuario <code>ids-api</code> solo entra desde el sensor por el tunel, la
+conexion es <b>API-SSL</b> extremo a extremo con la huella fijada, y el destino de cada accion es siempre
+el nodo de la IP (<code>punto|IP</code>), nunca el que tengas elegido en el selector. Si dejas el envio
+<b>deshabilitado</b>, la pestana Cuarentena solo <b>sugiere</b> (no toca ese router).</p>
 
 <h3>5) Estados de la pestana Cuarentena</h3>
 <p>El aviso de arriba de la pestana cambia de color segun el estado:</p>
 <ul>
 <li><b style="color:#1a7f37">Verde &mdash; MikroTik habilitado</b>: marcaste <b>Permitir enviar</b> y la conexion
-(host, usuario, clave) esta completa. Aparecen los botones <b>Enviar a cuarentena</b> por CPE y
+(usuario y clave del nodo) esta completa. Aparecen los botones <b>Enviar a cuarentena</b> por CPE y
 <b>Enviar todos</b>.</li>
 <li><b style="color:#b52a2a">Rojo &mdash; Falta configurar la conexion</b>: marcaste <b>Permitir enviar</b>
-pero todavia falta host, usuario o clave (o no conecta). Completa <b>Ajustes &rarr; MikroTik</b> y pulsa
+pero todavia falta el usuario o la clave (o no conecta). Completa la API del punto y pulsa
 <b>Probar conexion</b>. Mientras tanto no se envia nada.</li>
 <li><b>Gris &mdash; Modo sugerencia (dry-run)</b>: el permiso esta apagado. Solo se listan candidatos;
 el panel no toca el router.</li>
 </ul>
 <p><b>Enviar todos:</b> con el estado en verde, el boton <b>Enviar todos (N)</b> manda de una a la
 address-list todos los CPE de la lista que aun no esten en cuarentena (tope de 50 por accion; si el
-router deja de responder, se detiene y avisa). Cada IP queda con su <b>TTL</b> y se puede sacar con
-<b>Quitar</b>. Toda accion se registra en <code>/var/log/suricata-cuarentena.log</code>.</p>
+router deja de responder, se detiene y avisa). En «Todos» se reparte <b>por nodo</b> y el resultado
+se da por nodo: un router caido no frena a los demas. Cada IP queda con su <b>TTL</b> y se puede sacar
+con <b>Quitar</b>. Toda accion queda en la Bitacora.</p>
 
-<h2>Salud del sensor</h2>
-<p>Arriba de la pestana <b>Cuarentena</b> hay una tarjeta que responde de un vistazo si el
-sensor esta <b>viendo trafico</b>. Se mide en segundo plano cada ~60&nbsp;s (cache en
-<code>/var/log/suricata-sensor.json</code>) y distingue:</p>
+<h2>Salud de cada punto (por etapas)</h2>
+<p>La salud se mide <b>por punto y por etapas</b>, porque cada una falla por su lado. La ven todos los
+usuarios en el selector de nodo, y con detalle en <b>Puntos</b>:</p>
 <ul>
-<li><b>Viendo trafico</b> (verde): captura activa, con o sin amenazas.</li>
-<li><b>Sin trafico</b> / <b>Receptor TZSP caido</b> / <b>Suricata detenido</b> (rojo): no llega nada
-que inspeccionar &mdash; revisa el espejo del MikroTik o los servicios.</li>
-<li><b>Captura con perdidas</b> (ambar): Suricata descarta paquetes (drop ratio alto).</li>
-<li><b>Reporte desactualizado</b> (ambar): el resumen no se regenera; revisa el panel.</li>
+<li><b>VPN conectada</b>: el MikroTik tiene el tunel arriba.</li>
+<li><b>TZSP recibido</b>: llega el espejo al receptor del punto.</li>
+<li><b>Trafico procesado</b>: Suricata cuenta paquetes capturados y sus <b>descartes</b>.</li>
+<li><b>Eventos actualizados</b>: el registro de eventos del punto se esta escribiendo.</li>
+<li><b>Datos consultables</b>: el panel puede leerlos (reporte, eventos, historico).</li>
 </ul>
-<p>Muestra chips de servicios, interfaces de captura, paquetes/s y % de perdidas. Usa
-<code>suricatasc iface-stat</code> y <code>systemctl is-active</code>.</p>
+<p>Estados: <b>operativa</b>, <b>degradada</b>, <b>sin datos</b>, <b>desconectada</b>,
+<b>deshabilitada</b> y <b>desconocido</b>. Una VPN arriba, un contenedor en marcha o cero alertas
+<b>no</b> son «sano» por si solos. La captura es reducida (los primeros 10 KB de cada conexion de los
+prefijos elegidos) y se muestra como tal. Lo publican el orquestador (cada 15 s) y el receptor TZSP de
+cada punto.</p>
 
 <h2>Por que un CPE es candidato: confianza y evidencia</h2>
 <p>Una coincidencia en una lista o varias alertas repetidas <b>no bastan</b> para confirmar una
@@ -10889,73 +10761,59 @@ con su SID/firma/fecha/flow_id, las <b>coincidencias de reputacion</b> con su fu
 (PPPoE/DHCP). Si la IP cambio de dueño entre el ataque y ahora, la ficha lo avisa &mdash; asi no se
 culpa al cliente que hoy tiene esa IP por lo que hizo otro antes.</p>
 
-<h2>Varios MikroTik en un mismo sensor (multi-nodo)</h2>
-<p>Un sensor puede vigilar <b>varios routers</b>. Cada uno manda su espejo y el sensor lo
-recibe por <b>una interfaz distinta</b> (<code>ids-mon</code>, <code>ids-mon2</code>,
-<code>ids-mon3</code>&hellip;). De ahi sale <b>de que nodo es cada CPE</b>, y eso resuelve los
-dos problemas que hacen inviable compartir sensor sin mas:</p>
+<h2>Puntos: un MikroTik, su VPN y su Suricata</h2>
+<p>Cada MikroTik es un <b>punto</b>, con identidad fija (<code>p001</code>, <code>p002</code>...) y su
+propia VPN y su propio Suricata en contenedores que crea el orquestador. Un punto que falla o se reinicia
+no afecta a los demas, y sus datos van aparte.</p>
 <ul>
-<li><b>Rangos repetidos.</b> Es normal que cada nodo use <code>10.0.0.x</code>. Sin saber el
-router, <code>10.0.0.5</code> serian tres clientes mezclados en uno: alertas sumadas, riesgo
-inflado y el <b>abonado equivocado</b> en la ficha. Con el nodo, la identidad es el par
-<b>(router, IP)</b> y cada uno va por su lado.</li>
-<li><b>A que router bloquear.</b> Cada CPE se envia a la address-list de <b>su</b> MikroTik, con
-el nombre de lista que ese router tenga configurado (pueden llamarse distinto en cada uno).</li>
+<li><b>Rangos repetidos.</b> Es normal que cada nodo use <code>10.0.0.x</code>. La identidad de un CPE es
+el par <b>(punto, IP)</b>: el <code>10.0.0.5</code> de un nodo y el del otro son dos abonados, con sus
+alertas, su riesgo y su ficha.</li>
+<li><b>A que router bloquear.</b> Cada accion va al MikroTik <b>del nodo de esa IP</b> (lo dice la propia
+fila), nunca al que tengas elegido en el selector. En «Todos» las acciones masivas se reparten por nodo.</li>
+<li>Cada linea de la bitacora dice en que nodo se actuo.</li>
 </ul>
-
-<h3>Como se ve en el panel</h3>
-<p>Con <b>un solo</b> MikroTik no cambia nada: los CPEs se siguen viendo por su IP. En cuanto hay
-<b>mas de uno</b>, junto a cada IP aparece una <b>etiqueta azul con el nombre del nodo</b>, tanto
-en el Top como en la pestana Cuarentena. Esa etiqueta no es decorativa: dos abonados distintos
-pueden tener la misma IP en routers distintos, y el panel los trata como lo que son, dos CPEs
-separados.</p>
-<ul>
-<li>El boton <b>&#9888; Cuarentena</b> del Top envia al MikroTik <b>de ese nodo</b>, a la
-address-list que ese router tenga configurada.</li>
-<li>La marca <b>&#10003; En cuarentena</b> aparece cuando ese CPE concreto (nodo + IP) esta en una
-de las dos listas, la de infectados o la de DNS sospechoso.</li>
-<li><b>Quitar</b> libera solo a ese, no al homonimo del otro nodo.</li>
-<li>Cada linea de la bitacora termina en <code>nodo=&lt;nombre&gt;</code>, para saber despues en
-que router se actuo.</li>
-<li>Un nodo que este <b>sin habilitar</b> no recibe envios: se avisa en pantalla y no se toca.</li>
-</ul>
-
-<h3>Como se monta</h3>
+<h3>Alta</h3>
 <ol>
-<li><b>Instalar/re-ejecutar el instalador</b> con todas las IPs de los routers en <code>-m</code>:
-<pre><code>curl -fsSL .../install-suricata.sh | sudo bash -s -- \
-  -t -m 10.0.0.1,10.9.9.1,192.0.2.1 \
-  -n 10.0.0.0/8,172.16.0.0/12,192.168.0.0/16</code></pre>
-Eso crea una interfaz por router y hace que Suricata capture todas. <b>Este paso es el que
-habilita la captura</b>; sin el, un nodo dado de alta en el panel no se vigila.</li>
-<li><b>En cada MikroTik</b>, apuntar el espejo al sensor (igual que con uno solo):
-<pre><code>/tool sniffer set filter-interface=bridge1 streaming-enabled=yes \
-    streaming-server={ip_sensor}:37008
-/tool sniffer start</code></pre></li>
-<li><b>En Ajustes &rarr; MikroTik</b>, dar de alta cada nodo con su IP, usuario y clave de API,
-y marcar <b>Permitir enviar</b> en los que deban bloquear.</li>
+<li><b>Puntos &rarr; Agregar punto</b>: nombre, <b>prefijos de abonados</b> que se espejan, version de
+RouterOS (6.49+ o 7) y perfil (reducido por defecto). Un doble clic no crea dos puntos.</li>
+<li>El servidor crea la VPN y el Suricata del punto; se ve el avance paso a paso.</li>
+<li>Al terminar se muestran <b>una sola vez</b> el usuario y la clave de la VPN y los comandos para el
+MikroTik (v7 y v6) con la clave puesta. Si la pierdes, en la ficha esta <b>Regenerar la clave VPN</b>.</li>
+<li>En la ficha: la clave de la <b>API</b>, <b>Probar conexion</b> y luego <b>Espejo &rarr; Ver el plan
+&rarr; Aplicar</b>.</li>
 </ol>
-
-<h3>Como comprobar que llegan todos</h3>
-<p>El receptor escribe un resumen cada minuto con el <b>desglose por origen</b>. Si un router
-deja de espejar, ese nodo se queda ciego y <b>no hay ningun otro aviso</b>, asi que conviene
-mirarlo:</p>
-<pre><code>journalctl -u tzsp-decap -n 5
-# ... rx=... tx=... por_origen=10.0.0.1:812,10.9.9.1:655,192.0.2.1:430</code></pre>
-<p>Si falta un origen, revisa el sniffer de ese MikroTik y que su IP este en el
-<code>-m</code> del instalador.</p>
-
+<h3>La ficha del punto</h3>
+<p>Resumen (estado, salud por etapas, espejo, Suricata, alertas de 24 h y <b>retencion efectiva</b>),
+VPN (comandos sin la clave), API (usuario, clave, probar, huella), Espejo (plan, aplicar, pausar,
+retirar), Prefijos, Logs de la VPN y del Suricata, arrancar, parar, reiniciar y la baja.</p>
+<h3>Retencion</h3>
+<p>El objetivo es guardar <b>30 dias</b> de eventos de cada punto. Se poda por fecha (lo que tiene mas
+de 30 dias). Si el disco del servidor baja del 15 % libre, se borran antes los rotados mas viejos y
+queda registrado: por eso Puntos y Eventos dicen la <b>retencion efectiva</b> (desde que fecha hay
+eventos de verdad) y nunca prometen 30 dias si hubo borrado anticipado.</p>
+<h3>Baja</h3>
+<p>En la ficha, escribiendo el nombre del punto. Se borra todo el punto en el servidor (VPN, Suricata y
+eventos) y en el panel (sus reportes, su conexion y sus registros); queda una linea en la bitacora. Los
+identificadores no se reutilizan. En el MikroTik quedan lo que lleva el comentario
+<code>IDS ids-maat:&lt;punto&gt;</code>, la interfaz <code>ids-vpn</code> y el usuario <code>ids-api</code>:</p>
+<pre><code>/ip firewall mangle remove [find comment~"ids-maat:p003"]
+/ip firewall filter remove [find comment~"ids-maat:p003"]
+/ip firewall address-list remove [find comment~"ids-maat:p003"]
+/ip route remove [find comment~"ids-maat:p003"]
+/interface ovpn-client remove [find name=ids-vpn]
+/user remove [find name=ids-api]
+/user group remove [find name=ids-api]</code></pre>
+<p>Y devolver a la regla fasttrack sus valores originales (si se retiro el espejo desde el panel antes de
+la baja, ya esta hecho).</p>
 <h3>Limites que conviene tener claros</h3>
 <ul>
-<li><b>Todos los routers deben estar en la misma red que el sensor.</b> El espejo va por UDP
-sin retransmision: si cruza un enlace con perdida o saturado, el IDS ve trafico incompleto y
-<b>no te avisa</b>. Para un nodo remoto es preferible un sensor propio.</li>
-<li><b>Un sensor, un punto de fallo.</b> Si la caja cae, quedas ciego en todos los nodos a la
-vez; con un sensor por router solo pierdes ese.</li>
-<li><b>La capacidad se suma.</b> El trafico espejado de los tres nodos entra en la misma
-maquina: revisa la tabla de RAM y vigila <code>memcap_drop</code>.</li>
-<li><b>Quitar un nodo del panel no libera sus CPEs</b>: siguen bloqueados en ese MikroTik y hay
-que soltarlos desde el propio router.</li>
+<li><b>La capacidad es del servidor.</b> Cada punto reserva su memoria; <b>Puntos</b> dice cuantos caben
+todavia.</li>
+<li><b>El espejo va por el tunel</b> y por UDP: con perdida el IDS ve trafico incompleto. La salud por
+etapas lo enseña (descartes, TZSP).</li>
+<li><b>Dar de baja un punto no libera sus CPEs en el router</b> si no se quitaron antes: siguen en la
+address-list de ese MikroTik.</li>
 </ul>
 
 <h2>Ataques entrantes desde internet (y por que van aparte)</h2>
@@ -10973,7 +10831,7 @@ abonados). Se corta en el <b>firewall de borde</b>, o mejor: se <b>cierra la exp
 equipo atacado. Si algo tuyo recibe escaneo constante desde internet, casi siempre es que tiene
 un puerto publicado que no hacia falta.</p>
 <p><b>Si das IP publica a tus clientes</b>, dilo con <code>MIS_REDES=203.0.113.0/24,10.0.0.0/8</code>
-en <code>/etc/suricata-dashboard.conf</code>; por defecto son las privadas
+en la configuracion del panel (<code>/srv/ids/panel/conf/panel.conf</code>); por defecto son las privadas
 (<code>10/8</code>, <code>172.16/12</code>, <code>192.168/16</code>) mas CGNAT
 (<code>100.64/10</code>). Ojo: lo que pongas <b>reemplaza</b> el valor por defecto.</p>
 
@@ -11058,7 +10916,7 @@ normaliza), se dice que campo y como, y queda en la bitacora; si coincide, "Veri
 interface-list se pone en Ajustes (vacio = sin esa condicion) y tiene que existir en el router.</p>
 <p><b>Como se aplica.</b> Guarda primero. <i>Ver / aplicar en el router</i> ensena las lineas exactas que se
 van a crear, corregir o quitar en ese router; solo si confirmas se toca. Antes del primer cambio se
-<b>respalda</b> el firewall (raw, nat, filter, mangle y queue tree) en <code>/root/backups/panel/</code>; si
+<b>respalda</b> el firewall (raw, nat, filter, mangle y queue tree) en <code>/srv/ids/panel/respaldos/</code>; si
 el respaldo falla, no se toca nada. Cada regla del panel lleva <code>comment="Suricata:&lt;clase&gt;:&lt;n&gt;"</code>
 y la reconciliacion es <b>idempotente</b> (aplicar dos veces no cambia nada) y <b>acotada</b>: jamas toca una
 regla que no lleve ese comentario. Junto a los botones, una etiqueta dice como esta cada clase en el router:
@@ -11083,14 +10941,15 @@ cuantos cambios le faltan, ademas de si alguna lista con CPEs dentro no la usa n
 <p>Si una IP <b>destino</b> (p.ej. un DNS publico) dispara falsos positivos en muchos CPEs, en la
 pestana Cuarentena esta <b>Excluir destino (falso positivo)</b>: marca esa IP como <b>confiable</b>,
 sus alertas dejan de contar y se <b>liberan automaticamente</b> todos los CPEs que fueron a la lista
-por su culpa. Los destinos confiables se guardan en <code>/etc/suricata-destinos-confianza.lst</code>.</p>
+por su culpa. Los destinos confiables se guardan en la configuracion del panel
+(<code>/srv/ids/panel/conf/</code>).</p>
 
 <h2>Resolutores DNS: el DNS no es la victima</h2>
 <p>Cuando un CPE pregunta por un dominio de malware, la alerta lleva como <b>destino</b> la IP del
 DNS al que pregunto (1.1.1.2, 8.8.8.8, el de tu ISP...). Sin mas, el panel contaria eso como un
 ataque <i>al DNS</i> y el resolutor subiria a <b>Top destinos mas atacados</b>. No lo es: la prueba
 es el <b>dominio</b>, y la culpa, del CPE. En <b>Ajustes &rarr; DNS</b> esta la lista de resolutores
-conocidos (<code>/etc/suricata-resolutores.lst</code>, de serie los publicos). Para una IP de esa
+conocidos (en la configuracion del panel; de serie los publicos). Para una IP de esa
 lista, lo que va al <b>puerto 53</b> o lleva firma de DNS se cuenta como <b>consulta a traves de el</b>:
 sale aparte en Top destinos ("resolutores usados para consultar dominios maliciosos", con cuantos
 CPEs lo hacen), la ficha del CPE dice <i>consulta DNS maliciosa: tal dominio, via tal resolutor</i>,
@@ -11101,13 +10960,14 @@ puerto, eso <b>si</b> es un ataque y sigue saliendo como tal.</p>
 <h2>Allowlist "nunca bloquear"</h2>
 <p>En <b>Ajustes</b> puedes definir IPs/CIDR que <b>jamas</b> van a cuarentena (tu infraestructura,
 clientes criticos), aunque disparen alertas. Se guardan en
-<code>/etc/suricata-nunca-bloquear.lst</code> y las respetan tanto las politicas como el barrido rapido.</p>
+la configuracion del panel (<code>/srv/ids/panel/conf/</code>) y las respetan tanto las politicas como el
+barrido rapido, en todos los nodos.</p>
 
 <h2>Reputacion / feeds (abuse.ch y AbuseIPDB)</h2>
 <p>El panel enriquece los destinos con <b>feeds de reputacion</b> (IPs/CIDR y dominios maliciosos)
 con su <b>procedencia</b> y <b>caducidad</b>. En <b>Ajustes &rarr; Reputacion/feeds</b> (admin) se pegan
 las claves: la <b>Auth-Key</b> de abuse.ch (URLhaus/ThreatFox) y la <b>clave de AbuseIPDB</b>. Se
-guardan <b>solo-escritura</b> en <code>/etc/suricata-feeds.conf</code> (permisos 600, no se vuelven a
+guardan <b>solo-escritura</b> y <b>cifradas</b> con la clave maestra del servidor (no se vuelven a
 mostrar) y hay un <b>validador</b> que comprueba cada clave antes de guardarla. Feodo, CINS, Spamhaus,
 ET compromised y la lista de salidas Tor no necesitan clave. La tabla muestra el estado por fuente
 (vigente/vacia/caducada) y un boton para actualizar los feeds al momento.</p>
@@ -11125,8 +10985,8 @@ porque abuse.ch la dejo vacia en enero de 2025 (y sus JA3 no se actualizan desde
 <b>explique la evidencia en lenguaje llano</b> &mdash; estos informes los lee gente que no es de
 redes &mdash; y para senalar <b>falsos positivos conocidos</b>. <b>La IA no corta a nadie</b>: lee y
 recomienda; el corte lo sigue decidiendo una persona o la politica con sus umbrales medibles.</p>
-<p>La clave se guarda igual que las demas: <b>solo-escritura</b> en <code>/etc/suricata-feeds.conf</code>
-(permisos 600) y no se vuelve a mostrar. Al guardarla se <b>valida contra Groq</b>, y de paso se trae
+<p>La clave se guarda igual que las demas: <b>solo-escritura</b> y cifrada con la clave maestra
+del servidor, y no se vuelve a mostrar. Al guardarla se <b>valida contra Groq</b>, y de paso se trae
 <b>la lista de modelos que tiene tu cuenta</b>: el modelo se elige de ahi en vez de escribirlo a mano.
 Esto no es un capricho &mdash; Groq retira modelos cada cierto tiempo, y un nombre que ya no existe
 no falla al guardarlo sino en la primera consulta, lejos de donde se configuro. Si el modelo elegido
@@ -11348,20 +11208,20 @@ cuarentena, cambios de configuracion, altas y bajas de usuarios, actualizaciones
 <p>Cuando un CPE va a cuarentena (a mano, por politica o por el barrido rapido) se manda un aviso por
 Telegram con el <b>cliente/abonado</b>, la <b>accion</b> (a que lista), el <b>nivel de confianza</b>, la
 <b>evidencia</b> (top 3) y un enlace a la <b>ficha</b>. Hay dedupe por IP (no re-avisa dentro de 6&nbsp;h)
-y los envios masivos mandan un solo resumen. Usa el mismo <code>TELEGRAM_TOKEN</code>/<code>CHAT_ID</code>
-del informe diario. Para que el enlace de la ficha sea clicable, pon <code>PANEL_URL</code> en
-<code>/etc/suricata-dashboard.conf</code>.</p>
+y los envios masivos mandan un solo resumen. El aviso dice el nodo. Usa el mismo
+<code>TELEGRAM_TOKEN</code>/<code>CHAT_ID</code> del informe diario. Para que el enlace de la ficha sea
+clicable, el servidor tiene que declarar la URL publica del panel (<code>IDS_PANEL_URL</code>).</p>
 
-<!--CAT:Mantenimiento--><h2>Actualizar el panel (boton) y recuperacion</h2>
-<p>En <b>Ajustes &rarr; Actualizaciones</b> el admin ve la version desplegada y, si hay una nueva en
-GitHub, un boton con la lista de mejoras. El actualizador (<code>suricata-panel-update</code>) baja el
-ultimo commit por SHA, valida el codigo (<code>ast</code>/<code>sh -n</code>), <b>respalda la version
-actual</b> en <code>/root/backups/panel/</code> (conserva 5; tambien <code>suricata-mikrotik-init</code>,
-que renueva con el panel) y reinicia el panel. Luego hace un
-<b>health-check</b>: si el panel no responde, <b>revierte solo</b> al respaldo previo. No toca tu
-configuracion (usuarios, exclusiones, empresa, IPs de confianza, <code>.conf</code>, suricata.yaml ni
-las units). El registro queda en <code>/tmp/suricata-panel-update.log</code> y el resultado en
-<code>/var/log/suricata-update-result.json</code>.</p>
+<!--CAT:Mantenimiento--><h2>Version, actualizaciones y recuperacion</h2>
+<p>En <b>Ajustes &rarr; Version</b> se ve la version instalada (solo lectura). El panel ya no se
+actualiza a si mismo: lo hace el administrador del servidor con el instalador de IDS_MAAT, que trae
+imagenes nuevas de los contenedores, con respaldo y vuelta atras. Tu configuracion (usuarios,
+exclusiones, empresa, IPs de confianza, conexiones) vive en <code>/srv/ids/panel/</code> y no depende de
+la version.</p>
+<p><b>Respaldos.</b> Basta el respaldo del servidor (<code>/srv/ids</code>) mas la <b>clave maestra</b>
+(<code>/etc/ids-maat/master.key</code>), que se guarda aparte: sin ella no se pueden leer las claves
+cifradas (API de los routers, AbuseIPDB, abuse.ch, Groq, Telegram). El panel arranca igual y avisa, pero
+no las borra.</p>
 
 <h2>Mapa: a donde atacan tus CPEs</h2>
 <p>En la pestana <b>En vivo</b>, <b>debajo de la linea de tiempo</b> ("Ataques por hora y minuto"),
@@ -11371,11 +11231,11 @@ trafico sospechoso de tus CPEs). El color sube con el nº de alertas y al lado s
 <ul>
 <li><b>Geolocalizacion offline:</b> la IP destino se traduce a pais con una base
 <b>IP&rarr;pais DB-IP lite</b> (via ip-location-db, CC-BY-4.0, &copy; db-ip.com) que se guarda en el servidor
-(<code>/var/lib/suricata-geoip/ipv4.bin</code>). No usa servicios externos en caliente.</li>
+(<code>/srv/ids/panel/geo/</code>). No usa servicios externos en caliente.</li>
 <li><b>Flujo "de donde -> a donde":</b> ademas del color, salen <b>arcos animados</b> desde tu red
 hacia cada pais destino (un punto viaja por el arco = sensacion de trafico en vivo), y <b>cada punta
 late</b> igual que el origen, para ver de un vistazo donde cae cada flujo. El punto de
-origen se puede fijar con <code>MAPA_ORIGEN=lon,lat</code> en <code>/etc/suricata-dashboard.conf</code>
+origen se puede fijar con <code>MAPA_ORIGEN=lon,lat</code> en la configuracion del panel
 (por defecto Ecuador); es solo el inicio visual del arco, no un dato real.</li>
 <li><b>Detalle por pais:</b> al <b>pasar el mouse</b> por un pais sale un recuadro con <b>a que IPs
 destino</b> va el trafico, <b>por que puertos</b> (p.ej. <code>443/tcp</code>) y <b>desde que CPEs</b> de
@@ -11392,83 +11252,34 @@ guarda por pestana del navegador, asi que otra pestana o una sesion nueva empiez
 TopoJSON, mas Kosovo). Si un pais no tiene nombre traducido, se usa el del propio mapa.</li>
 <li><b>Solo destinos publicos:</b> las IPs privadas (tu red) o sin pais no cuentan en el mapa.</li>
 <li><b>El mapa</b> se dibuja en el navegador con un <b>TopoJSON</b> del mundo servido por el
-propio panel (<code>/var/lib/suricata-mapa/</code>); no llama a ningun CDN externo.</li>
+propio panel (viene en su imagen); no llama a ningun CDN externo.</li>
 <li>Si el mapa sale vacio, casi siempre es que la base GeoIP no se instalo (no habia internet
 en la instalacion). El panel <b>se auto-provisiona</b> al arrancar (baja el mapa y construye la
-base GeoIP en 2do plano si faltan); tambien se reconstruye con el boton <b>Actualizar</b> o
-re-ejecutando el instalador. Necesita salida a internet la primera vez.</li>
+base GeoIP en 2do plano si falta); tambien se reconstruye reiniciando el panel. Necesita salida a
+internet la primera vez.</li>
 </ul>
 <p class="muted" style="color:#52514e;font-size:12px">Mapa inspirado en
 <b>MikroDash</b> (MIT). Geometria del mundo: World Atlas / Natural Earth (dominio publico).</p>
 
-<h2>VPN (OpenVPN): el tunel de los MikroTik</h2>
-<p>Los MikroTik mandan el espejo a este sensor <b>por una VPN</b>, y el sensor es el servidor. Todo
-se hace desde <b>Ajustes &rarr; VPN</b>, sin entrar por consola:</p>
+<h2>La VPN de cada punto</h2>
+<p>Cada MikroTik manda el espejo por <b>su propia VPN</b>, un contenedor OpenVPN solo para el, con su
+puerto y su red de tunel (el sensor es la <code>.1</code> y el MikroTik la <code>.2</code>). Es
+compatible con RouterOS 6.49+ y 7.</p>
 <ul>
-<li><b>Instalar el servidor OpenVPN</b> (si no lo esta): compatible con RouterOS v6 y v7 (TCP 1194,
-AES-256-CBC, SHA1, sin tls-crypt), red del tunel <code>100.64.0.0/24</code>, el sensor es
-<code>100.64.0.1</code>. Tarda unos minutos y la ventana muestra el avance.</li>
-<li><b>Agregar un MikroTik</b>: crea su usuario y te da el comando <code>/interface ovpn-client</code>
-para v7 y para v6, listo para pegar en el router. La clave <b>solo se muestra esa vez</b>.</li>
-<li><b>Redes de sus abonados</b>: se le asignan a cada MikroTik (se enrutan por el tunel hacia el). No se
-admiten redes enormes (/0 a /7), ni que pisen la red del tunel, ni que se solapen con las de otro
-MikroTik. Agregar o quitar una red <b>reinicia OpenVPN</b>: todos los tuneles (y el espejo) se cortan
-unos segundos.</li>
-<li><b>Eliminar</b> un MikroTik: se borran su usuario, sus redes y sus rutas. Su cuenta del sistema se
-borra solo si es una de las que crea la VPN.</li>
+<li>La crea el alta del punto; los comandos para el router salen al terminar (con la clave, una sola vez)
+y en la ficha (sin la clave).</li>
+<li><b>La VPN solo trae el espejo y la API del propio router</b>: no enruta trafico de abonados, no lleva
+a otras redes y un punto no ve a otro.</li>
+<li>Cambiar, regenerar o borrar la VPN de un punto <b>no corta a los demas</b>.</li>
+<li><b>Regenerar la clave</b> (ficha del punto) corta la VPN de ese MikroTik hasta que pongas la nueva.</li>
 </ul>
-<p>La tabla dice que MikroTik estan <b>conectados</b> ahora (desde que IP, desde cuando y cuanto
-trafico). Antes de cada cambio se respalda <code>/etc/openvpn</code> en <code>/root/backups/</code>
-y todo queda en la <b>Bitacora</b>. Por debajo lo hace <code>/root/openvpn.sh</code>, que el
-instalador deja en cada caja y que tambien se puede usar por consola (sin argumentos abre su menu).</p>
 
-<h2>Espejo por la VPN, desde la web</h2>
-<p>Con la VPN montada quedan dos pasos, y los dos se hacen en <b>Ajustes &rarr; VPN</b>, sin consola:</p>
-<ol>
-<li><b>Montar el espejo en cada MikroTik.</b> En su fila, <b>Montar el espejo</b> (solo si esta
-<b>conectado</b> a la VPN: el sensor le habla por el tunel). Si el panel aun no tiene su API, el boton es
-<b>Dar de alta su API</b>: usuario, clave y puerto; queda como un router del panel con su IP del tunel,
-con el envio a cuarentena <b>apagado</b> (se activa en Ajustes &rarr; MikroTik) y la clave no se vuelve a
-mostrar. Antes de tocar nada sale la <b>vista previa</b>: las lineas exactas que se crearian o
-cambiarian (la lista <code>ids-vigilados</code> con sus redes, el espejo de ida y de vuelta en
-<code>forward</code> con <code>connection-bytes=0-10000</code>, el DNS entero aparte, apagar espejos viejos
-hacia este sensor y sacar la lista del fasttrack). Al confirmar se respalda el firewall del router y se
-aplica. Repetirlo no duplica nada. El espejo va a la IP del sensor <b>dentro del tunel</b>, nunca a la
-publica.</li>
-<li><b>Recibir el espejo por la VPN</b> (debajo de la tabla). El panel calcula las opciones del instalador
-(<code>-t -e vpn -m</code> con las IPs de los MikroTik en el tunel, <code>-n</code> con sus redes) y te
-ensena el comando exacto antes de lanzarlo. Lo ejecuta en el servidor (baja el instalador a
-<code>/root/install-suricata.sh</code>), sin <code>-P</code>: las claves no cambian. Tarda unos minutos y
-<b>reinicia el panel</b>: la ventana de avance aguanta el corte y sigue sola.</li>
-</ol>
-<p><b>Cuidado con quedarte fuera.</b> En modo VPN el sensor cierra el panel y EveBox desde la interfaz
-de internet; solo quedan la VPN y las redes de <code>-a</code>. Por eso <code>-a</code> viene puesto con
-la IP desde la que estas entrando ahora (si entras por un proxy, la del proxy, que es la que llega al
-sensor). Si la quitas, al terminar entraras por la VPN: <code>http://100.64.0.1:5637</code>. SSH no se
-toca nunca. Con UFW activo, el instalador abre la web solo en la interfaz del tunel (nunca a internet).</p>
-<p><b>Cada alerta, de su MikroTik.</b> Cada MikroTik entra por su propia interfaz (<code>ids-mon</code>,
-<code>ids-mon2</code>...) segun su posicion en <code>-m</code>, y el panel atribuye la alerta (y la
-cuarentena) al nodo que tiene esa interfaz. El que ya este dado de alta conserva la suya; al dar de alta
-su API se le pone la que le dara <code>-m</code>. La vista previa ensena los nodos que hay que corregir
-y se corrigen al lanzar: cada nodo de <code>-m</code> toma su interfaz, y un nodo que <b>no</b> esta en
-<code>-m</code> (p.ej. el MikroTik local de antes) deja de recibir espejo: pierde la interfaz que pasa a
-otro y se le <b>apaga el envio a cuarentena</b> (se reactiva en Ajustes &rarr; MikroTik).</p>
-<p>Antes se respalda en <code>/root/backups/</code> (archivo 600: lleva las claves de los routers) lo que
-el instalador va a reescribir: <code>suricata.yaml</code>, el receptor, el firewall de solo-tunel, los
-routers, la configuracion y los usuarios del panel, EveBox, <code>/etc/suricata-mikrotik.conf</code> y los
-programas <code>/usr/local/bin/suricata-*</code>. En la <b>Bitacora</b> queda quien lo lanzo, con que
-opciones y que nodos se corrigieron. Solo puede haber un cambio de modo a la vez, y el registro que se ve
-en la web lleva las claves enmascaradas.</p>
-
-<h2>Reinstalar o actualizar</h2>
-<p>Todo esta en un instalador idempotente. Para actualizar a la ultima version
-(ejemplo ISP con el espejo del MikroTik <b>por VPN</b>, que es el modo por defecto con
-<code>-t</code>, y todas las redes privadas):</p>
-<pre><code>curl -fsSL https://raw.githubusercontent.com/mtandazo35/suricata-ids-lab/main/install-suricata.sh | sudo bash -s -- -t -m &lt;IP del MikroTik en el tunel&gt; -n 10.0.0.0/8,172.16.0.0/12,192.168.0.0/16</code></pre>
-<p><code>-m</code> es la IP del MikroTik <b>dentro del tunel</b> (p.ej. <code>100.64.0.2</code>): solo
-se acepta espejo de esa IP. La VPN tiene que estar arriba antes; el instalador no la monta.
-Sin <code>-t</code> el sensor vigila solo el trafico de la propia caja. Si el sensor esta en la
-misma LAN que el router, anade <code>-e local</code>.</p>"""
+<h2>Instalar o recuperar el servidor</h2>
+<p>El servidor se instala con el instalador de IDS_MAAT (como root), que deja el orquestador
+(<code>ids-orq</code>), el panel y las reglas, y crea el primer administrador. Los MikroTik se agregan
+despues desde <b>Puntos</b>, no desde el instalador. Para recuperar en un servidor nuevo: instalar,
+restaurar <code>/srv/ids</code> y la clave maestra, y reconciliar (<code>ids-orq reconciliar</code>),
+que vuelve a levantar los contenedores de cada punto.</p>"""
     # --- La documentacion se parte en PAGINAS (una por tema), agrupadas en categorias.
     # Antes era un unico muro con indice lateral: con 23 temas costaba encontrar nada.
     # Las categorias se marcan en el texto con <!--CAT:Nombre--> delante del <h2> que
@@ -11959,8 +11770,9 @@ def reputacion_page(res=None, texto="", msg="", ok=False, es_admin=False, volver
     dnsbl = _dnsbl_hist()
     # los dias sin abuso son de la RED, no de cada entrada: se calcula una sola vez
     _limpio = dias_sin_abuso(cargar_metricas())
-    rs = cargar_routers()
-    multi = len(rs) > 1
+    _vis = nodos.nodos_de()
+    rs = [r for r in cargar_routers() if r.get("id") in _vis]
+    multi = nodos.es_todos() or len(rs) > 1
     bloques = []
     for r in rs:
         rid = r.get("id", "")
@@ -12309,7 +12121,7 @@ def bitacora_page(embed=False):
             "<input class=search id=lsearch placeholder='Buscar usuario, IP, accion...' oninput='lfiltrar()'></div>"
             + cuerpo + "</section></main>" + script + "</body></html>")
 
-METRICAS_FILE = "/var/log/suricata-metricas.json"
+METRICAS_FILE = "metricas.json"   # por nodo: nodos/<pid>/metricas.json (cargar_metricas usa nodos.salida)
 
 def cargar_metricas(nodo=None):
     """Contadores por dia que escribe el generador (sobreviven a la poda de reportes). Los
@@ -13272,7 +13084,8 @@ def conducta_barras(filas, titulo, n=10, sub=""):
         "<div class=vl>%s</div></div>"
         % (esc(f["ip"]), "{:,}".format(f["alertas"]).replace(",", "."),
            esc(nombre_categoria(f.get("_cat", "otros")).lower()),
-           esc(f["ip"]), max(100.0 * f["alertas"] / tope, 1.0),
+           esc(f["ip"]) + ((" &middot; " + esc(nodos.nombre(f["nodo"]))) if f.get("nodo") else ""),
+           max(100.0 * f["alertas"] / tope, 1.0),
            "{:,}".format(f["alertas"]).replace(",", "."))
         for f in top)
     return ("<div class='card bloque'><h3>%s</h3>%s<div class=bars>%s</div></div>"
@@ -13456,6 +13269,12 @@ def _cd_por(n):
         return CONDUCTA_POR_PAGINA
     return n if n in CONDUCTA_OPCIONES else CONDUCTA_POR_PAGINA
 
+def _nodo_oculto():
+    """<input hidden name=nodo> con el nodo que se mira, para los formularios GET de una pagina."""
+    if not nodos.hay_nodo():
+        return ""
+    return "<input type=hidden name=nodo value='%s'>" % html.escape(nodos.nodo_actual())
+
 def conducta_paginador(pag, paginas, q, total, desde, hasta, por=None, sel=""):
     """Navegacion entre paginas. Muestra los extremos y una ventana alrededor de la
     actual: con 13 paginas caben todas, con 200 no, y una tira de 200 numeros es tan
@@ -13468,6 +13287,7 @@ def conducta_paginador(pag, paginas, q, total, desde, hasta, por=None, sel=""):
     # sin esto, saltar de pagina te devuelve a los 10 por defecto y se pierde la eleccion
     if por and por != CONDUCTA_POR_PAGINA:
         qs += "&n=%d" % por
+    qs += qs_nodo()          # el enlace de una pagina se puede compartir: lleva su nodo
     def enlace(n, txt=None, cls=""):
         if n == pag:
             return "<span class='pg act'>%s</span>" % (txt or n)
@@ -13590,17 +13410,17 @@ def conducta_page(q="", msg="", pag=1, por=None):
     # El selector vive abajo, con el paginador: las dos cosas responden a la misma
     # pregunta (cuanto estoy viendo y como paso al resto), y se usan al terminar de leer.
     selector = ("<form class=porpag method=get action='/conducta#pgbar'>"
-                "<input type=hidden name=q value='%s'>"
+                "<input type=hidden name=q value='%s'>%s"
                 "<label for=cdpor>Ver</label>"
                 "<select id=cdpor name=n onchange='this.form.submit()'>%s</select>"
-                "<span class=pl>por pagina</span></form>" % (esc(q), _opts))
+                "<span class=pl>por pagina</span></form>" % (esc(q), _nodo_oculto(), _opts))
     acciones = ("<div class=acciones>"
                 "<form class=busca method=get action='/conducta'>"
-                "<input type=hidden name=n value='%d'>"
+                "<input type=hidden name=n value='%d'>%s"
                 "<input name=q value='%s' placeholder='filtrar por IP o firma'>"
                 "<button class=b>Filtrar</button></form>"
                 "<button class='b pri' type=button onclick='cdPdf()'>Generar reporte</button>"
-                "</div>" % (por, esc(q)))
+                "</div>" % (por, _nodo_oculto(), esc(q)))
     cab = ("<div class=card><h2>Informe de %d dias &mdash; conducta por abonado</h2>"
            "<p class=per>Del %s al %s &middot; generado hace %d min &middot; %s lineas de log</p>"
            "<div class=tiles>"
@@ -13644,7 +13464,7 @@ def conducta_page(q="", msg="", pag=1, por=None):
             tec = ", ".join("%s (%d)" % (esc(str(a)), b) for a, b in (f.get("destinos") or []))
             tarjetas.append(
                 "<div class=cpe style='--acento:%s'>"
-                "<div class=top><span class=ip>%s</span>"
+                "<div class=top><span class=ip>%s</span>%s"
                 "<span class=b>%s alertas</span><span class=b>%s</span>"
                 "<span class=b>ultima vez %s</span></div>"
                 "<p class=resumen>%s</p>"
@@ -13657,7 +13477,10 @@ def conducta_page(q="", msg="", pag=1, por=None):
                 "<div class=kv>%d destinos distintos: %s<br>"
                 "Dominios mas consultados (todos): %s</div></details>"
                 "</details></div>"
-                % (color, esc(f["ip"]), "{:,}".format(f["alertas"]).replace(",", "."),
+                % (color, esc(f["ip"]),
+                   # en «Todos» cada fila es de un nodo: la misma IP en dos nodos son dos fichas
+                   ("<span class=nodochip>%s</span>" % esc(nodos.nombre(f["nodo"]))) if f.get("nodo") else "",
+                   "{:,}".format(f["alertas"]).replace(",", "."),
                    "1 dia activo" if f["dias"] == 1 else "%d dias activo" % f["dias"],
                    fmt(f["ultima"]), resumen, indicios_html(f, esc),
                    _cd_minibarras(acts),
@@ -13831,8 +13654,10 @@ def historico_page(dias_n=7):
                 + "</p>" + filas + "</section>")
 
     # --- Reglas de salida: de los eventos que ve el sensor a lo que hay que pegar ----
-    rs = cargar_routers()
-    multi = len(rs) > 1
+    # solo los routers de lo que se mira: un nodo, o todos en la vista acumulada
+    _vis = nodos.nodos_de()
+    rs = [r for r in cargar_routers() if r.get("id") in _vis]
+    multi = nodos.es_todos() or len(rs) > 1
     secc_reglas = []
     for r in (rs if multi else [None]):
         rid = r.get("id", "") if r else None
@@ -13933,11 +13758,16 @@ def historico_page(dias_n=7):
             + (f"<p class=hint>Las 10 peores de {len(bl):,}.</p>" if len(bl) > 10 else "")
             + "<details style='margin-top:10px'><summary style='cursor:pointer;font-weight:600;"
               "font-size:13px'>Como montarlo en el MikroTik</summary>"
-              "<p class=hint style='margin:6px 0'>El router se baja la lista solo cada hora: "
-              "meterle miles de entradas por la API tardaria horas. La URL solo responde a las "
-              "IPs de los routers dados de alta.</p>"
+              "<p class=hint style='margin:6px 0'>Meterle miles de entradas por la API tardaria "
+              "horas, y el MikroTik no llega al panel por el tunel. Descarga "
+              f"<a href='/blocklist.rsc{qs_nodo('?')}'>blocklist.rsc</a> (administrador), subela al router "
+              "y aplicala con <code>/import blocklist.rsc</code>. Cada importacion reemplaza la lista "
+              "entera. La regla que la usa (solo conexiones nuevas: las respuestas a tus abonados "
+              "siguen pasando):</p>"
               f"<pre style='background:#f8f9fa;border:1px solid #eaecf0;border-radius:6px;"
-              f"padding:10px;overflow-x:auto;font-size:12px'>{esc(blocklist_reglas())}</pre>"
+              f"padding:10px;overflow-x:auto;font-size:12px'>/ip firewall filter add chain=forward "
+              f"connection-state=new src-address-list={esc(BL_LISTA)} action=drop "
+              f"comment=\"Suricata: atacantes\"</pre>"
               "</details></section>")
 
     diag_html = ""
@@ -13948,7 +13778,7 @@ def historico_page(dias_n=7):
     reglas_html = diag_html + bl_html + "".join(secc_reglas)
 
     sel = "".join(
-        f"<a href='?d={n}' class='{'on' if n == dias_n else ''}'>{n} dias</a>"
+        f"<a href='?d={n}{qs_nodo()}' class='{'on' if n == dias_n else ''}'>{n} dias</a>"
         for n in (7, 30, 90, 365))
 
     vacio = ("<div class=banner style='background:#fdf0e6;color:#a15c12;border:1px solid #f2d3ad;"
@@ -13958,13 +13788,14 @@ def historico_page(dias_n=7):
              if not hay else "")
 
     # --- reportes guardados (lo que habia antes, ahora al final) ---
-    fs = sorted(glob.glob(f"{LOGDIR}/report-*.html"), key=os.path.getmtime, reverse=True)
+    fs = sorted(glob.glob(os.path.join(nodos.dir_salida(), "report-*.html")),
+                key=os.path.getmtime, reverse=True)
     rows = []
     for f in fs:
         b = os.path.basename(f)
         t = time.strftime("%Y-%m-%d %H:%M", time.localtime(os.path.getmtime(f)))
         kb = os.path.getsize(f) // 1024
-        rows.append(f'<tr><td><a href="/r/{b}">{b}</a></td><td>{t}</td><td>{kb} KB</td></tr>')
+        rows.append(f'<tr><td><a href="/r/{b}{qs_nodo("?")}">{b}</a></td><td>{t}</td><td>{kb} KB</td></tr>')
     pager = ("<div class=pager><button id=hprev type=button onclick=hprev()>&larr; Anterior</button>"
              "<span id=hpi></span>"
              "<button id=hnext type=button onclick=hnext()>Siguiente &rarr;</button></div>") if rows else ""
@@ -14125,14 +13956,21 @@ def ficha_page(ip, embed=False):
     reputacion con su fuente/CIDR/vigencia, corroboracion independiente y decision)."""
     esc = html.escape
     ip = (ip or "").strip()
+    # ip es la identidad del CPE (nodo|IP): la evidencia se lee del nodo de ESE CPE, no del que
+    # se mira en el selector. Con la IP sola (sin nodo) se busca en lo que se esta mirando.
+    _pid = rid_de(ip)
     try:
-        data = json.load(open(f"{LOGDIR}/cuarentena.json", encoding="utf-8"))
+        _dir = nodos.dir_salida(nodos.exigir_pid(_pid) if _pid else None)
+    except (nodos.NodoInvalido, nodos.NodoInexistente):
+        _dir = None
+    try:
+        data = json.load(open(os.path.join(_dir, "cuarentena.json"), encoding="utf-8")) if _dir else {}
     except Exception:
         data = {}
     c = None; categoria = ""
     for key, lbl in (("candidatos", "Infeccion CnC"), ("dns_candidatos", "DNS sospechoso")):
         for x in data.get(key, []):
-            if x.get("ip") == ip:
+            if (clave_cpe(x.get("ip", ""), x.get("router", "")) == ip) if _pid else (x.get("ip") == ip):
                 c = x; categoria = lbl; break
         if c:
             break
@@ -14142,7 +13980,8 @@ def ficha_page(ip, embed=False):
     def _fecha(t):
         return time.strftime("%d/%m/%Y %H:%M", time.localtime(t)) if t else "&mdash;"
     if not c and not en_lista:
-        cuerpo = "<p class=sub2>No hay evidencia para <b>" + esc(ip) + "</b> en la ventana actual.</p>"
+        cuerpo = ("<p class=sub2>No hay evidencia para <b>" + esc(ip_de(ip)) + "</b>"
+                  + _chip_nodo_panel(ip) + " en la ventana actual.</p>")
     else:
         c = c or (ent or {}).get("motivo", {}) or {}
         conf = c.get("confianza", "")
@@ -14182,7 +14021,7 @@ def ficha_page(ip, embed=False):
             _d = [esc(x) for x in g["dst"][:2]]
             if len(g["dst"]) > 2:
                 _d.append("+%d mas" % (len(g["dst"]) - 2))
-            # el flow_id sigue estando (es con lo que se busca el flujo en EveBox), pero
+            # el flow_id sigue estando (es con lo que se busca el flujo en Eventos), pero
             # como referencia de la fila y no como una columna de ocho numeros iguales
             _ref = (" title='flow_id %s'" % esc(g["flow"])) if g["flow"] else ""
             al += (f"<tr{_ref}><td>{esc(sig)}"
@@ -14258,7 +14097,7 @@ def ficha_page(ip, embed=False):
                 + time.strftime("%d/%m %H:%M", time.localtime(_ia.get("ts", 0)))
                 + ". <b>Es una opinion, no una medicion</b>: la decision y el corte siguen "
                   "siendo tuyos. No se le manda ninguna IP ni dato del abonado.</div>")
-        ab = abonado_de(ip)
+        ab = abonado_de(ip_de(ip), _pid)
         _abinfo = cargar_abonados()
         _snap = time.strftime("%d/%m %H:%M", time.localtime(_abinfo.get("ts", 0))) if _abinfo.get("ts") else "—"
         # Punto-en-el-tiempo: quien tenia esta IP cuando ocurrio el evento
@@ -14269,7 +14108,7 @@ def ficha_page(ip, embed=False):
         if not ev_ts and en_lista:
             try: ev_ts = int((ent or {}).get("cuando", 0) or 0)
             except (TypeError, ValueError): ev_ts = 0
-        _hist = historial_abonado(ip, ev_ts) if ev_ts else {}
+        _hist = historial_abonado(ip_de(ip), ev_ts) if ev_ts else {}
         pit = ""
         if _hist:
             _et = time.strftime("%d/%m %H:%M", time.localtime(ev_ts))
@@ -14294,7 +14133,7 @@ def ficha_page(ip, embed=False):
             cliente = f"{esc(ip)} <span class=rowmeta>configura el MikroTik en Ajustes para ver el abonado</span>"
         cliente += pit
         cuerpo = (
-            f"<div class=fichah><h2 style='margin:0'>{esc(ip)}</h2>{conf_b}"
+            f"<div class=fichah><h2 style='margin:0'>{esc(ip_de(ip))}{_chip_nodo_panel(ip)}</h2>{conf_b}"
             f"<span class=sub2 style='margin-left:auto'>{esc(categoria)} · riesgo {c.get('riesgo', '')}</span></div>"
             "<table class=ficha>"
             + _row("Cliente", cliente)
@@ -14355,17 +14194,25 @@ def cuarentena_page(msg="", es_admin=False):
     esc = html.escape
     data, gen, vmin, cand = {}, 0, 0, []
     try:
-        data = json.load(open(f"{LOGDIR}/cuarentena.json", encoding="utf-8"))
+        # la del nodo que se mira; en «Todos», la acumulada (cada candidato con su router = pid)
+        data = json.load(open(nodos.salida("cuarentena.json"), encoding="utf-8"))
         gen = data.get("generado", 0); vmin = data.get("ventana_min", 0)
         cand = data.get("candidatos", [])
     except Exception:
         pass
     dns_cand = data.get("dns_candidatos", []); umbral_dns = data.get("umbral_dns", 3)
     edad = f"{int((time.time()-gen)//60)} min" if gen else "-"
-    m = cargar_mk(); en = m.get("ENABLED") == "1"; conf_ok = mk_configurado()
-    activo = en and conf_ok
-    enviados = cargar_enviados(MK_SENT)
-    enviados_dns = cargar_enviados(MK_SENT_DNS)
+    m = cargar_mk()
+    # que nodos se miran y cuales de sus routers pueden recibir envios (cada uno el suyo)
+    _vis = set(nodos.nodos_de())
+    _rs_vis = [r for r in cargar_routers() if r.get("id") in _vis]
+    _listos = {r.get("id") for r in _rs_vis if mk_listo(cargar_mk_de(r))}
+    en = any(r.get("ENABLED") == "1" for r in _rs_vis)
+    activo = bool(_listos)
+    conf_ok = activo or any(r.get("USER") and r.get("PASS") for r in _rs_vis)
+    _en_vista = lambda k: rid_de(k) in _vis
+    enviados = {k: v for k, v in cargar_enviados(MK_SENT).items() if _en_vista(k)}
+    enviados_dns = {k: v for k, v in cargar_enviados(MK_SENT_DNS).items() if _en_vista(k)}
     def _col(b):
         return {"ALTO": "#e34948", "MEDIO": "#e58a00"}.get(b, "#3a9d5d")
 
@@ -14439,7 +14286,7 @@ def cuarentena_page(msg="", es_admin=False):
                 meta = _rev(env_map[k])
                 meta_html = f"<div class='rowmeta'>desde {cuando}{(' · ' + meta) if meta else ''}</div>"
                 return f"<span class='enq' title='En {esc(lista_name)} desde {cuando}'>En lista</span> {quitar}{meta_html}"
-            if es_admin and activo:
+            if es_admin and rid_de(k) in _listos:
                 # la lista REAL de ese CPE, no la de la seccion: el envio enruta por
                 # categoria (clientes-botnet, clientes-escaneo...). Decir otra cosa aqui
                 # es prometer un destino y usar otro.
@@ -14454,7 +14301,7 @@ def cuarentena_page(msg="", es_admin=False):
             return "<span class='dry' title='Configura y habilita el MikroTik en Ajustes para activar el envio'>solo sugerencia</span>"
         filas = "".join(
             f"<tr><td data-label='CPE' class='mono ipx'>{esc(c.get('ip',''))}"
-            f"{_chip_nodo_panel(_k(c))}{_cli(c.get('ip',''))}</td>"
+            f"{_chip_nodo_panel(_k(c))}{_cli(c.get('ip',''), c.get('router',''))}</td>"
             f"<td data-label='Riesgo'><span class='rb' style='background:{_col(c.get('banda',''))}'>{c.get('riesgo',0)} · {esc(c.get('banda',''))}</span>"
             f"<div style='margin-top:4px'>{_conf_badge(c)}</div></td>"
             # la firma primero: es el QUE. El recuento es el cuanto y va debajo, mas
@@ -14465,7 +14312,7 @@ def cuarentena_page(msg="", es_admin=False):
             f"{esc(c.get('firma','') or '')}</span>"
             f"<div class='motn'>{c.get(cnt_key,0)} {cnt_lbl} &middot; {c.get(fir_key,0)} firma(s)"
             f" &middot; <button type=button class=evlink "
-            f"onclick=\"verFicha('{esc(c.get('ip',''))}')\">ver evidencia</button></div>"
+            f"onclick=\"verFicha('{esc(_k(c))}')\">ver evidencia</button></div>"
             f"{_ev_html(c)}</td>"
             f"<td data-label='Destinos' class='num'>{c.get('destinos',0)}</td><td data-label='Puertos' class='num'>{c.get('puertos',0)}</td>"
             f"<td data-label='Alertas' class='num'>{c.get('total_alertas',0):,}</td>"
@@ -14476,7 +14323,10 @@ def cuarentena_page(msg="", es_admin=False):
         pend_alta = [c for c in pend if c.get("confianza") == "alta"]
         btn = ""
         if es_admin and activo and pend_alta:
+            # el formulario dice QUE lista se vio (el nodo o «Todos»); el destino de cada CPE
+            # sale de su propia identidad pid|ip, y el servidor reparte el envio por nodo
             btn = (f"<form method=post action='/{pref}/enviar-todos' style='display:inline;margin-left:auto'>"
+                   f"<input type=hidden name=nodo value='{esc(nodos.nodo_actual())}'>"
                    f"<button class='qbtn send' onclick=\"return ask(this,"
                    f"'Enviar los confirmados',"
                    f"'Entran de golpe {len(pend_alta)} CPE con "
@@ -14506,7 +14356,7 @@ def cuarentena_page(msg="", es_admin=False):
         total = 0
         dentro = cpes_por_lista()
         _mapa = cargar_abonados().get("mapa") or {}      # una lectura para todas las filas
-        _multi = len(cargar_routers()) > 1
+        _multi = nodos.es_todos() or len(cargar_routers()) > 1
         def _quien(e):
             por = e["por"]
             if por in ("politica", "politica-rapida"):
@@ -14514,7 +14364,7 @@ def cuarentena_page(msg="", es_admin=False):
             return "a mano (%s)" % por if por and por != "?" else "a mano"
         for cat, nom, lst, n in listas_en_uso():
             total += n
-            miembros = dentro.get(lst, [])
+            miembros = [e for e in dentro.get(lst, []) if not e.get("router") or e["router"] in _vis]
             if miembros:
                 items = ""
                 for e in miembros[:200]:
@@ -14523,8 +14373,8 @@ def cuarentena_page(msg="", es_admin=False):
                     items += ("<tr><td class=mono><button type=button class=evlink "
                               "onclick=\"verFicha('%s')\" title='Ver la ficha'>%s</button>%s</td>"
                               "<td>%s</td><td class=mono>%s</td><td>%s</td></tr>"
-                              # la ficha busca por IP (como el resto del panel), no por clave
-                              % (esc(e["ip"]), esc(e["ip"]),
+                              # la ficha va por la identidad (nodo|IP): la IP sola es ambigua
+                              % (esc(e.get("clave") or e["ip"]), esc(e["ip"]),
                                  ((" <span class=sub2>&middot; %s</span>" % esc(e["router"])) if _multi and e["router"] else "")
                                  + (" <span style='color:#a15c12;font-weight:600'>&middot; falta en el router</span>"
                                     if e.get("falta") else ""),
@@ -14551,8 +14401,7 @@ def cuarentena_page(msg="", es_admin=False):
                 "<p class=sub>Cada CPE va a la lista de <b>su</b> categoria, porque no "
                 "todas se tratan igual: una botnet se corta, el P2P se encola y el DNS de "
                 "malware se redirige al resolutor. El nombre de cada lista se puede cambiar "
-                "en <code>/etc/suricata-mikrotik.conf</code> con "
-                "<code>LISTA_&lt;CATEGORIA&gt;</code>. "
+                "en <b>Ajustes &rarr; MikroTik</b>. "
                 + ("<b>%d CPE enviados</b> en total." % total if total
                    else "Todavia no se ha enviado ninguno.")
                 + "</p></div></div>"
@@ -14626,17 +14475,8 @@ def cuarentena_page(msg="", es_admin=False):
         # solo hace falta saber SI hay: pedir las 50.000 para un len() era el resto
         # del coste de esta pagina
         _n_feed = len(destinos_feed(tope=1))
-        if _n_feed:
-            # que el router se baje la lista solo: son miles de entradas y meterlas
-            # una a una por la API tardaria horas
-            _reglas_dst += (
-                "\n\n# --- bloqueo PREVENTIVO: que el router se baje los feeds solo ---\n"
-                "/system scheduler\n"
-                'add name=suricata-destinos interval=1h on-event="/tool fetch '
-                'url=\\\\"http://%s:%s/destinos.rsc\\\\" '
-                'dst-path=destinos.rsc; :delay 5s; /import destinos.rsc" '
-                'comment="Suricata: destinos de mala reputacion"'
-                % (ip_del_sensor(), CFG.get("PORT", "5637")))
+        # El MikroTik no llega al panel por el tunel (solo pasan espejo y API): ya no se baja
+        # la lista solo. Se descarga del panel (administrador) y se importa con /import.
         sec_dst = (
             "<div class=seccion><div class=shead><div>"
             "<h2>Destinos de mala reputacion</h2>"
@@ -14655,7 +14495,9 @@ def cuarentena_page(msg="", es_admin=False):
                "(C2 activo e infraestructura delictiva). Es <b>mejor que lo de arriba</b>: corta "
                "la salida <b>antes</b> de que ningun abonado llegue, asi el equipo infectado ni "
                "siquiera consigue instrucciones. No entran los feeds de \"esta IP escaneo a "
-               "alguien\": esa misma IP puede alojar una web que un abonado visita."
+               "alguien\": esa misma IP puede alojar una web que un abonado visita. "
+               "Se descarga en <a href='/destinos.rsc'>destinos.rsc</a> (administrador) y se importa "
+               "en el router con <code>/import</code>."
                "</div>" if _n_feed else "")
             + "<details style='margin-top:8px'><summary style='cursor:pointer;font-size:13px;"
             "font-weight:600'>Regla que hace falta en el MikroTik</summary>"
@@ -14702,7 +14544,10 @@ def cuarentena_page(msg="", es_admin=False):
                 f"<td data-label='Enviado' class='mono' data-sort='{int(_cuando_ts)}'>{cuando}</td>"
                 f"<td data-label='Ultima revision' class='rowmeta' style='margin:0' data-sort='{int(_rev_ts)}'>{_rev(mm) or '&mdash;'}</td>"
                 f"<td data-label='Accion'>{quitar}</td></tr>")
-    _ci = {c.get("ip") for c in cand}; _cd = {c.get("ip") for c in dns_cand}
+    # los candidatos se comparan por identidad (nodo|IP): con la IP sola, el 10.0.0.5 de un
+    # nodo escondia al enviado a mano del otro
+    _ci = {clave_cpe(c.get("ip", ""), c.get("router", "")) for c in cand}
+    _cd = {clave_cpe(c.get("ip", ""), c.get("router", "")) for c in dns_cand}
     manual_rows = "".join(_fila_manual(ip, mm, "cuarentena", m.get("LIST", "")) for ip, mm in enviados.items() if ip not in _ci)
     manual_rows += "".join(_fila_manual(ip, mm, "cuarentena/dns", m.get("LIST_DNS", "")) for ip, mm in enviados_dns.items() if ip not in _cd)
     if manual_rows:
@@ -14768,10 +14613,10 @@ def cuarentena_page(msg="", es_admin=False):
                     if auto else " Las IPs caducan solas con su TTL.")
         estado = (f"<div class='banner ok'><b>MikroTik habilitado.</b> Puedes enviar cada CPE a su address-list "
                   f"(infectados &rarr; <code>{esc(m.get('LIST',''))}</code>, DNS &rarr; <code>{esc(m.get('LIST_DNS',''))}</code>) "
-                  f"en <code>{esc(m.get('HOST',''))}</code>; el MikroTik decide con tus reglas. Reversible con <b>Quitar</b>.{auto_txt}</div>")
+                  f"en el MikroTik de cada nodo; el MikroTik decide con tus reglas. Reversible con <b>Quitar</b>.{auto_txt}</div>")
     elif en and not conf_ok:
         estado = ("<div class='banner err'><b>Falta configurar la conexion.</b> Marcaste <b>Permitir enviar</b>, pero "
-                  "aun falta <b>host, usuario o clave</b> del MikroTik. Ve a <b>Ajustes &rarr; MikroTik</b>, completa los datos "
+                  "aun falta <b>usuario o clave</b> de la API del MikroTik. Ve a <b>Puntos</b> (ficha &rarr; API), completa los datos "
                   "y pulsa <b>Probar conexion</b>. Hasta entonces esta pestana no envia nada.</div>")
     else:
         estado = ("<div class='banner'><b>Modo sugerencia (dry-run).</b> No se envia nada al MikroTik. "
@@ -14892,7 +14737,8 @@ def cuarentena_page(msg="", es_admin=False):
             "onclick=\"document.getElementById('fichamodal').style.display='none'\">&times;</button>"
             "<iframe id=fichafr class=fichafr></iframe></div></div>"
             "<script>function verFicha(ip){var m=document.getElementById('fichamodal');"
-            "document.getElementById('fichafr').src='/cuarentena/ficha?embed=1&ip='+encodeURIComponent(ip);"
+            "document.getElementById('fichafr').src='/cuarentena/ficha?embed=1&ip='+encodeURIComponent(ip)"
+            + ("+'" + qs_nodo() + "'" if qs_nodo() else "") + ";"
             "m.style.display='flex';}"
             "document.addEventListener('keydown',function(e){if(e.key==='Escape')"
             "document.getElementById('fichamodal').style.display='none';});"
@@ -14923,9 +14769,11 @@ def cuarentena_page(msg="", es_admin=False):
             "s.forEach(function(c){var p=c.value.split('|');"
             "var li=document.createElement('li');"
             "var e=document.createElement('span');e.className='est';e.textContent='\\u00b7';"
-            "var t=document.createElement('span');t.textContent=p[1]+(p[0]==='dns'?'  (DNS)':'');"
+            # valor "lista|nodo|IP": se ensena la IP y su nodo, no el nodo como si fuera la IP
+            "var ipx=p[p.length-1],nd=p.length>2?p[1]:'';"
+            "var t=document.createElement('span');t.textContent=ipx+(nd?' \u00b7 '+nd:'')+(p[0]==='dns'?'  (DNS)':'');"
             "li.appendChild(e);li.appendChild(t);ul.appendChild(li);"
-            "filas.push({val:c.value,ip:p[1],li:li,est:e});"
+            "filas.push({val:c.value,ip:ipx,li:li,est:e});"
             # el form sigue existiendo como respaldo: si el navegador no puede con fetch,
             # el envio normal hace el quitado en bloque por /cuarentena/quitar-varios
             "var h=document.createElement('input');h.type='hidden';h.name='sel';h.value=c.value;"
@@ -14982,6 +14830,100 @@ def cuarentena_page(msg="", es_admin=False):
             "</main></body></html>")
     return wrap(body, refresh=False, active="/cuarentena")
 
+def _router_de_pid(rid):
+    """Router del nodo de la operacion (pid del formulario o de la clave pid|ip), validado con
+    nodos.exigir_pid. None si no hay destino inequivoco: nunca el del selector, el de la sesion,
+    «Todos» ni un router "por defecto" (CONTRATO-F2 §10.1)."""
+    try:
+        nodos.exigir_pid(rid)
+    except (nodos.NodoInvalido, nodos.NodoInexistente):
+        return None
+    return next((x for x in cargar_routers() if x.get("id") == rid), None)
+
+def _destino_ok(clave):
+    """La identidad de un CPE trae su destino: "pid|ip" con un punto que existe y su router."""
+    pid, sep, _ip = (clave or "").partition("|")
+    return bool(sep) and _router_de_pid(pid) is not None
+
+def _enviar_confirmados(nodo_form, tipo):
+    """Envio masivo de los CONFIRMADOS (2+ pruebas) de la lista que se vio (un nodo o «Todos»),
+    repartido por nodo: cada CPE va al router de SU nodo (pid|ip) y un router que no responde
+    solo corta los envios de su nodo. Devuelve (enviados, resultado por nodo en texto)."""
+    dns = tipo == "dns"
+    try:
+        vista = nodos.validar_nodo(nodo_form or nodos.nodo_actual())
+    except (nodos.NodoInvalido, nodos.NodoInexistente):
+        return 0, "Nodo no valido: no se envio nada."
+    try:
+        cq = json.load(open(nodos.salida("cuarentena.json", vista), encoding="utf-8")).get(
+            "dns_candidatos" if dns else "candidatos", [])
+    except Exception:
+        cq = []
+    reg = MK_SENT_DNS if dns else MK_SENT
+    env = cargar_enviados(reg)
+    por_nodo = {}
+    for c in cq:
+        clave = clave_cpe(c.get("ip", ""), c.get("router", ""))
+        if clave in env or c.get("confianza") != "alta" or not _destino_ok(clave):
+            continue
+        try:
+            ipaddress.ip_address(ip_de(clave))
+        except ValueError:
+            continue
+        por_nodo.setdefault(rid_de(clave), []).append((clave, c))
+    quien = getattr(CTX, "user", "?")
+    total = 0
+    partes = []
+    for pid in sorted(por_nodo):
+        r = _router_de_pid(pid)
+        dr = cargar_mk_de(r)
+        nom = nodos.nombre(pid)
+        if not mk_listo(dr):
+            partes.append("%s: nada (MikroTik sin habilitar)" % nom)    # ese nodo esta en dry-run
+            continue
+        ok_n = err_n = 0; ult_err = ""
+        for clave, c in por_nodo[pid][:50]:
+            ip = ip_de(clave)
+            if dns:
+                _cat = ""
+                _lst = dr.get("LIST_DNS", "suricata-dns-sospechoso"); _ttl = _ttl_efectivo(dr, "TTL_DNS")
+                _com = "suricata DNS-sospechoso riesgo %s %s"
+            else:
+                _cat = categoria_cpe(clave)
+                _lst = lista_de_categoria(_cat); _ttl = _ttl_efectivo(dr, "TTL")
+                _com = "suricata " + _cat + " riesgo %s %s"
+            try:
+                ok, err = mk_add(ip, comment=_com % (c.get("riesgo", 0), time.strftime("%Y-%m-%d %H:%M")),
+                                 lista=_lst, ttl=_ttl, router=r)
+            except Exception as ex:
+                ok, err = False, str(ex)
+            if ok:
+                rec = {"cuando": int(time.time()), "score": c.get("riesgo", 0), "por": quien,
+                       "router": r.get("id", ""), "motivo": _motivo_bloqueo(clave)}
+                if not dns:
+                    rec.update({"categoria": _cat, "lista": _lst})
+                env[clave] = rec
+                mk_log("ENVIADO", ip, quien, f"lista={_lst} ({'dns ' if dns else ''}masivo)" + _suf_nodo(clave))
+                ok_n += 1
+            else:
+                mk_log("ERROR-ENVIO", ip, quien, f"lista={_lst} {err}"); err_n += 1; ult_err = err
+                if "conexion" in (err or "").lower() or "login" in (err or "").lower():
+                    break   # ese router no responde: no seguir con el, si con los demas nodos
+        total += ok_n
+        partes.append("%s: %d enviado(s)%s" % (nom, ok_n, (", %d con error (%s)" % (err_n, ult_err))
+                                               if err_n else ""))
+    guardar_enviados(env, reg)
+    if not partes:
+        return 0, "No habia confirmados pendientes de enviar."
+    return total, "Envio masivo " + "; ".join(partes)
+
+def _pagina_error(titulo, texto):
+    return ("<!doctype html><html lang=es><head><meta charset=utf-8><title>%s</title>"
+            "<style>body{margin:0;padding:40px 24px;font:15px/1.6 system-ui,Segoe UI,sans-serif;"
+            "color:#33322f;background:#fcfcfb}div{max-width:620px;margin:0 auto}h1{font-size:20px}</style>"
+            "</head><body><div><h1>%s</h1><p>%s</p><p><a href='/'>Volver al panel</a></p></div></body></html>"
+            % (html.escape(titulo), html.escape(titulo), html.escape(texto)))
+
 def _host_puerto(netloc):
     """("host", puerto o None) de un "host[:puerto]"; None si no se entiende."""
     try:
@@ -15000,7 +14942,7 @@ def _forwarded_host(valor):
             return v.strip().strip('"')
     return ""
 
-def origen_ajeno(headers, panel_url=""):
+def origen_ajeno(headers, panel_url="", proxy_confiable=True):
     """"" si un POST viene de este mismo panel; si no, el motivo para rechazarlo (CSRF).
 
     La cookie va con SameSite=Strict, pero sin usuarios (modo sin-auth, tras VPN o proxy)
@@ -15042,8 +14984,12 @@ def origen_ajeno(headers, panel_url=""):
     if u.scheme not in ("http", "https") or not h:
         return "origen %s" % fuente[:80]
     p = p or (443 if u.scheme == "https" else 80)
-    candidatos = [(headers.get(cab) or "").split(",")[0] for cab in ("Host", "X-Forwarded-Host")]
-    candidatos.append(_forwarded_host(headers.get("Forwarded")))
+    candidatos = [(headers.get("Host") or "").split(",")[0]]
+    # X-Forwarded-Host y Forwarded los pone quien quiera: solo cuentan si llegan de un proxy
+    # de confianza (CONTRATO-F2 §7); el nucleo lo dice con proxy_confiable
+    if proxy_confiable:
+        candidatos.append((headers.get("X-Forwarded-Host") or "").split(",")[0])
+        candidatos.append(_forwarded_host(headers.get("Forwarded")))
     for cand in candidatos:
         hp = _host_puerto(cand)
         # Host sin puerto: un proxy con nginx manda $host, que no lo lleva aunque se entre por
@@ -15303,6 +15249,34 @@ class H(BaseHTTPRequestHandler):
             return self._html("<!doctype html><meta charset=utf-8><h1>Peticion rechazada</h1>"
                               "<p>El formulario no viene de este panel (Origin/Referer de otro sitio).</p>", 403)
         return self._post()
+
+    def _ctx_nodo(self):
+        """Pone el contexto (usuario, rol y nodo) con _set_ctx del nucleo. Un nodo mal escrito
+        responde 400 y uno que no existe 404 (CONTRATO-F2 §10.1): nunca se cambia por «Todos».
+        Vale tanto si _set_ctx lanza la excepcion como si ya respondio y devuelve False."""
+        try:
+            if self._set_ctx() is False:
+                return False
+        except nodos.NodoInvalido:
+            self._html(_pagina_error("Nodo no valido", "El identificador de nodo de la direccion no es "
+                                     "valido (se espera p001..p999 o _todos)."), 400)
+            return False
+        except nodos.NodoInexistente:
+            self._html(_pagina_error("Punto inexistente", "Ese punto no existe (quiza se dio de baja). "
+                                     "Elige otro nodo en la barra."), 404)
+            return False
+        return True
+
+    def _prohibido(self):
+        """403 por rol: el permiso se comprueba aqui, en el servidor, en cada ruta."""
+        try:
+            bitacora("SIN-PERMISO", "%s %s rol=%s" % (self.command, self.path.split("?", 1)[0][:80],
+                                                      getattr(CTX, "role", None) or "-"))
+        except Exception:
+            pass
+        return self._html(_pagina_error("Sin permiso", "Tu rol no permite esta accion. Si la necesitas, "
+                                        "pidesela a un administrador."), 403)
+
     def _get(self):
         path = self.path.split("?", 1)[0]
         if path in ("/logo.png", "/favicon.ico"):
@@ -15323,7 +15297,7 @@ class H(BaseHTTPRequestHandler):
                   "topojson-client.min.js": "application/javascript"}.get(fname)
             if ct:
                 try:
-                    with open(os.path.join("/var/lib/suricata-mapa", fname), "rb") as f:
+                    with open(os.path.join(nodos.MAPA, fname), "rb") as f:
                         data = f.read()
                 except OSError:
                     self.send_error(404); return
@@ -15333,35 +15307,6 @@ class H(BaseHTTPRequestHandler):
                 self.send_header("Content-Length", str(len(data)))
                 self.end_headers(); self.wfile.write(data); return
             self.send_error(404); return
-        if path == "/destinos.rsc":
-            # bloqueo PREVENTIVO de destinos. Se la baja el propio MikroTik, asi que no
-            # puede pedir sesion: se abre solo a las IPs de los routers dados de alta.
-            quien = self._client_ip()
-            permitidas = {(r.get("HOST") or "").strip()
-                          for r in cargar_routers() if (r.get("HOST") or "").strip()}
-            if quien not in permitidas:
-                return self._html("<h1>No autorizado</h1>", 403)
-            cuerpo = destinos_rsc().encode("utf-8")
-            self.send_response(200)
-            self.send_header("Content-Type", "text/plain; charset=utf-8")
-            self.send_header("Content-Length", str(len(cuerpo)))
-            self.end_headers(); self.wfile.write(cuerpo)
-            return
-        if path == "/blocklist.rsc":
-            # La descarga el propio MikroTik con /tool fetch, asi que no puede pedir
-            # sesion. Se abre SOLO a las IPs de los routers dados de alta: nada de meter
-            # un token en la configuracion del router.
-            quien = self._client_ip()
-            permitidas = {(r.get("HOST") or "").strip()
-                          for r in cargar_routers() if (r.get("HOST") or "").strip()}
-            if quien not in permitidas:
-                return self._html("<h1>No autorizado</h1>", 403)
-            cuerpo = blocklist_rsc().encode("utf-8")
-            self.send_response(200)
-            self.send_header("Content-Type", "text/plain; charset=utf-8")
-            self.send_header("Content-Length", str(len(cuerpo)))
-            self.end_headers(); self.wfile.write(cuerpo)
-            return
         if not ip_confiable(self._client_ip()):
             return self._html("<!doctype html><meta charset=utf-8><title>Acceso restringido</title>"
                               "<div style='font:15px system-ui;max-width:520px;margin:60px auto;padding:24px;text-align:center'>"
@@ -15374,18 +15319,53 @@ class H(BaseHTTPRequestHandler):
         if path == "/logout":
             sid = self._sid()
             if sid:
-                SESSIONS.pop(sid, None); _guardar_sesiones()
+                sesion_cerrar(sid)
             return self._redirect("/login", cookie="sid=; Path=/; Max-Age=0")
         if not self._auth_ok():
             return self._deny()
-        self._set_ctx()
+        if not self._ctx_nodo():
+            return                  # nodo mal escrito (400) o inexistente (404): ya respondido
+        if path == "/puntos" or path.startswith(("/puntos/", "/operaciones/")):
+            # apartado Puntos: solo admin, comprobado dentro (403)
+            _cq = {k: v[0] for k, v in _up.parse_qs(self.path.split("?", 1)[1]).items()} if "?" in self.path else {}
+            if puntos_web.get(self, path, _cq):
+                return
+        if path in ("/eventos", "/eventos/detalle"):
+            # Eventos (modulo de E): todos los roles; el nodo ya esta validado en el contexto
+            import eventos_web
+            _cq = {k: v[0] for k, v in _up.parse_qs(self.path.split("?", 1)[1]).items()} if "?" in self.path else {}
+            fn = eventos_web.pagina if path == "/eventos" else eventos_web.detalle
+            try:
+                cuerpo = fn(_cq, nodos.nodo_actual())
+            except nodos.NodoInvalido:
+                return self._html(_pagina_error("Nodo no valido", "Ese identificador de nodo no es valido."), 400)
+            except nodos.NodoInexistente:
+                return self._html(_pagina_error("Punto inexistente", "Ese punto no existe."), 404)
+            # sin autorrecarga: perderia el cursor de la busqueda
+            return self._html(wrap("<!doctype html><html lang=es><head><meta charset=utf-8>"
+                                   "<link rel=icon type=image/png href=/favicon.ico>"
+                                   "<meta name=viewport content='width=device-width,initial-scale=1'>"
+                                   "<title>Eventos</title><style>" + BASE_CSS + "</style></head><body>"
+                                   + cuerpo + "</body></html>", refresh=False, active="/eventos"))
+        if path in ("/destinos.rsc", "/blocklist.rsc"):
+            # Descarga para importar a mano en el router (/import). Antes se la bajaba el propio
+            # MikroTik con /tool fetch, pero por el tunel solo pasan el espejo y la API.
+            if not self._admin():
+                return self._prohibido()
+            cuerpo = (destinos_rsc() if path == "/destinos.rsc" else blocklist_rsc()).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain; charset=utf-8")
+            self.send_header("Content-Disposition", "attachment; filename=" + path.lstrip("/"))
+            self.send_header("Content-Length", str(len(cuerpo)))
+            self.end_headers(); self.wfile.write(cuerpo)
+            return
         if path in ("/", "/index.html"):
             feed = live_feed_html()
             head_css, resumen_inner, _ = partes_reporte()   # resumen SIN la tabla de detalle
             ahora_ec = datetime.now(TZ_EC).strftime("%d/%m/%Y %H:%M")
             # selector de ventana (solo admin): elegir cuanto tiempo abarca el resumen
             wsel = ""
-            if getattr(CTX, "role", None) in (None, "admin"):
+            if getattr(CTX, "role", None) == "admin":
                 va = ventana_actual()
                 opts = "".join(f"<option value={v}{' selected' if v == va else ''}>{t}</option>"
                                for v, t in VENTANAS)
@@ -15404,15 +15384,17 @@ class H(BaseHTTPRequestHandler):
                 cabecera = (
                     "<header class='pageh'><div>"
                     "<h1>Resumen</h1>"
-                    "<p class='ph-sub'>Panel IDS Suricata &middot; alertas graves salientes &middot; "
-                    f"actualizado {ahora_ec} (hora de Ecuador) "
+                    "<p class='ph-sub'>Panel IDS Suricata &middot; "
+                    + html.escape(nodos.nombre(nodos.nodo_actual())) + " &middot; alertas graves salientes &middot; "
+                    f"actualizado {ahora_ec} (hora local) "
                     "<span class='ph-live'><span class='dotlive'></span>en vivo &middot; "
                     f"refresca en <span id='cd'>20</span>s</span></p></div>{wsel}</header>")
                 resumen = f"{cabecera}<main>{resumen_inner}</main>"
             else:
                 cabecera = (
                     "<header class='pageh'><div><h1>Resumen</h1>"
-                    f"<p class='ph-sub'>Panel IDS Suricata &middot; actualizado {ahora_ec} (hora de Ecuador)</p></div>{wsel}</header>")
+                    "<p class='ph-sub'>Panel IDS Suricata &middot; " + html.escape(nodos.nombre(nodos.nodo_actual()))
+                    + f" &middot; actualizado {ahora_ec} (hora local)</p></div>{wsel}</header>")
                 resumen = (cabecera + "<main style='padding:8px 28px 24px'><p style='color:#52514e'>El resumen se "
                            "esta generando en segundo plano; aparecera aqui en unos minutos. "
                            "El feed de abajo ya esta en vivo.</p></main>")
@@ -15446,7 +15428,8 @@ class H(BaseHTTPRequestHandler):
             self.send_response(200)
             self.send_header("Content-Type", "text/csv; charset=utf-8")
             self.send_header("Content-Disposition",
-                             "attachment; filename=conducta-%s.csv" % time.strftime("%Y%m%d"))
+                             "attachment; filename=conducta-%s-%s.csv" % (nodos.nodo_actual().strip("_"),
+                                                                          time.strftime("%Y%m%d")))
             self.send_header("Content-Length", str(len(data)))
             self.end_headers()
             self.wfile.write(data)
@@ -15487,29 +15470,20 @@ class H(BaseHTTPRequestHandler):
             return self._html(cuarentena_page(msg=_cmsg, es_admin=self._operador()))
         if path == "/cuarentena/ficha":
             if not self._operador():
-                return self._redirect("/")
+                return self._prohibido()
             _qs = _up.parse_qs(self.path.split("?", 1)[1]) if "?" in self.path else {}
             return self._html(ficha_page(_qs.get("ip", [""])[0],
                                          embed=("embed=1" in (self.path.split("?", 1)[1] if "?" in self.path else ""))))
         if path == "/log":
             if not self._admin():
-                return self._redirect("/")   # lectura no ve el log de accesos
+                return self._prohibido()   # lectura no ve el log de accesos
             return self._html(log_page(embed=("embed=1" in (self.path.split("?", 1)[1] if "?" in self.path else ""))))
         if path == "/bitacora":
             if not self._admin():
-                return self._redirect("/")   # la bitacora (auditoria) es solo de admin
+                return self._prohibido()   # la bitacora (auditoria) es solo de admin
             return self._html(bitacora_page(embed=("embed=1" in (self.path.split("?", 1)[1] if "?" in self.path else ""))))
         if path == "/perfil":
             return self._redirect("/ajustes")
-        if path == "/vpn/log":
-            if not self._admin():
-                return self._deny()
-            return self._json(ovpn_log())
-        if path == "/vpn/sensor-log":
-            # avance del cambio de modo del sensor (el JS lo pide en bucle y tolera cortes)
-            if not self._admin():
-                return self._deny()
-            return self._json(espejo_vpn_avance())
         if path == "/mi-foto":
             ft = foto_de(getattr(CTX, "user", None))
             if not ft:
@@ -15526,7 +15500,7 @@ class H(BaseHTTPRequestHandler):
             return self._html(perfil_page())
         if path == "/exclusiones/export":
             if not self._admin():
-                return self._redirect("/")
+                return self._prohibido()
             propias = [r for r in cargar_exclusiones() if r.get("motivo") != "(conf)"]
             data = json.dumps(propias, ensure_ascii=False, indent=2).encode("utf-8")
             self.send_response(200)
@@ -15538,7 +15512,7 @@ class H(BaseHTTPRequestHandler):
             return
         if path == "/exclusiones":
             if not self._admin():
-                return self._redirect("/")   # lectura no gestiona exclusiones
+                return self._prohibido()   # lectura no gestiona exclusiones
             edit = None
             if "?" in self.path:
                 try:
@@ -15551,7 +15525,7 @@ class H(BaseHTTPRequestHandler):
             # rango sin cambiar de pagina. Se consulta a demanda, al abrir: pintar las
             # nueve de un /28 de golpe gastaria nueve consultas de la cuota por mirar una.
             if not self._operador():
-                return self._deny()
+                return self._prohibido()
             _qf = _up.parse_qs(self.path.split("?", 1)[1]) if "?" in self.path else {}
             _ip = (_qf.get("ip", [""])[0]).strip()
             if not aidb_ip_valida(_ip):
@@ -15562,11 +15536,13 @@ class H(BaseHTTPRequestHandler):
                                   % html.escape(_err or "sin respuesta"))
             return self._html(ficha_ip_html(_d, _ip))
         if path == "/reputacion":
-            if not self._operador():
-                return self._deny()
+            # ver la pagina (tus publicas por nodo) es de todos; consultar AbuseIPDB gasta cuota y
+            # es de operador o admin (CONTRATO-F2 §10.2)
             # ?ips=... para poder enlazar una IP concreta desde la tabla de una red
             _qr = _up.parse_qs(self.path.split("?", 1)[1]) if "?" in self.path else {}
             _t = (_qr.get("ips", [""])[0]).strip()
+            if _t and not self._operador():
+                return self._prohibido()
             if _t:
                 _res, _av = aidb_lote(_t, refrescar=bool(_qr.get("refrescar")))
                 return self._html(reputacion_page(res=_res, texto=_t, msg=_av, ok=not _av,
@@ -15585,7 +15561,7 @@ class H(BaseHTTPRequestHandler):
                                                  pagina=(_qd.get("p", [""])[0])))
         m = re.match(r"^/r/(report-[0-9A-Za-z_-]+\.html)$", path)
         if m:
-            f = os.path.join(LOGDIR, m.group(1))
+            f = os.path.join(nodos.dir_salida(), m.group(1))
             if os.path.isfile(f):
                 try:
                     return self._html(wrap(open(f, encoding="utf-8", errors="replace").read(), refresh=False))
@@ -15618,11 +15594,7 @@ class H(BaseHTTPRequestHandler):
                 LOGIN_FAILS.pop(ip, None)   # login correcto: limpia el contador
                 login_registrar(ip, u, "OK")
                 bitacora("LOGIN", f"rol={role}", quien=u, ip=ip)
-                token = secrets.token_urlsafe(24)
-                SESSIONS[token] = {"user": u, "role": role, "exp": time.time() + SESSION_TTL}
-                for k in [k for k, v in SESSIONS.items() if v.get("exp", 0) < time.time()]:
-                    SESSIONS.pop(k, None)
-                _guardar_sesiones()   # persistir: sobrevive al reinicio del panel (no re-login)
+                token = sesion_abrir(u, role)   # se guarda sha256(token) con la marca de la clave
                 return self._redirect("/", cookie=f"sid={token}; Path=/; HttpOnly; SameSite=Strict; Max-Age={SESSION_TTL}{self._cookie_secure()}")
             if not cargar_confianza():
                 login_fallo(ip)   # solo se cuenta para bloquear si no hay lista de confianza
@@ -15631,17 +15603,25 @@ class H(BaseHTTPRequestHandler):
             return self._html(login_page("Usuario o clave incorrectos."))
         if not self._auth_ok():
             return self._deny()
-        self._set_ctx()
+        if not self._ctx_nodo():
+            return                  # nodo mal escrito (400) o inexistente (404): ya respondido
+        if ruta.startswith("/puntos/"):
+            # apartado Puntos: solo admin, comprobado dentro (403); el pid sale de la ruta
+            if puntos_web.post(self, ruta, {k: v[0] for k, v in q.items()}):
+                return
         if ruta == "/update-reglas":
             if not self._admin():
-                return self._deny()   # accion de admin
+                return self._prohibido()   # accion de admin
             if not UPDATE["running"]:
                 UPDATE["running"] = True; UPDATE["started"] = time.time(); UPDATE["msg"] = ""
-                threading.Thread(target=_run_rules_update, daemon=True).start()
+                # orden reglas.actualizar del orquestador (las reglas son de todos los puntos)
+                threading.Thread(target=_run_rules_update,
+                                 args=(getattr(CTX, "user", "?") or "?", getattr(CTX, "ip", "") or ""),
+                                 daemon=True).start()
             return self._redirect("/documentacion#reglas")
         if ruta == "/ventana":
             if not self._admin():
-                return self._deny()
+                return self._prohibido()
             try:
                 m = int(q.get("min", ["1440"])[0])
             except ValueError:
@@ -15657,84 +15637,15 @@ class H(BaseHTTPRequestHandler):
             global FORCE_REGEN
             FORCE_REGEN = True   # el refrescador regenera el resumen con la nueva ventana en <=10 s
             return self._redirect("/")
-        if ruta == "/buscar-update":
-            if not self._admin():
-                return self._deny()
-            try:
-                chequear_update()
-                d = update_info()
-                msg = ("Hay una version nueva disponible." if d.get("disponible")
-                       else "Estas en la ultima version.")
-                ok = True
-            except Exception:
-                msg, ok = "No se pudo consultar GitHub (sin red o limite de la API).", False
-            return self._html(perfil_page(msg, ok=ok))
-        if ruta == "/update-panel":
-            if not self._admin():
-                return self._deny()
-            registrar_update_inicio(getattr(CTX, "user", ""))  # de-que-SHA y quien, para el registro
-            bitacora("ACTUALIZAR-PANEL", "disparo actualizacion del panel")
-            # el actualizador reinicia el panel: se lanza DESACOPLADO (systemd-run) para
-            # que sobreviva al reinicio; si no hay systemd-run, con setsid como respaldo.
-            try:
-                subprocess.Popen(["systemd-run", "--no-block", "--collect",
-                                  "--unit=suricata-panel-update-run",
-                                  "/usr/local/bin/suricata-panel-update"])
-            except Exception:
-                try:
-                    subprocess.Popen(["setsid", "/usr/local/bin/suricata-panel-update"])
-                except Exception:
-                    pass
-            return self._html(
-                "<!doctype html><html lang=es><head><meta charset=utf-8><title>Actualizando panel</title>"
-                "<meta http-equiv=refresh content='50;url=/ajustes'>"
-                "<link rel=icon type=image/png href=/favicon.ico>"
-                "<style>"
-                "body{margin:0;background:#fcfcfb;font:15px system-ui,-apple-system,Segoe UI,sans-serif;color:#0b0b0b}"
-                ".wrap{max-width:560px;margin:64px auto;padding:30px 28px;text-align:center;"
-                "border:1px solid #e7e6e2;border-radius:14px;background:#fff}"
-                ".wrap h2{margin:0 0 6px;font-size:21px}"
-                ".spin{width:34px;height:34px;margin:2px auto 14px;border:3px solid #e7e6e2;"
-                "border-top-color:#2a78d6;border-radius:50%;animation:sp .8s linear infinite}"
-                "@keyframes sp{to{transform:rotate(360deg)}}"
-                ".sub{color:#52514e;margin:0 0 20px;line-height:1.5}"
-                ".track{height:14px;background:#ecebe7;border-radius:20px;overflow:hidden}"
-                ".fill{height:100%;width:0;border-radius:20px;"
-                "background:linear-gradient(90deg,#2a78d6,#4c9bf0);transition:width .25s linear}"
-                ".row{display:flex;justify-content:space-between;margin-top:9px;font-size:13px;color:#52514e}"
-                ".pct{font-weight:800;color:#2a78d6}"
-                "</style></head><body>"
-                "<div class='wrap'>"
-                "<div class='spin'></div>"
-                "<h2>Actualizando el panel&hellip;</h2>"
-                "<p class='sub'>Bajando la ultima version y reiniciando el panel. "
-                "Tu configuracion no se toca. Al terminar volveras a Ajustes solo.</p>"
-                "<div class='track'><div class='fill' id='f'></div></div>"
-                "<div class='row'><span class='pct' id='p'>0%</span>"
-                "<span id='t'>faltan ~50 s</span></div>"
-                "</div>"
-                "<script>"
-                "var T=50,ini=Date.now(),f=document.getElementById('f'),"
-                "p=document.getElementById('p'),t=document.getElementById('t');"
-                "var iv=setInterval(function(){"
-                " var s=(Date.now()-ini)/1000, r=Math.max(0,T-s);"
-                " var pc=Math.min(96,s/T*100);"          # tope 96%: el 100% real es cuando recarga
-                " f.style.width=pc.toFixed(1)+'%';"
-                " p.textContent=Math.round(pc)+'%';"
-                " t.textContent = r>1 ? ('faltan ~'+Math.ceil(r)+' s') : 'casi listo, recargando';"
-                " if(s>=T){clearInterval(iv);f.style.width='100%';p.textContent='100%';"
-                "  location.href='/ajustes';}"
-                "},250);"
-                "</script></body></html>")
         if ruta == "/exclusiones":
             if not self._admin():
-                return self._deny()   # lectura no gestiona exclusiones
+                return self._prohibido()   # lectura no gestiona exclusiones
             return self._post_exclusiones(q)
         if ruta == "/perfil":
             return self._post_perfil(q)
         if ruta == "/empresa":
             if not self._admin():
-                return self._deny()
+                return self._prohibido()
             nombre = (q.get("nombre", [""])[0]).strip()[:60]
             logo = q.get("logo", [""])[0]
             actual = cargar_empresa()
@@ -15751,14 +15662,16 @@ class H(BaseHTTPRequestHandler):
             return self._html(perfil_page("Datos de la empresa guardados.", ok=True))
         if ruta == "/mikrotik":
             if not self._admin():
-                return self._deny()
+                return self._prohibido()
             m = cargar_mk()
-            m["HOST"] = (q.get("host", [""])[0]).strip()[:80]
-            m["PORT"] = (q.get("port", [""])[0]).strip()[:6] or "8728"
-            m["USER"] = (q.get("user", [""])[0]).strip()[:64]
-            npass = q.get("pass", [""])[0]
-            if npass:                                   # vacio = conservar la clave actual
-                m["PASS"] = npass
+            # La conexion es del router del NODO del formulario (validado; nunca el del selector
+            # ni uno "por defecto"), sin HOST ni puerto: se alcanza por el rele de su punto. Lo
+            # demas del formulario (listas, acciones, politicas) es global.
+            _rid = (q.get("nodo", [""])[0]).strip()
+            if _rid and _router_de_pid(_rid) is None:
+                return self._html(perfil_page("Ese nodo no existe: no se guardo nada.", ok=False), 400)
+            for _k in ("HOST", "PORT", "TLS", "USER", "PASS", "CERT_FP"):
+                m.pop(_k, None)        # la conexion no va en la configuracion global
             m["LIST"] = (q.get("list", [""])[0]).strip()[:64] or "suricata-cuarentena"
             m["TTL"] = (q.get("ttl", [""])[0]).strip()[:16]
             m["LIST_DNS"] = (q.get("list_dns", [""])[0]).strip()[:64] or "suricata-dns-sospechoso"
@@ -15809,23 +15722,27 @@ class H(BaseHTTPRequestHandler):
                 if _v in POL_CLASE_VALORES:
                     m["POL_" + _cat.upper()] = _v
             m["POL_AUTO"] = "1" if q.get("pol_auto") else "0"
-            m["TLS"] = "1" if q.get("tls") else "0"
-            m["ENABLED"] = "1" if q.get("enabled") else "0"
             try:
                 guardar_mk(m)
-                # la conexion vive en el registro de nodos; este formulario edita el primero
-                _rs = cargar_routers()
-                for _k in ("HOST", "PORT", "TLS", "USER", "PASS", "LIST", "TTL",
-                           "LIST_DNS", "TTL_DNS", "ENABLED"):
-                    _rs[0][_k] = m.get(_k, "")
-                if not _rs[0].get("nombre"):
-                    _rs[0]["nombre"] = m.get("HOST", "") or "Nodo principal"
-                guardar_routers(_rs)
+                if _rid:
+                    _rs = cargar_routers()
+                    for _r in _rs:
+                        if _r.get("id") != _rid:
+                            continue
+                        _r["USER"] = (q.get("user", [""])[0]).strip()[:64]
+                        _np = q.get("pass", [""])[0]
+                        if _np:                     # vacio = conservar; guardar_routers la cifra
+                            _r["PASS"] = _np
+                        _r["ENABLED"] = "1" if q.get("enabled") else "0"
+                        for _k in ("LIST", "TTL", "LIST_DNS", "TTL_DNS"):
+                            if m.get(_k):
+                                _r[_k] = m[_k]
+                    guardar_routers(_rs)
             except OSError as ex:
                 return self._html(perfil_page(f"No se pudo guardar: {ex}", ok=False))
             conf_dash_set("DOBLE_SENAL", "1" if q.get("doble") else "0")   # doble senal (lo lee el generador)
             guardar_nunca(q.get("nunca", [""])[0])                         # allowlist 'nunca bloquear'
-            bitacora("CONFIG-MIKROTIK", f"host={m.get('HOST','')} enviar={'si' if m.get('ENABLED')=='1' else 'no'} "
+            bitacora("CONFIG-MIKROTIK", f"punto={_rid or '-'} enviar={'si' if q.get('enabled') else 'no'} "
                                         f"doble_senal={'si' if q.get('doble') else 'no'}")
             if _err_reglas:
                 return self._html(perfil_page(
@@ -15836,73 +15753,11 @@ class H(BaseHTTPRequestHandler):
                     "Guardado. El verificador avisa en tus reglas (se guardaron igual; revisalas "
                     "antes de aplicar): " + " | ".join(_av_reglas[:6]), ok=True))
             return self._html(perfil_page("Conexion al MikroTik guardada.", ok=True))
-        if ruta == "/routers/guardar":
-            # Alta o edicion de un nodo. El primero se edita desde la tarjeta de MikroTik;
-            # aqui se gestionan los demas (y se puede renombrar cualquiera).
-            if not self._admin():
-                return self._deny()
-            rid = (q.get("rid", [""])[0]).strip()[:16]
-            rs = cargar_routers()
-            r = None
-            for x in rs:
-                if x.get("id") == rid:
-                    r = x
-                    break
-            if r is None:
-                if len(rs) >= 8:
-                    return self._html(perfil_page("Maximo 8 nodos por sensor.", ok=False))
-                r = _router_vacio(len(rs) + 1)
-                rs.append(r)
-            r["nombre"] = (q.get("nombre", [""])[0]).strip()[:40] or r.get("HOST", "") or r["id"]
-            r["HOST"] = (q.get("host", [""])[0]).strip()[:80]
-            r["PORT"] = (q.get("port", [""])[0]).strip()[:6] or "8728"
-            r["USER"] = (q.get("user", [""])[0]).strip()[:64]
-            _np = q.get("pass", [""])[0]
-            if _np:                                   # vacio = conservar la clave actual
-                r["PASS"] = _np
-            r["LIST"] = (q.get("list", [""])[0]).strip()[:64] or "suricata-cuarentena"
-            r["LIST_DNS"] = (q.get("list_dns", [""])[0]).strip()[:64] or "suricata-dns-sospechoso"
-            r["TTL"] = (q.get("ttl", [""])[0]).strip()[:16] or "1h"
-            r["TTL_DNS"] = (q.get("ttl_dns", [""])[0]).strip()[:16] or "1d"
-            r["TLS"] = "1" if q.get("tls") else "0"
-            r["ENABLED"] = "1" if q.get("enabled") else "0"
-            if not r.get("HOST"):
-                return self._html(perfil_page("Falta la IP del MikroTik del nodo.", ok=False))
-            try:
-                guardar_routers(rs)
-            except OSError as ex:
-                return self._html(perfil_page(f"No se pudo guardar: {ex}", ok=False))
-            bitacora("CONFIG-NODO", f"nodo={r['nombre']} host={r['HOST']} "
-                                    f"enviar={'si' if r['ENABLED'] == '1' else 'no'}")
-            return self._html(perfil_page(
-                f"Nodo '{r['nombre']}' guardado. Para que su espejo se capture, re-ejecuta "
-                f"el instalador con -m incluyendo {r['HOST']}.", ok=True))
-        if ruta == "/routers/quitar":
-            if not self._admin():
-                return self._deny()
-            rid = (q.get("rid", [""])[0]).strip()[:16]
-            rs = cargar_routers()
-            if len(rs) <= 1:
-                return self._html(perfil_page("No se puede quitar el unico nodo.", ok=False))
-            quedan = [x for x in rs if x.get("id") != rid]
-            if len(quedan) == len(rs):
-                return self._html(perfil_page("Ese nodo ya no existe.", ok=False))
-            # OJO: no se tocan sus entradas de cuarentena. Si el nodo se quita sin
-            # liberarlas antes, siguen bloqueadas en ese router y el panel ya no las
-            # gestiona. Se avisa en el mensaje.
-            try:
-                guardar_routers(quedan)
-            except OSError as ex:
-                return self._html(perfil_page(f"No se pudo guardar: {ex}", ok=False))
-            bitacora("QUITAR-NODO", f"nodo={rid}")
-            return self._html(perfil_page(
-                "Nodo quitado del panel. Si tenia CPEs en cuarentena, siguen bloqueados en "
-                "ese MikroTik: quitalos desde el propio router.", ok=True))
         if ruta == "/mikrotik/reglas/verificar":
             # Verificar un bloque de reglas propias SIN guardarlo ni aplicarlo: estatico y,
             # si hay router configurado, contra el router. Texto para el modal.
             if not self._admin():
-                return self._deny()
+                return self._prohibido()
             def _txtv(texto):
                 b = ("OK " + texto).encode("utf-8")
                 self.send_response(200)
@@ -15921,8 +15776,8 @@ class H(BaseHTTPRequestHandler):
                 return _txtv("el bloque esta vacio")
             ver = verificar_reglas(reglas, lista)
             rid = (q.get("rid", [""])[0]).strip()
-            r = next((x for x in cargar_routers() if x.get("id") == rid), None) if rid else router_defecto()
-            if r and r.get("HOST") and r.get("USER") and r.get("PASS"):
+            r = _router_de_pid(rid) if rid else None     # sin nodo: solo la revision estatica
+            if r and r.get("USER") and r.get("PASS"):
                 try:
                     s_ = mk_conectar(cargar_mk_de(r))
                     try:
@@ -15937,74 +15792,14 @@ class H(BaseHTTPRequestHandler):
             ne = sum(1 for v in ver if v["nivel"] == "error"); na = sum(1 for v in ver if v["nivel"] == "aviso")
             cab = "%d regla(s) \u00b7 %d error(es) \u00b7 %d aviso(s)" % (len(reglas), ne, na)
             return _txtv(cab + "\n" + "\n".join(lineas_verificacion(ver)))
-        if ruta in ("/vpn/instalar", "/vpn/usuario", "/vpn/redes", "/vpn/quitar-redes", "/vpn/borrar"):
-            # Ajustes > VPN. Solo admin. Respuesta JSON para el modal.
-            if not self._admin():
-                return self._deny()
-            quien = getattr(CTX, "user", "?")
-            try:
-                if ruta == "/vpn/instalar":
-                    okv, msgv = ovpn_instalar(quien=quien)
-                    return self._json({"ok": okv, "msg": msgv})
-                if ruta == "/vpn/usuario":
-                    okv, msgv, datos = ovpn_accion("usuario", quien=quien)
-                    return self._json({"ok": okv, "msg": msgv, "datos": datos})
-                usuario = (q.get("usuario", [""])[0]).strip()
-                est = ovpn_estado()
-                mio = next((x for x in est["usuarios"] if x["usuario"] == usuario), None)
-                if not mio:
-                    return self._json({"ok": False, "msg": "ese MikroTik no esta en la VPN"})
-                if ruta == "/vpn/redes":
-                    nuevas, errores, avisos = ovpn_redes_validas(q.get("redes", [""])[0], usuario, est)
-                    if errores:
-                        return self._json({"ok": False, "msg": "\n".join(errores), "avisos": avisos})
-                    if not nuevas:
-                        return self._json({"ok": True, "msg": "No habia redes nuevas.", "avisos": avisos})
-                    okv, msgv, _d = ovpn_accion("redes", usuario, nuevas, quien=quien)
-                    return self._json({"ok": okv, "msg": msgv, "avisos": avisos})
-                if ruta == "/vpn/quitar-redes":
-                    red = (q.get("redes", [""])[0]).strip()
-                    if red not in mio["redes"]:
-                        return self._json({"ok": False, "msg": "%s no es una red de %s" % (red, usuario)})
-                    okv, msgv, _d = ovpn_accion("quitar-redes", usuario, [red], quien=quien)
-                    return self._json({"ok": okv, "msg": msgv})
-                okv, msgv, _d = ovpn_accion("borrar", usuario, quien=quien)
-                return self._json({"ok": okv, "msg": msgv})
-            except Exception as ex:
-                return self._json({"ok": False, "msg": "error: %s" % ex})
-        if ruta in ("/vpn/mk-alta", "/vpn/mk-espejo-plan", "/vpn/mk-espejo-aplicar",
-                    "/vpn/sensor-plan", "/vpn/sensor-aplicar"):
-            # Ajustes > VPN: el espejo desde la web (en el router y en el sensor). Solo admin;
-            # respuesta JSON para el modal. Lo que se lanza se recalcula y revalida aqui: no
-            # se ejecuta nada que venga hecho del navegador.
-            if not self._admin():
-                return self._deny()
-            quien = getattr(CTX, "user", "?")
-            usuario = (q.get("usuario", [""])[0]).strip()
-            try:
-                if ruta == "/vpn/mk-alta":
-                    okv, msgv = vpn_mk_alta(usuario, q.get("nombre", [""])[0], q.get("user", [""])[0],
-                                            q.get("pass", [""])[0], q.get("port", [""])[0],
-                                            (q.get("tls", [""])[0] or "") in ("1", "on", "true"), quien=quien)
-                    return self._json({"ok": okv, "msg": msgv})
-                if ruta in ("/vpn/mk-espejo-plan", "/vpn/mk-espejo-aplicar"):
-                    okv, msgv = vpn_mk_espejo(usuario, aplicar=ruta.endswith("-aplicar"), quien=quien)
-                    return self._json({"ok": okv, "msg": msgv})
-                p = espejo_vpn_plan(q.get("n", [""])[0], q.get("a", [""])[0], self._peer_ip())
-                if ruta == "/vpn/sensor-plan" or not p["ok"]:
-                    return self._json(p)
-                okv, msgv = espejo_vpn_lanzar(p["args"], quien=quien, nodos=p.get("nodos"))
-                return self._json({"ok": okv, "msg": msgv})
-            except Exception as ex:
-                return self._json({"ok": False, "msg": "error: %s" % ex})
         if ruta == "/mikrotik/listas/recargar":
             # Vuelve a cargar en el router las IPs en cuarentena que faltan en su lista.
             if not self._admin():
-                return self._deny()
+                return self._prohibido()
             rid = (q.get("rid", [""])[0]).strip()
-            r = next((x for x in cargar_routers() if x.get("id") == rid), None) if rid else router_defecto()
-            if not r or not (r.get("HOST") and r.get("USER") and r.get("PASS")):
-                okr, msg = False, "ese router no tiene la conexion configurada: guarda primero host, usuario y clave"
+            r = _router_de_pid(rid)     # el nodo de la operacion, validado; nunca uno por defecto
+            if not r or not (r.get("USER") and r.get("PASS")):
+                okr, msg = False, "ese router no tiene la conexion configurada: guarda primero el usuario y la clave de su API"
             else:
                 try:
                     okr, msg = recargar_listas(r, quien=getattr(CTX, "user", "?"))
@@ -16020,10 +15815,10 @@ class H(BaseHTTPRequestHandler):
             # La etiqueta de cada clase en Ajustes ("Reglas aplicadas" en verde, o lo que
             # falta). JSON; con el router caido, {"_error": motivo} y la pagina no se rompe.
             if not self._admin():
-                return self._deny()
+                return self._prohibido()
             rid = (q.get("rid", [""])[0]).strip()
-            r = next((x for x in cargar_routers() if x.get("id") == rid), None) if rid else router_defecto()
-            if not r or not (r.get("HOST") and r.get("USER") and r.get("PASS")):
+            r = _router_de_pid(rid)     # el nodo de la operacion, validado; nunca uno por defecto
+            if not r or not (r.get("USER") and r.get("PASS")):
                 res = {"_error": "router sin conexion configurada"}
             else:
                 try:
@@ -16041,7 +15836,7 @@ class H(BaseHTTPRequestHandler):
             # Las reglas de una clase en UN router: vista previa (sin tocar), aplicar o quitar.
             # Responde texto plano para el modal: "OK <cabecera>\n<rsc...>" o "ERR: motivo".
             if not self._admin():
-                return self._deny()
+                return self._prohibido()
             def _txt(okr, texto):
                 b = (("OK " if okr else "ERR: ") + texto).encode("utf-8")
                 self.send_response(200)
@@ -16052,9 +15847,9 @@ class H(BaseHTTPRequestHandler):
             rid = (q.get("rid", [""])[0]).strip()
             if cat not in ACCIONES_POR_CAT:
                 return _txt(False, "clase desconocida")
-            r = next((x for x in cargar_routers() if x.get("id") == rid), None) if rid else router_defecto()
-            if not r or not (r.get("HOST") and r.get("USER") and r.get("PASS")):
-                return _txt(False, "ese router no tiene la conexion configurada: guarda primero host, usuario y clave")
+            r = _router_de_pid(rid)     # el nodo de la operacion, validado; nunca uno por defecto
+            if not r or not (r.get("USER") and r.get("PASS")):
+                return _txt(False, "ese router no tiene la conexion configurada: guarda primero el usuario y la clave de su API")
             quien = getattr(CTX, "user", "?")
             try:
                 if ruta.endswith("/plan"):
@@ -16078,32 +15873,28 @@ class H(BaseHTTPRequestHandler):
                 return _txt(False, "no se pudo hablar con el router: %s" % ex)
         if ruta == "/mikrotik/test":
             if not self._admin():
-                return self._deny()
-            m = cargar_mk()                              # guarda lo que este en el form antes de probar
-            m["HOST"] = (q.get("host", [""])[0]).strip()[:80] or m.get("HOST", "")
-            m["PORT"] = (q.get("port", [""])[0]).strip()[:6] or m.get("PORT", "8728")
-            m["USER"] = (q.get("user", [""])[0]).strip()[:64] or m.get("USER", "")
-            npass = q.get("pass", [""])[0]
-            if npass:
-                m["PASS"] = npass
-            m["LIST"] = (q.get("list", [""])[0]).strip()[:64] or m.get("LIST", "suricata-cuarentena")
-            m["TTL"] = (q.get("ttl", [""])[0]).strip()[:16]
-            m["LIST_DNS"] = (q.get("list_dns", [""])[0]).strip()[:64] or m.get("LIST_DNS", "suricata-dns-sospechoso")
-            m["TTL_DNS"] = (q.get("ttl_dns", [""])[0]).strip()[:16]
-            m["AUTO_MANTENER"] = "1" if q.get("auto") else "0"
-            m["TLS"] = "1" if q.get("tls") else "0"
-            m["ENABLED"] = "1" if q.get("enabled") else "0"
-            try:
-                guardar_mk(m)
-            except OSError:
-                pass
-            ok, msg = mk_probar()
+                return self._prohibido()
+            _rid = (q.get("nodo", [""])[0]).strip()
+            _rs = cargar_routers()
+            _r = next((x for x in _rs if x.get("id") == _rid), None) if _router_de_pid(_rid) else None
+            if _r is None:
+                ok, msg = False, "Elige un nodo existente."
+            else:
+                # guarda lo que este en el formulario antes de probar (vacio = conservar la clave)
+                if (q.get("user", [""])[0]).strip():
+                    _r["USER"] = (q.get("user", [""])[0]).strip()[:64]
+                if q.get("pass", [""])[0]:
+                    _r["PASS"] = q.get("pass", [""])[0]
+                try:
+                    guardar_routers(_rs)
+                except OSError:
+                    pass
+                ok, msg = puntos_web.probar_api(sys.modules[__name__], _rid)
+                bitacora("PROBAR-API", "punto=%s resultado=%s" % (_rid, "ok" if ok else "fallo"))
             if not ok:
-                if "ssl" in msg.lower() or "handshake" in msg.lower() or "tls" in msg.lower():
-                    msg += (" — Verifica que el servicio api-ssl este habilitado (/ip service enable api-ssl) y el puerto (8729). "
-                            "No necesitas certificado (se usan cifrados ADH). Si sigue, prueba API plano: desmarca API-SSL y usa 8728.")
-                else:
-                    msg += " — Revisa host, puerto, usuario, clave, que el servicio API este activo y permitido desde este servidor."
+                msg += (" — Revisa el usuario y la clave de la API, que el punto tenga la VPN conectada "
+                        "y que el router tenga la API-SSL (8729) con el certificado ids-promax "
+                        "(comandos de la ficha del punto).")
             if q.get("ajax"):   # desde el modal: texto plano, sin recargar la pagina
                 b = (("OK " if ok else "ERR: ") + msg).encode("utf-8")
                 self.send_response(200)
@@ -16113,7 +15904,7 @@ class H(BaseHTTPRequestHandler):
             return self._html(perfil_page(("Prueba: " + msg), ok=ok))
         if ruta == "/feeds":
             if not self._admin():
-                return self._deny()
+                return self._prohibido()
             ak = q.get("authkey", [""])[0]
             if ak.strip() == "BORRAR":
                 feeds_auth_set(""); bitacora("CONFIG-FEEDS-AUTHKEY", "borrada")
@@ -16132,7 +15923,7 @@ class H(BaseHTTPRequestHandler):
             return self._html(perfil_page(f"Auth-Key guardada, pero {det}. Se reintentara en la proxima actualizacion.", ok=True))
         if ruta == "/reputacion":
             if not self._operador():
-                return self._deny()
+                return self._prohibido()
             texto = q.get("ips", [""])[0]
             res, aviso = aidb_lote(texto, refrescar=bool(q.get("refrescar")))
             if res:
@@ -16141,7 +15932,7 @@ class H(BaseHTTPRequestHandler):
                                               es_admin=self._admin()))
         if ruta == "/reputacion/denunciar":
             if not self._operador():
-                return self._deny()
+                return self._prohibido()
             ip = (q.get("ip", [""])[0]).strip()
             okd, det = aidb_denunciar(ip, firma=q.get("firma", [""])[0],
                                       dport=q.get("dport", [""])[0],
@@ -16156,7 +15947,7 @@ class H(BaseHTTPRequestHandler):
             return
         if ruta == "/feeds/reportar":
             if not self._admin():
-                return self._deny()
+                return self._prohibido()
             on = bool(q.get("reportar"))
             aidb_set_reportar(on)
             bitacora("CONFIG-ABUSEIPDB-REPORTAR", "activadas" if on else "desactivadas")
@@ -16165,9 +15956,9 @@ class H(BaseHTTPRequestHandler):
                 if on else "Denuncias a AbuseIPDB desactivadas.", ok=True))
         if ruta == "/publicas":
             if not self._admin():
-                return self._deny()
+                return self._prohibido()
             rid = (q.get("rid", [""])[0]).strip()
-            if not router_por_id(rid):
+            if not _router_de_pid(rid):
                 return self._redirect("/reputacion")
             ok_l, mal, tap = guardar_publicas_de(rid, q.get("entradas", [""])[0],
                                                  origen_nuevas="manual")
@@ -16178,9 +15969,9 @@ class H(BaseHTTPRequestHandler):
             return self._redirect("/reputacion")
         if ruta == "/publicas/agregar":
             if not self._admin():
-                return self._deny()
+                return self._prohibido()
             rid = (q.get("rid", [""])[0]).strip()
-            if not router_por_id(rid):
+            if not _router_de_pid(rid):
                 return self._redirect("/reputacion")
             actuales = cargar_publicas().get(rid, [])
             ok_l, mal, tap = guardar_publicas_de(
@@ -16195,11 +15986,13 @@ class H(BaseHTTPRequestHandler):
                                   else "/reputacion")
         if ruta == "/publicas/quitar":
             if not self._admin():
-                return self._deny()
+                return self._prohibido()
             rid = (q.get("rid", [""])[0]).strip()
             # 'solo' lo manda la x de un chip. Va aparte de 'entrada' a proposito: los
             # chips son casillas con ese nombre, y al pulsar la x el navegador envia
             # TODAS las marcadas. Sin distinguirlo, quitar una se llevaria las marcadas.
+            if not _router_de_pid(rid):
+                return self._redirect("/reputacion")
             fuera = (q.get("solo", [""])[0] or q.get("entrada", [""])[0]).strip()
             quedan_e = [e for e in cargar_publicas().get(rid, []) if e != fuera]
             guardar_publicas_de(rid, "\n".join(quedan_e))
@@ -16210,8 +16003,10 @@ class H(BaseHTTPRequestHandler):
             # metia trece entradas basura y limpiarlas se llevaba por delante la unica
             # buena, que ademas tenia historial detras. Aqui se elige que se va.
             if not self._admin():
-                return self._deny()
+                return self._prohibido()
             rid = (q.get("rid", [""])[0]).strip()
+            if not _router_de_pid(rid):
+                return self._redirect("/reputacion")
             fuera = set(x.strip() for x in q.get("entrada", []) if x.strip())
             if not fuera:
                 return self._redirect(rep_aviso_url("No marcaste ninguna entrada."))
@@ -16222,9 +16017,9 @@ class H(BaseHTTPRequestHandler):
                 "%d entrada(s) quitada(s). El historial de listas negras se conserva." % len(fuera)))
         if ruta == "/publicas/detectar":
             if not self._admin():
-                return self._deny()
+                return self._prohibido()
             rid = (q.get("rid", [""])[0]).strip()
-            r = router_por_id(rid)
+            r = _router_de_pid(rid)
             if not r:
                 return self._redirect("/reputacion")
             try:
@@ -16274,7 +16069,7 @@ class H(BaseHTTPRequestHandler):
                 + nota_viejas, marcar))
         if ruta == "/publicas/revisar":
             if not self._operador():
-                return self._deny()
+                return self._prohibido()
             # en segundo plano: revisar un /24 en 6 listas son ~1.500 consultas DNS y la
             # peticion se quedaria colgada
             threading.Thread(target=vigilar_dnsbl, daemon=True).start()
@@ -16282,7 +16077,7 @@ class H(BaseHTTPRequestHandler):
             return self._redirect("/reputacion")
         if ruta == "/feeds/aidb":
             if not self._admin():
-                return self._deny()
+                return self._prohibido()
             k = q.get("aidbkey", [""])[0]
             if k.strip() == "BORRAR":
                 aidb_set(""); bitacora("CONFIG-ABUSEIPDB", "borrada")
@@ -16301,7 +16096,7 @@ class H(BaseHTTPRequestHandler):
             return self._html(perfil_page(f"Clave guardada, pero {det}.", ok=True))
         if ruta == "/dns":
             if not self._admin():
-                return self._deny()
+                return self._prohibido()
             n = guardar_resolutores(q.get("resolutores", [""])[0])
             bitacora("CONFIG-DNS", "%d resolutor(es)" % n)
             return self._html(perfil_page(
@@ -16310,7 +16105,7 @@ class H(BaseHTTPRequestHandler):
                 ok=True))
         if ruta == "/feeds/groq":
             if not self._admin():
-                return self._deny()
+                return self._prohibido()
             k = q.get("groqkey", [""])[0]
             mod = (q.get("groqmodel", [""])[0] or "").strip()
             if k.strip() == "BORRAR":
@@ -16346,10 +16141,12 @@ class H(BaseHTTPRequestHandler):
             return self._html(perfil_page("Clave guardada, pero %s." % det, ok=True))
         if ruta == "/feeds/actualizar":
             if not self._admin():
-                return self._deny()
+                return self._prohibido()
             actualizar_feeds_async(); bitacora("ACTUALIZAR-FEEDS", "manual")
             return self._html(perfil_page("Actualizando feeds en segundo plano; recarga en un momento para ver el estado.", ok=True))
         if ruta == "/conducta/refrescar":
+            if not self._operador():
+                return self._prohibido()
             # No se genera dentro de la peticion: recorrer 3 dias de logs puede tardar
             # minutos y el navegador cortaria por timeout. Lo hace el hilo de fondo.
             globals()["FORCE_CONDUCTA"] = True
@@ -16357,7 +16154,7 @@ class H(BaseHTTPRequestHandler):
                 "Generando en segundo plano; recarga en un rato.", pagina="/conducta"))
         if ruta == "/cuarentena/enviar":
             if not self._operador():
-                return self._deny()
+                return self._prohibido()
             ajax = bool(q.get("ajax"))   # desde el Top: responde texto plano y NO redirige
             def _fin(okr, texto):
                 if ajax:
@@ -16379,6 +16176,8 @@ class H(BaseHTTPRequestHandler):
                 ipaddress.ip_address(ip)
             except Exception:
                 return _fin(False, "IP invalida")
+            if not _destino_ok(clave):
+                return _fin(False, "destino no valido: hace falta el nodo de la IP (nodo|IP) y que ese punto exista")
             if not es_mi_cpe(ip):
                 # una IP de internet no es un abonado: la cuarentena de CPEs no la frena
                 return _fin(False, f"{ip} no es de tus redes: es un atacante externo, "
@@ -16390,13 +16189,14 @@ class H(BaseHTTPRequestHandler):
                 return _fin(False, f"{ip} es una de TUS publicas ({_pub}): mandarla a la "
                                    f"cuarentena dejaria sin internet a todos los abonados "
                                    f"que salen por ahi")
-            r = router_de_clave(clave); m = cargar_mk_de(r)
+            r = _router_de_pid(rid_de(clave)); m = cargar_mk_de(r)
             if not mk_listo(m):
                 return _fin(False, f"Configura y HABILITA el MikroTik "
                                    f"{m.get('ROUTER_NOMBRE') or ''} en Ajustes primero".replace("  ", " "))
             try:   # si la IP no es candidato actual, es un envio MANUAL (no lo libera el auto)
                 cand_ips = {clave_cpe(c.get("ip", ""), c.get("router", ""))
-                            for c in json.load(open(f"{LOGDIR}/cuarentena.json", encoding="utf-8")).get("candidatos", [])}
+                            for c in json.load(open(nodos.salida("cuarentena.json", rid_de(clave)),
+                                                    encoding="utf-8")).get("candidatos", [])}
             except Exception:
                 cand_ips = set()
             # a la lista de SU categoria: no es lo mismo una botnet que P2P, y cada
@@ -16419,7 +16219,7 @@ class H(BaseHTTPRequestHandler):
                 mk_log("ENVIADO", ip, getattr(CTX, "user", "?"), f"lista={_lst} ttl={m.get('TTL')}"
                        + (" (manual)" if clave not in cand_ips else "") + _suf_nodo(clave))
                 # la lista a la que FUE de verdad (la de su categoria), no la heredada
-                notificar_cuarentena(ip, "Infeccion CnC", _lst, quien=getattr(CTX, "user", "?"))
+                notificar_cuarentena(clave, "Infeccion CnC", _lst, quien=getattr(CTX, "user", "?"))
                 globals()["FORCE_REGEN"] = True   # regenerar pronto para que el Top muestre 'En cuarentena'
                 nota = " (ya estaba en la lista)" if err else ""
                 return _fin(True, f"{ip} en {_lst} ({nombre_categoria(_cat)}){nota}")
@@ -16427,7 +16227,7 @@ class H(BaseHTTPRequestHandler):
             return _fin(False, f"No se pudo enviar {ip}: {err}")
         if ruta in ("/cuarentena/destino/bloquear", "/cuarentena/destino/quitar"):
             if not self._operador():
-                return self._deny()
+                return self._prohibido()
             ip = (q.get("ip", [""])[0]).strip()
             ok_d, porque = destino_bloqueable(ip)
             if not ok_d:
@@ -16472,7 +16272,7 @@ class H(BaseHTTPRequestHandler):
             # Corte PARCIAL: se le cortan los puertos de abuso y se le deja el resto. El
             # abonado sigue navegando, no llama a soporte, y por eso el corte aguanta.
             if not self._operador():
-                return self._deny()
+                return self._prohibido()
             ajax_g = bool(q.get("ajax"))
             def _fin_g(okr, texto):
                 if ajax_g:
@@ -16490,6 +16290,8 @@ class H(BaseHTTPRequestHandler):
                 ipaddress.ip_address(ip)
             except Exception:
                 return _fin_g(False, "IP invalida")
+            if not _destino_ok(clave):
+                return _fin_g(False, "destino no valido: hace falta el nodo de la IP (nodo|IP) y que ese punto exista")
             if not es_mi_cpe(ip):
                 return _fin_g(False, f"{ip} no es de tus redes")
             if nunca_bloquear(ip):
@@ -16498,7 +16300,7 @@ class H(BaseHTTPRequestHandler):
             if _pub:
                 return _fin_g(False, f"{ip} es una de TUS publicas ({_pub}): cortarla "
                                      f"dejaria sin servicio a todos los abonados de ese NAT")
-            r = router_de_clave(clave); m = cargar_mk_de(r)
+            r = _router_de_pid(rid_de(clave)); m = cargar_mk_de(r)
             if not mk_listo(m):
                 return _fin_g(False, "Configura y HABILITA el MikroTik en Ajustes primero")
             lst = m.get("LIST_GRAD", "suricata-graduada")
@@ -16526,13 +16328,15 @@ class H(BaseHTTPRequestHandler):
             return _fin_g(True, f"{ip} con corte parcial en {lst}{aviso}")
         if ruta == "/cuarentena/graduada/quitar":
             if not self._operador():
-                return self._deny()
+                return self._prohibido()
             clave = (q.get("ip", [""])[0]).strip()
-            ip = ip_de(clave); rt = router_de_clave(clave)
+            ip = ip_de(clave); rt = _router_de_pid(rid_de(clave))
             try:
                 ipaddress.ip_address(ip)
             except Exception:
                 return self._redirect(cuar_aviso_url("IP invalida"))
+            if not _destino_ok(clave):
+                return self._redirect(cuar_aviso_url("destino no valido: hace falta el nodo de la IP (nodo|IP) y que ese punto exista"))
             lst = cargar_mk_de(rt).get("LIST_GRAD", "suricata-graduada")
             try:
                 ok, err = mk_remove(ip, lista=lst, router=rt)
@@ -16546,63 +16350,25 @@ class H(BaseHTTPRequestHandler):
                 f"{ip}: corte parcial retirado" if ok else f"No se pudo quitar {ip}: {err}"))
         if ruta == "/cuarentena/enviar-todos":
             if not self._operador():
-                return self._deny()
-            m = cargar_mk()
-            if not (mk_configurado() and m.get("ENABLED") == "1"):
-                return self._redirect(cuar_aviso_url("Configura y HABILITA el MikroTik en Ajustes primero"))
-            try:
-                cq = json.load(open(f"{LOGDIR}/cuarentena.json", encoding="utf-8")).get("candidatos", [])
-            except Exception:
-                cq = []
-            env = cargar_enviados()
-            # masivo: solo CONFIRMADOS (2+ pruebas independientes); el resto va a mano
-            pend = [c for c in cq
-                    if clave_cpe(c.get("ip", ""), c.get("router", "")) not in env
-                    and c.get("confianza") == "alta"][:50]
-            ok_n = err_n = 0; ult_err = ""
-            for c in pend:
-                clave = clave_cpe(c.get("ip", ""), c.get("router", "")); ip = ip_de(clave)
-                try:
-                    ipaddress.ip_address(ip)
-                except Exception:
-                    continue
-                r = router_de_clave(clave); dr = cargar_mk_de(r)
-                if not mk_listo(dr):
-                    continue            # ese nodo esta en dry-run: no se le manda nada
-                _cat = categoria_cpe(clave)
-                _lst = lista_de_categoria(_cat)
-                try:
-                    ok, err = mk_add(ip, comment=f"suricata {_cat} riesgo {c.get('riesgo',0)} {time.strftime('%Y-%m-%d %H:%M')}",
-                                     lista=_lst, ttl=_ttl_efectivo(dr, "TTL"), router=r)
-                except Exception as ex:
-                    ok, err = False, str(ex)
-                if ok:
-                    env[clave] = {"cuando": int(time.time()), "score": c.get("riesgo", 0), "por": getattr(CTX, "user", "?"),
-                                  "router": r.get("id", ""), "categoria": _cat, "lista": _lst,
-                                  "motivo": _motivo_bloqueo(clave)}
-                    mk_log("ENVIADO", ip, getattr(CTX, "user", "?"), f"lista={_lst} (masivo)" + _suf_nodo(clave))
-                    ok_n += 1
-                else:
-                    mk_log("ERROR-ENVIO", ip, getattr(CTX, "user", "?"), err); err_n += 1; ult_err = err
-                    if "conexion" in (err or "").lower() or "login" in (err or "").lower():
-                        break   # si el router no responde, no seguir intentando
-            guardar_enviados(env)
+                return self._prohibido()
+            ok_n, resumen = _enviar_confirmados(q.get("nodo", [""])[0], "cuar")
             if ok_n:
                 enviar_telegram(f"\U0001f6a8 Cuarentena masiva [{_hostname()}]: {ok_n} CPE confirmados (2+ pruebas) "
-                                f"a la lista '{m.get('LIST')}' por {getattr(CTX, 'user', '?')}")
-            resumen = f"Enviados {ok_n} a cuarentena" + (f", {err_n} con error ({ult_err})" if err_n else "")
+                                f"por {getattr(CTX, 'user', '?')}. {resumen}")
             return self._redirect(cuar_aviso_url(resumen))
         if ruta == "/cuarentena/quitar":
             if not self._operador():
-                return self._deny()
+                return self._prohibido()
             # primero se separa la identidad y luego se valida la IP: al reves, un
             # "router|IP" se rechazaba como "IP invalida" y el CPE no se podia liberar
             clave = (q.get("ip", [""])[0]).strip()
-            ip = ip_de(clave); rt = router_de_clave(clave)
+            ip = ip_de(clave); rt = _router_de_pid(rid_de(clave))
             try:
                 ipaddress.ip_address(ip)
             except Exception:
                 return self._redirect(cuar_aviso_url("IP invalida"))
+            if not _destino_ok(clave):
+                return self._redirect(cuar_aviso_url("destino no valido: hace falta el nodo de la IP (nodo|IP) y que ese punto exista"))
             # de la lista donde esta DE VERDAD, no de la que toque hoy por categoria
             _guardada = (cargar_enviados(MK_SENT).get(clave) or {}).get("lista", "")
             try:
@@ -16632,9 +16398,11 @@ class H(BaseHTTPRequestHandler):
                 ipaddress.ip_address(ip)
             except Exception:
                 return self._json({"ok": False, "ip": ip, "err": "IP invalida"})
+            if not _destino_ok(clave):
+                return self._json({"ok": False, "ip": ip, "err": "destino no valido"}, 400)
             es_dns = (tipo == "dns")
             reg = MK_SENT_DNS if es_dns else MK_SENT
-            rt = router_de_clave(clave)
+            rt = _router_de_pid(rid_de(clave))
             # La IP debe estar en ESE registro. Si no, mk_remove consultaria la otra
             # address-list, no encontraria nada y devolveria "0 entradas quitadas" como
             # exito: saldria un visto bueno sin haber quitado nada del router.
@@ -16656,7 +16424,7 @@ class H(BaseHTTPRequestHandler):
             # quitado masivo desde la tabla "Enviados manualmente". Cada seleccion llega como
             # "cuar|IP" o "dns|IP" porque cada una vive en una address-list distinta.
             if not self._operador():
-                return self._deny()
+                return self._prohibido()
             sels = q.get("sel", [])
             if not sels:
                 return self._redirect(cuar_aviso_url("No seleccionaste ninguna IP"))
@@ -16674,8 +16442,10 @@ class H(BaseHTTPRequestHandler):
                     ipaddress.ip_address(ip)
                 except Exception:
                     errores.append(f"{ip or '?'} (IP invalida)"); continue
+                if not _destino_ok(clave):
+                    errores.append(f"{ip} (destino no valido)"); continue
                 reg = MK_SENT_DNS if tipo == "dns" else MK_SENT
-                rt = router_de_clave(clave)
+                rt = _router_de_pid(rid_de(clave))
                 if clave not in en_reg[reg]:   # evita el falso exito de "0 entradas quitadas"
                     errores.append(f"{ip} (no esta en esa lista)"); continue
                 _ld = cargar_mk_de(rt).get("LIST_DNS", lst_dns)
@@ -16712,12 +16482,12 @@ class H(BaseHTTPRequestHandler):
             return self._redirect(cuar_aviso_url(resumen + corte))
         if ruta == "/cuarentena/excluir-destino":
             if not self._operador():
-                return self._deny()
+                return self._prohibido()
             n, msg = excluir_destino((q.get("destino", [""])[0]).strip())
             return self._redirect(cuar_aviso_url(msg))
         if ruta == "/cuarentena/quitar-destino":
             if not self._operador():
-                return self._deny()
+                return self._prohibido()
             d = (q.get("destino", [""])[0]).strip()
             cur = _dest_ok_set(); cur.discard(d); guardar_dest_ok_set(cur)
             globals()["FORCE_REGEN"] = True
@@ -16725,13 +16495,15 @@ class H(BaseHTTPRequestHandler):
             return self._redirect(cuar_aviso_url(f"'{d}' ya no es destino confiable"))
         if ruta in ("/cuarentena/dns/enviar", "/cuarentena/dns/quitar", "/cuarentena/dns/enviar-todos"):
             if not self._operador():
-                return self._deny()
+                return self._prohibido()
             m = cargar_mk(); lst = m.get("LIST_DNS", "suricata-dns-sospechoso"); ttl = _ttl_efectivo(m, "TTL_DNS")
             if ruta == "/cuarentena/dns/quitar":
                 clave = (q.get("ip", [""])[0]).strip()
-                ip = ip_de(clave); rt = router_de_clave(clave)
+                ip = ip_de(clave); rt = _router_de_pid(rid_de(clave))
                 try: ipaddress.ip_address(ip)
                 except Exception: return self._redirect(cuar_aviso_url("IP invalida"))
+                if not _destino_ok(clave):
+                    return self._redirect(cuar_aviso_url("destino no valido: hace falta el nodo de la IP (nodo|IP) y que ese punto exista"))
                 lst = cargar_mk_de(rt).get("LIST_DNS", lst)
                 try: ok, err = mk_remove(ip, lista=lst, router=rt)
                 except Exception as ex: ok, err = False, str(ex)
@@ -16739,8 +16511,6 @@ class H(BaseHTTPRequestHandler):
                     quitar_enviados([clave], MK_SENT_DNS)
                 mk_log("QUITADO" if ok else "ERROR-QUITAR", ip, getattr(CTX, "user", "?"), f"lista={lst} {err}")
                 return self._redirect(cuar_aviso_url(f"{ip}: {err}" if ok else f"No se pudo quitar {ip}: {err}"))
-            if not (mk_configurado() and m.get("ENABLED") == "1"):
-                return self._redirect(cuar_aviso_url("Configura y HABILITA el MikroTik en Ajustes primero"))
             if ruta == "/cuarentena/dns/enviar":
                 clave = (q.get("ip", [""])[0]).strip()
                 ip = ip_de(clave); score = (q.get("score", [""])[0]).strip()[:8]
@@ -16751,7 +16521,9 @@ class H(BaseHTTPRequestHandler):
                         f"{ip} no es de tus redes: se corta en el borde, no en la cuarentena de CPEs"))
                 if nunca_bloquear(ip):
                     return self._redirect(cuar_aviso_url(f"{ip} esta en la lista 'Nunca bloquear'"))
-                rt = router_de_clave(clave); dr = cargar_mk_de(rt)
+                if not _destino_ok(clave):
+                    return self._redirect(cuar_aviso_url("destino no valido: hace falta el nodo de la IP (nodo|IP) y que ese punto exista"))
+                rt = _router_de_pid(rid_de(clave)); dr = cargar_mk_de(rt)
                 if not mk_listo(dr):
                     return self._redirect(cuar_aviso_url("Ese MikroTik no esta habilitado para enviar"))
                 lst = dr.get("LIST_DNS", lst); ttl = _ttl_efectivo(dr, "TTL_DNS")
@@ -16763,43 +16535,16 @@ class H(BaseHTTPRequestHandler):
                                   "router": rt.get("id", ""), "motivo": _motivo_bloqueo(clave)}
                     guardar_enviados(env, MK_SENT_DNS)
                     mk_log("ENVIADO", ip, getattr(CTX, "user", "?"), f"lista={lst} (dns)" + _suf_nodo(clave))
-                    notificar_cuarentena(ip, "DNS sospechoso", lst, quien=getattr(CTX, "user", "?"))
+                    notificar_cuarentena(clave, "DNS sospechoso", lst, quien=getattr(CTX, "user", "?"))
                     return self._redirect(cuar_aviso_url(f"{ip} enviado a la lista {lst}"))
                 mk_log("ERROR-ENVIO", ip, getattr(CTX, "user", "?"), f"lista={lst} {err}")
                 return self._redirect(cuar_aviso_url(f"No se pudo enviar {ip}: {err}"))
-            # enviar-todos DNS
-            try:
-                cq = json.load(open(f"{LOGDIR}/cuarentena.json", encoding="utf-8")).get("dns_candidatos", [])
-            except Exception:
-                cq = []
-            env = cargar_enviados(MK_SENT_DNS)
-            pend = [c for c in cq
-                    if clave_cpe(c.get("ip", ""), c.get("router", "")) not in env
-                    and c.get("confianza") == "alta"][:50]
-            ok_n = err_n = 0; ult_err = ""
-            for c in pend:
-                clave = clave_cpe(c.get("ip", ""), c.get("router", "")); ip = ip_de(clave)
-                try: ipaddress.ip_address(ip)
-                except Exception: continue
-                rt = router_de_clave(clave); dr = cargar_mk_de(rt)
-                if not mk_listo(dr):
-                    continue            # ese nodo esta en dry-run: no se le manda nada
-                _ld = dr.get("LIST_DNS", lst)
-                try: ok, err = mk_add(ip, comment=f"suricata DNS-sospechoso riesgo {c.get('riesgo',0)} {time.strftime('%Y-%m-%d %H:%M')}", lista=_ld, ttl=_ttl_efectivo(dr, "TTL_DNS"), router=rt)
-                except Exception as ex: ok, err = False, str(ex)
-                if ok:
-                    env[clave] = {"cuando": int(time.time()), "score": c.get("riesgo", 0), "por": getattr(CTX, "user", "?"),
-                                  "router": rt.get("id", ""), "motivo": _motivo_bloqueo(clave)}
-                    mk_log("ENVIADO", ip, getattr(CTX, "user", "?"), f"lista={_ld} (dns masivo)" + _suf_nodo(clave)); ok_n += 1
-                else:
-                    mk_log("ERROR-ENVIO", ip, getattr(CTX, "user", "?"), f"lista={lst} {err}"); err_n += 1; ult_err = err
-                    if "conexion" in (err or "").lower() or "login" in (err or "").lower():
-                        break
-            guardar_enviados(env, MK_SENT_DNS)
+            # enviar-todos DNS: repartido por nodo, con resultado por nodo
+            ok_n, resumen = _enviar_confirmados(q.get("nodo", [""])[0], "dns")
             if ok_n:
                 enviar_telegram(f"\U0001f6a8 DNS sospechoso masivo [{_hostname()}]: {ok_n} CPE confirmados (2+ pruebas) "
-                                f"a la lista '{lst}' por {getattr(CTX, 'user', '?')}")
-            return self._redirect(cuar_aviso_url(f"Enviados {ok_n} a {lst}" + (f", {err_n} con error ({ult_err})" if err_n else "")))
+                                f"por {getattr(CTX, 'user', '?')}. {resumen}")
+            return self._redirect(cuar_aviso_url(resumen))
         return self._html("<h1>No encontrado</h1>", 404)
 
     def _post_perfil(self, q):
@@ -16824,6 +16569,8 @@ class H(BaseHTTPRequestHandler):
                 guardar_usuarios(us)
             except OSError as ex:
                 return self._html(perfil_page(f"No se pudo guardar: {ex}", ok=False))
+            # las demas sesiones de este usuario quedan fuera (cambio la marca); la suya sigue
+            sesion_renovar(self._sid())
             return self._html(perfil_page("Tu clave fue actualizada.", ok=True))
         # --- cambiar MI foto (cualquier usuario) ---
         if accion == "mi_foto":
@@ -16843,7 +16590,7 @@ class H(BaseHTTPRequestHandler):
             return self._html(perfil_page("Tu foto fue actualizada." if foto != "__BORRAR__" else "Foto quitada.", ok=True))
         # --- gestion de usuarios (solo admin) ---
         if not self._admin():
-            return self._deny()
+            return self._prohibido()
         if accion == "unlock_ip":
             ip = q.get("ip", [""])[0].strip()
             existia = LOGIN_FAILS.pop(ip, None)
@@ -16923,8 +16670,8 @@ class H(BaseHTTPRequestHandler):
                 return self._html(perfil_page(f"No se pudo guardar: {ex}", ok=False))
             bitacora("USUARIO-ELIMINADO", objetivo)
             # si borra su propia cuenta, cerrar su sesion
+            sesiones_cerrar_usuario(objetivo)   # sus sesiones dejan de valer ya
             if objetivo == yo:
-                SESSIONS.pop(self._sid(), None)
                 return self._redirect("/login", cookie="sid=; Path=/; Max-Age=0")
             return self._html(perfil_page(f"Usuario '{objetivo}' eliminado.", ok=True))
         if accion == "rol_user":
@@ -16987,6 +16734,8 @@ class H(BaseHTTPRequestHandler):
             except OSError as ex:
                 return self._html(perfil_page(f"No se pudo guardar: {ex}", ok=False))
             bitacora("USUARIO-EDITADO", f"{objetivo} rol={nrole}" + (" clave=cambiada" if npw else ""))
+            if npw and objetivo == yo:
+                sesion_renovar(self._sid())   # el admin que cambia su propia clave sigue dentro
             if npw:
                 return self._html(perfil_page(
                     f"Usuario '{objetivo}' actualizado. La clave nueva ya vale: se entra con el "
@@ -17007,9 +16756,10 @@ class H(BaseHTTPRequestHandler):
                 guardar_usuarios(us)
             except OSError as ex:
                 return self._html(perfil_page(f"No se pudo guardar: {ex}", ok=False))
-            if not obj["activo"] and objetivo == yo:
-                SESSIONS.pop(self._sid(), None); _guardar_sesiones()
-                return self._redirect("/login", cookie="sid=; Path=/; Max-Age=0")
+            if not obj["activo"]:
+                sesiones_cerrar_usuario(objetivo)
+                if objetivo == yo:
+                    return self._redirect("/login", cookie="sid=; Path=/; Max-Age=0")
             estado = "activado" if obj["activo"] else "desactivado"
             return self._html(perfil_page(f"Usuario '{objetivo}' {estado}.", ok=True))
         return self._html(perfil_page("Accion no reconocida.", ok=False))
@@ -17046,10 +16796,14 @@ class H(BaseHTTPRequestHandler):
                     except (ValueError, TypeError):
                         pass
                 sid = str(r.get("sid") or "").strip(); sid = sid if sid.isdigit() else ""
+                # un nodo que no existe NO se convierte en "todos" (ampliaria el alcance): fuera
+                _nodo = str(r.get("nodo") or "").strip()
+                if _nodo and not nodos.existe(_nodo):
+                    continue
                 try: hasta = float(r.get("hasta") or 0)
                 except (TypeError, ValueError): hasta = 0
                 limpio.append({"tipo": tipo, "ip": ip, "motivo": str(r.get("motivo", ""))[:80],
-                               "puertos": pts, "sid": sid, "hasta": hasta,
+                               "puertos": pts, "sid": sid, "hasta": hasta, "nodo": _nodo,
                                "autor": str(r.get("autor", ""))[:40], "creado": r.get("creado", 0)})
             try:
                 guardar_exclusiones(limpio)
@@ -17065,7 +16819,8 @@ class H(BaseHTTPRequestHandler):
                 if objetivo.get("motivo") == "(conf)":
                     return self._html(exclusiones_page("Esa exclusion esta en el archivo .conf; quitala alli.", ok=False))
                 propias = [r for r in propias if not (r["ip"] == objetivo["ip"] and r["tipo"] == objetivo["tipo"]
-                           and r["puertos"] == objetivo["puertos"] and r.get("sid", "") == objetivo.get("sid", ""))]
+                           and r["puertos"] == objetivo["puertos"] and r.get("sid", "") == objetivo.get("sid", "")
+                           and (r.get("nodo") or "") == (objetivo.get("nodo") or ""))]
                 guardar_exclusiones(propias)
                 return self._html(exclusiones_page("Exclusion eliminada.", ok=True))
             except Exception:
@@ -17077,8 +16832,11 @@ class H(BaseHTTPRequestHandler):
         pts_raw = (q.get("puertos", [""])[0]).strip()
         sid = (q.get("sid", [""])[0]).strip()
         vig = (q.get("vigencia", ["0"])[0]).strip()
+        nodo_ex = (q.get("nodo", [""])[0]).strip()       # vacio = todos los nodos
         if tipo not in ("dst", "src"):
             tipo = "dst"
+        if nodo_ex and not nodos.existe(nodo_ex):
+            return self._html(exclusiones_page("Ese nodo no existe.", ok=False), 400)
         try:
             ipaddress.ip_address(ip)
         except ValueError:
@@ -17105,7 +16863,7 @@ class H(BaseHTTPRequestHandler):
         autor = getattr(CTX, "user", "") or ""
         creado = (propias[edit_idx].get("creado") if edit_idx is not None else 0) or ahora
         nueva = {"tipo": tipo, "ip": ip, "motivo": motivo, "puertos": puertos,
-                 "sid": sid, "hasta": hasta, "autor": autor, "creado": creado}
+                 "sid": sid, "hasta": hasta, "autor": autor, "creado": creado, "nodo": nodo_ex}
         tlabel = "origen" if tipo == "src" else "destino"
 
         def _redundante(ex_ports):
@@ -17126,6 +16884,8 @@ class H(BaseHTTPRequestHandler):
             if j == edit_idx:
                 continue
             if r.get("sid", "") != sid:                  # distinta firma = alcance distinto, se permite
+                continue
+            if (r.get("nodo") or "") not in ("", nodo_ex):  # otro nodo = otro abonado; la global cubre todos
                 continue
             if r.get("ip") == ip and r.get("tipo") == tipo:
                 dup, txt = _redundante(r.get("puertos"))
