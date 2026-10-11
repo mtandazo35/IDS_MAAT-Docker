@@ -1,21 +1,30 @@
 """ids-panel servir | crear-admin --usuario U | restablecer --usuario U | salud
 
+El panel es el dashboard de suricata-ids-lab (`dashboard.py`, junto a este paquete). Los
+usuarios van en el formato del dashboard (lista con PBKDF2) en `conf/usuarios.json`; este
+CLI escribe ESE formato, con rol `admin`, para que el instalador y `ids-orq panel …` sigan
+igual (CONTRATO-F2 §7).
+
 Códigos de salida:
   crear-admin   0 creado (stdout: UNA línea CLAVE=<clave>), 3 el usuario ya existe (no se toca nada)
-  restablecer   0 hecho (stdout: CLAVE=<clave>), 4 el usuario no existe
-  salud         0 si GET http://127.0.0.1:<IDS_PUERTO>/salud da 200, 1 si no
+  restablecer   0 hecho (stdout: CLAVE=<clave>), 4 el usuario no existe. Expulsa sus sesiones
+                abiertas (la sesión guarda una marca del hash de la clave, que cambia).
+  salud         0 si HEAD / al propio servidor da 200, 1 si no
   2             argumentos o configuración no válidos
 """
 
 import argparse
 import os
-import signal
+import re
+import secrets
+import string
 import sys
-import threading
-import urllib.request
+import time
+import http.client
 
-from .config import Config, ErrorConfig
-from .usuarios import ErrorUsuarios, UsuarioExiste, UsuarioNoExiste, Usuarios, validar_usuario
+RE_USUARIO = re.compile(r"^[a-z0-9][a-z0-9._-]{0,31}$")
+LARGO_GENERADA = 20
+ALFABETO = string.ascii_letters + string.digits
 
 
 def _err(msg):
@@ -26,90 +35,113 @@ def _parser():
     ap = argparse.ArgumentParser(prog="ids-panel", description="Panel web de IDS_MAAT-Docker")
     sub = ap.add_subparsers(dest="cmd")
     sub.add_parser("servir", help="servidor HTTP (por defecto)")
-    x = sub.add_parser("crear-admin", help="crea el usuario con una clave aleatoria")
+    x = sub.add_parser("crear-admin", help="crea el usuario (rol admin) con una clave aleatoria")
     x.add_argument("--usuario", default="admin")
-    x = sub.add_parser("restablecer", help="da una clave aleatoria nueva a un usuario")
+    x = sub.add_parser("restablecer", help="da una clave aleatoria nueva a un usuario y expulsa sus sesiones")
     x.add_argument("--usuario", required=True)
     sub.add_parser("salud", help="comprobación para el healthcheck")
     return ap
 
 
-def crear_admin(cfg, usuario):
+def nueva_clave(largo=LARGO_GENERADA):
+    return "".join(secrets.choice(ALFABETO) for _ in range(largo))
+
+
+def _dash():
+    """El módulo del panel (mismo almacén de usuarios y mismo hash que usa la web)."""
+    import dashboard
+    return dashboard
+
+
+def _puerto(env=None):
+    env = os.environ if env is None else env
     try:
-        validar_usuario(usuario)
-    except ErrorUsuarios as e:
-        _err(str(e))
+        p = int(env.get("IDS_PUERTO") or 5637)
+    except ValueError:
+        raise ValueError("IDS_PUERTO debe ser un número")
+    if not 1 <= p <= 65535:
+        raise ValueError("IDS_PUERTO fuera de rango")
+    return p
+
+
+def crear_admin(usuario, dash=None):
+    if not isinstance(usuario, str) or not RE_USUARIO.match(usuario):
+        _err("usuario inválido: minúsculas, números, . _ - (máx. 32)")
         return 2
-    os.makedirs(str(cfg.panel_dir), exist_ok=True)
-    try:
-        clave = Usuarios(str(cfg.usuarios_json)).crear(usuario)
-    except UsuarioExiste:
-        _err("el usuario %s ya existe; no se ha tocado nada (para una clave nueva: "
-             "ids-panel restablecer --usuario %s)" % (usuario, usuario))
-        return 3
+    d = dash or _dash()
+    d.nodos.asegurar_dirs()
+    with d._USR_LOCK:
+        lst = d.cargar_usuarios()
+        if any(r.get("user") == usuario for r in lst):
+            _err("el usuario %s ya existe; no se ha tocado nada (para una clave nueva: "
+                 "ids-panel restablecer --usuario %s)" % (usuario, usuario))
+            return 3
+        clave = nueva_clave()
+        salt, h = d._hash_pw(clave)
+        lst.append({"user": usuario, "salt": salt, "hash": h, "role": "admin", "nombre": "",
+                    "correo": "", "activo": True, "clave_temporal": True, "creado": int(time.time())})
+        d.guardar_usuarios(lst)
     print("CLAVE=%s" % clave, flush=True)
     return 0
 
 
-def restablecer(cfg, usuario):
-    try:
-        validar_usuario(usuario)
-    except ErrorUsuarios as e:
-        _err(str(e))
+def restablecer(usuario, dash=None):
+    if not isinstance(usuario, str) or not RE_USUARIO.match(usuario):
+        _err("usuario inválido: minúsculas, números, . _ - (máx. 32)")
         return 2
+    d = dash or _dash()
+    with d._USR_LOCK:
+        lst = d.cargar_usuarios()
+        r = next((x for x in lst if x.get("user") == usuario), None)
+        if r is None:
+            _err("el usuario %s no existe" % usuario)
+            return 4
+        clave = nueva_clave()
+        r["salt"], r["hash"] = d._hash_pw(clave)
+        r["activo"] = True                  # sirve también para recuperar un admin desactivado
+        r["clave_temporal"] = True
+        r["cambiado"] = int(time.time())
+        d.guardar_usuarios(lst)
+    # la marca del hash ya no coincide: las sesiones abiertas de ese usuario dejan de valer
+    # también en el servidor que está corriendo (otro proceso). Aquí se borran de disco.
     try:
-        clave = Usuarios(str(cfg.usuarios_json)).restablecer(usuario)
-    except UsuarioNoExiste:
-        _err("el usuario %s no existe" % usuario)
-        return 4
+        d.SESSIONS.update(d._cargar_sesiones())
+        d.sesiones_cerrar_usuario(usuario)
+    except Exception:
+        pass
     print("CLAVE=%s" % clave, flush=True)
     return 0
 
 
-def salud(cfg, timeout=5):
+def salud(puerto, timeout=5):
+    puerto = getattr(puerto, "puerto", puerto)     # tambien un objeto con .puerto (Config del F1b)
     try:
-        with urllib.request.urlopen("http://127.0.0.1:%d/salud" % cfg.puerto, timeout=timeout) as r:
-            return 0 if r.status == 200 else 1
+        c = http.client.HTTPConnection("127.0.0.1", puerto, timeout=timeout)
+        try:
+            c.request("HEAD", "/")
+            return 0 if c.getresponse().status == 200 else 1
+        finally:
+            c.close()
     except Exception:  # noqa: BLE001 - cualquier fallo = no sano
         return 1
 
 
-def servir(cfg):
-    from .app import Panel, crear_servidor
-    panel = Panel(cfg)
-    if not panel.usuarios.nombres():
-        _err("no hay usuarios: nadie puede entrar hasta crear uno con «ids-panel crear-admin --usuario admin»")
-    srv = crear_servidor(panel)
-    # la primera cuenta de alertas de 24 h lee hacia atrás el eve de cada punto: mejor ahora
-    threading.Thread(target=panel.precalentar, daemon=True).start()
-
-    def _fin(*_):
-        raise KeyboardInterrupt
-    signal.signal(signal.SIGTERM, _fin)
-    _err("escuchando en %s:%d (proxies de confianza: %s)" % (
-        cfg.escucha, cfg.puerto, ", ".join(str(p) for p in cfg.proxies) or "ninguno"))
-    try:
-        srv.serve_forever(poll_interval=0.5)
-    except KeyboardInterrupt:
-        pass
-    finally:
-        srv.server_close()
-        panel.sesiones.guardar()
-    return 0
+def servir():
+    return _dash().main()
 
 
 def main(argv=None):
     a = _parser().parse_args(argv)
     try:
-        cfg = Config.desde_entorno()
-    except ErrorConfig as e:
+        puerto = _puerto()
+    except ValueError as e:
         _err(str(e))
         return 2
     cmd = a.cmd or "servir"
     if cmd == "crear-admin":
-        return crear_admin(cfg, a.usuario)
+        return crear_admin(a.usuario)
     if cmd == "restablecer":
-        return restablecer(cfg, a.usuario)
+        return restablecer(a.usuario)
     if cmd == "salud":
-        return salud(cfg)
-    return servir(cfg)
+        return salud(puerto)
+    return servir()

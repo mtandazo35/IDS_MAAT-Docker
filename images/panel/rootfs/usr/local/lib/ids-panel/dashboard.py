@@ -2,9 +2,14 @@
 """suricata-dashboard: panel web de estadisticas de Suricata (apartado "Estadisticas").
 
 Sirve el reporte HTML grafico en vivo (lo regenera si esta viejo) y el historico de
-reportes diarios, con login basico. Solo biblioteca estandar. Corre como servicio.
+reportes diarios, con login. Corre dentro del contenedor `panel` de IDS_MAAT-Docker.
 
-Config: /etc/suricata-dashboard.conf  (PORT, USER, PASS)
+Cada MikroTik es un punto (`p001`..): sus eventos vienen de /srv/ids/datos/<pid>/ (solo
+lectura), sus salidas van a /srv/ids/panel/nodos/<pid>/ y la vista "Todos los nodos" a
+/srv/ids/panel/nodos/_todos/. Las rutas salen de `nodos.py`; el nodo que se mira va en el
+contexto del hilo (`nodos.poner_nodo` en cada peticion, `nodos.contexto` en el fondo).
+
+Config: /srv/ids/panel/conf/panel.conf + entorno (IDS_PUERTO, IDS_PROXY, IDS_TZ, IDS_EMPRESA)
 """
 import base64, glob, hashlib, html, json, os, re, secrets, socket, subprocess, sys, threading, time
 from concurrent.futures import ThreadPoolExecutor
@@ -12,10 +17,25 @@ import traceback
 import urllib.request, urllib.parse, urllib.error, ipaddress
 from datetime import datetime, timezone, timedelta
 
-TZ_EC = timezone(timedelta(hours=-5))   # hora de Ecuador (America/Guayaquil)
+_AQUI = os.path.dirname(os.path.abspath(__file__))
+if _AQUI not in sys.path:
+    sys.path.insert(0, _AQUI)
+import nodos, secretos   # noqa: E402  (rutas/nodo del hilo y secretos cifrados: CONTRATO-F2 §2, §10.3)
+
+IDS_TZ = (os.environ.get("IDS_TZ") or "UTC").strip() or "UTC"
+
+def _zona(nombre):
+    """Zona horaria de IDS_TZ (el contenedor corre con TZ=UTC). Sin tzdata: UTC."""
+    try:
+        from zoneinfo import ZoneInfo
+        return ZoneInfo(nombre)
+    except Exception:
+        return timezone.utc
+
+TZ_EC = _zona(IDS_TZ)   # nombre heredado: es la zona de la empresa (IDS_TZ), no la de Ecuador
 
 def hora_ec(ts):
-    """Devuelve HH:MM:SS en hora de Ecuador desde una marca de eve.json (con offset)."""
+    """Devuelve HH:MM:SS en la hora de IDS_TZ desde una marca de eve.json (con offset)."""
     for fmt in ("%Y-%m-%dT%H:%M:%S.%f%z", "%Y-%m-%dT%H:%M:%S%z"):
         try:
             return datetime.strptime(ts, fmt).astimezone(TZ_EC).strftime("%H:%M:%S")
@@ -32,9 +52,23 @@ _up = urllib.parse      # alias corto. A NIVEL DE MODULO a proposito: ver abajo.
 from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-SESSIONS = {}          # token -> {user, role, exp}
+SESSIONS = {}          # sha256(token) -> {user, role, exp, marca}
 SESSION_TTL = 12 * 3600
-SESSIONS_FILE = "/etc/suricata-dashboard-sessions.json"   # persistir para no cerrar sesion al reiniciar
+# persistir para no cerrar sesion al reiniciar. NO es el sesiones.json del panel F1b (otro formato)
+SESSIONS_FILE = nodos.ruta("estado", "sesiones-dash.json")
+_SES_LOCK = threading.RLock()
+
+def _hash_token(token):
+    """En disco y en memoria solo va el sha256 del token: quien lea el fichero de sesiones
+    no puede entrar con lo que hay dentro."""
+    return hashlib.sha256(str(token or "").encode("utf-8")).hexdigest()
+
+def marca_usuario(r):
+    """Huella del hash de la clave del usuario. La sesion la guarda al abrirse: si la clave
+    cambia (cambio propio, edicion del admin o `ids-panel restablecer` desde otro proceso),
+    la marca deja de coincidir y la sesion deja de valer al instante."""
+    r = r or {}
+    return hashlib.sha256(("%s:%s" % (r.get("salt", ""), r.get("hash", ""))).encode("utf-8")).hexdigest()[:24]
 
 def _cargar_sesiones():
     """Carga las sesiones vigentes del disco (para que un reinicio del panel -p.ej. al
@@ -42,22 +76,77 @@ def _cargar_sesiones():
     try:
         d = json.load(open(SESSIONS_FILE, encoding="utf-8"))
         ahora = time.time()
-        return {t: v for t, v in d.items() if isinstance(v, dict) and v.get("exp", 0) > ahora}
+        return {t: v for t, v in d.items() if isinstance(v, dict) and v.get("exp", 0) > ahora
+                and re.match(r"^[0-9a-f]{64}$", t) and v.get("marca")}
     except Exception:
         return {}
 
 def _guardar_sesiones():
     try:
         ahora = time.time()
-        data = {t: v for t, v in SESSIONS.items() if v.get("exp", 0) > ahora}
-        tmp = SESSIONS_FILE + ".tmp"
+        with _SES_LOCK:
+            data = {t: v for t, v in SESSIONS.items() if v.get("exp", 0) > ahora}
+        os.makedirs(os.path.dirname(SESSIONS_FILE), mode=0o700, exist_ok=True)
+        tmp = "%s.%d.%d.tmp" % (SESSIONS_FILE, os.getpid(), threading.get_ident())
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump(data, f)
+        os.chmod(tmp, 0o600)
         os.replace(tmp, SESSIONS_FILE)
-        try: os.chmod(SESSIONS_FILE, 0o600)
-        except OSError: pass
     except OSError:
         pass
+
+def sesion_abrir(user, role):
+    """Abre una sesion para un usuario ya autenticado. Devuelve el token (va SOLO en la
+    cookie); se guarda su sha256 con la marca de la clave actual del usuario."""
+    r = buscar_usuario(user) or {}
+    token = secrets.token_urlsafe(32)
+    ahora = time.time()
+    with _SES_LOCK:
+        SESSIONS[_hash_token(token)] = {"user": user, "role": role, "exp": ahora + SESSION_TTL,
+                                        "marca": marca_usuario(r)}
+        for k in [k for k, v in SESSIONS.items() if v.get("exp", 0) < ahora]:
+            SESSIONS.pop(k, None)
+    _guardar_sesiones()
+    return token
+
+def sesion_cerrar(token):
+    with _SES_LOCK:
+        hubo = SESSIONS.pop(_hash_token(token), None) is not None
+    if hubo:
+        _guardar_sesiones()
+
+def sesiones_cerrar_usuario(user):
+    """Expulsa todas las sesiones de un usuario (borrado, desactivado, clave cambiada)."""
+    with _SES_LOCK:
+        ks = [k for k, v in SESSIONS.items() if v.get("user") == user]
+        for k in ks:
+            SESSIONS.pop(k, None)
+    if ks:
+        _guardar_sesiones()
+    return len(ks)
+
+def sesion_de(token):
+    """La sesion de ese token si sigue valiendo, con el rol RELEIDO del usuario; si no, None.
+
+    Vale si: no ha caducado, el usuario existe y esta activo, y la marca de su clave es la
+    misma que cuando entro (un restablecimiento la cambia y expulsa)."""
+    if not token:
+        return None
+    k = _hash_token(token)
+    with _SES_LOCK:
+        s = SESSIONS.get(k)
+    if not s or s.get("exp", 0) <= time.time():
+        return None
+    r = buscar_usuario(s.get("user"))
+    if (not r or r.get("activo", True) is False or r.get("role") not in ROLES
+            or not secrets.compare_digest(str(s.get("marca", "")), marca_usuario(r))):
+        with _SES_LOCK:
+            SESSIONS.pop(k, None)
+        _guardar_sesiones()
+        return None
+    v = dict(s)
+    v["role"] = r.get("role")
+    return v
 
 SESSIONS = _cargar_sesiones()
 
@@ -88,7 +177,7 @@ def login_fallo(ip):
         for k in [k for k, v in LOGIN_FAILS.items() if now - v[1] > LOGIN_WINDOW]:
             LOGIN_FAILS.pop(k, None)
 
-LOGIN_LOG = "/var/log/suricata-dashboard-login.log"
+LOGIN_LOG = nodos.ruta("log", "login.log")
 
 def login_registrar(ip, user, estado):
     """Deja constancia de cada intento: fecha, IP, usuario y estado (OK/FAIL/BLOQUEADO)."""
@@ -129,14 +218,14 @@ def ips_bloqueadas():
             res.append((ip, s, LOGIN_FAILS[ip][0]))
     return sorted(res, key=lambda x: -x[1])
 
-EVE = "/var/log/suricata/eve.json"
-
-EXCL_FILE = "/etc/suricata-exclusiones.json"
+EXCL_FILE = nodos.ruta("conf", "exclusiones.json")
 
 def cargar_exclusiones(incluir_vencidas=False):
     """Lista de reglas de exclusion. Cada una: {tipo:'dst'|'src', ip, motivo, puertos:[int],
-    sid, hasta, autor, creado}. puertos vacio = todos; sid vacio = cualquier firma;
-    hasta=0 = permanente. Las vencidas se ocultan (salvo incluir_vencidas, para la UI).
+    sid, hasta, autor, creado, nodo}. puertos vacio = todos; sid vacio = cualquier firma;
+    hasta=0 = permanente; nodo vacio = todos los nodos (las IPs privadas se repiten entre
+    puntos: una exclusion de 10.0.0.5 en p001 no tiene por que valer en p002).
+    Las vencidas se ocultan (salvo incluir_vencidas, para la UI).
     Tambien lee las lineas IGNORAR_* legacy del .conf."""
     reglas = []; ahora = time.time()
     try:
@@ -155,11 +244,14 @@ def cargar_exclusiones(incluir_vencidas=False):
                                "puertos": [int(p) for p in (r.get("puertos") or []) if str(p).isdigit()],
                                "sid": str(r.get("sid") or ""), "hasta": hasta,
                                "autor": r.get("autor", ""), "creado": r.get("creado", 0),
+                               "nodo": r.get("nodo") or "",
                                "vencida": vencida})
+                if reglas[-1]["nodo"] and not nodos.pid_valido(reglas[-1]["nodo"]):
+                    reglas.pop()      # nodo mal escrito: no vale en ninguno (nunca "en todos")
     except Exception:
         pass
     try:
-        for l in open("/etc/suricata-report.conf", encoding="utf-8"):
+        for l in open(REPORT_CONF, encoding="utf-8"):
             l = l.strip()
             if l.startswith("IGNORAR_DESTINOS="):
                 for ip in l.split("=", 1)[1].split(","):
@@ -173,10 +265,13 @@ def cargar_exclusiones(incluir_vencidas=False):
         pass
     return reglas
 
-THRESHOLD_FILE = "/etc/suricata/threshold.config"
 THRESHOLD_MARCA = "# --- generado por el panel: exclusiones (no editar entre marcas) ---"
+THRESHOLD_FIN = "# --- fin de lo generado por el panel ---"
+# huella del threshold.config que se mando a cada punto: solo se le vuelve a pedir al
+# orquestador lo que cambio (y lo que fallo la vez anterior)
+THRESHOLD_ENVIADO = nodos.ruta("estado", "threshold-enviado.json")
 
-def threshold_desde_exclusiones(reglas):
+def threshold_desde_exclusiones(reglas, pid=None):
     """Las lineas de threshold.config que corresponden a las exclusiones del panel.
 
     Solo las que Suricata puede decir EXACTAMENTE igual que el panel: con sid y sin
@@ -184,10 +279,12 @@ def threshold_desde_exclusiones(reglas):
     de lo que se pidio. Las demas siguen filtrandose en el panel, como siempre. Vencidas
     fuera: cargar_exclusiones ya las quita, pero se comprueba aqui tambien porque esto
     acaba en el sensor y una exclusion caducada que siguiera activa seria un falso
-    negativo mudo."""
+    negativo mudo. Con `pid`, solo las de ese punto y las de todos los nodos."""
     out = []
     ahora = time.time()
     for r in (reglas or []):
+        if pid is not None and (r.get("nodo") or "") not in ("", pid):
+            continue
         sid = str(r.get("sid") or "").strip()
         if not sid.isdigit() or r.get("puertos"):
             continue
@@ -199,95 +296,103 @@ def threshold_desde_exclusiones(reglas):
         except ValueError:
             continue
         via = "by_dst" if r.get("tipo") == "dst" else "by_src"
-        mot = (r.get("motivo") or "").replace("\n", " ")[:60]
+        mot = re.sub(r"[\r\n]", " ", r.get("motivo") or "")[:60]
         out.append("suppress gen_id 1, sig_id %s, track %s, ip %s%s"
                    % (sid, via, r["ip"], ("   # " + mot) if mot else ""))
     return out
 
-def _threshold_fusionar(actual, lineas):
-    """Mete las lineas del panel entre marcas, conservando lo que haya escrito a mano
-    fuera de ellas. El archivo es compartido: el operador puede tener sus propios
-    suppress y no se le pisan."""
-    ini = THRESHOLD_MARCA
-    fin = "# --- fin de lo generado por el panel ---"
-    bloque = [ini] + lineas + [fin]
-    if ini in actual and fin in actual:
-        a = actual.index(ini)
-        b = actual.index(fin) + len(fin)
-        return actual[:a] + "\n".join(bloque) + actual[b:]
-    return actual.rstrip("\n") + "\n\n" + "\n".join(bloque) + "\n"
+def threshold_contenido(reglas, pid):
+    """El threshold.config entero de un punto. Lo escribe el orquestador (punto.threshold):
+    el fichero vive en el host, en el directorio del Suricata de ese punto."""
+    return "\n".join([THRESHOLD_MARCA] + threshold_desde_exclusiones(reglas, pid) + [THRESHOLD_FIN]) + "\n"
 
-def escribir_threshold(reglas=None):
-    """Regenera threshold.config desde las exclusiones y recarga Suricata si valida.
+# cliente del orquestador (socket y token montados en el contenedor). Las pruebas lo cambian.
+ORQ_SOCK = os.environ.get("IDS_ORQ_SOCK") or "/run/ids-orq/orq.sock"
+ORQ_TOKEN = os.environ.get("IDS_ORQ_TOKEN") or "/run/secrets/orq_token"
+ORQ_TRANSPORTE = None
 
-    Se hace en un hilo: `suricata -T` tarda segundos y la ruta que guarda la exclusion no
-    puede quedarse colgada. Si el test falla se restaura el archivo anterior: un
-    threshold.config roto deja el sensor sin reglas, que es peor que una exclusion de mas."""
-    import subprocess, threading as _th
+def orq_cliente(timeout=15):
+    from idspanel import orq as _orq
+    return _orq.ClienteOrq(ORQ_SOCK, ORQ_TOKEN,
+                           transporte=ORQ_TRANSPORTE or _orq.transporte_unix(ORQ_SOCK, timeout=timeout))
+
+def escribir_threshold(reglas=None, quien=None):
+    """Pide al orquestador el threshold.config de cada punto afectado (punto.threshold).
+
+    Antes se escribia /etc/suricata/threshold.config y se recargaba Suricata aqui mismo; en
+    el contenedor el panel no ve el Suricata de ningun punto: lo hace el orquestador, que
+    valida, escribe atomico y recarga sin cortar el espejo. Solo se pide a los puntos cuyo
+    contenido cambio (o fallo la ultima vez). Devuelve la lista de avisos (vacia si todo
+    fue bien): un fallo queda en la bitacora y se le dice a quien guardo."""
     if reglas is None:
         reglas = cargar_exclusiones()
-    lineas = threshold_desde_exclusiones(reglas)
-
-    def _trabajo():
+    try:
+        prev = json.load(open(THRESHOLD_ENVIADO, encoding="utf-8"))
+        if not isinstance(prev, dict):
+            prev = {}
+    except (OSError, ValueError):
+        prev = {}
+    quien = quien if quien is not None else (getattr(CTX, "user", "") or "panel")
+    avisos = []
+    nuevo = {}
+    cli = None
+    for pid in nodos.pids():
+        contenido = threshold_contenido(reglas, pid)
+        huella = hashlib.sha256(contenido.encode("utf-8")).hexdigest()
+        if prev.get(pid) == huella:
+            nuevo[pid] = huella
+            continue
         try:
-            actual = open(THRESHOLD_FILE, encoding="utf-8").read()
-        except OSError:
-            actual = ""
-        nuevo = _threshold_fusionar(actual, lineas)
-        if nuevo == actual:
-            return
-        tmp = THRESHOLD_FILE + ".tmp"
-        try:
-            open(tmp, "w", encoding="utf-8").write(nuevo)
-            os.replace(tmp, THRESHOLD_FILE)
-        except OSError as e:
-            sys.stderr.write("threshold: no se pudo escribir: %s\n" % e)
-            return
-        try:
-            t = subprocess.run(["suricata", "-T", "-c", "/etc/suricata/suricata.yaml"],
-                               capture_output=True, text=True, timeout=120)
-            ok = t.returncode == 0
-        except (OSError, subprocess.TimeoutExpired) as e:
-            ok = False
-            t = None
-            sys.stderr.write("threshold: suricata -T no se pudo ejecutar: %s\n" % e)
-        if not ok:
-            # volver atras: lo anterior validaba (o no existia), lo nuevo no
-            try:
-                open(tmp, "w", encoding="utf-8").write(actual)
-                os.replace(tmp, THRESHOLD_FILE)
-            except OSError:
-                pass
-            sys.stderr.write("threshold: suricata -T FALLO, restaurado el anterior%s\n"
-                             % ((": " + (t.stderr or "")[-300:]) if t else ""))
-            bitacora("THRESHOLD", "rechazado por suricata -T; se restauro el anterior")
-            return
-        for cmd in (["suricatasc", "-c", "reload-rules"],
-                    ["systemctl", "reload", "suricata"]):
-            try:
-                if subprocess.run(cmd, capture_output=True, timeout=60).returncode == 0:
-                    break
-            except (OSError, subprocess.TimeoutExpired):
-                continue
-        bitacora("THRESHOLD", "%d exclusion(es) bajadas a Suricata" % len(lineas))
-
-    _th.Thread(target=_trabajo, daemon=True).start()
+            cli = cli or orq_cliente()
+            r = cli.pedir("punto.threshold", {"pid": pid, "contenido": contenido},
+                          quien="panel:%s" % quien, ip=getattr(CTX, "ip", "") or "")
+        except Exception as ex:          # el cliente no lanza, pero por si acaso
+            r = {"ok": False, "codigo": "FALLO", "mensaje": str(ex)[:200]}
+        if r.get("ok"):
+            nuevo[pid] = huella
+            bitacora("THRESHOLD", "punto=%s %d supresion(es) enviadas (%s)" % (
+                pid, len(threshold_desde_exclusiones(reglas, pid)), r.get("codigo", "OK")))
+        else:
+            msg = "%s: %s" % (r.get("codigo", "FALLO"), (r.get("mensaje") or "")[:160])
+            avisos.append("%s (%s): no se pudo llevar las exclusiones a su Suricata (%s); "
+                          "en el panel ya se aplican" % (nodos.nombre(pid), pid, msg))
+            bitacora("THRESHOLD-FALLO", "punto=%s %s" % (pid, msg))
+    try:
+        tmp = "%s.%d.%d.tmp" % (THRESHOLD_ENVIADO, os.getpid(), threading.get_ident())
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(nuevo, f)
+        os.replace(tmp, THRESHOLD_ENVIADO)
+    except OSError:
+        pass
+    return avisos
 
 def guardar_exclusiones(reglas):
-    _keys = ("tipo", "ip", "motivo", "puertos", "sid", "hasta", "autor", "creado")
+    """Guarda las exclusiones y las lleva al Suricata de cada punto afectado. Devuelve la
+    lista de avisos de los puntos a los que no se pudo llevar (vacia = todo bien)."""
+    _keys = ("tipo", "ip", "motivo", "puertos", "sid", "hasta", "autor", "creado", "nodo")
     limpio = [{k: r[k] for k in _keys if k in r} for r in reglas if r.get("motivo") != "(conf)"]
-    tmp = EXCL_FILE + ".tmp"
+    for r in limpio:
+        if r.get("nodo") and not nodos.pid_valido(r["nodo"]):
+            raise ValueError("nodo invalido en una exclusion: %r" % r["nodo"])
+    tmp = "%s.%d.%d.tmp" % (EXCL_FILE, os.getpid(), threading.get_ident())
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(limpio, f, ensure_ascii=False, indent=1)
+    os.chmod(tmp, 0o600)
     os.replace(tmp, EXCL_FILE)
     # y al sensor: las que se puedan expresar exactas dejan de generar la alerta
     try:
-        escribir_threshold(limpio)
+        return escribir_threshold(limpio)
     except Exception as _e:
         sys.stderr.write("threshold: %s\n" % _e)
+        bitacora("THRESHOLD-FALLO", str(_e)[:200])
+        return ["no se pudo llevar las exclusiones a los Suricata: %s" % str(_e)[:160]]
 
-def _excluido(reglas, src, dst, dport, sid=None):
+def _excluido(reglas, src, dst, dport, sid=None, pid=None):
+    """La alerta casa con alguna exclusion. `pid` = punto del evento: una exclusion con
+    nodo solo vale en ese punto; sin pid (llamadas viejas) solo valen las de todos."""
     for r in reglas:
+        if (r.get("nodo") or "") not in ("", pid or ""):
+            continue
         quien = dst if r["tipo"] == "dst" else src
         if quien != r["ip"]:
             continue
@@ -302,20 +407,26 @@ _RE = {k: re.compile(p) for k, p in {
     "dest_ip": r'"dest_ip":"([^"]+)"', "src_port": r'"src_port":(\d+)',
     "dest_port": r'"dest_port":(\d+)', "proto": r'"proto":"([^"]+)"',
     "sig": r'"signature":"((?:[^"\\]|\\.)*)"', "sid": r'"signature_id":(\d+)',
-    # de que MikroTik vino la alerta (cada nodo espeja por su interfaz)
-    "iface": r'"in_iface":"([^"]+)"',
 }.items()}
+# De que MikroTik vino una alerta ya no lo dice in_iface (dentro del contenedor es la misma
+# interfaz en todos los puntos): lo dice el DIRECTORIO del fichero, datos/<pid>/eve.json.
 
-def rid_por_iface(iface):
-    """Id del router de esa interfaz. Con un solo nodo devuelve "" y todo queda
-    indexado por IP, como siempre."""
-    lst = cargar_routers()
-    if len(lst) < 2:
-        return ""
-    for r in lst:
-        if r.get("iface") == iface:
-            return r.get("id", "")
-    return ""
+def _cola_eventos(ruta, maxbytes):
+    """Las ultimas lineas completas de un eve.json (lectura acotada por bytes)."""
+    try:
+        with open(ruta, "rb") as f:
+            f.seek(0, 2); size = f.tell(); start = max(0, size - maxbytes)
+            f.seek(start); data = f.read()
+    except OSError:
+        return None
+    lines = data.decode("utf-8", "replace").split("\n")
+    if start > 0 and lines:
+        lines = lines[1:]              # descarta la primera linea, casi seguro cortada
+    return lines
+
+def _eves_vivos(nodo=None):
+    """[(pid, ruta del eve.json vivo)] del nodo que se mira (o de todos en «Todos»)."""
+    return [(pid, nodos.eve_vivo(pid)) for pid in nodos.nodos_de(nodo)]
 
 SEV = [  # (claves en la firma, color, etiqueta). Se evalua en orden; gana la primera.
     # ROJO = comunicacion real con el atacante (infeccion confirmada), no una simple
@@ -413,51 +524,63 @@ def _traducir_lento(sig):
     limpio = re.sub(r"^(?:ET|GPL)\s+(?:[A-Z_]{3,}\s+)?", "", sig).strip() or sig
     return (limpio[:44] + "\u2026") if len(limpio) > 45 else limpio
 
-def tail_grupos(path=EVE, want=200, maxbytes=6_000_000, top=25):
-    """Cola del eve.json agrupada por (origen, destino, puerto, firma) con contador."""
-    try:
-        with open(path, "rb") as f:
-            f.seek(0, 2); size = f.tell(); start = max(0, size - maxbytes)
-            f.seek(start); data = f.read()
-    except OSError:
-        return []
-    lines = data.decode("utf-8", "replace").split("\n")
-    if start > 0 and lines:
-        lines = lines[1:]
+def tail_grupos(path=None, want=200, maxbytes=6_000_000, top=25):
+    """Cola del eve.json agrupada por (nodo, origen, destino, puerto, firma) con contador.
+
+    Sin `path` lee el eve vivo del nodo que se mira; en «Todos», el de cada punto (con el
+    tope de bytes repartido) y cada grupo lleva su pid: la misma IP en dos puntos son dos
+    filas, nunca una suma. Devuelve [(hora, src, dst, puerto, firma, veces, pid)]."""
+    if path is not None:
+        fuentes = [(nodos.nodo_actual() if nodos.hay_nodo() and not nodos.es_todos() else "", path)]
+    else:
+        fuentes = _eves_vivos()
+    por_fichero = max(1_000_000, maxbytes // max(1, len(fuentes)))
     reglas = cargar_exclusiones()
     g = {}
-    vistos = 0
-    for line in reversed(lines):
-        if '"event_type":"alert"' not in line:
+    for pid, ruta in fuentes:
+        lines = _cola_eventos(ruta, por_fichero)
+        if not lines:
             continue
-        get = lambda k: (_RE[k].search(line).group(1) if _RE[k].search(line) else "")
-        sig = get("sig")
-        if sig.startswith("ET INFO"):
-            continue
-        src = get("src_ip"); dst = get("dest_ip"); dp = get("dest_port"); pr = get("proto")
-        if _excluido(reglas, src, dst, int(dp) if dp else None, get("sid")):   # exclusiones configuradas
-            continue
-        vistos += 1
-        hh = hora_ec(get("ts"))
-        key = (src, dst, f"{dp}/{pr}" if dp else pr, sig)
-        r = g.get(key)
-        if r is None:
-            g[key] = [1, hh]      # primera vez que lo vemos (= mas reciente, vamos al reves)
-        else:
-            r[0] += 1
-        if vistos >= want:
-            break
-    filas = [(hh, k[0], k[1], k[2], k[3], c) for k, (c, hh) in g.items()]
-    filas.sort(key=lambda x: x[0], reverse=True)   # mas reciente primero
-    return filas[:top]
+        vistos = 0
+        for line in reversed(lines):
+            if '"event_type":"alert"' not in line:
+                continue
+            get = lambda k: (_RE[k].search(line).group(1) if _RE[k].search(line) else "")
+            sig = get("sig")
+            if sig.startswith("ET INFO"):
+                continue
+            src = get("src_ip"); dst = get("dest_ip"); dp = get("dest_port"); pr = get("proto")
+            if _excluido(reglas, src, dst, int(dp) if dp else None, get("sid"), pid):   # exclusiones configuradas
+                continue
+            vistos += 1
+            ts = get("ts")
+            key = (pid, src, dst, f"{dp}/{pr}" if dp else pr, sig)
+            r = g.get(key)
+            if r is None:
+                g[key] = [1, hora_ec(ts), ts]   # primera vez que lo vemos (= mas reciente, vamos al reves)
+            else:
+                r[0] += 1
+            if vistos >= want:
+                break
+    filas = [(hh, k[1], k[2], k[3], k[4], c, k[0], ts) for k, (c, hh, ts) in g.items()]
+    filas.sort(key=lambda x: x[7], reverse=True)   # mas reciente primero (marca completa: vale entre nodos)
+    return [f[:7] for f in filas[:top]]
+
+def _chip_pid(pid):
+    """Etiqueta de nodo para las filas de la vista «Todos»."""
+    if not pid:
+        return ""
+    return ("<span class='nodochip' title='Punto %s'>%s</span>"
+            % (html.escape(pid), html.escape(nodos.nombre(pid))))
 
 def live_feed_html():
     filas = tail_grupos()
+    todos = nodos.hay_nodo() and nodos.es_todos()
     if not filas:
         cuerpo = '<tr><td colspan="6" class="muted" style="padding:14px">Sin ataques recientes o esperando trafico...</td></tr>'
     else:
         tr = []
-        for hh, src, dst, puerto, sig, cnt in filas:
+        for hh, src, dst, puerto, sig, cnt, pid in filas:
             color, etq = sev(sig)
             veces = f'<span class="veces">&times;{cnt}</span>' if cnt > 1 else ""
             pnum = puerto.split("/", 1)[0]
@@ -467,7 +590,7 @@ def live_feed_html():
                 f'<tr data-r style="border-left:4px solid {color}">'
                 f'<td class="mono t" data-s="{html.escape(hh)}">{html.escape(hh)}</td>'
                 f'<td data-s="{_SEVRANK.get(etq, 0)}"><span class="badge" style="background:{color}">{etq}</span></td>'
-                f'<td class="mono" data-s="{_ipnum(src)}">{html.escape(src)}</td>'
+                f'<td class="mono" data-s="{_ipnum(src)}">{html.escape(src)}{(" " + _chip_pid(pid)) if todos else ""}</td>'
                 f'<td class="mono dst" data-s="{_ipnum(dst)}">{html.escape(dst)}</td>'
                 f'<td class="mono" data-s="{pnum}">{html.escape(puerto)}</td>'
                 f'<td title="{html.escape(sig)}" data-s="{html.escape(sig_es)}">{html.escape(sig_es)} {veces}</td></tr>')
@@ -497,6 +620,8 @@ def live_feed_html():
         '.badge{color:#fff;font-size:10px;font-weight:700;letter-spacing:.3px;'
         'padding:2px 7px;border-radius:20px;white-space:nowrap}'
         '.veces{background:#ecebe7;color:#52514e;font-size:11px;padding:1px 6px;border-radius:10px;margin-left:4px}'
+        '.feed .nodochip{font-family:system-ui;background:#eef4fd;color:#184f95;border:1px solid #cfe0f6;'
+        'font-size:10.5px;padding:1px 6px;border-radius:10px;margin-left:4px;white-space:nowrap}'
         '</style>'
         f'<section class="feed">'
         f'<h2><span class="pulse"></span>Ultimos ataques en vivo'
@@ -532,54 +657,59 @@ def live_feed_html():
         '})();</script>'
         f'</section>')
 
-def top_origenes(path=EVE, maxbytes=12_000_000, topn=5, subn=8):
+def top_origenes(path=None, maxbytes=12_000_000, topn=5, subn=8):
     """Top de IPs origen que mas alertan, con el desglose de cada una:
-    desde que puerto origen, hacia que IP destino y hacia que puerto destino."""
-    try:
-        with open(path, "rb") as f:
-            f.seek(0, 2); size = f.tell(); start = max(0, size - maxbytes)
-            f.seek(start); data = f.read()
-    except OSError:
-        return [], 0
-    lines = data.decode("utf-8", "replace").split("\n")
-    if start > 0 and lines:
-        lines = lines[1:]              # descarta la primera linea, casi seguro cortada
+    desde que puerto origen, hacia que IP destino y hacia que puerto destino.
+
+    El origen es la identidad (pid, IP): en «Todos», la misma IP de dos puntos son dos
+    entradas, cada una con su `pid`."""
+    if path is not None:
+        fuentes = [(nodos.nodo_actual() if nodos.hay_nodo() and not nodos.es_todos() else "", path)]
+    else:
+        fuentes = _eves_vivos()
+    por_fichero = max(1_000_000, maxbytes // max(1, len(fuentes)))
     reglas = cargar_exclusiones()
     total, combos, dst_set, dp_set = {}, {}, {}, {}
     procesados = 0
-    for line in lines:
-        if '"event_type":"alert"' not in line:
+    for pid, ruta in fuentes:
+        lines = _cola_eventos(ruta, por_fichero)
+        if not lines:
             continue
-        get = lambda k: (_RE[k].search(line).group(1) if _RE[k].search(line) else "")
-        sig = get("sig")
-        if sig.startswith("ET INFO"):
-            continue
-        src = get("src_ip"); dst = get("dest_ip")
-        sp = get("src_port"); dp = get("dest_port"); pr = get("proto")
-        if not src:
-            continue
-        if _excluido(reglas, src, dst, int(dp) if dp else None, get("sid")):
-            continue
-        procesados += 1
-        total[src] = total.get(src, 0) + 1
-        k = (src, sp, dst, dp, pr)
-        combos[k] = combos.get(k, 0) + 1
-        dst_set.setdefault(src, set()).add(dst)
-        dp_set.setdefault(src, set()).add(dp)
+        for line in lines:
+            if '"event_type":"alert"' not in line:
+                continue
+            get = lambda k: (_RE[k].search(line).group(1) if _RE[k].search(line) else "")
+            sig = get("sig")
+            if sig.startswith("ET INFO"):
+                continue
+            src = get("src_ip"); dst = get("dest_ip")
+            sp = get("src_port"); dp = get("dest_port"); pr = get("proto")
+            if not src:
+                continue
+            if _excluido(reglas, src, dst, int(dp) if dp else None, get("sid"), pid):
+                continue
+            procesados += 1
+            o = (pid, src)
+            total[o] = total.get(o, 0) + 1
+            k = (o, sp, dst, dp, pr)
+            combos[k] = combos.get(k, 0) + 1
+            dst_set.setdefault(o, set()).add(dst)
+            dp_set.setdefault(o, set()).add(dp)
     tops = sorted(total.items(), key=lambda x: x[1], reverse=True)[:topn]
     filas = []
-    for src, cnt in tops:
-        sub = [(sp, dst, dp, pr, c) for (s, sp, dst, dp, pr), c in combos.items() if s == src]
+    for o, cnt in tops:
+        sub = [(sp, dst, dp, pr, c) for (s, sp, dst, dp, pr), c in combos.items() if s == o]
         sub.sort(key=lambda x: x[4], reverse=True)
-        filas.append({"src": src, "total": cnt,
-                      "n_dst": len(dst_set.get(src, ())),
-                      "n_dp": len(dp_set.get(src, ())),
+        filas.append({"src": o[1], "pid": o[0], "total": cnt,
+                      "n_dst": len(dst_set.get(o, ())),
+                      "n_dp": len(dp_set.get(o, ())),
                       "sub": sub[:subn]})
     return filas, procesados
 
 def _top_cards_tail():
     """Respaldo: arma las tarjetas del Top con la cola en vivo (mientras no hay reporte 24h)."""
     filas, procesados = top_origenes()
+    todos = nodos.hay_nodo() and nodos.es_todos()
     if not filas:
         return ("<div class='topwrap'><div class='tcard'><p class='muted' style='margin:0;padding:12px'>"
                 "Sin ataques recientes todavia; en cuanto entre trafico apareceran aqui.</p></div></div>", procesados)
@@ -595,6 +725,7 @@ def _top_cards_tail():
             f"<div class='tcard'>"
             f"<div class='thd'><span class='rank'>#{i}</span>"
             f"<span class='ipx mono'>{html.escape(r['src'])}</span>"
+            + (_chip_pid(r.get("pid")) if todos else "") +
             f"<span class='tot'>{r['total']:,} alertas</span>"
             f"<span class='meta'>&rarr; {r['n_dst']} IP destino &middot; {r['n_dp']} puertos destino</span></div>"
             f"<div class='tablewrap'><table><thead><tr>"
@@ -602,7 +733,6 @@ def _top_cards_tail():
             f"<th class='num'>Puerto destino</th><th>Protocolo</th><th class='num'>Peticiones</th>"
             f"</tr></thead><tbody>{trs}</tbody></table></div></div>")
     return "<div class='topwrap'>" + "".join(cards) + "</div>", procesados
-
 def top_page():
     css_rep, top_html = partes_top()
     if top_html.strip():
@@ -623,6 +753,8 @@ def top_page():
            ".topwrap .ipx{font-weight:700;font-size:15px;font-family:ui-monospace,Consolas,monospace}"
            ".topwrap .tot{background:#e34948;color:#fff;font-size:12px;font-weight:700;padding:3px 9px;border-radius:20px}"
            ".topwrap .meta{color:#52514e;font-size:12px;margin-left:auto}"
+           ".topwrap .nodochip{background:#eef4fd;color:#184f95;border:1px solid #cfe0f6;font-size:11px;"
+           "padding:2px 8px;border-radius:10px;white-space:nowrap}"
            ".topwrap table{width:100%;border-collapse:collapse;font-size:13px}"
            ".topwrap table{table-layout:fixed}"
            ".topwrap thead th{text-align:center;color:#52514e;font-weight:600;padding:8px 14px;border-bottom:1px solid #eee;background:#fbfbfa}"
@@ -646,9 +778,26 @@ def top_page():
             f"{nota}</p>{cuerpo}</main></body></html>")
     return body
 
-LOGDIR = "/var/log/suricata"
-GEN = "/usr/local/bin/suricata-html-report"
-CONF = "/etc/suricata-dashboard.conf"
+def logdir(nodo=None):
+    """Salidas del nodo que se mira (o del dado): report-*.html, cuarentena.json, metricas...
+    Sustituye a la constante LOGDIR: ya no hay UN directorio, hay uno por punto y el de
+    «Todos». Los eventos (de solo lectura) NO estan aqui: nodos.ficheros_eventos()."""
+    return nodos.dir_salida(nodo)
+
+def cuarentena_json(nodo=None):
+    """Ruta de cuarentena.json del nodo que se mira (o del dado)."""
+    return nodos.salida("cuarentena.json", nodo)
+
+def _cargar_cuarentena(nodo=None):
+    """cuarentena.json del nodo como dict ({} si no hay o esta roto)."""
+    try:
+        d = json.load(open(cuarentena_json(nodo), encoding="utf-8"))
+        return d if isinstance(d, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+GEN = os.path.join(_AQUI, "html_report.py")   # el generador corre como subproceso, de un nodo en uno
+CONF = nodos.ruta("conf", "panel.conf")
 REFRESH_SECS = 300    # regeneracion del resumen en segundo plano: cada 5 min (tiles, graficos, linea de tiempo y Top 5)
 FORCE_REGEN = False   # el selector de ventana lo pone True para regenerar el resumen ya
 REGEN_MIN_SECS = 60   # separacion minima entre regeneraciones FORZADAS (ver pedir_regen)
@@ -694,16 +843,17 @@ def _sello(path):
     return sello
 
 def conf():
-    # PROXIES: IPs de los proxies inversos de confianza, separadas por coma. SOLO desde
-    #   esas IPs se hace caso a X-Forwarded-For / X-Forwarded-Proto; de cualquier otro
+    # PROXIES: proxies inversos de confianza (IPs o CIDR, separados por coma). SOLO desde
+    #   ellos se hace caso a X-Forwarded-For / -Proto / -Host / Forwarded; de cualquier otro
     #   origen esas cabeceras las pone el cliente y se ignoran (si no, la lista de IPs
     #   de confianza y el bloqueo por intentos se saltan mandando una cabecera).
-    # BIND: interfaz donde escucha el panel. 0.0.0.0 = todas (compatibilidad); si lo
-    #   pones detras de un proxy HTTPS, 127.0.0.1 deja de exponerlo en claro a la red.
+    # PORT, BIND y PROXIES salen del ENTORNO del contenedor (IDS_PUERTO, IDS_ESCUCHA,
+    #   IDS_PROXY) y mandan sobre el fichero. USER/PASS del panel viejo ya no existen: los
+    #   usuarios viven en conf/usuarios.json (ids-panel crear-admin).
     clave = _sello(CONF)
     hecho = _CONF_CACHE.get(clave)
     if hecho is None:
-        d = {"PORT": "5637", "USER": "admin", "PASS": "", "PROXIES": "", "BIND": "0.0.0.0"}
+        d = {"PORT": "5637", "PROXIES": "", "BIND": "0.0.0.0"}
         try:
             for l in open(CONF, encoding="utf-8"):
                 l = l.strip()
@@ -711,6 +861,11 @@ def conf():
                     k, v = l.split("=", 1); d[k.strip()] = v.strip().strip('"').strip("'")
         except OSError:
             pass
+        for k in ("USER", "PASS"):
+            d.pop(k, None)
+        for k, env in (("PORT", "IDS_PUERTO"), ("BIND", "IDS_ESCUCHA"), ("PROXIES", "IDS_PROXY")):
+            if (os.environ.get(env) or "").strip():
+                d[k] = os.environ[env].strip()
         _CONF_CACHE.clear()          # una sola version viva: el archivo es uno
         _CONF_CACHE[clave] = d
         hecho = d
@@ -718,20 +873,57 @@ def conf():
     # acabar dentro de la cache
     return dict(hecho)
 
+def _redes_proxy(txt):
+    """IDS_PROXY: IPs o CIDR (la IP del proxy en la red de Docker puede cambiar)."""
+    out = []
+    for t in (txt or "").replace(";", ",").split(","):
+        t = t.strip()
+        if not t:
+            continue
+        try:
+            out.append(ipaddress.ip_network(t, strict=False))
+        except ValueError:
+            sys.stderr.write("IDS_PROXY: %r no es una IP ni un CIDR: se ignora\n" % t)
+    return tuple(out)
+
 CFG = conf()
 # proxies inversos de confianza (ver conf()). Vacio = no se hace caso a X-Forwarded-*.
-PROXIES_OK = {x.strip() for x in CFG.get("PROXIES", "").split(",") if x.strip()}
+PROXIES_OK = _redes_proxy(CFG.get("PROXIES", ""))
+
+def proxy_confiable(ip):
+    try:
+        a = ipaddress.ip_address((ip or "").strip())
+    except ValueError:
+        return False
+    return any(a.version == n.version and a in n for n in PROXIES_OK)
+
+class _Cabeceras(dict):
+    """Cabeceras HTTP como dict con get() sin distinguir mayusculas (para origen_ajeno)."""
+    def __init__(self, d):
+        super().__init__((k.lower(), v) for k, v in d.items())
+    def get(self, k, defecto=None):
+        return super().get(str(k).lower(), defecto)
+
+def _origen_con_proxy():
+    """Si origen_ajeno() ya admite proxy_confiable= (version de P): se le pasa, ademas de
+    quitarle las cabeceras de proxy cuando el par TCP no es de confianza."""
+    try:
+        import inspect
+        return "proxy_confiable" in inspect.signature(origen_ajeno).parameters
+    except (TypeError, ValueError, NameError):
+        return False
 
 # ---------------------------------------------------------------- MikroTik (cuarentena Fase B)
 # Empuja IPs de CPEs infectados a una address-list del MikroTik via API. El MikroTik
 # decide que hacer con esa lista (drop/limitar) con las reglas que define el operador.
-# La contrasena API es un SECRETO que se USA (no se verifica): se guarda con chmod 600.
+# La contrasena API es un SECRETO que se USA (no se verifica): se guarda CIFRADA con la
+# clave maestra (secretos.py) en un fichero 600, y solo se descifra en memoria para usarla.
 import socket as _socket, ssl as _ssl, hashlib as _hashlib
-MK_CONF = "/etc/suricata-mikrotik.conf"
-MK_SENT = "/var/log/suricata-cuarentena-enviados.json"       # IPs enviadas a la lista de cuarentena
-MK_SENT_DNS = "/var/log/suricata-dns-enviados.json"          # IPs enviadas a la lista de DNS sospechoso
-MK_SENT_GRAD = "/var/log/suricata-graduada-enviados.json"     # CPEs con corte PARCIAL
-MK_LOG  = "/var/log/suricata-cuarentena.log"                 # bitacora de acciones
+MK_CONF = nodos.ruta("conf", "mikrotik.conf")                      # SOLO ajustes globales (politicas, listas)
+MK_SENT = nodos.ruta("estado", "cuarentena-enviados.json")         # IPs enviadas a la lista de cuarentena (claves pid|ip)
+MK_SENT_DNS = nodos.ruta("estado", "dns-enviados.json")            # IPs enviadas a la lista de DNS sospechoso
+MK_SENT_GRAD = nodos.ruta("estado", "graduada-enviados.json")      # CPEs con corte PARCIAL
+MK_LOG  = nodos.ruta("log", "cuarentena.log")                      # bitacora de acciones
 
 # Los puertos que se le cortan a un CPE en cuarentena graduada. Fuera queda todo lo que
 # el abonado usa de verdad (web, streaming, juegos, videollamadas): por eso no llama a
@@ -943,15 +1135,21 @@ def analisis_conducta(rid=None):
     grupos.sort(key=lambda g: g["alertas"], reverse=True)
     return grupos
 
-_CPES_CACHE = {"sello": None, "datos": []}
+_CPES_CACHE = {}          # ruta de cuarentena.json -> {"sello", "datos"}
+_CPES_LOCK = threading.Lock()
 
 def _cpes_de_reporte(rid=None):
     """CPEs del reporte actual con su desglose de puertos, opcionalmente de un nodo.
 
-    Con cache por mtime del archivo: la pagina de Abuso saliente lo pedia hasta SIETE
+    El reporte es el del nodo que se mira (o el de `rid` si se pide uno concreto). Con
+    cache por ruta y mtime del archivo: la pagina de Abuso saliente lo pedia hasta SIETE
     veces por render (analisis de salida, de conducta, de control, y otra vez para saber
-    si habia algo que mostrar), y cada una releia y reparseaba el JSON entero."""
-    f = f"{LOGDIR}/cuarentena.json"
+    si habia algo que mostrar), y cada una releia y reparseaba el JSON entero. Una ranura
+    por ruta: con una sola, dos pestanas en nodos distintos se pisaban la cache."""
+    nodo = rid if (rid and nodos.pid_valido(rid)) else None
+    f = cuarentena_json(nodo)
+    if nodo is None and nodos.hay_nodo() and not nodos.es_todos():
+        nodo = nodos.nodo_actual()          # el reporte de un punto: sus CPEs son de el
     try:
         st = os.stat(f)
     except OSError:
@@ -959,7 +1157,9 @@ def _cpes_de_reporte(rid=None):
     # nanosegundos + tamaño: con getmtime a secas, un archivo reescrito dentro del mismo
     # tick se servia de cache VIEJA sin que nada lo delatara
     sello = (st.st_mtime_ns, st.st_size)
-    if sello != _CPES_CACHE["sello"]:
+    with _CPES_LOCK:
+        ent = _CPES_CACHE.get(f)
+    if not ent or sello != ent["sello"]:
         try:
             cq = json.load(open(f, encoding="utf-8"))
         except (OSError, ValueError):
@@ -967,15 +1167,20 @@ def _cpes_de_reporte(rid=None):
         vistos = {}
         for k in ("top_riesgo", "candidatos", "dns_candidatos"):
             for c in cq.get(k, []):
+                if not c.get("router") and nodo:
+                    c["router"] = nodo          # reporte de un solo nodo: sus CPEs son de el
                 clave = clave_cpe(c.get("ip", ""), c.get("router", ""))
                 if clave not in vistos or (c.get("puertos_top")
                                            and not vistos[clave].get("puertos_top")):
                     vistos[clave] = c
-        _CPES_CACHE["datos"] = list(vistos.values())
-        _CPES_CACHE["sello"] = sello
+        ent = {"sello": sello, "datos": list(vistos.values())}
+        with _CPES_LOCK:
+            if len(_CPES_CACHE) > 64:
+                _CPES_CACHE.clear()
+            _CPES_CACHE[f] = ent
     if rid is None:
-        return _CPES_CACHE["datos"]
-    return [c for c in _CPES_CACHE["datos"] if (c.get("router") or "") == rid]
+        return ent["datos"]
+    return [c for c in ent["datos"] if (c.get("router") or "") == rid]
 
 def analisis_salida(rid=None):
     """Cuanto abuso mataria cada regla de salida, con los datos REALES del sensor.
@@ -1040,17 +1245,18 @@ def grad_reglas_texto(lista):
     return "\n".join(out)
 
 def cargar_mk():
-    # CERT_FP: huella SHA256 del certificado del router, fijada en la primera conexion
-    # TLS (TOFU). Mientras no cambie, nadie puede colarse en medio; si cambia, la
-    # conexion se rechaza y hay que borrar la clave a mano tras comprobar por que.
-    # Forma de siempre (ajustes globales + UN router), para todo el codigo que aun no
-    # distingue nodo. El router es el de por defecto; con multi-nodo, cada camino que
-    # ya sabe de routers usa cargar_mk_de(router) en su lugar.
-    return cargar_mk_de(router_defecto())
+    # Los ajustes GLOBALES de la instalacion (politicas, listas por categoria, acciones,
+    # AUTO_MANTENER, POL_*), con los valores por defecto de las listas y TTL. NO trae
+    # conexion: la de cada punto sale de cargar_mk_de(router_por_id(pid)). Antes devolvia
+    # tambien "el router por defecto", y las tareas de fondo acababan hablando con el
+    # MikroTik de otro nodo; ese router ya no existe (CONTRATO-F2 §3).
+    d = cargar_mk_de(None)
+    d["ROUTER_ID"] = ""
+    return d
 
 def cargar_mk_de(r):
     """Los ajustes tal y como los espera el codigo: politica global + este router."""
-    d = {"HOST": "", "PORT": "8728", "TLS": "0", "USER": "", "PASS": "",
+    d = {"HOST": "", "PORT": "8729", "TLS": "1", "USER": "", "PASS": "",
          "LIST": "suricata-cuarentena", "TTL": "1h",
          "LIST_DNS": "suricata-dns-sospechoso", "TTL_DNS": "1d",
          "LIST_GRAD": "suricata-graduada", "TTL_GRAD": "1d",
@@ -1064,30 +1270,38 @@ def cargar_mk_de(r):
         if k in (r or {}):
             d[k] = (r or {})[k]
     d["ROUTER_ID"] = (r or {}).get("id", "")
-    d["ROUTER_NOMBRE"] = (r or {}).get("nombre", "") or d.get("HOST", "")
+    d["ROUTER_NOMBRE"] = (r or {}).get("nombre", "") or d["ROUTER_ID"]
     return d
 
 # ---------------------------------------------------------------------------------
-# Varios MikroTik (multi-nodo)
+# Varios MikroTik: un router por PUNTO del orquestador
 # ---------------------------------------------------------------------------------
-# Un sensor puede recibir el espejo de varios routers. Cada uno tiene su conexion, sus
-# address-lists y SUS abonados, y ademas dos nodos suelen repetir el mismo rango privado
-# (10.0.0.x en los dos), asi que una IP sola no identifica a nadie: hace falta el par
-# (router, IP). La interfaz por la que entra el espejo de cada router es lo que permite
-# saber de cual vino cada alerta (Suricata lo registra como in_iface).
+# Cada punto es un MikroTik con su VPN y su Suricata. Su router tiene id = iface = pid y se
+# le habla por el rele API-SSL del contenedor vpn de ese punto (HOST "unix:<api.sock>"):
+# el MikroTik no es alcanzable de otra forma. Dos puntos pueden repetir el mismo rango
+# privado, asi que una IP sola no identifica a nadie: la identidad es siempre `pid|ip`.
 #
-# Los ajustes de POLITICA son globales (bandas de riesgo) y siguen en MK_CONF; lo que es
-# por router vive aqui. Si este archivo no existe todavia se construye a partir del
-# MK_CONF de siempre, asi que una instalacion existente sigue funcionando igual.
-ROUTERS_CONF = "/etc/suricata-routers.json"
-IFACE_BASE = "ids-mon"       # el primer router conserva el nombre de siempre
+# routers.json guarda SOLO lo que el usuario pone por punto (usuario y clave de la API,
+# listas, TTL, enviar si/no y la huella del certificado). La clave va cifrada con la clave
+# maestra (asociado "router:<pid>:PASS"). Los ajustes de POLITICA son globales (MK_CONF).
+ROUTERS_CONF = nodos.ruta("conf", "routers.json")
 CAMPOS_ROUTER = ("id", "nombre", "iface", "HOST", "PORT", "TLS", "USER", "PASS",
                  "LIST", "TTL", "LIST_DNS", "TTL_DNS", "LIST_GRAD", "TTL_GRAD",
                  "LIST_DST", "TTL_DST", "CERT_FP", "ENABLED")
+# lo que se guarda por punto en routers.json (el resto sale de estado.json)
+CAMPOS_USUARIO = ("USER", "PASS", "LIST", "TTL", "LIST_DNS", "TTL_DNS", "LIST_GRAD", "TTL_GRAD",
+                  "LIST_DST", "TTL_DST", "ENABLED", "CERT_FP")
+_ROUTERS_LOCK = threading.RLock()
+SECRETOS_AVISO = {}          # campo -> motivo, de los secretos que no se pudieron descifrar
 
-def _router_vacio(idx=1):
-    return {"id": "r%d" % idx, "nombre": "", "iface": IFACE_BASE if idx == 1 else "%s%d" % (IFACE_BASE, idx),
-            "HOST": "", "PORT": "8728", "TLS": "0", "USER": "", "PASS": "",
+def _asoc_router(pid):
+    return "router:%s:PASS" % pid
+
+def _router_vacio(pid):
+    p = nodos.punto(pid) or {}
+    return {"id": pid, "nombre": p.get("nombre") or pid, "iface": pid,
+            "HOST": "unix:" + os.path.join(nodos.RUN, pid, "api.sock"),
+            "PORT": str(p.get("api_puerto") or 8729), "TLS": "1", "USER": "", "PASS": "",
             "LIST": "suricata-cuarentena", "TTL": "1h",
             "LIST_DNS": "suricata-dns-sospechoso", "TTL_DNS": "1d",
             "LIST_GRAD": "suricata-graduada", "TTL_GRAD": "1d",
@@ -1095,64 +1309,129 @@ def _router_vacio(idx=1):
             "CERT_FP": "", "ENABLED": "0"}
 
 def _mk_globales():
-    """Lee MK_CONF crudo (conexion antigua + ajustes globales de politica)."""
-    d = {"AUTO_MANTENER": "0", "ENABLED": "0", "POL_AUTO": "0",
+    """Lee MK_CONF crudo: SOLO los ajustes globales de politica (nada de conexion)."""
+    d = {"AUTO_MANTENER": "0", "POL_AUTO": "0",
          "POL_BAJO": "nada", "POL_MEDIO": "nada", "POL_ALTO": "nada"}
     try:
         for l in open(MK_CONF, encoding="utf-8"):
             l = l.strip()
             if l and not l.startswith("#") and "=" in l:
-                k, v = l.split("=", 1); d[k.strip()] = v.strip()
+                k, v = l.split("=", 1)
+                k = k.strip()
+                if k not in _MK_CONEXION:
+                    d[k] = v.strip()
     except OSError:
         pass
     return d
 
-def cargar_routers():
-    """Lista de routers configurados. Si aun no hay archivo propio, se migra el unico
-    router del MK_CONF de siempre (sin tocar nada en disco: la migracion se persiste
-    la primera vez que se guarde)."""
+def _routers_guardados():
+    """{pid: {campo: valor}} de routers.json tal cual (la clave, cifrada)."""
     try:
         d = json.load(open(ROUTERS_CONF, encoding="utf-8"))
-        lst = d.get("routers") if isinstance(d, dict) else d
-        if isinstance(lst, list) and lst:
-            salida = []
-            for i, r in enumerate(lst, 1):
-                base = _router_vacio(i)
-                if isinstance(r, dict):
-                    base.update({k: v for k, v in r.items() if k in CAMPOS_ROUTER})
-                salida.append(base)
-            return salida
-    except Exception:
-        pass
-    g = _mk_globales()                      # migracion desde la configuracion de un solo router
-    uno = _router_vacio(1)
-    for k in ("HOST", "PORT", "TLS", "USER", "PASS", "LIST", "TTL",
-              "LIST_DNS", "TTL_DNS", "LIST_GRAD", "TTL_GRAD", "LIST_DST", "TTL_DST",
-              "CERT_FP", "ENABLED"):
-        if g.get(k, "") != "":
-            uno[k] = g[k]
-    uno["nombre"] = uno["HOST"] or "MikroTik"
-    return [uno]
+    except (OSError, ValueError):
+        return {}
+    rs = d.get("routers") if isinstance(d, dict) else None
+    if not isinstance(rs, dict):
+        return {}
+    return {k: v for k, v in rs.items() if nodos.pid_valido(k) and isinstance(v, dict)}
+
+def cargar_routers():
+    """Un router por punto de nodos.puntos(), en ese orden: id = iface = pid, nombre del
+    punto, HOST "unix:<api.sock>", PORT = api_puerto, TLS siempre, y lo que el usuario
+    guardo por punto en routers.json (la clave, descifrada en memoria). Un pid guardado
+    que ya no es un punto se ignora."""
+    guardados = _routers_guardados()
+    salida = []
+    for p in nodos.puntos():
+        pid = p["pid"]
+        base = _router_vacio(pid)
+        g = guardados.get(pid) or {}
+        base.update({k: str(v) for k, v in g.items() if k in CAMPOS_USUARIO and k != "PASS"})
+        enc = g.get("PASS") or ""
+        base["_PASS_ENC"] = enc
+        try:
+            base["PASS"] = secretos.descifrar(enc, _asoc_router(pid))
+            SECRETOS_AVISO.pop(_asoc_router(pid), None)
+        except secretos.SecretoNoDisponible as ex:
+            base["PASS"] = ""
+            base["_PASS_ILEGIBLE"] = "1"         # no se borra: al guardar se conserva el cifrado
+            SECRETOS_AVISO[_asoc_router(pid)] = str(ex)
+        salida.append(base)
+    return salida
 
 def guardar_routers(lst):
-    """Guarda la lista con permisos 600: lleva las claves de la API."""
-    limpia = []
-    for i, r in enumerate(lst, 1):
-        base = _router_vacio(i)
-        base.update({k: v for k, v in (r or {}).items() if k in CAMPOS_ROUTER})
-        if not base.get("id"):
-            base["id"] = "r%d" % i
-        limpia.append(base)
-    tmp = ROUTERS_CONF + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump({"routers": limpia}, f, ensure_ascii=False, indent=1)
-    os.replace(tmp, ROUTERS_CONF)
-    try: os.chmod(ROUTERS_CONF, 0o600)
-    except OSError: pass
-    publicar_routers_map(limpia)
-    return limpia
+    """Guarda lo del usuario de cada router con permisos 600, con la clave CIFRADA. Se
+    fusiona con lo que ya hay (un router que no viene en `lst` conserva lo suyo) y se
+    borra lo de los pids que ya no son puntos. Una clave en claro de una version vieja
+    se acepta al leer y aqui queda cifrada."""
+    vivos = set(nodos.pids())
+    with _ROUTERS_LOCK:
+        guardados = {k: v for k, v in _routers_guardados().items() if k in vivos}
+        for r in lst or []:
+            pid = (r or {}).get("id") or ""
+            if pid not in vivos:
+                continue
+            g = dict(guardados.get(pid) or {})
+            for k in CAMPOS_USUARIO:
+                if k == "PASS" or k not in r:
+                    continue
+                g[k] = str(r.get(k) or "")
+            if r.get("PASS"):
+                g["PASS"] = secretos.cifrar(r["PASS"], _asoc_router(pid))   # sin clave maestra: lanza, no se guarda en claro
+            elif r.get("_PASS_ILEGIBLE"):
+                g["PASS"] = r.get("_PASS_ENC") or g.get("PASS", "")
+            elif "PASS" in r and not r.get("PASS") and not r.get("_PASS_ENC"):
+                g["PASS"] = ""
+            elif g.get("PASS") and secretos.necesita_cifrar(g["PASS"]):
+                g["PASS"] = secretos.cifrar(g["PASS"], _asoc_router(pid))   # en claro de antes: se cifra
+            guardados[pid] = g
+        for pid, g in guardados.items():                 # lo viejo en claro que no se toco
+            if g.get("PASS") and secretos.necesita_cifrar(g["PASS"]):
+                try:
+                    g["PASS"] = secretos.cifrar(g["PASS"], _asoc_router(pid))
+                except secretos.SecretoNoDisponible:
+                    pass
+        os.makedirs(os.path.dirname(ROUTERS_CONF), mode=0o700, exist_ok=True)
+        tmp = "%s.%d.%d.tmp" % (ROUTERS_CONF, os.getpid(), threading.get_ident())
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump({"v": 2, "routers": guardados}, f, ensure_ascii=False, indent=1)
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, ROUTERS_CONF)
+    salida = cargar_routers()
+    publicar_routers_map(salida)
+    return salida
 
-ROUTERS_MAP = "/var/log/suricata-routers-map.json"
+def olvidar_router(pid):
+    """Baja de un punto: borra lo suyo de routers.json (lo llama el apartado Puntos)."""
+    with _ROUTERS_LOCK:
+        guardados = _routers_guardados()
+        if guardados.pop(pid, None) is None:
+            return False
+        tmp = "%s.%d.%d.tmp" % (ROUTERS_CONF, os.getpid(), threading.get_ident())
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump({"v": 2, "routers": guardados}, f, ensure_ascii=False, indent=1)
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, ROUTERS_CONF)
+    return True
+
+def _guardar_huella(pid, fp):
+    """TOFU por punto: fija la huella del certificado de ESE router en routers.json."""
+    with _ROUTERS_LOCK:
+        guardados = _routers_guardados()
+        if pid not in nodos.pids():
+            return
+        g = dict(guardados.get(pid) or {})
+        if g.get("CERT_FP"):
+            return                       # otra conexion la fijo antes: manda la primera
+        g["CERT_FP"] = fp
+        guardados[pid] = g
+        tmp = "%s.%d.%d.tmp" % (ROUTERS_CONF, os.getpid(), threading.get_ident())
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump({"v": 2, "routers": guardados}, f, ensure_ascii=False, indent=1)
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, ROUTERS_CONF)
+
+ROUTERS_MAP = nodos.ruta("estado", "routers-map.json")
 
 def publicar_routers_map(lst=None):
     """Publica id, nombre e interfaz de cada router para que lo lea el generador del
@@ -1160,9 +1439,9 @@ def publicar_routers_map(lst=None):
     el generador no tiene por que verlas."""
     try:
         lst = lst if lst is not None else cargar_routers()
-        datos = [{"id": r.get("id", ""), "nombre": r.get("nombre", "") or r.get("HOST", ""),
+        datos = [{"id": r.get("id", ""), "nombre": r.get("nombre", "") or r.get("id", ""),
                   "iface": r.get("iface", "")} for r in lst]
-        tmp = ROUTERS_MAP + ".tmp"
+        tmp = "%s.%d.tmp" % (ROUTERS_MAP, os.getpid())
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump(datos, f, ensure_ascii=False)
         os.replace(tmp, ROUTERS_MAP)
@@ -1175,53 +1454,49 @@ def router_por_id(rid):
             return r
     return None
 
-def router_por_iface(iface):
-    """De que router vino una alerta, segun la interfaz por la que entro su espejo."""
-    if iface:
-        for r in cargar_routers():
-            if r.get("iface") == iface:
-                return r
-    return None
-
-def router_defecto():
-    """El primero habilitado; si ninguno lo esta, el primero. Es el que usan los caminos
-    que todavia no distinguen router (compatibilidad mientras dure la migracion)."""
-    lst = cargar_routers()
-    for r in lst:
-        if r.get("ENABLED") == "1":
-            return r
-    return lst[0] if lst else _router_vacio(1)
+_MK_CONEXION = ("HOST", "PORT", "TLS", "USER", "PASS", "CERT_FP", "ENABLED",
+                "LIST", "TTL", "LIST_DNS", "TTL_DNS", "LIST_GRAD", "TTL_GRAD", "LIST_DST", "TTL_DST")
 
 def guardar_mk(d):
-    orden = ["HOST", "PORT", "TLS", "USER", "PASS", "LIST", "TTL", "LIST_DNS", "TTL_DNS",
-             "AUTO_MANTENER", "ENABLED", "CERT_FP", "POL_AUTO", "POL_BAJO", "POL_MEDIO", "POL_ALTO"]
+    """Guarda los ajustes GLOBALES en MK_CONF. Lo de la conexion (host, usuario, clave,
+    listas y TTL de cada router, enviar si/no, huella) es por punto y va a routers.json:
+    aqui se descarta, para que ninguna clave acabe en claro en este fichero."""
+    orden = ["AUTO_MANTENER", "POL_AUTO", "POL_BAJO", "POL_MEDIO", "POL_ALTO"]
     # Las claves por categoria (LISTA_<CAT>) y por clase (POL_<CLASE>) no estaban en esta
     # lista fija: el formulario las leia, la ruta las ponia en `d`... y aqui se tiraban al
     # escribir. El usuario rellenaba sus listas, guardaba, y volvian vacias (2026-10-09).
     extra = sorted(k for k, v in d.items()
-                   if k not in orden and (k.startswith("LISTA_") or k.startswith("POL_")
-                                           or k.startswith("ACCION_"))
+                   if k not in orden and k not in _MK_CONEXION
+                   and (k.startswith("LISTA_") or k.startswith("POL_") or k.startswith("ACCION_"))
                    and str(v or "").strip())
-    txt = ("# Conexion API al MikroTik para la cuarentena. La clave se usa para autenticar\n"
-           "# (no se puede hashear). Archivo con permisos 600.\n"
+    txt = ("# Ajustes globales de la cuarentena por MikroTik (politicas y listas). La conexion\n"
+           "# de cada punto vive en routers.json. Archivo con permisos 600.\n"
            + "".join(f"{k}={d.get(k,'')}\n" for k in orden)
            + "".join(f"{k}={d[k]}\n" for k in extra))
-    tmp = MK_CONF + ".tmp"
+    os.makedirs(os.path.dirname(MK_CONF), mode=0o700, exist_ok=True)
+    tmp = "%s.%d.%d.tmp" % (MK_CONF, os.getpid(), threading.get_ident())
     with open(tmp, "w", encoding="utf-8") as f:
         f.write(txt)
+    os.chmod(tmp, 0o600)
     os.replace(tmp, MK_CONF)
-    try: os.chmod(MK_CONF, 0o600)
-    except OSError: pass
 
-def mk_configurado():
-    d = cargar_mk()
-    return bool(d.get("HOST") and d.get("USER") and d.get("PASS"))
+def mk_configurado(pid=None):
+    """Si hay router con que hablar: el del pid dado; sin pid, el del nodo que se mira
+    (en «Todos», si alguno lo esta). Solo para MOSTRAR: una accion usa mk_listo() del
+    router de su destino."""
+    if pid is None:
+        pids = nodos.nodos_de() if nodos.hay_nodo() else nodos.pids()
+    else:
+        pids = [pid]
+    for r in cargar_routers():
+        if r.get("id") in pids and r.get("USER") and r.get("PASS"):
+            return True
+    return False
 
 def mk_listo(d):
     """Si ESE router (no el de por defecto) esta configurado y habilitado para enviar.
     Con varios nodos, uno puede estar en dry-run y otro enviando."""
-    return bool(d.get("HOST") and d.get("USER") and d.get("PASS") and d.get("ENABLED") == "1")
-
+    return bool(d.get("ROUTER_ID") and d.get("USER") and d.get("PASS") and d.get("ENABLED") == "1")
 # --- cliente minimo de la API de RouterOS (v6.43+ y v7), stdlib pura ---
 def _mk_len(n):
     if n < 0x80: return bytes([n])
@@ -1285,13 +1560,30 @@ def _mk_reply(sock):
 
 _MK_TLS_OK = {}     # (host, port) -> cifrados que funcionaron la ultima vez
 
+def _mk_abrir_unix(ruta, timeout):
+    """Socket conectado al rele API-SSL del punto (socat en su contenedor vpn). Aparte
+    para que las pruebas puedan cambiarlo en plataformas sin AF_UNIX."""
+    if not hasattr(_socket, "AF_UNIX"):
+        raise IOError("AF_UNIX no disponible en esta plataforma")
+    raw = _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM)
+    raw.settimeout(timeout)
+    try:
+        raw.connect(ruta)
+    except OSError:
+        raw.close()
+        raise
+    return raw
+
 def _mk_tls_wrap(host, port, timeout):
     """Envuelve en TLS probando cifrados en orden. RouterOS api-ssl SIN certificado usa
     cifrados ANONIMOS (ADH) -> hay que habilitarlos con @SECLEVEL=0 (Python los desactiva
     por defecto). Con certificado usa los normales. Se prueban ambos para no exigir cert.
 
+    `host` es "unix:<ruta del api.sock del punto>": el TCP lo pone el rele por el tunel y
+    aqui solo se abre el socket local y se hace TLS encima, igual que antes contra la IP.
+
     Se empieza por el que funciono la ultima vez con ese router: cada intento es una
-    conexion TCP nueva, y "Aplicar" sumaba hasta doce en dos segundos contra la API.
+    conexion nueva, y "Aplicar" sumaba hasta doce en dos segundos contra la API.
     Si fallan todos se dice el motivo de CADA uno: antes solo salia el del ultimo (el
     cifrado por defecto de Python, que RouterOS siempre rechaza), que tapaba el de verdad."""
     orden = ["ADH:@SECLEVEL=0", "DEFAULT:@SECLEVEL=0", None]
@@ -1302,7 +1594,10 @@ def _mk_tls_wrap(host, port, timeout):
     fallos = []
     for ciphers in orden:
         try:
-            raw = _socket.create_connection((host, port), timeout=timeout)
+            if host.startswith("unix:"):
+                raw = _mk_abrir_unix(host[len("unix:"):], timeout)
+            else:
+                raise IOError("el MikroTik solo se alcanza por el rele de su punto (unix:...)")
         except Exception as e:
             raise IOError(str(e))
         ctx = _ssl.create_default_context()
@@ -1313,7 +1608,7 @@ def _mk_tls_wrap(host, port, timeout):
             try: ctx.set_ciphers(ciphers)
             except Exception: pass
         try:
-            sk = ctx.wrap_socket(raw, server_hostname=host)
+            sk = ctx.wrap_socket(raw, server_hostname=None)
             _MK_TLS_OK[(host, port)] = ciphers
             return sk
         except Exception as e:
@@ -1324,29 +1619,31 @@ def _mk_tls_wrap(host, port, timeout):
     raise IOError("TLS handshake fallo con los %d cifrados probados (%s)" % (len(fallos), " | ".join(fallos)))
 
 def mk_conectar(d, timeout=6):
-    """Abre el socket y hace login. Devuelve el socket o lanza excepcion."""
-    host = d["HOST"]; port = int(d.get("PORT") or (8729 if d.get("TLS") == "1" else 8728))
-    if d.get("TLS") == "1":
-        sock = _mk_tls_wrap(host, port, timeout)
-        # RouterOS trae un certificado autofirmado: no hay CA que valide la cadena, asi
-        # que se fija su huella la primera vez (TOFU) y despues tiene que coincidir. Sin
-        # esto cualquiera en medio acepta el handshake y se lleva la clave del router,
-        # que es justo lo que se manda en el /login de aqui abajo.
-        fp = _hashlib.sha256(sock.getpeercert(binary_form=True) or b"").hexdigest()
-        esperada = (d.get("CERT_FP") or "").strip().lower().replace(":", "")
-        if esperada and fp != esperada:
-            sock.close()
-            raise RuntimeError(
-                "El certificado del MikroTik no coincide con el fijado (esperado "
-                f"{esperada[:16]}..., recibido {fp[:16]}...). Puede ser un cambio "
-                "legitimo del router o alguien en medio: comprueba el router y, si es "
-                f"correcto, borra la linea CERT_FP de {MK_CONF}.")
-        if not esperada:
-            d["CERT_FP"] = fp
-            try: guardar_mk(d)
-            except OSError: pass
-    else:
-        sock = _socket.create_connection((host, port), timeout=timeout)
+    """Abre el socket y hace login. Devuelve el socket o lanza excepcion.
+
+    El destino es SIEMPRE el rele del punto del router (`ROUTER_ID`), validado: nunca una
+    ruta o host que venga de un fichero o de un formulario."""
+    pid = nodos.exigir_pid(d.get("ROUTER_ID") or "")
+    host = "unix:" + nodos.api_sock(pid)
+    port = int(d.get("PORT") or 8729)
+    sock = _mk_tls_wrap(host, port, timeout)
+    # RouterOS trae un certificado autofirmado: no hay CA que valide la cadena, asi
+    # que se fija su huella la primera vez (TOFU) y despues tiene que coincidir. Sin
+    # esto cualquiera en medio acepta el handshake y se lleva la clave del router,
+    # que es justo lo que se manda en el /login de aqui abajo. La huella es de ESE punto.
+    fp = _hashlib.sha256(sock.getpeercert(binary_form=True) or b"").hexdigest()
+    esperada = (d.get("CERT_FP") or "").strip().lower().replace(":", "")
+    if esperada and fp != esperada:
+        sock.close()
+        raise RuntimeError(
+            "El certificado del MikroTik no coincide con el fijado (esperado "
+            f"{esperada[:16]}..., recibido {fp[:16]}...). Puede ser un cambio "
+            "legitimo del router o alguien en medio: comprueba el router y, si es "
+            "correcto, borra la huella en Puntos -> API de este punto.")
+    if not esperada:
+        d["CERT_FP"] = fp
+        try: _guardar_huella(pid, fp)
+        except OSError: pass
     sock.settimeout(timeout)
     # login moderno (6.43+/v7): usuario y clave directos
     _mk_send(sock, ["/login", f"=name={d['USER']}", f"=password={d['PASS']}"])
@@ -1368,10 +1665,12 @@ def mk_conectar(d, timeout=6):
         raise IOError(err or "login rechazado")
     return sock
 
-def mk_probar():
-    d = cargar_mk()
-    if not (d.get("HOST") and d.get("USER") and d.get("PASS")):
-        return (False, "Falta host, usuario o clave.")
+def mk_probar(pid):
+    """Prueba la API del router de ESE punto (el del formulario, validado)."""
+    pid = nodos.exigir_pid(pid)
+    d = cargar_mk_de(router_por_id(pid))
+    if not (d.get("USER") and d.get("PASS")):
+        return (False, "Falta usuario o clave de la API de este punto.")
     try:
         s = mk_conectar(d)
         _mk_send(s, ["/system/identity/print"])
@@ -1382,13 +1681,20 @@ def mk_probar():
                 if a.startswith("=name="):
                     nombre = a[len("=name="):]
         s.close()
-        return (True, f"Conexion OK con '{nombre or d['HOST']}'.")
+        return (True, f"Conexion OK con '{nombre or d.get('ROUTER_NOMBRE') or pid}'.")
     except Exception as e:
         return (False, f"No conecto: {e}")
 
+def _router_destino(router):
+    """El router de una accion: tiene que venir dado y ser un punto que existe. Sin
+    destino inequivoco no se ejecuta nada (antes caia en «el de por defecto»)."""
+    if not router or not router.get("id"):
+        raise ValueError("accion sin router de destino: no se ejecuta")
+    nodos.exigir_pid(router["id"])
+    return router
+
 def mk_add(ip, comment="", lista=None, ttl=None, router=None):
-    # router=None -> el de por defecto, para todo el codigo que aun no distingue nodo
-    d = cargar_mk_de(router) if router else cargar_mk()
+    d = cargar_mk_de(_router_destino(router))
     lst = lista or d.get("LIST", "suricata-cuarentena")
     tt = ttl if ttl is not None else d.get("TTL")
     s = mk_conectar(d)
@@ -1409,7 +1715,7 @@ def mk_add(ip, comment="", lista=None, ttl=None, router=None):
 
 def mk_remove(ip, lista=None, router=None):
     """Quita TODAS las entradas de esa IP en la lista (busca .id y las borra)."""
-    d = cargar_mk_de(router) if router else cargar_mk()
+    d = cargar_mk_de(_router_destino(router))
     lst = lista or d.get("LIST", "suricata-cuarentena")
     s = mk_conectar(d)
     try:
@@ -1424,7 +1730,6 @@ def mk_remove(ip, lista=None, router=None):
     finally:
         try: s.close()
         except Exception: pass
-
 # =====================================================================================
 # Politicas de ACCION por categoria: las reglas que usan cada address-list, puestas en
 # el router POR LA API.
@@ -1470,7 +1775,7 @@ T_FILTER = "/ip/firewall/filter"
 _TABLA_RSC = {T_RAW: "/ip firewall raw", T_NAT: "/ip firewall nat", T_FILTER: "/ip firewall filter",
               T_MANGLE: "/ip firewall mangle", T_QUEUE: "/queue tree"}
 _RSC_TABLA = {v: k for k, v in _TABLA_RSC.items()}
-REGLAS_DIR = "/etc/suricata-reglas"          # <cat>.rsc: las reglas propias, tal cual se pegaron
+REGLAS_DIR = nodos.ruta("conf", "reglas")     # <cat>.rsc: las reglas propias, tal cual se pegaron
 # que propiedades se leen de cada tabla para comparar con lo deseado
 _PROPS_TABLA = {
     T_RAW: ["chain", "action", "src-address-list", "protocol", "dst-port", "jump-target"],
@@ -1481,7 +1786,7 @@ _PROPS_TABLA = {
                "new-packet-mark", "passthrough"],
     T_QUEUE: ["name", "parent", "packet-mark", "max-limit"],
 }
-RESPALDOS_MK = "/root/backups/panel"
+RESPALDOS_MK = os.path.join(nodos.RESPALDOS, "mikrotik")
 
 
 def accion_de_clase(cat, m=None):
@@ -2159,12 +2464,14 @@ def guardar_enviados(d, path=MK_SENT):
     if antes != set(d.keys()):
         pedir_regen()
 
-BITACORA_LOG = "/var/log/suricata-bitacora.log"   # auditoria: quien hizo que y cuando
+BITACORA_LOG = nodos.ruta("log", "bitacora.log")   # auditoria: quien hizo que y cuando
 
 def bitacora(accion, detalle="", quien=None, ip=None):
     """Registra una accion en la bitacora auditable (una linea por accion)."""
     q = quien if quien is not None else getattr(CTX, "user", "?") or "?"
     ipx = ip if ip is not None else (getattr(CTX, "ip", "") or "")
+    # una linea por accion: un salto o un tabulador en un campo no puede fabricar otra
+    q, ipx, accion, detalle = (re.sub(r"[\t\r\n]", " ", str(x or "")) for x in (q, ipx, accion, detalle))
     try:
         with open(BITACORA_LOG, "a", encoding="utf-8") as f:
             f.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')}\t{q}\t{ipx}\t{accion}\t{detalle}\n")
@@ -2174,7 +2481,7 @@ def bitacora(accion, detalle="", quien=None, ip=None):
 # Acciones por dia (cuantos CPEs se pusieron en cuarentena y cuantos se liberaron).
 # Va en un archivo PROPIO del panel: las metricas de deteccion las escribe el generador y
 # dos procesos editando el mismo archivo se pisarian.
-ACCIONES_FILE = "/var/log/suricata-acciones.json"
+ACCIONES_FILE = nodos.ruta("estado", "acciones.json")
 ACCIONES_DIAS = 400
 _ACC_LOCK = threading.RLock()
 
@@ -2220,48 +2527,53 @@ def _ttl_efectivo(m, ttl_key):
     reconciliador cuando el CPE deja de atacar. Sin auto, se usa el TTL configurado."""
     return "" if m.get("AUTO_MANTENER") == "1" else m.get(ttl_key, "")
 
-def reconciliar_cuarentena():
+def reconciliar_cuarentena(pid=None):
     """Mantiene la cuarentena: un CPE sigue en la lista mientras siga siendo candidato
-    (sigue atacando); cuando deja de aparecer, se libera solo. Corre en segundo plano.
-    Solo actua con MikroTik habilitado y AUTO_MANTENER activo."""
-    m = cargar_mk()
-    if not (mk_configurado() and m.get("ENABLED") == "1" and m.get("AUTO_MANTENER") == "1"):
+    (sigue atacando); cuando deja de aparecer, se libera solo. Corre en segundo plano,
+    POR PUNTO: solo mira el cuarentena.json de ese punto y solo toca claves `pid|...`
+    suyas (con el de un solo nodo leido, los CPEs de los demas parecerian "ya no ataca"
+    y se liberarian). Solo actua con el router del punto habilitado y AUTO_MANTENER."""
+    pid = nodos.exigir_pid(pid if pid is not None else nodos.nodo_actual())
+    r = router_por_id(pid)
+    m = cargar_mk_de(r)
+    if not (mk_listo(m) and m.get("AUTO_MANTENER") == "1"):
         return
-    try:
-        data = json.load(open(f"{LOGDIR}/cuarentena.json", encoding="utf-8"))
-    except Exception:
-        return
+    data = _cargar_cuarentena(pid)
+    if not data:
+        return                                 # sin reporte de este punto no se libera a nadie
     for cand_key, sent_path, list_key in (("candidatos", MK_SENT, "LIST"),
                                           ("dns_candidatos", MK_SENT_DNS, "LIST_DNS")):
         # El registro va por identidad (router, IP); los candidatos traen la IP y su nodo
         # por separado. Comparar IP contra identidad daba "ya no ataca" a TODOS los CPEs
         # de un sensor con varios routers.
-        activas = {clave_cpe(c.get("ip", ""), c.get("router", "")) for c in data.get(cand_key, [])}
-        env = cargar_enviados(sent_path); cambiado = False
+        activas = {clave_cpe(c.get("ip", ""), c.get("router", "") or pid) for c in data.get(cand_key, [])}
+        env = cargar_enviados(sent_path)
+        liberadas = []
         for k in list(env.keys()):
+            if rid_de(k) != pid:
+                continue                       # de otro punto: no es asunto de este ciclo
             if env[k].get("manual") or env[k].get("pol"):
                 continue                       # manual o por politica -> los gestiona otro, no el auto
             if k in activas:
                 continue                       # sigue atacando -> se queda (entrada permanente)
-            r = router_de_clave(k); lst = cargar_mk_de(r).get(list_key, "")
+            lst = m.get(list_key, "")
             if not lst:
                 continue
             try:
                 mk_remove(ip_de(k), lista=lst, router=r)   # dejo de atacar -> liberar
             except Exception:
                 continue                       # si el router no responde, reintenta el proximo ciclo
-            env.pop(k, None); cambiado = True
+            liberadas.append(k)
             mk_log("AUTO-LIBERADO", ip_de(k), "auto", f"lista={lst} (dejo de atacar)" + _suf_nodo(k))
-        if cambiado:
-            guardar_enviados(env, sent_path)
-
+        if liberadas:
+            quitar_enviados(liberadas, sent_path)   # relee dentro del cerrojo: no pisa lo de otros hilos
 def mk_lista_en_uso(lista, router=None):
     """True si alguna regla del firewall referencia esa address-list.
 
     Una address-list sin regla que la use no bloquea NADA: el panel diria "enviado" y el
     CPE seguiria atacando tan tranquilo. Es el fallo silencioso mas facil de cometer al
     montar esto, asi que se comprueba y se avisa."""
-    d = cargar_mk_de(router) if router else cargar_mk()
+    d = cargar_mk_de(_router_destino(router))   # sin router no hay a quien preguntar (nada de "el de por defecto")
     s_ = mk_conectar(d)
     try:
         _mk_send(s_, ["/ip/firewall/filter/print", "=.proplist=src-address-list"])
@@ -2393,7 +2705,7 @@ def mk_publicas_detectadas(router=None):
     fallido y la WAN encontrada, todas las WAN declaradas antes saldrian "ya no
     detectadas" y llegarian marcadas para quitar. Aviso no vacio = resultado parcial: quien
     llama no debe sacar conclusiones de lo que falta."""
-    d = cargar_mk_de(router) if router else cargar_mk()
+    d = cargar_mk_de(_router_destino(router))   # sin router no hay a quien preguntar (nada de "el de por defecto")
     lista_wan = _params_accion("wan", d)["wan"]      # "" si el usuario puso "ninguna"
     s_ = mk_conectar(d)
     encontradas = []
@@ -2571,7 +2883,11 @@ def rep_aviso_tomar(cod):
     return v[1], v[2]
 
 def rep_aviso_url(texto, marcar=None, pagina="/reputacion"):
-    return pagina + "?msg=" + rep_aviso_guardar(texto, marcar)
+    """La redireccion tras una accion conserva el nodo que se estaba mirando (?nodo=)."""
+    url = pagina + "?msg=" + rep_aviso_guardar(texto, marcar)
+    if nodos.hay_nodo():
+        url += "&nodo=" + urllib.parse.quote(nodos.nodo_actual())
+    return url
 
 def cuar_aviso_url(texto):
     """/cuarentena?msg=<codigo> con el resultado de una accion de Cuarentena."""
@@ -2580,7 +2896,7 @@ def cuar_aviso_url(texto):
 # ---------------------------------------------------------------------------------
 # Bloqueo en el BORDE: los que nos atacan desde internet
 # ---------------------------------------------------------------------------------
-ENTRANTES_FILE = "/var/log/suricata-entrantes.json"
+ENTRANTES_FILE = "entrantes.json"     # por nodo: lo escribe el generador en nodos/<pid>/
 BL_LISTA = "suricata-atacantes"
 BL_MIN_ALERTAS = 20        # por debajo de esto es ruido de fondo de internet
 BL_MIN_DESTINOS = 3        # que golpee a varios: uno solo puede ser un falso positivo
@@ -2641,16 +2957,20 @@ def rep_categoria(ip):
 # que es lo que mantiene vivo al equipo infectado: sin canal de control, la botnet no
 # manda nada. Y funciona para todos los abonados a la vez, sin tener que identificar a
 # ninguno.
-DESTINOS_FILE = "/var/log/suricata-destinos-malos.json"
-MK_SENT_DST = "/var/log/suricata-destinos-enviados.json"
+DESTINOS_FILE = "destinos-malos.json"     # por nodo: lo escribe el generador en nodos/<pid>/
+MK_SENT_DST = nodos.ruta("estado", "destinos-enviados.json")
 # Por confianza del feed. Un C2 activo es lo que es; una IP que alguna vez escaneo a
 # alguien puede alojar ademas algo legitimo, y bloquearla deja sin servicio a un abonado
 # que no hizo nada.
 DST_CONFIABLES = ("c2-activo", "c2-ioc", "distribucion-malware", "infra-delictiva")
 
+def _salida_ctx(nombre):
+    """Fichero de salida del generador del nodo que se mira (sin contexto: el de «Todos»)."""
+    return nodos.salida(nombre, nodos.nodo_actual() if nodos.hay_nodo() else nodos.TODOS)
+
 def cargar_destinos_malos():
     try:
-        return (json.load(open(DESTINOS_FILE, encoding="utf-8")).get("destinos") or {})
+        return (json.load(open(_salida_ctx(DESTINOS_FILE), encoding="utf-8")).get("destinos") or {})
     except (OSError, ValueError, AttributeError):
         return {}
 
@@ -2779,7 +3099,7 @@ def destinos_reglas(lista="suricata-destinos-malos"):
 
 def cargar_entrantes():
     try:
-        return (json.load(open(ENTRANTES_FILE, encoding="utf-8")).get("origenes") or {})
+        return (json.load(open(_salida_ctx(ENTRANTES_FILE), encoding="utf-8")).get("origenes") or {})
     except (OSError, ValueError, AttributeError):
         return {}
 
@@ -2827,54 +3147,24 @@ def blocklist_rsc(lista=BL_LISTA, ttl="1d"):
         out.append('add list=%s address=%s timeout=%s comment="%s"' % (lista, f["ip"], ttl, com))
     return "\n".join(out) + "\n"
 
-def ip_del_sensor(hacia=""):
-    """La IP de ESTE sensor por la que el router tiene que hablarle.
-
-    No sirve `hostname -I` ni la primera interfaz: estas cajas suelen tener varias (la de
-    gestion, la del tunel, la de la red del cliente) y la buena es la que se usa para
-    llegar A ESE router, que es distinta segun el nodo. Se averigua abriendo un socket UDP
-    hacia el: en UDP `connect` no manda ni un paquete, solo fija la ruta, y `getsockname`
-    dice por donde saldria.
-
-    Si no se puede averiguar se devuelve el hueco de siempre, que al menos se ve que hay
-    que rellenarlo a mano. Poner una IP equivocada seria peor: el espejo apuntaria a otra
-    caja y el sensor se quedaria ciego sin que nada lo dijera."""
-    destinos = [hacia]
-    try:
-        destinos.append((cargar_mk() or {}).get("HOST", ""))
-    except Exception:
-        pass
-    # ultimo recurso: cualquier destino enrutable vale, solo sirve para que el sistema
-    # elija interfaz de salida. 192.0.2.1 es de la red de documentacion (RFC 5737).
-    destinos.append("192.0.2.1")
-    for dst in destinos:
-        if not dst:
-            continue
-        try:
-            sk = _socket.socket(_socket.AF_INET, _socket.SOCK_DGRAM)
-            try:
-                sk.connect((dst, 9))
-                ip = sk.getsockname()[0]
-            finally:
-                sk.close()
-        except OSError:
-            continue
-        if ip and not ip.startswith(("0.", "127.")):
-            return ip
-    return "IP_DEL_SENSOR"
+def sensor_del_punto(pid):
+    """(IP del sensor en el tunel, puerto TZSP) del punto: a donde manda el espejo SU
+    MikroTik. Lo publica el orquestador en estado.json; ya no se adivina con un socket
+    (en el contenedor saldria la IP de la red de Docker, que el router no ve)."""
+    p = nodos.punto(pid) or {}
+    return (p.get("sensor") or ""), int(p.get("tzsp_puerto") or nodos.TZSP_PUERTO)
 
 def blocklist_reglas(lista=BL_LISTA):
     """Las reglas. El detalle que decide si esto sirve o rompe clientes es
     connection-state=new: si se corta en raw o sin ese matcher, tambien se tiran las
     RESPUESTAS a conexiones que abrio tu abonado, y el cliente se queda sin poder entrar
-    a un sitio legitimo sin que nadie entienda por que."""
+    a un sitio legitimo sin que nadie entienda por que.
+
+    Ya no lleva el /tool fetch: el MikroTik no llega al panel por el tunel (solo pasan el
+    espejo y la API). La lista se carga pegando en el router el script que da el panel."""
     return "\n".join([
-        "# 1) que el router se baje la lista solo, cada hora",
-        "/system scheduler",
-        'add name=suricata-atacantes interval=1h on-event="/tool fetch '
-        'url=\\"http://%s:%s/blocklist.rsc\\" dst-path=atacantes.rsc; '
-        ':delay 5s; /import atacantes.rsc" comment="Suricata: lista de atacantes"'
-        % (ip_del_sensor(), CFG.get("PORT", "5637")),
+        "# 1) la lista: pega en la terminal del router el script de atacantes que da el",
+        "#    panel (se reemplaza entera cada vez). El router no descarga nada del panel.",
         "",
         "# 2) cortar SOLO las conexiones NUEVAS que entran desde esas IPs.",
         "#    Sin connection-state=new se tiran tambien las respuestas a lo que pidio tu",
@@ -2885,7 +3175,6 @@ def blocklist_reglas(lista=BL_LISTA):
         'add chain=input connection-state=new src-address-list=%s action=drop '
         'comment="Suricata: atacantes contra el router"' % ros_lista(lista),
     ])
-
 def _mk_print(s_, cmd, props):
     """Un print de la API como lista de diccionarios."""
     filas = []
@@ -2905,7 +3194,7 @@ def _mk_print(s_, cmd, props):
         filas.append(d)
     return filas
 
-DIAG_FILE = "/var/log/suricata-diagnostico.json"
+DIAG_FILE = nodos.ruta("estado", "diagnostico.json")
 
 def guardar_diagnostico():
     """Consulta a cada router y deja el resultado en disco.
@@ -2916,7 +3205,7 @@ def guardar_diagnostico():
     entero."""
     out = {}
     for r in cargar_routers():
-        if not ((r.get("HOST") or "").strip() and r.get("ENABLED") == "1"):
+        if not (r.get("USER") and r.get("PASS") and r.get("ENABLED") == "1"):
             continue
         rid = r.get("id", "")
         try:
@@ -2942,7 +3231,7 @@ def diagnostico_de(rid):
 def mk_diagnostico(router=None):
     """Que le falta al router para poder cortar de verdad. [(estado, titulo, detalle, arreglo)]
     estado: ok | falta | aviso."""
-    d = cargar_mk_de(router) if router else cargar_mk()
+    d = cargar_mk_de(_router_destino(router))   # sin router no hay a quien preguntar (nada de "el de por defecto")
     s_ = mk_conectar(d)
     try:
         filtros = _mk_print(s_, "/ip/firewall/filter/print",
@@ -2950,9 +3239,11 @@ def mk_diagnostico(router=None):
                              "protocol", "psd", "disabled", "connection-limit"])
         crudas = _mk_print(s_, "/ip/firewall/raw/print", ["action", "src-address-list"])
         ajustes = _mk_print(s_, "/ip/settings/print", ["rp-filter"])
-        sniffer = _mk_print(s_, "/tool/sniffer/print",
-                            ["running", "streaming-enabled", "streaming-server",
-                             "filter-interface"])
+        # el espejo del punto: mangle sniff-tzsp con el comentario del punto (OPERACION §2)
+        espejo = [f for f in _mk_print(s_, "/ip/firewall/mangle/print",
+                                       ["action", "sniff-target", "sniff-target-port",
+                                        "disabled", "comment"])
+                  if f.get("action") == "sniff-tzsp"]
         # 2b) la ACCION configurada por clase: aplicada en este router o le faltan cambios
         _acc_checks = []
         _m = _mk_globales()
@@ -2986,17 +3277,19 @@ def mk_diagnostico(router=None):
 
     out = []
     # 1) sin espejo no hay nada que analizar
-    sn = sniffer[0] if sniffer else {}
-    if sn.get("running") == "true" and sn.get("streaming-enabled") == "true":
+    _pid = d.get("ROUTER_ID", "")
+    _sensor, _puerto = sensor_del_punto(_pid)
+    _activas = [f for f in espejo if f.get("disabled") != "true"
+                and (not _sensor or f.get("sniff-target") == _sensor)]
+    if len(_activas) >= 2:
         out.append(("ok", "El espejo esta activo",
-                    "Enviando a %s desde %s." % (sn.get("streaming-server", "?"),
-                                                 sn.get("filter-interface") or "todas las interfaces"), ""))
+                    "%d regla(s) sniff-tzsp hacia el sensor del punto (%s:%s)." % (
+                        len(_activas), _sensor or "?", _puerto), ""))
     else:
-        out.append(("falta", "El espejo NO esta enviando",
-                    "Sin esto el sensor esta ciego y todo lo demas da igual.",
-                    "/tool sniffer set streaming-enabled=yes "
-                    "streaming-server=%s:37008 filter-stream=yes\n/tool sniffer start"
-                    % ip_del_sensor(d.get("HOST", ""))))
+        out.append(("falta", "El espejo NO esta enviando (o solo en un sentido)",
+                    "Sin esto el sensor esta ciego y todo lo demas da igual. Hacen falta las dos "
+                    "reglas sniff-tzsp (ida y vuelta) hacia %s:%s." % (_sensor or "el sensor del punto", _puerto),
+                    "Puntos -> este punto -> Espejo -> Montar espejo (con vista previa y respaldo)"))
 
     # 2) las address-lists tienen que tener una regla que las use.
     #    Incluidas las de CATEGORIA, que son a las que el panel manda de verdad: antes se
@@ -3068,7 +3361,7 @@ def mk_diagnostico(router=None):
 
 def mk_list_ips(lista, router=None):
     """Devuelve el conjunto de direcciones que estan AHORA en esa address-list del MikroTik."""
-    d = cargar_mk_de(router) if router else cargar_mk()
+    d = cargar_mk_de(_router_destino(router))   # sin router no hay a quien preguntar (nada de "el de por defecto")
     s = mk_conectar(d)
     try:
         _mk_send(s, ["/ip/firewall/address-list/print", "=.proplist=address", f"?list={lista}"])
@@ -3085,7 +3378,7 @@ def mk_list_ips(lista, router=None):
         except Exception: pass
 
 # --- Cliente -> abonado: mapear IP interna a PPPoE/DHCP del MikroTik (para la ficha) ---
-ABONADOS_FILE = "/var/log/suricata-abonados.json"
+ABONADOS_FILE = nodos.ruta("estado", "abonados.json")
 
 def _mk_re_dicts(frases):
     """Convierte las sentencias !re de una respuesta API en lista de dicts {clave: valor}."""
@@ -3102,7 +3395,7 @@ def _mk_re_dicts(frases):
 
 def mk_abonados(router=None):
     """Consulta PPPoE activos + leases DHCP y arma {ip: {nombre, tipo, mac, extra}}."""
-    d = cargar_mk_de(router) if router else cargar_mk()
+    d = cargar_mk_de(_router_destino(router))   # sin router no hay a quien preguntar (nada de "el de por defecto")
     s = mk_conectar(d)
     mapa = {}
     try:
@@ -3128,10 +3421,9 @@ def mk_abonados(router=None):
 
 def refrescar_abonados():
     """Refresca el mapa IP->abonado desde el MikroTik (solo si esta configurado). En 2do plano."""
-    routers = [r for r in cargar_routers() if r.get("ENABLED") == "1" and (r.get("HOST") or "")]
+    routers = [r for r in cargar_routers() if r.get("ENABLED") == "1" and r.get("USER") and r.get("PASS")]
     if not routers:
         return
-    multi = len(cargar_routers()) > 1
     # Cada router conoce SOLO a sus abonados. Con varios nodos hay que preguntarle a
     # todos y guardar la asignacion con su nodo: si no, los CPEs de los demas saldrian
     # sin nombre, o peor, se les pondria el del cliente que tiene esa misma IP en otro.
@@ -3144,19 +3436,20 @@ def refrescar_abonados():
         for ip, datos in (parcial or {}).items():
             datos = dict(datos)
             datos["router"] = r["id"]
-            datos["router_nombre"] = r.get("nombre") or r.get("HOST", "")
-            mapa[clave_cpe(ip, r["id"] if multi else "")] = datos
+            datos["router_nombre"] = r.get("nombre") or r["id"]
+            mapa[clave_cpe(ip, r["id"])] = datos      # siempre pid|ip, tambien con un solo punto
     if not mapa:
         return
     try:
-        tmp = ABONADOS_FILE + ".tmp"
-        json.dump({"ts": int(time.time()), "mapa": mapa}, open(tmp, "w", encoding="utf-8"))
+        tmp = "%s.%d.tmp" % (ABONADOS_FILE, os.getpid())
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump({"ts": int(time.time()), "mapa": mapa}, f)
         os.replace(tmp, ABONADOS_FILE)
     except OSError:
         pass
     _registrar_hist_abonados(mapa)
 
-ABON_HIST_FILE = "/var/log/suricata-abonados-hist.jsonl"
+ABON_HIST_FILE = nodos.ruta("estado", "abonados-hist.jsonl")
 _ABON_HIST_MAX = 40000                     # lineas a conservar tras rotar
 
 def _registrar_hist_abonados(mapa):
@@ -3197,10 +3490,17 @@ def _registrar_hist_abonados(mapa):
     except OSError:
         pass
 
-def historial_abonado(ip, ts):
-    """Quien tenia esa IP en el instante ts (ultimo cambio registrado con ts <= evento)."""
+def historial_abonado(ip, ts, rid=""):
+    """Quien tenia esa IP en el instante ts (ultimo cambio registrado con ts <= evento).
+    El historial va por identidad pid|ip (como el mapa de abonados): con `rid`, o con un
+    punto mirado, se busca la de ese punto; una clave pid|ip tambien vale como `ip`."""
     if not ip or not ts:
         return {}
+    if "|" not in ip:
+        try:
+            ip = clave_cpe(ip, rid)
+        except (ValueError, nodos.SinContexto):
+            return {}                    # en «Todos» y sin punto: no se adivina el abonado
     best = {}
     try:
         for ln in open(ABON_HIST_FILE, encoding="utf-8"):
@@ -3228,18 +3528,17 @@ def abonado_de(ip, rid="", mapa=None):
     que con cientos de filas es cuadratico."""
     if mapa is None:
         mapa = cargar_abonados().get("mapa") or {}
+    if "|" in (ip or ""):                       # ya viene la identidad pid|ip
+        rid, ip = rid_de(ip), ip_de(ip)
+    if not rid and nodos.hay_nodo() and not nodos.es_todos():
+        rid = nodos.nodo_actual()               # se esta mirando un punto: es de ese
     if rid:
         v = mapa.get(clave_cpe(ip, rid))
-        if v is not None:
-            return v
-    v = mapa.get(ip)
-    if v is not None:
-        return v
-    # registro antiguo (guardado cuando aun no se distinguian nodos)
-    for k, datos in mapa.items():
-        if ip_de(k) == ip and not rid:
-            return datos
-    return {}
+        return v if v is not None else {}
+    # sin punto (vista «Todos»): solo si la IP es de UN unico punto; con la misma IP en
+    # dos puntos no se elige uno al azar, que es dar el nombre del abonado equivocado
+    halladas = [datos for k, datos in mapa.items() if ip_de(k) == ip]
+    return halladas[0] if len(halladas) == 1 else {}
 
 def _mk_ips_listas_en(s_, listas):
     """{lista: set(ips)} de esas address-lists, sobre una conexion abierta. Una consulta
@@ -3262,8 +3561,10 @@ def _mk_ips_listas(router, listas):
         try: s_.close()
         except Exception: pass
 
-def _rid_entrada(k, v, rid_def):
-    return rid_de(k) or ((v or {}).get("router") or rid_def)
+def _rid_entrada(k, v, rid_def=""):
+    # el pid de la clave manda; una clave sin pid (registro de antes) NO se atribuye a
+    # ningun router "por defecto": se queda sin dueno y nadie la toca
+    return rid_de(k) or ((v or {}).get("router") if nodos.pid_valido((v or {}).get("router") or "") else "")
 
 def mk_sync_enviados():
     """Sincroniza el registro del panel con lo que REALMENTE hay en el MikroTik, para que el
@@ -3280,11 +3581,10 @@ def mk_sync_enviados():
         con TTL -> caduco en el router: se suelta, como siempre;
         permanente (politica, o sin TTL) -> NO se olvida: queda marcado "falta en el
         router" (en_router=False) para que "Recargar las listas" lo vuelva a cargar."""
-    routers = [r for r in cargar_routers() if r.get("ENABLED") == "1" and (r.get("HOST") or "")]
+    routers = [r for r in cargar_routers() if r.get("ENABLED") == "1" and r.get("USER") and r.get("PASS")]
     if not routers:
         return
-    multi = len(cargar_routers()) > 1
-    rid_def = routers[0]["id"]
+    rid_def = ""
     nowt = int(time.time())
     for list_key, ttl_key, sent_path in (("LIST", "TTL", MK_SENT), ("LIST_DNS", "TTL_DNS", MK_SENT_DNS)):
         # Se consulta CADA router y se compara solo contra SUS entradas. Mirar un solo
@@ -3319,7 +3619,7 @@ def mk_sync_enviados():
             for rid, por_lista in reales.items():
                 for lst, ips in por_lista.items():
                     for ip in ips:
-                        k = clave_cpe(ip, rid if multi else "")
+                        k = clave_cpe(ip, rid)
                         if k not in env:   # esta en el router pero no en el panel -> registrarlo
                             env[k] = {"cuando": nowt, "score": "", "por": "mikrotik", "manual": True,
                                       "router": rid, "lista": lst}
@@ -3350,9 +3650,8 @@ def recargar_listas(router, quien="?"):
     su address-list (alguien vacio la lista, se restauro un backup viejo, se cambio el
     router...). Las que ya estan se omiten; las que ahora estan en "nunca bloquear" no se
     cargan. Una sola conexion. (ok, mensaje)"""
-    rid = (router or {}).get("id", "")
-    rs = cargar_routers()
-    rid_def = rs[0]["id"] if rs else ""
+    rid = _router_destino(router)["id"]
+    rid_def = ""
     d = cargar_mk_de(router)
     pend = []            # (registro, clave, ip, lista, ttl, categoria)
     for list_key, ttl_key, path in (("LIST", "TTL", MK_SENT), ("LIST_DNS", "TTL_DNS", MK_SENT_DNS)):
@@ -3424,7 +3723,7 @@ def recargar_listas(router, quien="?"):
     return (tot["fallos"] == 0, cab + ". " + "; ".join(partes))
 
 # --- allowlist "nunca bloquear": IPs/CIDR que jamas van a cuarentena (infra, clientes clave) ---
-NUNCA_FILE = "/etc/suricata-nunca-bloquear.lst"
+NUNCA_FILE = nodos.ruta("conf", "nunca-bloquear.lst")
 
 def cargar_nunca():
     try:
@@ -3454,38 +3753,50 @@ def guardar_nunca(texto):
         pass
 
 def _chip_nodo_panel(clave):
-    """Etiqueta con el nodo. Vacia si la instalacion tiene un solo MikroTik."""
+    """Etiqueta con el nodo (el punto del que cuelga el CPE)."""
     r = rid_de(clave)
     if not r:
         return ""
-    nom = (router_por_id(r) or {}).get("nombre") or r
+    nom = nodos.nombre(r) if nodos.pid_valido(r) else r
     return ("<span class='nodochip' title='Este CPE cuelga de este MikroTik'>"
             + html.escape(nom) + "</span>")
 
 def _suf_nodo(clave):
-    """Sufijo para la bitacora: deja constancia de en que nodo se actuo."""
+    """Sufijo para la bitacora: deja constancia de en que nodo se actuo (pid y nombre)."""
     r = rid_de(clave)
     if not r:
         return ""
-    return " nodo=" + ((router_por_id(r) or {}).get("nombre") or r)
+    nom = nodos.nombre(r) if nodos.pid_valido(r) else r
+    return " nodo=%s%s" % (r, (" (%s)" % nom) if nom != r else "")
 
 def clave_cpe(ip, rid):
-    """Identidad de un CPE: con varios nodos es (router, IP). Tiene que coincidir con la
-    que usa el generador, porque el panel lee sus candidatos."""
-    return (rid + "|" + ip) if rid else ip
+    """Identidad de un CPE: SIEMPRE `pid|ip` (nodos.clave), tambien con un solo punto.
+    Tiene que coincidir con la que usa el generador, porque el panel lee sus candidatos.
+
+    Sin rid (un cuarentena.json de un nodo que no lo trae) vale el nodo que se mira; en
+    «Todos» o sin contexto eso es un error: nunca se devuelve la IP pelada."""
+    if not rid and nodos.hay_nodo() and not nodos.es_todos():
+        rid = nodos.nodo_actual()
+    return nodos.clave(rid, ip)
 
 def ip_de(clave):
     """La IP pelada, que es lo que se manda al router."""
     return clave.split("|", 1)[1] if "|" in clave else clave
 
 def rid_de(clave):
-    """A que router pertenece ("" si la instalacion tiene un solo nodo)."""
+    """A que router (punto) pertenece; "" si la clave no lo dice (registro viejo)."""
     return clave.split("|", 1)[0] if "|" in clave else ""
 
 def router_de_clave(clave):
-    """El router al que hay que hablarle para bloquear o liberar este CPE."""
-    r = rid_de(clave)
-    return (router_por_id(r) or router_defecto()) if r else router_defecto()
+    """El router al que hay que hablarle para bloquear o liberar este CPE: el del pid de
+    la propia clave, validado (nodos.exigir_pid). Nunca el del selector ni uno "por
+    defecto": una clave sin pid, o de un punto que ya no existe, no tiene destino y lanza
+    (NodoInvalido / NodoInexistente)."""
+    pid = nodos.exigir_pid(rid_de(clave or ""))
+    r = router_por_id(pid)
+    if r is None:
+        raise nodos.NodoInexistente(pid)
+    return r
 
 def mis_redes():
     """Redes que son TUYAS (abonados). MIS_REDES=CIDR,CIDR en el .conf; por defecto las
@@ -3559,7 +3870,7 @@ def nunca_bloquear(ip):
 # --- destinos confiables (falsos positivos): un DNS u otro destino que dispara alertas en
 # muchos CPEs. Al marcarlo, el generador deja de contar sus alertas y se liberan los CPEs
 # que fueron a la lista por su culpa. ---
-DEST_OK_FILE = "/etc/suricata-destinos-confianza.lst"
+DEST_OK_FILE = nodos.ruta("conf", "destinos-confianza.lst")
 
 def cargar_dest_ok():
     try:
@@ -3594,7 +3905,7 @@ def guardar_dest_ok_set(conjunto):
 # de estos NO es un ataque al DNS: la prueba es el dominio y la culpa es del CPE. El
 # generador los saca del ranking de victimas y la ficha lo dice como es. Distinto de
 # DEST_OK: ahi la alerta deja de contar para TODOS; aqui sigue contando para el CPE. ---
-RESOLUTORES_FILE = "/etc/suricata-resolutores.lst"
+RESOLUTORES_FILE = nodos.ruta("conf", "resolutores.lst")
 RESOLUTORES_DEFECTO = ("1.1.1.1", "1.1.1.2", "1.1.1.3", "1.0.0.1", "8.8.8.8", "8.8.4.4",
                        "9.9.9.9", "149.112.112.112", "208.67.222.222", "208.67.220.220",
                        "208.67.222.123", "208.67.220.123")   # OpenDNS FamilyShield
@@ -3677,31 +3988,37 @@ def excluir_destino(d):
     cur = _dest_ok_set(); cur.add(d)
     guardar_dest_ok_set(cur)                       # 1) destino a la lista de confiables
     liberados = 0
-    try:                                           # destinos por CPE del reporte actual (respaldo)
-        cq = json.load(open(f"{LOGDIR}/cuarentena.json", encoding="utf-8"))
-        cand_dst = {}
+    cand_dst = {}                                  # destinos por CPE del reporte de CADA punto (respaldo)
+    for pid in nodos.pids():                       # la exclusion de un destino publico vale en todos
+        cq = _cargar_cuarentena(pid)
         for key in ("candidatos", "dns_candidatos"):
             for c in cq.get(key, []):
-                cand_dst[clave_cpe(c.get("ip", ""), c.get("router", ""))] = c.get("destinos_ip", [])
-    except Exception:
-        cand_dst = {}
+                try:
+                    cand_dst[clave_cpe(c.get("ip", ""), c.get("router", "") or pid)] = c.get("destinos_ip", [])
+                except ValueError:
+                    continue
     for list_key, sent_path in (("LIST", MK_SENT), ("LIST_DNS", MK_SENT_DNS)):
-        env = cargar_enviados(sent_path); cambiado = False
+        env = cargar_enviados(sent_path)
+        sueltas = []
         for k in list(env.keys()):
             dips = (env[k].get("motivo") or {}).get("destinos_ip") or cand_dst.get(k) or []
             if d in dips:                          # 2) atribuible a ese destino -> liberar
-                # cada CPE se libera en SU router y en la lista que ese router tenga
-                r = router_de_clave(k); dr = cargar_mk_de(r); lst = dr.get(list_key, "")
+                # cada CPE se libera en SU router (el del pid de su clave) y en su lista
+                try:
+                    r = router_de_clave(k)
+                except (ValueError, LookupError):
+                    continue                       # sin punto valido no hay a quien pedirselo
+                dr = cargar_mk_de(r); lst = env[k].get("lista") or dr.get(list_key, "")
                 try:
                     if lst and dr.get("ENABLED") == "1":
                         mk_remove(ip_de(k), lista=lst, router=r)
                 except Exception:
-                    pass
-                env.pop(k, None); cambiado = True; liberados += 1
+                    continue                       # no se pudo: se queda registrada, como en el router
+                sueltas.append(k); liberados += 1
                 mk_log("LIBERADO-FALSO-POSITIVO", ip_de(k), getattr(CTX, "user", "?"),
                        f"destino={d} lista={lst}" + _suf_nodo(k))
-        if cambiado:
-            guardar_enviados(env, sent_path)
+        if sueltas:
+            quitar_enviados(sueltas, sent_path)
     globals()["FORCE_REGEN"] = True                # 3) recalcular candidatos sin ese destino
     bitacora("EXCLUIR-DESTINO", f"{d} -> {liberados} CPE liberado(s)")
     return liberados, f"Destino {d} marcado confiable; {liberados} CPE liberado(s) por falso positivo."
@@ -3759,8 +4076,9 @@ def categoria_de_cats(cats_top):
 
 def categoria_cpe(clave):
     """En que categoria cae ese CPE, segun el tipo de trafico que hace de verdad."""
-    for x in _cpes_de_reporte(None):
-        if clave_cpe(x.get("ip", ""), x.get("router", "")) == clave:
+    _r = rid_de(clave or "")
+    for x in _cpes_de_reporte(_r if nodos.pid_valido(_r) else None):
+        if clave_cpe(x.get("ip", ""), x.get("router", "") or _r) == clave:
             return categoria_de_cats(x.get("cats_top"))
     return CAT_OTROS[0]
 
@@ -3862,16 +4180,19 @@ def _motivo_bloqueo(clave):
     """Busca por que un CPE es candidato (firma, banda, score, conteos) en cuarentena.json,
     para guardarlo AL bloquear y poder explicar el bloqueo aunque despues deje de atacar.
     Recibe la IDENTIDAD (router, IP): con varios nodos dos CPEs distintos pueden tener la
-    misma IP y se guardaria el motivo del vecino."""
-    try:
-        cq = json.load(open(f"{LOGDIR}/cuarentena.json", encoding="utf-8"))
-    except Exception:
+    misma IP y se guardaria el motivo del vecino. Se mira el reporte del punto de la
+    clave, no el del nodo que se este mirando."""
+    pid = rid_de(clave or "")
+    if not nodos.pid_valido(pid):
+        return {}
+    cq = _cargar_cuarentena(pid)
+    if not cq:
         return {}
     for key, tipo, cnt, cntlbl, fir in (
             ("candidatos", "infeccion", "alertas_cnc", "alertas CnC", "firmas_cnc"),
             ("dns_candidatos", "dns", "alertas_dns", "alertas DNS", "firmas_dns")):
         for c in cq.get(key, []):
-            if clave_cpe(c.get("ip", ""), c.get("router", "")) == clave:
+            if clave_cpe(c.get("ip", ""), c.get("router", "") or pid) == clave:
                 return {"tipo": tipo, "banda": c.get("banda", ""), "score": c.get("riesgo", 0),
                         "firma": (c.get("firma", "") or "")[:120],
                         "conteo": f"{c.get(cnt, 0)} {cntlbl}, {c.get(fir, 0)} firma(s)",
@@ -3880,7 +4201,7 @@ def _motivo_bloqueo(clave):
     # CPE no es candidato confirmado, el motivo se arma con lo que uso la politica para
     # decidir (banda, puntaje y su desglose). Sin esto el bloqueo se quedaba sin motivo.
     for c in cq.get("top_riesgo", []):
-        if clave_cpe(c.get("ip", ""), c.get("router", "")) == clave:
+        if clave_cpe(c.get("ip", ""), c.get("router", "") or pid) == clave:
             return {"tipo": "politica", "banda": c.get("banda", ""), "score": c.get("riesgo", 0),
                     "firma": "", "desglose": c.get("desglose", ""),
                     "conteo": (f"{c.get('alertas', 0)} alertas, {c.get('destinos', 0)} destino(s) "
@@ -3888,48 +4209,74 @@ def _motivo_bloqueo(clave):
                     "destinos_ip": []}
     return {}
 
-def evaluar_bloqueos():
+def evaluar_bloqueos(pid=None):
     """Sella en cada entrada de cuarentena la ultima evaluacion (last_eval) y si el CPE
-    SIGUE activo. Barato (solo lee cuarentena.json); corre cada ciclo del hilo de fondo."""
-    try:
-        cq = json.load(open(f"{LOGDIR}/cuarentena.json", encoding="utf-8"))
-    except Exception:
+    SIGUE activo. Barato (solo lee cuarentena.json); corre cada ciclo del hilo de fondo,
+    POR PUNTO: solo toca las entradas `pid|...` de ese punto (con el reporte de uno solo,
+    las de los demas saldrian todas como "ya no sigue")."""
+    pid = nodos.exigir_pid(pid if pid is not None else nodos.nodo_actual())
+    cq = _cargar_cuarentena(pid)
+    if not cq:
         return
-    activos = ({clave_cpe(c.get("ip", ""), c.get("router", "")) for c in cq.get("candidatos", [])}
-               | {clave_cpe(c.get("ip", ""), c.get("router", "")) for c in cq.get("dns_candidatos", [])})
+    activos = ({clave_cpe(c.get("ip", ""), c.get("router", "") or pid) for c in cq.get("candidatos", [])}
+               | {clave_cpe(c.get("ip", ""), c.get("router", "") or pid) for c in cq.get("dns_candidatos", [])})
     now = int(time.time())
     for path in (MK_SENT, MK_SENT_DNS):
-        env = cargar_enviados(path)
-        if not env:
-            continue
-        for k, e in env.items():
-            e["last_eval"] = now
-            e["sigue"] = k in activos
-        guardar_enviados(env, path)
+        with _ENV_LOCK:                    # releido dentro del cerrojo: no pisa lo de otros hilos
+            env = cargar_enviados(path)
+            tocadas = 0
+            for k, e in env.items():
+                if rid_de(k) != pid:
+                    continue
+                e["last_eval"] = now
+                e["sigue"] = k in activos
+                tocadas += 1
+            if tocadas:
+                guardar_enviados(env, path)
 
 # --- salud del sensor: distinguir "sin amenazas" de "sin trafico / perdidas / reporte viejo" ---
-SENSOR_FILE = "/var/log/suricata-sensor.json"
-REPORT_CONF = "/etc/suricata-report.conf"   # comparte TELEGRAM_TOKEN/CHAT_ID con el informe
+SENSOR_FILE = "sensor.json"     # por nodo: nodos/<pid>/sensor.json (medir_sensor)
+REPORT_CONF = nodos.ruta("conf", "report.conf")   # comparte TELEGRAM_TOKEN (cifrado)/CHAT_ID con el informe
 
 def _hostname():
+    """Nombre que sale en los avisos: el de la empresa (IDS_EMPRESA o Ajustes). En el
+    contenedor el nombre de la maquina es el id del contenedor y no le dice nada a nadie."""
     try:
-        return os.uname().nodename
+        n = (cargar_empresa().get("nombre") or "").strip()
     except Exception:
-        return "suricata"
+        n = ""
+    return n or (os.environ.get("IDS_EMPRESA") or "").strip() or "IDS"
 
-def enviar_telegram(texto):
-    """Envia un aviso por Telegram si esta configurado en /etc/suricata-report.conf.
-    No lanza: si no hay token o falla la red, no pasa nada (el aviso igual queda en el panel)."""
-    tok = chat = None
+TELEGRAM_ASOC = "report:TELEGRAM_TOKEN"
+
+def telegram_token():
+    """El token de Telegram, descifrado en memoria ("" si no hay o no se puede descifrar)."""
+    tok = ""
     try:
         for ln in open(REPORT_CONF, encoding="utf-8"):
             ln = ln.strip()
             if ln.startswith("TELEGRAM_TOKEN="):
                 tok = ln.split("=", 1)[1].strip()
-            elif ln.startswith("TELEGRAM_CHAT_ID="):
+    except OSError:
+        return ""
+    try:
+        return secretos.descifrar(tok, TELEGRAM_ASOC)
+    except secretos.SecretoNoDisponible as ex:
+        SECRETOS_AVISO[TELEGRAM_ASOC] = str(ex)
+        return ""
+
+def enviar_telegram(texto):
+    """Envia un aviso por Telegram si esta configurado en conf/report.conf (token cifrado).
+    No lanza: si no hay token o falla la red, no pasa nada (el aviso igual queda en el panel)."""
+    chat = None
+    try:
+        for ln in open(REPORT_CONF, encoding="utf-8"):
+            ln = ln.strip()
+            if ln.startswith("TELEGRAM_CHAT_ID="):
                 chat = ln.split("=", 1)[1].strip()
     except OSError:
         return False
+    tok = telegram_token()
     if not (tok and chat):
         return False
     try:
@@ -3939,72 +4286,80 @@ def enviar_telegram(texto):
     except Exception:
         return False
 
-NOTIF_CUAR_FILE = "/var/log/suricata-notif-cuarentena.json"   # dedupe de avisos de cuarentena
+NOTIF_CUAR_FILE = nodos.ruta("estado", "notif-cuarentena.json")   # dedupe de avisos de cuarentena (por pid|ip)
+_NOTIF_LOCK = threading.Lock()
 
-def notificar_cuarentena(ip, tipo, lista, quien=""):
+def notificar_cuarentena(clave, tipo, lista, quien=""):
     """Aviso ACCIONABLE (Telegram) cuando un CPE va a cuarentena: cliente/abonado, confianza,
-    evidencia, accion aplicada y enlace a la ficha. Dedupe por IP: no re-notifica dentro de 6h."""
+    evidencia, accion aplicada y enlace a la ficha. Dedupe por IDENTIDAD (pid|ip): la misma
+    IP en dos puntos son dos abonados y dos avisos. No re-notifica dentro de 6h.
+
+    `clave` es `pid|ip`; una IP pelada solo vale si se esta mirando un punto concreto."""
+    if "|" not in (clave or ""):
+        try:
+            clave = clave_cpe(clave, "")      # el nodo que se mira; en «Todos» no hay a quien atribuirla
+        except (ValueError, nodos.SinContexto):
+            sys.stderr.write("aviso de cuarentena sin punto (%s): no se manda\n" % clave)
+            return
+    pid, ip = rid_de(clave), ip_de(clave)
     now = time.time()
-    try:
-        d = json.load(open(NOTIF_CUAR_FILE, encoding="utf-8"))
-    except Exception:
-        d = {}
-    if now - d.get(ip, 0) < 6 * 3600:
-        return
-    ab = abonado_de(ip)
+    with _NOTIF_LOCK:
+        try:
+            d = json.load(open(NOTIF_CUAR_FILE, encoding="utf-8"))
+        except Exception:
+            d = {}
+        if now - d.get(clave, 0) < 6 * 3600:
+            return
+    ab = abonado_de(ip, pid)
     cliente = f"{ab.get('nombre')} ({ip})" if ab.get("nombre") else ip
     conf = ""; ev = ""
-    try:
-        cq = json.load(open(f"{LOGDIR}/cuarentena.json", encoding="utf-8"))
-        for k in ("candidatos", "dns_candidatos"):
-            for c in cq.get(k, []):
-                if c.get("ip") == ip:
-                    conf = c.get("confianza", "")
-                    ev = "; ".join((c.get("evidencias") or [])[:3])
-                    break
-    except Exception:
-        pass
+    cq = _cargar_cuarentena(pid) if nodos.pid_valido(pid) else {}
+    for k in ("candidatos", "dns_candidatos"):
+        for c in cq.get(k, []):
+            if c.get("ip") == ip and (c.get("router") or pid) == pid:
+                conf = c.get("confianza", "")
+                ev = "; ".join((c.get("evidencias") or [])[:3])
+                break
     base = conf_dash_get("PANEL_URL", "").rstrip("/")
-    link = f"{base}/cuarentena/ficha?ip={ip}" if base else f"panel -> Cuarentena -> Ver evidencia ({ip})"
-    txt = (f"\U0001f6a8 Cuarentena [{_hostname()}]: {cliente}\n"
+    q = urllib.parse.urlencode({"ip": ip, "nodo": pid})
+    link = f"{base}/cuarentena/ficha?{q}" if base else f"panel -> Cuarentena -> Ver evidencia ({ip})"
+    txt = (f"\U0001f6a8 Cuarentena [{_hostname()} / {nodos.nombre(pid)}]: {cliente}\n"
            f"Accion: enviado a lista '{lista}' ({tipo})" + (f" | confianza {conf}" if conf else "") + "\n"
            + (f"Evidencia: {ev}\n" if ev else "")
            + (f"Por: {quien}\n" if quien else "")
            + f"Ficha: {link}")
     if enviar_telegram(txt):
-        d[ip] = int(now)
-        try:
-            json.dump(d, open(NOTIF_CUAR_FILE, "w", encoding="utf-8"))
-        except OSError:
-            pass
-
-def _suricatasc(cmd):
-    try:
-        r = subprocess.run(["suricatasc", "-c", cmd], capture_output=True, text=True, timeout=8)
-        return json.loads(r.stdout) if r.returncode == 0 and r.stdout.strip() else None
-    except Exception:
-        return None
-
-def _svc_activo(nombre):
-    try:
-        return subprocess.run(["systemctl", "is-active", "--quiet", nombre],
-                              timeout=5).returncode == 0
-    except Exception:
-        return False
+        with _NOTIF_LOCK:
+            try:
+                d = json.load(open(NOTIF_CUAR_FILE, encoding="utf-8"))
+            except Exception:
+                d = {}
+            d[clave] = int(now)
+            d = {k: v for k, v in d.items() if now - v < 7 * 86400}
+            try:
+                tmp = "%s.%d.tmp" % (NOTIF_CUAR_FILE, os.getpid())
+                with open(tmp, "w", encoding="utf-8") as f:
+                    json.dump(d, f)
+                os.replace(tmp, NOTIF_CUAR_FILE)
+            except OSError:
+                pass
 
 SALUD_DROPS = 0.02      # perdida de captura a partir de la cual el dato ya no es fiable
 SALUD_EVE_MUDO = 300    # segundos sin un evento nuevo en eve.json
 SALUD_DISCO = 90        # % de uso del disco que empieza a comprometer la captura
 SALUD_COBERTURA = 95    # % de cobertura por debajo del cual NO se afirma que no hay amenazas
+SALUD_TZSP_MUDO = 90    # el receptor reescribe tzsp.json cada 30 s
+SALUD_ESTADO_VIEJO = 120   # estado.json lo reescribe el orquestador cada 15 s
 
-def suricata_stats(tam=3 * 1024 * 1024):
-    """Los contadores del ultimo evento 'stats' de eve.json.
+def suricata_stats(pid=None, tam=3 * 1024 * 1024):
+    """Los contadores del ultimo evento 'stats' del eve.json del punto.
 
     Suricata publica ahi mucho mas que los drops: si un memcap se agota, empieza a tirar
     flujos o a no reensamblar, y las alertas que faltan no dejan ningun rastro. Mirar
     solo kernel_drops deja ciego justo al caso mas enganoso, porque el kernel no ha
     tirado nada: lo tira Suricata por quedarse sin memoria."""
-    ruta = f"{LOGDIR}/eve.json"
+    pid = nodos.exigir_pid(pid if pid is not None else nodos.nodo_actual())
+    ruta = nodos.eve_vivo(pid)
     try:
         with open(ruta, "rb") as f:
             f.seek(0, 2)
@@ -4042,12 +4397,14 @@ def salud_memcaps(st):
             out[etiqueta] = v
     return out
 
-TZSP_ESTADO = "/var/log/suricata-tzsp.json"
 COBERTURA_MUDO = 600     # segundos sin un solo paquete de un nodo -> ese nodo esta a ciegas
 COBERTURA_RECHAZO = 0.20 # fraccion de rechazo a partir de la cual el espejo esta mal dirigido
 
-def cobertura_tzsp(ahora=None):
+def cobertura_tzsp(ahora=None, pid=None):
     """Que parte del espejo esta llegando de verdad, y de quien.
+
+    Lee el latido del receptor TZSP del punto (run/<pid>/tzsp.json, mismo formato que el
+    del sensor viejo).
 
     Existe por un caso real: el MikroTik empezo a mandar el espejo a otra direccion, el
     receptor lo rechazo entero por no estar en la lista de origenes, y el panel siguio
@@ -4055,8 +4412,9 @@ def cobertura_tzsp(ahora=None):
     un sensor ciego. Lo que se mira no es cuanto entra, sino cuanto se APROVECHA y si
     todos los nodos esperados siguen hablando."""
     ahora = ahora or time.time()
+    pid = nodos.exigir_pid(pid if pid is not None else nodos.nodo_actual())
     try:
-        d = json.load(open(TZSP_ESTADO, encoding="utf-8"))
+        d = json.load(open(nodos.tzsp_json(pid), encoding="utf-8"))
     except (OSError, ValueError):
         return {}
     ven = d.get("ventana") or {}
@@ -4066,7 +4424,8 @@ def cobertura_tzsp(ahora=None):
     o = {"ts": int(d.get("ts", 0)), "aceptados": acep, "rechazados": rech,
          "ratio_rechazo": round(rech / total, 4) if total else 0.0,
          "intrusos": sorted((ven.get("rechazados") or {}).keys()),
-         "mudos": [], "nodos": {}, "edad": int(ahora - d.get("ts", 0))}
+         "mudos": [], "nodos": {}, "edad": int(ahora - d.get("ts", 0)),
+         "recorte_bytes": int(d.get("recorte_bytes", 0) or 0)}
     for origen in (d.get("esperados") or []):
         # un /32 en la lista es un nodo concreto; una red puede cubrir a varios
         visto = 0
@@ -4105,31 +4464,45 @@ def desperdicio_espejo(d):
     return {"desperdicio": round(frac, 4),
             "desperdicio_alto": frac >= DESPERDICIO_AVISO}
 
-def medir_sensor():
-    """Mide el estado real del sensor (captura, perdidas, servicios, frescura del reporte).
-    Corre en el hilo de fondo y cachea en SENSOR_FILE; el request solo lee el cache."""
+def _estado_fresco():
+    """estado.json y si es reciente (el orquestador lo reescribe cada 15 s)."""
+    est = nodos.leer_estado() or {}
+    try:
+        edad = time.time() - float(est.get("ts") or 0)
+    except (TypeError, ValueError):
+        edad = None
+    return est, (edad is not None and edad < SALUD_ESTADO_VIEJO)
+
+def _corriendo(cont, parte):
+    return ((cont or {}).get(parte) or {}).get("estado") == "running"
+
+def medir_sensor(pid=None):
+    """Mide el estado real del sensor de UN punto (captura, perdidas, servicios, frescura del
+    reporte). Corre en el hilo de fondo y cachea en nodos/<pid>/sensor.json; el request
+    solo lee el cache. Lo que antes salia de systemctl y suricatasc sale ahora de estado.json
+    (contenedores y contadores del Suricata del punto), de su tzsp.json y de su eve.json."""
+    pid = nodos.exigir_pid(pid if pid is not None else nodos.nodo_actual())
+    ruta_s = nodos.salida(SENSOR_FILE, pid)
     prev = {}
     try:
-        prev = json.load(open(SENSOR_FILE, encoding="utf-8"))
+        prev = json.load(open(ruta_s, encoding="utf-8"))
     except Exception:
         pass
     now = time.time()
-    o = {"ts": int(now)}
-    o["suricata"] = _svc_activo("suricata")
-    o["tzsp_mode"] = os.path.exists("/etc/systemd/system/tzsp-decap.service")
-    o["tzsp"] = _svc_activo("tzsp-decap") if o["tzsp_mode"] else None
-    # interfaces capturadas + contadores acumulados
-    ifl = _suricatasc("iface-list")
-    ifaces = ((ifl or {}).get("message", {}) or {}).get("ifaces", []) or []
-    o["ifaces"] = ifaces
-    pkts = drop = 0
-    for i in ifaces:
-        st = _suricatasc(f"iface-stat {i}")
-        msg = (st or {}).get("message", {}) or {}
-        try:
-            pkts += int(msg.get("pkts", 0)); drop += int(msg.get("drop", 0))
-        except (TypeError, ValueError):
-            pass
+    est, fresco = _estado_fresco()
+    p = nodos.punto(pid) or {}
+    cont = p.get("contenedores") or {}
+    o = {"ts": int(now), "pid": pid, "nombre": nodos.nombre(pid)}
+    o["suricata"] = _corriendo(cont, "suricata")
+    o["tzsp_mode"] = True
+    o["tzsp"] = _corriendo(cont, "vpn")
+    _st = suricata_stats(pid)
+    try:
+        _kp = int((_st.get("capture") or {}).get("kernel_packets", 0))
+        _kd = int((_st.get("capture") or {}).get("kernel_drops", 0))
+    except (TypeError, ValueError):
+        _kp = _kd = 0
+    pkts, drop = _kp, _kd
     o["pkts"] = pkts; o["drop"] = drop
     # tasas: delta desde la medicion anterior
     dt = now - prev.get("ts", 0) if prev.get("ts") else 0
@@ -4137,51 +4510,40 @@ def medir_sensor():
     o["pps"] = round(dpkts / dt, 1) if dt > 0 and dpkts >= 0 else None
     ddrop = drop - prev.get("drop", drop)
     o["drop_ratio"] = round(ddrop / dpkts, 4) if dt > 0 and dpkts > 0 and ddrop >= 0 else 0.0
-    # crecimiento de eve.json (respaldo por si iface-stat no da paquetes)
+    # crecimiento de eve.json (respaldo por si los contadores no dan paquetes)
+    eve = nodos.eve_vivo(pid)
     try:
-        sz = os.path.getsize(f"{LOGDIR}/eve.json")
+        sz = os.path.getsize(eve)
     except OSError:
         sz = prev.get("eve_size", 0)
     o["eve_size"] = sz
     o["eve_bps"] = round((sz - prev.get("eve_size", sz)) / dt, 0) if dt > 0 and sz >= prev.get("eve_size", sz) else None
     # frescura del reporte
-    nr = newest_report()
+    nr = newest_report(pid)
     o["reporte_edad"] = int(now - os.path.getmtime(nr)) if nr and os.path.exists(nr) else None
     # amenazas activas (para separar "sano sin amenazas" de "con CPEs en riesgo")
-    try:
-        cq = json.load(open(f"{LOGDIR}/cuarentena.json", encoding="utf-8"))
-        o["candidatos"] = len(cq.get("candidatos", [])) + len(cq.get("dns_candidatos", []))
-    except Exception:
-        o["candidatos"] = 0
+    cq = _cargar_cuarentena(pid)
+    o["candidatos"] = len(cq.get("candidatos", [])) + len(cq.get("dns_candidatos", []))
     # clasificacion en un nivel + titulo legible
     hay_trafico = (o["pps"] is not None and o["pps"] >= 1) or (o["eve_bps"] is not None and o["eve_bps"] >= 1)
-    o["cobertura"] = cob = cobertura_tzsp(now)
-    _st = suricata_stats()
+    o["cobertura"] = cob = cobertura_tzsp(now, pid)
     o["memcaps"] = salud_memcaps(_st)
-    try:
-        _kp = int((_st.get("capture") or {}).get("kernel_packets", 0))
-        _kd = int((_st.get("capture") or {}).get("kernel_drops", 0))
-    except (TypeError, ValueError):
-        _kp = _kd = 0
     o["kernel_packets"], o["kernel_drops"] = _kp, _kd
     o["drops_pct"] = round(100.0 * _kd / _kp, 2) if _kp else 0.0
     o["reglas"] = int((_st.get("detect") or {}).get("engines", [{}])[0].get("rules_loaded", 0)) \
         if isinstance((_st.get("detect") or {}).get("engines"), list) else 0
+    libre = (est.get("disco") or {}).get("srv_ids_libre_pct")
+    o["disco_pct"] = round(100.0 - float(libre), 1) if isinstance(libre, (int, float)) else None
     try:
-        _sv = os.statvfs(LOGDIR)
-        o["disco_pct"] = round(100.0 * (_sv.f_blocks - _sv.f_bfree) / _sv.f_blocks, 1)
-    except (OSError, ZeroDivisionError):
-        o["disco_pct"] = None
-    try:
-        o["eve_edad"] = int(now - os.path.getmtime(f"{LOGDIR}/eve.json"))
+        o["eve_edad"] = int(now - os.path.getmtime(eve))
     except OSError:
         o["eve_edad"] = None
-    if not o["suricata"]:
+    if not fresco or not p:
+        o["nivel"], o["titulo"] = "warn", "Sin estado reciente del orquestador: no se sabe como esta el punto"
+    elif not o["suricata"]:
         o["nivel"], o["titulo"] = "down", "Sensor detenido"
     elif o["tzsp_mode"] and not o["tzsp"]:
         o["nivel"], o["titulo"] = "warn", "Receptor TZSP caido"
-    elif not ifaces:
-        o["nivel"], o["titulo"] = "warn", "Sin interfaz de captura"
     elif cob and cob.get("ratio_rechazo", 0) >= COBERTURA_RECHAZO:
         # lo mas enganoso de todo: SI hay trafico, pero se esta tirando casi entero
         o["nivel"] = "warn"
@@ -4247,32 +4609,202 @@ def medir_sensor():
     mal = o["nivel"] in ("warn", "down")
     era_mal = prev.get("alert_estado", "ok") in ("warn", "down")
     aviso = None
+    donde = "%s / %s" % (_hostname(), nodos.nombre(pid))
     if mal and (not era_mal or o["titulo"] != o["alert_titulo"] or now - o["alert_ts"] > 6 * 3600):
         ico = "⛔" if o["nivel"] == "down" else "⚠️"
         det = []
         if o.get("pps") is not None: det.append(f"{o['pps']:,.0f} pkts/s")
         if o.get("drop_ratio"): det.append(f"perdidas {o['drop_ratio']*100:.1f}%")
         if o.get("reporte_edad") is not None: det.append(f"reporte hace {o['reporte_edad']//60} min")
-        aviso = f"{ico} Suricata [{_hostname()}]: {o['titulo']}" + (" (" + ", ".join(det) + ")" if det else "")
+        aviso = f"{ico} Suricata [{donde}]: {o['titulo']}" + (" (" + ", ".join(det) + ")" if det else "")
     elif era_mal and not mal:
-        aviso = f"✅ Suricata [{_hostname()}]: sensor recuperado ({o['titulo']})"
+        aviso = f"✅ Suricata [{donde}]: sensor recuperado ({o['titulo']})"
     if aviso:
         enviar_telegram(aviso)
         o["alert_estado"] = o["nivel"]; o["alert_titulo"] = o["titulo"]; o["alert_ts"] = int(now)
     try:
-        tmp = SENSOR_FILE + ".tmp"
-        json.dump(o, open(tmp, "w", encoding="utf-8"))
-        os.replace(tmp, SENSOR_FILE)
+        tmp = "%s.%d.tmp" % (ruta_s, os.getpid())
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(o, f)
+        os.replace(tmp, ruta_s)
     except OSError:
         pass
+    return o
 
-def estado_sensor():
+_NIVEL_PESO = {"down": 3, "warn": 2, "ok": 1}
+
+def estado_sensor(pid=None):
+    """Lo ultimo que midio medir_sensor() del nodo que se mira (o del dado). En «Todos», el
+    PEOR de los puntos, con su nombre delante: un punto ciego no lo tapa otro sano."""
+    nodo = pid if pid is not None else (nodos.nodo_actual() if nodos.hay_nodo() else nodos.TODOS)
+    if nodo != nodos.TODOS:
+        try:
+            return json.load(open(nodos.salida(SENSOR_FILE, nodos.exigir_pid(nodo)), encoding="utf-8"))
+        except Exception:
+            return {}
+    peor = {}
+    for p in nodos.pids():
+        try:
+            s = json.load(open(nodos.salida(SENSOR_FILE, p), encoding="utf-8"))
+        except Exception:
+            continue
+        if not peor or _NIVEL_PESO.get(s.get("nivel"), 0) > _NIVEL_PESO.get(peor.get("nivel"), 0):
+            peor = dict(s)
+            peor["titulo"] = "%s: %s" % (nodos.nombre(p), s.get("titulo", ""))
+    return peor
+
+# --- Salud por etapas (CONTRATO-F2 §10.6) ------------------------------------------------
+# Por punto y por separado: VPN conectada, TZSP recibido, trafico procesado por Suricata
+# (captura y descartes con su alcance), eventos al dia y datos consultables. "VPN arriba",
+# "contenedor en marcha" o "cero alertas" NO son sano: cada etapa dice lo suyo.
+SALUD_ESTADOS = ("operativa", "degradada", "sin datos", "desconectada", "deshabilitada", "desconocido")
+
+_ETAPAS = (("vpn", "VPN"), ("tzsp", "Espejo TZSP"), ("suricata", "Suricata"),
+           ("eventos", "Eventos"), ("datos", "Datos consultables"))
+
+def _etapa(ok, detalle, **extra):
+    d = {"ok": ok, "estado": "ok" if ok else "fallo", "detalle": detalle}
+    d.update(extra)
+    return d
+
+def retencion_efectiva(pid):
+    """Desde cuando hay eventos de verdad para ese punto. Si el orquestador la publica en
+    estado.json (`retencion`: {desde, borrado_anticipado}) se usa esa; si no, se mira la
+    marca de tiempo del primer evento del fichero rotado mas viejo. Nunca se promete el
+    objetivo de 30 dias: se dice la fecha que hay."""
+    p = nodos.punto(pid) or {}
+    r = p.get("retencion")
+    if isinstance(r, dict) and r.get("desde") not in (None, ""):
+        desde = r.get("desde")
+        if isinstance(desde, str):
+            desde = _ts_evento(desde) or None
+        return {"desde": int(desde) if desde else None, "fuente": "orquestador",
+                "anticipado": bool(r.get("borrado_anticipado") or r.get("anticipado"))}
+    fs = []
+    for _pid, f in nodos.ficheros_eventos(pid):
+        try:
+            if os.path.islink(f):
+                continue                  # nunca seguir enlaces de un directorio de datos
+            fs.append((os.path.getmtime(f), f))
+        except OSError:
+            continue
+    for _mt, f in sorted(fs):
+        ts = _primer_evento(f)
+        if ts:
+            return {"desde": int(ts), "fuente": "ficheros", "anticipado": None}
+    return {"desde": None, "fuente": "ficheros", "anticipado": None}
+
+def _ts_evento(txt):
+    for fmt in ("%Y-%m-%dT%H:%M:%S.%f%z", "%Y-%m-%dT%H:%M:%S%z"):
+        try:
+            return datetime.strptime(txt, fmt).timestamp()
+        except (ValueError, TypeError):
+            pass
+    return 0
+
+def _primer_evento(ruta, tope=65536):
+    """Marca del primer evento de un fichero (vivo o .gz rotado), leyendo como mucho `tope`
+    bytes descomprimidos."""
     try:
-        return json.load(open(SENSOR_FILE, encoding="utf-8"))
-    except Exception:
-        return {}
+        if ruta.endswith(".gz"):
+            import gzip
+            with gzip.open(ruta, "rb") as f:
+                bloque = f.read(tope)
+        else:
+            with open(ruta, "rb") as f:
+                bloque = f.read(tope)
+    except (OSError, EOFError):
+        return 0
+    for linea in bloque.decode("utf-8", "replace").split("\n")[:50]:
+        m = _RE["ts"].search(linea)
+        if m:
+            t = _ts_evento(m.group(1))
+            if t:
+                return t
+    return 0
 
-POL_NOTIF = "/var/log/suricata-politica-notif.json"   # dedupe de la accion 'notificar'
+def salud_punto(pid):
+    """Salud de UN punto por etapas, desde estado.json (lo publica el orquestador cada 15 s),
+    el latido TZSP y los ficheros de eventos del punto. Sin systemctl ni suricatasc.
+
+    {"pid", "nombre", "estado" (SALUD_ESTADOS), "motivo", "etapas": [{id, nombre, estado
+     (ok|fallo), ok, detalle, ...}] en el orden vpn, tzsp, suricata, eventos, datos,
+     "etapas_por_id": {id: etapa}, "captura": {recorte_bytes, redes, alcance}, "retencion"}"""
+    pid = nodos.exigir_pid(pid)
+    now = time.time()
+    est, fresco = _estado_fresco()
+    p = nodos.punto(pid) or {}
+    cont = p.get("contenedores") or {}
+    vc = p.get("vpn_cliente") or {}
+    tz = p.get("tzsp") or {}
+    su = p.get("suricata") or {}
+    cob = cobertura_tzsp(now, pid)
+    et = {}
+    # 1) VPN: el MikroTik conectado a SU contenedor vpn (no basta con que el contenedor viva)
+    vpn_ok = bool(vc.get("conectado")) and _corriendo(cont, "vpn")
+    et["vpn"] = _etapa(vpn_ok,
+                       ("conectada desde %s" % vc.get("ip_real")) if vpn_ok else
+                       ("contenedor vpn %s, MikroTik %s" % ((cont.get("vpn") or {}).get("estado", "?"),
+                                                           "conectado" if vc.get("conectado") else "sin conectar")),
+                       desde=vc.get("desde"))
+    # 2) TZSP: el receptor late y le llega espejo del origen permitido
+    edad_tz = tz.get("edad_s")
+    tz_ok = edad_tz is not None and edad_tz < SALUD_TZSP_MUDO and bool(tz.get("tx"))
+    rech = (cob or {}).get("ratio_rechazo", 0)
+    et["tzsp"] = _etapa(tz_ok and rech < COBERTURA_RECHAZO,
+                        "sin latido del receptor" if edad_tz is None else
+                        ("latido hace %ds, %s paquetes reenviados, %s rechazados" % (
+                            edad_tz, tz.get("tx"), tz.get("rechazados"))),
+                        rechazo=rech, avisos=[a for a in (p.get("avisos") or []) if "ESPEJO" in a])
+    # 3) Suricata: contadores de captura y descartes, con su alcance (desde que arranco)
+    kp, kd = su.get("kernel_packets"), su.get("kernel_drops")
+    drops_pct = round(100.0 * kd / kp, 2) if isinstance(kp, int) and kp and isinstance(kd, int) else None
+    st_edad = su.get("stats_edad_s")
+    su_ok = (_corriendo(cont, "suricata") and isinstance(kp, int) and kp > 0
+             and st_edad is not None and st_edad < SALUD_EVE_MUDO)
+    et["suricata"] = _etapa(su_ok and (drops_pct is None or drops_pct <= SALUD_DROPS * 100),
+                            "contenedor %s, %s paquetes capturados, %s descartados%s" % (
+                                (cont.get("suricata") or {}).get("estado", "?"), kp, kd,
+                                (" (%.2f%%)" % drops_pct) if drops_pct is not None else ""),
+                            kernel_packets=kp, kernel_drops=kd, drops_pct=drops_pct,
+                            alcance="acumulado desde el ultimo arranque del Suricata del punto",
+                            reglas=su.get("reglas_cargadas"))
+    # 4) eventos al dia
+    try:
+        eve_edad = int(now - os.path.getmtime(nodos.eve_vivo(pid)))
+    except OSError:
+        eve_edad = None
+    et["eventos"] = _etapa(eve_edad is not None and eve_edad < SALUD_EVE_MUDO,
+                           "sin eve.json" if eve_edad is None else "ultimo evento escrito hace %ds" % eve_edad,
+                           edad_s=eve_edad)
+    # 5) datos consultables: el directorio del punto se puede leer
+    try:
+        consultable = os.path.isdir(nodos.dir_eventos(pid)) and os.access(nodos.dir_eventos(pid), os.R_OK)
+    except Exception:
+        consultable = False
+    et["datos"] = _etapa(consultable, "eventos legibles" if consultable else "no se pueden leer los eventos")
+    captura = {"recorte_bytes": (cob or {}).get("recorte_bytes") or 10000,
+               "redes": list(p.get("redes") or []),
+               "alcance": "captura reducida: los primeros 10 KB de cada conexion de los prefijos vigilados"}
+    # estado global
+    if not fresco or not p:
+        estado, motivo = "desconocido", "sin estado reciente del orquestador"
+    elif p.get("deseado") not in (None, "", "activo"):
+        estado, motivo = "deshabilitada", "punto parado (deseado=%s)" % p.get("deseado")
+    elif not et["vpn"]["ok"]:
+        estado, motivo = "desconectada", et["vpn"]["detalle"]
+    elif not (tz_ok and isinstance(kp, int) and kp > 0):
+        estado, motivo = "sin datos", "VPN arriba pero no llega espejo procesado"
+    elif all(e["ok"] for e in et.values()):
+        estado, motivo = "operativa", "todas las etapas al dia"
+    else:
+        estado = "degradada"
+        motivo = ", ".join(nom for k, nom in _ETAPAS if not et[k]["ok"])
+    etapas = [dict(et[k], id=k, nombre=nom) for k, nom in _ETAPAS]
+    return {"pid": pid, "nombre": nodos.nombre(pid), "estado": estado, "motivo": motivo,
+            "nota": motivo, "etapas": etapas, "etapas_por_id": et, "captura": captura,
+            "retencion": retencion_efectiva(pid), "avisos": list(p.get("avisos") or [])}
+POL_NOTIF = nodos.ruta("estado", "politica-notif.json")   # dedupe de la accion 'notificar'
 POL_ACCIONES = ("nada", "cuarentena", "dns", "notificar")   # valores heredados por banda
 # Politica por CLASE: para cada clase de abuso, desde que riesgo se actua. El destino es
 # siempre la address-list de esa clase (lista_de_categoria).
@@ -4315,31 +4847,40 @@ def accion_para(cat, banda, m=None):
         return p
     return "cuarentena" if _BANDA_NIVEL.get((banda or "").upper(), 0) >= _POL_UMBRAL[p] else "nada"
 
-def aplicar_politicas():
+def aplicar_politicas(pid=None):
     """Aplica la politica de cada CLASE a los CPEs del Top: cuarentena en la lista de su
     clase, solo notificar, o nada. Las entradas 'pol' las gestiona ESTA funcion (entran
-    cuando el CPE califica, salen cuando deja de calificar). Solo con MikroTik habilitado
-    y POL_AUTO."""
-    m = cargar_mk()
-    if not (mk_configurado() and m.get("ENABLED") == "1" and m.get("POL_AUTO") == "1"):
+    cuando el CPE califica, salen cuando deja de calificar). Solo con el router del punto
+    habilitado y POL_AUTO.
+
+    Corre POR PUNTO: lee el Top de ese punto y solo mete o saca claves `pid|...` suyas.
+    Sin ese filtro, "sacar los que ya no califican" liberaria a los CPEs de los demas
+    puntos (que no estan en el Top de este). Antes de cada envio se exige evidencia
+    reciente (CONTRATO-F2 §10.4): con evidencia vieja la accion automatica no se hace."""
+    pid = nodos.exigir_pid(pid if pid is not None else nodos.nodo_actual())
+    r = router_por_id(pid)
+    m = cargar_mk_de(r)
+    if not (mk_listo(m) and m.get("POL_AUTO") == "1"):
         return
-    try:
-        top = json.load(open(f"{LOGDIR}/cuarentena.json", encoding="utf-8")).get("top_riesgo", [])
-    except Exception:
-        return
+    cq = _cargar_cuarentena(pid)
+    if not cq:
+        return                             # sin reporte de este punto no se decide nada
+    top = cq.get("top_riesgo", [])
     deseado = {}; a_notificar = {}
     for c in top:
         ip = c.get("ip"); sc = c.get("riesgo", "")
         if not ip:
             continue
+        if (c.get("router") or pid) != pid:
+            continue                       # de otro punto: no es asunto de este ciclo
         cat = categoria_de_cats(c.get("cats_top"))
         act = accion_para(cat, c.get("banda", ""), m)
-        k = clave_cpe(ip, c.get("router", ""))   # a que nodo pertenece este CPE
+        k = clave_cpe(ip, pid)             # a que nodo pertenece este CPE
         if act == "cuarentena":
             deseado[k] = (sc, cat)
         elif act == "notificar":
             a_notificar[k] = (sc, c.get("banda", ""), cat)
-    # --- accion notificar (dedupe: 1 aviso cada 6h por IP) ---
+    # --- accion notificar (dedupe: 1 aviso cada 6h por pid|ip) ---
     if a_notificar:
         try:
             nv = json.load(open(POL_NOTIF, encoding="utf-8"))
@@ -4354,19 +4895,25 @@ def aplicar_politicas():
         nv = {k: v for k, v in nv.items() if ahora - v < 7 * 86400}   # limpiar viejos
         if cambio_n:
             try:
-                with open(POL_NOTIF + ".tmp", "w", encoding="utf-8") as f:
+                tmp = "%s.%d.tmp" % (POL_NOTIF, os.getpid())
+                with open(tmp, "w", encoding="utf-8") as f:
                     json.dump(nv, f)
-                os.replace(POL_NOTIF + ".tmp", POL_NOTIF)
+                os.replace(tmp, POL_NOTIF)
             except OSError:
                 pass
     # --- cuarentena: cada CPE a la lista de SU clase, en SU router ---
-    env = cargar_enviados(MK_SENT); cambiado = False
+    env = cargar_enviados(MK_SENT)
+    nuevas = {}
     for k, (sc, cat) in deseado.items():
         if k in env:
             continue
-        r = router_de_clave(k); dr = cargar_mk_de(r)
         lst = lista_de_categoria(cat)
-        if not lst or dr.get("ENABLED") != "1":
+        if not lst:
+            continue
+        ev = evidencia_reciente(k, cq)
+        if not ev["ok"]:
+            mk_log("POLITICA-EVIDENCIA-VIEJA", ip_de(k), "politica",
+                   f"clase={cat} riesgo={sc} {ev['detalle']} (no se envia)" + _suf_nodo(k))
             continue
         try:
             ok, err = mk_add(ip_de(k), comment=f"suricata politica {cat} riesgo {sc} {time.strftime('%Y-%m-%d %H:%M')}",
@@ -4374,45 +4921,148 @@ def aplicar_politicas():
         except Exception:
             ok = False
         if ok:
-            env[k] = {"cuando": int(time.time()), "score": sc, "por": "politica", "manual": False, "pol": True,
-                      "router": r.get("id", ""), "categoria": cat, "lista": lst, "motivo": _motivo_bloqueo(k)}
-            notificar_cuarentena(ip_de(k), "politica de clase %s" % cat, lst, quien="politica")
+            nuevas[k] = {"cuando": int(time.time()), "score": sc, "por": "politica", "manual": False, "pol": True,
+                         "router": pid, "categoria": cat, "lista": lst, "motivo": _motivo_bloqueo(k)}
+            notificar_cuarentena(k, "politica de clase %s" % cat, lst, quien="politica")
             mk_log("POLITICA-ENVIADO", ip_de(k), "politica",
-                   f"lista={lst} clase={cat} riesgo={sc}" + _suf_nodo(k)); cambiado = True
+                   f"lista={lst} clase={cat} riesgo={sc}" + _suf_nodo(k))
+    sueltas = []
     for k in list(env.keys()):        # sacar los que entraron por politica y ya no califican
+        if rid_de(k) != pid:
+            continue                   # de otro punto: ni se mira
         if env[k].get("pol") and k not in deseado:
-            r = router_de_clave(k); dr = cargar_mk_de(r)
             # de la lista en la que ESTA (la guardada), no de la que le tocaria hoy
-            lst = env[k].get("lista") or dr.get("LIST", "")
+            lst = env[k].get("lista") or m.get("LIST", "")
             if not lst:
                 continue
             try:
                 mk_remove(ip_de(k), lista=lst, router=r)
             except Exception:
                 continue
-            env.pop(k, None)
+            sueltas.append(k)
             mk_log("POLITICA-LIBERADO", ip_de(k), "politica", f"lista={lst}" + _suf_nodo(k))
-            cambiado = True
-    if cambiado:
-        guardar_enviados(env, MK_SENT)
+    _registrar_enviados(MK_SENT, nuevas, sueltas)
     # --- la lista DNS heredada: la accion 'dns' ya no existe (la clase DNS tiene su propia
     # lista), asi que lo que entro por politica ahi se libera y no vuelve a entrar ---
-    envd = cargar_enviados(MK_SENT_DNS); cambiado_d = False
+    envd = cargar_enviados(MK_SENT_DNS)
+    sueltas_d = []
     for k in list(envd.keys()):
+        if rid_de(k) != pid:
+            continue
         if envd[k].get("pol"):
-            r = router_de_clave(k); dr = cargar_mk_de(r)
-            lst = envd[k].get("lista") or dr.get("LIST_DNS", "")
+            lst = envd[k].get("lista") or m.get("LIST_DNS", "")
             if not lst:
                 continue
             try:
                 mk_remove(ip_de(k), lista=lst, router=r)
             except Exception:
                 continue
-            envd.pop(k, None)
+            sueltas_d.append(k)
             mk_log("POLITICA-LIBERADO", ip_de(k), "politica", f"lista={lst}" + _suf_nodo(k))
-            cambiado_d = True
-    if cambiado_d:
-        guardar_enviados(envd, MK_SENT_DNS)
+    _registrar_enviados(MK_SENT_DNS, {}, sueltas_d)
+
+def _registrar_enviados(path, nuevas, sueltas):
+    """Anota altas y bajas en el registro RELEYENDOLO dentro del cerrojo: entre que se
+    decide y se guarda pasan segundos hablando con el router, y otro hilo (una peticion,
+    el barrido rapido de otro punto) puede haber anotado algo mientras tanto."""
+    if not nuevas and not sueltas:
+        return
+    with _ENV_LOCK:
+        env = cargar_enviados(path)
+        for k in sueltas:
+            env.pop(k, None)
+        for k, v in nuevas.items():
+            env.setdefault(k, v)
+        guardar_enviados(env, path)
+
+# --- Evidencia reciente antes de actuar (CONTRATO-F2 §10.4) ------------------------------
+# Una IP privada de abonado cambia de manos (DHCP, PPPoE). Mandar a cuarentena por alertas
+# viejas puede cortar a quien tiene HOY esa IP. Antes de cualquier envio se mira cuando fue
+# la ultima alerta de ese pid|ip: dentro de la ventana del reporte y como mucho de las
+# ultimas EVIDENCIA_MAX_HORAS (panel.conf, 24 h por defecto).
+EVIDENCIA_MAX_HORAS = 24
+EVIDENCIA_COLA = 8_000_000      # bytes del eve.json vivo que se miran para fechar la ultima alerta
+_EV_CACHE = {}                  # pid -> (sello del eve, {ip: ultima marca de alerta})
+_EV_LOCK = threading.Lock()
+
+def evidencia_max_s(cq=None):
+    try:
+        horas = float(conf().get("EVIDENCIA_MAX_HORAS", "") or EVIDENCIA_MAX_HORAS)
+    except ValueError:
+        horas = EVIDENCIA_MAX_HORAS
+    lim = max(60.0, horas * 3600)
+    try:
+        vmin = int((cq or {}).get("ventana_min") or 0)
+    except (TypeError, ValueError):
+        vmin = 0
+    if vmin > 0:
+        lim = min(lim, vmin * 60)
+    return int(lim)
+
+def _ultimas_alertas(pid):
+    """{ip origen: marca de su ultima alerta} de la cola del eve.json vivo del punto."""
+    ruta = nodos.eve_vivo(pid)
+    try:
+        st = os.stat(ruta)
+        sello = (st.st_mtime_ns, st.st_size, getattr(st, "st_ino", 0))
+    except OSError:
+        return {}
+    with _EV_LOCK:
+        ent = _EV_CACHE.get(pid)
+        if ent and ent[0] == sello:
+            return ent[1]
+    out = {}
+    for line in _cola_eventos(ruta, EVIDENCIA_COLA) or []:
+        if '"event_type":"alert"' not in line:
+            continue
+        ms = _RE["src_ip"].search(line); mt = _RE["ts"].search(line)
+        if not (ms and mt):
+            continue
+        t = _ts_evento(mt.group(1))
+        if t and t > out.get(ms.group(1), 0):
+            out[ms.group(1)] = t
+    with _EV_LOCK:
+        _EV_CACHE[pid] = (sello, out)
+    return out
+
+def evidencia_reciente(clave, cq=None, ahora=None):
+    """{"ok", "edad_s", "limite_s", "detalle"} de la evidencia de ese `pid|ip`.
+
+    La edad sale de la marca `ultima` que deje el generador en la entrada (si la trae) o
+    de la ultima alerta de esa IP en la cola del eve.json vivo de SU punto. Sin evidencia
+    datable no es reciente. La accion automatica no se hace con ok=False; la manual pide
+    confirmacion explicita diciendo la antiguedad."""
+    ahora = ahora or time.time()
+    pid = nodos.exigir_pid(rid_de(clave or ""))
+    ip = ip_de(clave)
+    if cq is None:
+        cq = _cargar_cuarentena(pid)
+    lim = evidencia_max_s(cq)
+    ult = 0
+    for key in ("candidatos", "dns_candidatos", "top_riesgo"):
+        for c in (cq or {}).get(key, []):
+            if c.get("ip") == ip and (c.get("router") or pid) == pid:
+                try:
+                    ult = max(ult, float(c.get("ultima") or 0))
+                except (TypeError, ValueError):
+                    pass
+    ult = max(ult, _ultimas_alertas(pid).get(ip, 0))
+    if not ult:
+        return {"ok": False, "edad_s": None, "limite_s": lim,
+                "detalle": "no hay alertas recientes de %s en %s que lo respalden" % (ip, nodos.nombre(pid))}
+    edad = int(max(0, ahora - ult))
+    ok = edad <= lim
+    return {"ok": ok, "edad_s": edad, "limite_s": lim,
+            "detalle": ("ultima alerta hace %s" % _dura_txt(edad)) + ("" if ok else
+                       " (mas vieja que %s: la IP puede ser hoy de otro abonado)" % _dura_txt(lim))}
+
+def _dura_txt(s):
+    s = int(s)
+    if s < 3600:
+        return "%d min" % (s // 60)
+    if s < 86400:
+        return "%d h" % (s // 3600)
+    return "%d dia(s)" % (s // 86400)
 
 # --- barrido rapido de ALTO: envio casi inmediato de infecciones confirmadas ---
 # El ciclo normal (reporte + aplicar_politicas) corre cada REFRESH_SECS (5 min), asi que
@@ -4421,7 +5071,7 @@ def aplicar_politicas():
 # Es conservador: solo firmas de infeccion confirmada (mismo umbral que los candidatos del
 # reporte), respeta allowlist / destinos de confianza / exclusiones, y solo actua si el ALTO
 # esta configurado para ir a cuarentena. MEDIO/BAJO siguen en el ciclo de 5 min.
-_FAST_LAST = {}            # ip -> ts de la ultima accion (anti-rebote por CPE)
+_FAST_LAST = {}            # pid|ip -> ts de la ultima accion (anti-rebote por CPE)
 _FAST_CNC = ("cnc", "c2 ", "command and control", "checkin", "check-in", "botnet", "mirai",
              "katana", "trojan", "ransom", "coinmin", "cryptomin", "compromised")
 # Contacto con infraestructura FICHADA en los feeds. Por niveles, porque no todas las
@@ -4433,32 +5083,33 @@ _FAST_REP_CONTEXTO = ("anonimizador",)   # Tor: se ensena, no cuenta (ni como "o
 _FAST_REP_OTRAS = 3
 try:                      # umbral de confirmacion; alinear con el del reporte (report.conf)
     _u = 3
-    for _l in open("/etc/suricata-report.conf", encoding="utf-8"):
+    for _l in open(REPORT_CONF, encoding="utf-8"):
         if _l.strip().startswith("UMBRAL_INFECTADO="):
             _u = int(_l.split("=", 1)[1].strip() or "3"); break
     _FAST_UMBRAL = max(1, _u)
 except Exception:
     _FAST_UMBRAL = 3
-
-def barrido_alto_rapido(maxbytes=4_000_000):
+def barrido_alto_rapido(pid=None, maxbytes=4_000_000):
     """Envia a cuarentena, casi al instante, los CPEs con INFECCION confirmada (CnC/botnet
-    repetida) sin esperar el ciclo de 5 min. Idempotente y con anti-rebote de 60s por CPE."""
-    m = cargar_mk()
-    if not (mk_configurado() and m.get("ENABLED") == "1" and m.get("POL_AUTO") == "1"):
+    repetida) sin esperar el ciclo de 5 min. Idempotente y con anti-rebote de 60s por CPE.
+
+    POR PUNTO: lee la cola del eve.json de ESE punto y el router es el suyo (el pid del
+    directorio del fichero, no in_iface). Solo cuenta lo de la ultima EVIDENCIA_MAX_HORAS:
+    la cola de un punto con poco trafico puede tener dias, y eso no es evidencia reciente."""
+    pid = nodos.exigir_pid(pid if pid is not None else nodos.nodo_actual())
+    r_pid = router_por_id(pid)
+    m = cargar_mk_de(r_pid)
+    if not (mk_listo(m) and m.get("POL_AUTO") == "1"):
         return
     # infeccion confirmada = clase botnet: el barrido actua si esa clase corta en algun
     # nivel (la confirmacion ya es la prueba; la banda no hace falta esperarla)
     if politica_de_clase("botnet", m) not in _POL_UMBRAL:
         return
-    try:
-        with open(EVE, "rb") as f:
-            f.seek(0, 2); size = f.tell(); start = max(0, size - maxbytes); f.seek(start); data = f.read()
-    except OSError:
+    lines = _cola_eventos(nodos.eve_vivo(pid), maxbytes)
+    if not lines:
         return
-    lines = data.decode("utf-8", "replace").split("\n")
-    if start > 0 and lines:
-        lines = lines[1:]                        # la 1a linea casi seguro viene cortada
     reglas = cargar_exclusiones(); dest_ok = _dest_ok_set()
+    corte = time.time() - evidencia_max_s()
     hits = {}; sids = {}; rep_hits = {}
     for line in lines:
         if '"event_type":"alert"' not in line:
@@ -4477,9 +5128,11 @@ def barrido_alto_rapido(maxbytes=4_000_000):
             continue                             # es tu propia salida NAT, no un abonado
         if not es_mi_cpe(src_ip):
             continue                             # atacante de internet: no va a la cuarentena de CPEs
-        if _excluido(reglas, src_ip, dst, int(dp) if dp else None, sid):
+        if _excluido(reglas, src_ip, dst, int(dp) if dp else None, sid, pid):
             continue
-        src = clave_cpe(src_ip, rid_por_iface(get("iface")))   # identidad (router, IP)
+        if _ts_evento(get("ts")) < corte:
+            continue                             # evidencia vieja: no se actua por ella
+        src = clave_cpe(src_ip, pid)             # identidad (punto, IP)
         if _es_cnc:
             hits[src] = hits.get(src, 0) + 1
             sids.setdefault(src, set()).add(sid or low)
@@ -4493,7 +5146,8 @@ def barrido_alto_rapido(maxbytes=4_000_000):
             if not _r["quien"]:
                 _r["quien"] = dst; _r["cat"] = _cat
     ahora = time.time()
-    env = cargar_enviados(MK_SENT); cambiado = False
+    env = cargar_enviados(MK_SENT)
+    nuevas = {}
     motivos = {}
     for src, r in rep_hits.items():
         # hablar con un C2 activo basta una vez; con el resto de listas, insistencia
@@ -4510,8 +5164,8 @@ def barrido_alto_rapido(maxbytes=4_000_000):
         if src in env or ahora - _FAST_LAST.get(src, 0) < 60:
             continue                             # ya en la lista, o anti-rebote 60s
         _FAST_LAST[src] = ahora
+        _r = r_pid
         try:
-            _r = router_de_clave(src)
             _cat = categoria_cpe(src)
             lst = lista_de_categoria(_cat)      # cada categoria, a su lista
             ok, _err = mk_add(ip_de(src), comment=f"suricata ALTO inmediato {time.strftime('%Y-%m-%d %H:%M')}",
@@ -4519,16 +5173,14 @@ def barrido_alto_rapido(maxbytes=4_000_000):
         except Exception:
             ok = False
         if ok:
-            env[src] = {"cuando": int(ahora), "score": "", "por": "politica-rapida", "manual": False,
-                        "pol": True, "router": _r.get("id", ""), "categoria": _cat, "lista": lst,
-                        "motivo": _motivo_bloqueo(src)}
-            try: notificar_cuarentena(ip_de(src), "ALTO (envio inmediato)", lst, quien="politica-rapida")
+            nuevas[src] = {"cuando": int(ahora), "score": "", "por": "politica-rapida", "manual": False,
+                           "pol": True, "router": pid, "categoria": _cat, "lista": lst,
+                           "motivo": _motivo_bloqueo(src)}
+            try: notificar_cuarentena(src, "ALTO (envio inmediato)", lst, quien="politica-rapida")
             except Exception: pass
             mk_log("POLITICA-RAPIDA", ip_de(src), "politica",
                    f"lista={lst} {motivos.get(src, '')}" + _suf_nodo(src))
-            cambiado = True
-    if cambiado:
-        guardar_enviados(env, MK_SENT)
+    _registrar_enviados(MK_SENT, nuevas, [])
     # limpiar anti-rebote viejo para no crecer sin fin
     for k in [k for k, v in _FAST_LAST.items() if ahora - v > 3600]:
         _FAST_LAST.pop(k, None)
@@ -4602,53 +5254,52 @@ REPORTES_RETENCION_DIAS = 3   # reportes HTML guardados: se borra lo mas viejo q
 
 def podar_reportes():
     """Borra los reportes HTML de mas de REPORTES_RETENCION_DIAS dias, conservando SIEMPRE
-    el mas nuevo (En vivo sirve ese archivo, no debe quedarse sin ninguno)."""
+    el mas nuevo de cada nodo (En vivo sirve ese archivo, no debe quedarse sin ninguno).
+    Recorre el directorio de salida de cada punto y el de «Todos»; los eventos de datos/
+    no se tocan nunca (son de solo lectura y los rota el orquestador)."""
     corte = time.time() - REPORTES_RETENCION_DIAS * 86400
-    fs = glob.glob(f"{LOGDIR}/report-*.html")
-    if not fs:
-        return
-    nuevo = max(fs, key=lambda p: os.path.getmtime(p) if os.path.exists(p) else 0)
-    for f in fs:
-        if f == nuevo:
+    for nodo in nodos.pids() + [nodos.TODOS]:
+        fs = glob.glob(os.path.join(nodos.dir_salida(nodo, crear=False), "report-*.html"))
+        if not fs:
             continue
-        try:
-            if os.path.getmtime(f) < corte:
-                os.remove(f)
-        except OSError:
-            pass
+        nuevo = max(fs, key=lambda p: os.path.getmtime(p) if os.path.exists(p) else 0)
+        for f in fs:
+            if f == nuevo:
+                continue
+            try:
+                if os.path.getmtime(f) < corte:
+                    os.remove(f)
+            except OSError:
+                pass
 
 # ---------------------------------------------------------------- usuarios y roles
-USERS_FILE = "/etc/suricata-dashboard-users.json"
+USERS_FILE = nodos.ruta("conf", "usuarios.json")   # el mismo que escribe `ids-panel crear-admin`
 CTX = threading.local()   # contexto por peticion: user/role del que la hace
 ROLES = ("admin", "operador", "lectura")   # operador: gestiona incidentes y cuarentenas; no toca usuarios/conexiones/updates
+PBKDF2_ITER = 200_000
 
 def _hash_pw(pw, salt=None):
     if not salt:
         salt = secrets.token_hex(16)
-    h = hashlib.pbkdf2_hmac("sha256", pw.encode("utf-8"), bytes.fromhex(salt), 200_000).hex()
+    h = hashlib.pbkdf2_hmac("sha256", pw.encode("utf-8"), bytes.fromhex(salt), PBKDF2_ITER).hex()
     return salt, h
 
-def _blank_conf_pass():
-    """Deja PASS= vacio en el .conf: la clave real ya vive hasheada en users.json.
-    Evita la contrasena en texto plano en disco (y que el instalador la reimprima)."""
-    try:
-        lineas = open(CONF, encoding="utf-8").read().splitlines()
-    except OSError:
-        return
-    out = []
-    for l in lineas:
-        out.append("PASS=" if l.strip().startswith("PASS=") else l)
-    tmp = CONF + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        f.write("\n".join(out) + "\n")
-    os.chmod(tmp, 0o600)
-    os.replace(tmp, CONF)
-    CFG["PASS"] = ""
+def sesion_renovar(token):
+    """Tras cambiar SU PROPIA clave, la sesion de quien la cambio sigue valiendo (las demas
+    de ese usuario quedan fuera, porque su marca ya no coincide)."""
+    k = _hash_token(token)
+    with _SES_LOCK:
+        s = SESSIONS.get(k)
+        if not s:
+            return False
+        s["marca"] = marca_usuario(buscar_usuario(s.get("user")) or {})
+    _guardar_sesiones()
+    return True
 
 VENTANAS = [(30, "30 min"), (60, "1 hora"), (180, "3 horas"),
             (360, "6 horas"), (720, "12 horas"), (1440, "24 horas")]
 
-def ventana_generada():
+def ventana_generada(nodo=None):
     """Con que ventana se genero el resumen que se esta mostrando.
 
     El generador la deja escrita en cuarentena.json. Sirve para saber si lo que hay en
@@ -4656,11 +5307,9 @@ def ventana_generada():
     regeneracion que en una caja con trafico tarda minutos, y mientras tanto se sigue
     viendo el resumen anterior. Sin decirlo, parece que el selector no funciona."""
     try:
-        return int(json.load(open(f"{LOGDIR}/cuarentena.json",
-                                  encoding="utf-8")).get("ventana_min") or 0)
-    except (OSError, ValueError, TypeError):
+        return int(_cargar_cuarentena(nodo).get("ventana_min") or 0)
+    except (ValueError, TypeError):
         return 0
-
 def etiqueta_ventana(minutos):
     for v, t in VENTANAS:
         if v == minutos:
@@ -4704,7 +5353,7 @@ def conf_dash_get(key, default=""):
     return default
 
 def conf_dash_set(key, val):
-    """Escribe/actualiza una clave en /etc/suricata-dashboard.conf (lo lee el generador)."""
+    """Escribe/actualiza una clave en conf/panel.conf (lo lee el generador)."""
     try:
         lineas = open(CONF, encoding="utf-8").read().splitlines()
     except OSError:
@@ -4725,12 +5374,14 @@ def conf_dash_set(key, val):
         pass
 
 # --- feeds de reputacion: Auth-Key (abuse.ch) y estado por fuente ---
-FEEDS_CONF = "/etc/suricata-feeds.conf"
-FEEDS_META = "/var/lib/suricata-feeds/reputation.meta"
+FEEDS_CONF = nodos.ruta("conf", "feeds.conf")
+FEEDS_META = os.path.join(nodos.FEEDS, "reputation.meta")
 
-def _feeds_conf_get(clave):
-    """Valor de una clave del .conf de feeds. Solo lo usa el codigo que HACE la peticion;
-    nunca se devuelve a una pagina."""
+# claves de feeds.conf que son SECRETOS: van cifradas con la clave maestra (asociado
+# "feeds:<CLAVE>"). feeds_update.py las descifra igual (CONTRATO-F2 §10.3).
+FEEDS_SECRETOS = ("ABUSE_CH_AUTH_KEY", "ABUSEIPDB_KEY", "GROQ_API_KEY")
+
+def _feeds_conf_crudo(clave):
     try:
         for l in open(FEEDS_CONF, encoding="utf-8"):
             l = l.strip()
@@ -4740,8 +5391,23 @@ def _feeds_conf_get(clave):
         pass
     return ""
 
+def _feeds_conf_get(clave):
+    """Valor de una clave del .conf de feeds (los secretos, descifrados en memoria). Solo
+    lo usa el codigo que HACE la peticion; nunca se devuelve a una pagina. Un secreto que
+    no se puede descifrar (sin clave maestra) vale "" y queda avisado; no se borra."""
+    v = _feeds_conf_crudo(clave)
+    if clave in FEEDS_SECRETOS and v:
+        try:
+            v = secretos.descifrar(v, "feeds:" + clave)
+            SECRETOS_AVISO.pop("feeds:" + clave, None)
+        except secretos.SecretoNoDisponible as ex:
+            SECRETOS_AVISO["feeds:" + clave] = str(ex)
+            return ""
+    return v
+
 def _feeds_conf_set(clave, val):
-    """Guarda/actualiza (o borra) una clave en /etc/suricata-feeds.conf (permisos 600).
+    """Guarda/actualiza (o borra) una clave en conf/feeds.conf (permisos 600). Los
+    secretos se guardan CIFRADOS; sin clave maestra no se guardan (False), nunca en claro.
     Solo-escritura: el valor NO se muestra despues. Conserva los comentarios/plantilla."""
     try:
         lineas = open(FEEDS_CONF, encoding="utf-8").read().splitlines()
@@ -4749,15 +5415,79 @@ def _feeds_conf_set(clave, val):
         lineas = []
     out = [l for l in lineas if not l.strip().startswith(clave + "=")]   # quita la activa vieja
     v = (val or "").strip()
+    if v and clave in FEEDS_SECRETOS:
+        try:
+            v = secretos.cifrar(v, "feeds:" + clave)
+        except secretos.SecretoNoDisponible as ex:
+            SECRETOS_AVISO["feeds:" + clave] = str(ex)
+            return False
     if v:
         out.append(f"{clave}={v}")
     try:
-        tmp = FEEDS_CONF + ".tmp"
-        open(tmp, "w", encoding="utf-8").write("\n".join(out) + "\n")
-        os.chmod(tmp, 0o600); os.replace(tmp, FEEDS_CONF); os.chmod(FEEDS_CONF, 0o600)
+        os.makedirs(os.path.dirname(FEEDS_CONF), mode=0o700, exist_ok=True)
+        tmp = "%s.%d.%d.tmp" % (FEEDS_CONF, os.getpid(), threading.get_ident())
+        with open(tmp, "w", encoding="utf-8") as f:
+            f.write("\n".join(out) + "\n")
+        os.chmod(tmp, 0o600); os.replace(tmp, FEEDS_CONF)
         return True
     except OSError:
         return False
+
+def telegram_set(token=None, chat=None):
+    """Guarda el token de Telegram (CIFRADO, asociado "report:TELEGRAM_TOKEN") y/o el chat
+    en conf/report.conf. None = no tocar ese campo; "" = borrarlo. Lo lee informe_diario.py."""
+    try:
+        lineas = open(REPORT_CONF, encoding="utf-8").read().splitlines()
+    except OSError:
+        lineas = []
+    out = list(lineas)
+    for clave, val in (("TELEGRAM_TOKEN", token), ("TELEGRAM_CHAT_ID", chat)):
+        if val is None:
+            continue
+        out = [l for l in out if not l.strip().startswith(clave + "=")]
+        v = str(val).strip()
+        if v and clave == "TELEGRAM_TOKEN":
+            v = secretos.cifrar(v, TELEGRAM_ASOC)           # sin clave maestra lanza: nunca en claro
+        if v:
+            out.append(f"{clave}={v}")
+    os.makedirs(os.path.dirname(REPORT_CONF), mode=0o700, exist_ok=True)
+    tmp = "%s.%d.%d.tmp" % (REPORT_CONF, os.getpid(), threading.get_ident())
+    with open(tmp, "w", encoding="utf-8") as f:
+        f.write("\n".join(out) + "\n")
+    os.chmod(tmp, 0o600)
+    os.replace(tmp, REPORT_CONF)
+    return True
+
+def migrar_secretos():
+    """Al arrancar: cifra los secretos que sigan en claro (configuracion vieja o
+    importada). Sin clave maestra no toca nada y lo deja avisado (no se borra ningun
+    secreto). Devuelve cuantos cifro."""
+    n = 0
+    if not secretos.disponible():
+        SECRETOS_AVISO["clave-maestra"] = "no se puede leer la clave maestra: los secretos guardados no se pueden usar"
+        return 0
+    SECRETOS_AVISO.pop("clave-maestra", None)
+    for c in FEEDS_SECRETOS:
+        v = _feeds_conf_crudo(c)
+        if v and secretos.necesita_cifrar(v):
+            if _feeds_conf_set(c, v):
+                n += 1
+    try:
+        tok = ""
+        for ln in open(REPORT_CONF, encoding="utf-8"):
+            if ln.strip().startswith("TELEGRAM_TOKEN="):
+                tok = ln.split("=", 1)[1].strip()
+        if tok and secretos.necesita_cifrar(tok):
+            telegram_set(token=tok)
+            n += 1
+    except OSError:
+        pass
+    viejos = [pid for pid, g in _routers_guardados().items()
+              if g.get("PASS") and secretos.necesita_cifrar(g["PASS"])]
+    if viejos:
+        guardar_routers([])                     # guardar_routers cifra lo que quede en claro
+        n += len(viejos)
+    return n
 
 def feeds_auth_configurada():
     """La Auth-Key de abuse.ch esta puesta? (nunca se devuelve el valor, solo si existe)."""
@@ -4794,13 +5524,25 @@ def cargar_feeds_meta():
     except Exception:
         return {}
 
+FEEDS_BIN = os.path.join(_AQUI, "feeds_update.py")   # baja los feeds a nodos.FEEDS (sin dataset ni recarga)
+FEEDS_CADA = 15 * 60
+_FEEDS_PROC = {"p": None}
+_FEEDS_LOCK = threading.Lock()
+
 def actualizar_feeds_async():
-    try:
-        subprocess.Popen(["/usr/local/bin/suricata-feeds-update"],
-                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        return True
-    except Exception:
-        return False
+    """Lanza feeds_update.py en segundo plano (con nice). Si ya hay una corrida en marcha
+    no se lanza otra: dos procesos escribiendo los mismos ficheros se pisarian."""
+    with _FEEDS_LOCK:
+        p = _FEEDS_PROC["p"]
+        if p is not None and p.poll() is None:
+            return True
+        try:
+            _FEEDS_PROC["p"] = subprocess.Popen(
+                ["nice", "-n", "15", sys.executable, FEEDS_BIN],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            return True
+        except Exception:
+            return False
 
 # ---------------------------------------------------------------------------------
 # AbuseIPDB: que hace REALMENTE una IP publica
@@ -4814,8 +5556,8 @@ def actualizar_feeds_async():
 # un barrido no deje al operador sin consultas). Y el UNICO proceso que llama a la API es
 # el panel: el generador del reporte solo LEE la cache, porque dos procesos gastando la
 # misma cuota se la comen sin que nadie lleve la cuenta.
-AIDB_CACHE = "/var/lib/suricata-feeds/abuseipdb.json"
-AIDB_ESTADO = "/var/lib/suricata-feeds/abuseipdb-estado.json"
+AIDB_CACHE = os.path.join(nodos.FEEDS, "abuseipdb.json")
+AIDB_ESTADO = os.path.join(nodos.FEEDS, "abuseipdb-estado.json")
 AIDB_TTL_LIMPIA = 7 * 24 * 3600    # sin denuncias: cambia poco
 AIDB_TTL_SUCIA = 12 * 3600         # con denuncias: cambia rapido
 AIDB_CUOTA = 1000                  # consultas por IP al dia (plan gratuito "Standard")
@@ -5185,16 +5927,14 @@ def precargar_abuseipdb(max_por_ciclo=4):
     queda sin cuota o sin red deja de insistir hasta el ciclo siguiente."""
     if not aidb_configurada():
         return 0
-    try:
-        cq = json.load(open(f"{LOGDIR}/cuarentena.json", encoding="utf-8"))
-    except (OSError, ValueError):
-        return 0
     destinos = []
-    for key in ("candidatos", "dns_candidatos"):
-        for c in cq.get(key, []):
-            for d in (c.get("destinos_ip") or []):
-                if d not in destinos:
-                    destinos.append(d)
+    for pid in nodos.pids():               # los destinos de TODOS los puntos: la cuota es una
+        cq = _cargar_cuarentena(pid)
+        for key in ("candidatos", "dns_candidatos"):
+            for c in cq.get(key, []):
+                for d in (c.get("destinos_ip") or []):
+                    if d not in destinos:
+                        destinos.append(d)
     # Lo que ya esta fresco se descarta AQUI, de una sola mirada a la cache, en vez de
     # entrar a aidb_consultar por cada uno. Con muchos candidatos la lista son cientos de
     # IPs y casi todas estan ya resueltas.
@@ -5230,9 +5970,9 @@ def precargar_abuseipdb(max_por_ciclo=4):
 # viene apagada, no se dispara sola (siempre la pulsa una persona), solo acepta atacantes
 # ENTRANTES (IPs publicas que golpean TU red, nunca tus abonados) y el comentario va sin
 # datos de nadie. AbuseIPDB pide expresamente que no se manden datos personales.
-AIDB_DENUNCIAS = "/var/lib/suricata-feeds/abuseipdb-denuncias.json"
+AIDB_DENUNCIAS = os.path.join(nodos.FEEDS, "abuseipdb-denuncias.json")
 AIDB_REDENUNCIA = 24 * 3600      # no repetir la misma IP antes de esto
-PANEL_FLAGS = "/var/log/suricata-panel-flags.json"   # sin secretos: lo lee el reporte
+PANEL_FLAGS = nodos.ruta("estado", "panel-flags.json")   # sin secretos: lo lee el reporte
 
 # Firma de Suricata -> categorias de AbuseIPDB. Se SUMAN todas las que casan; no manda la
 # primera. "ET SCAN Potential SSH Scan" es un escaneo Y es SSH: con la primera ganando se
@@ -5392,8 +6132,8 @@ def aidb_denunciar(ip, firma="", dport="", proto="", n=0, quien="?"):
 #   y el cruce de las dos cosas es el abonado al que hay que meter en cuarentena.
 #
 # Sin el cruce solo se sabe "algo sale mal por esta IP", que no sirve para actuar.
-PUBLICAS_CONF = "/etc/suricata-publicas.json"
-PUB_HIST = "/var/log/suricata-publicas-reputacion.json"
+PUBLICAS_CONF = nodos.ruta("conf", "publicas.json")
+PUB_HIST = nodos.ruta("estado", "publicas-reputacion.json")
 PUB_HIST_DIAS = 180
 PUB_UMBRAL_AVISO = 25          # a partir de aqui la IP ya esta ensuciada: avisar
 _PUB_LOCK = threading.RLock()
@@ -5687,17 +6427,16 @@ def por_que_sin_culpables(cats):
             "actual: pudo pasar antes, o salir por otro nodo.")
 
 def _cpes_del_nodo(rid):
-    """CPEs con actividad del reporte actual, con lo que hace falta para el cruce."""
-    try:
-        cq = json.load(open(f"{LOGDIR}/cuarentena.json", encoding="utf-8"))
-    except (OSError, ValueError):
+    """CPEs con actividad del reporte actual DE ESE PUNTO, con lo que hace falta para el cruce."""
+    if not nodos.pid_valido(rid or ""):
         return []
+    cq = _cargar_cuarentena(rid)
     fuera = {}
     for clave in ("candidatos", "dns_candidatos", "top_riesgo"):
         for c in cq.get(clave, []):
-            if (c.get("router") or "") != (rid or ""):
+            if (c.get("router") or rid) != rid:
                 continue
-            k = clave_cpe(c.get("ip", ""), c.get("router", ""))
+            k = clave_cpe(c.get("ip", ""), rid)
             prev = fuera.get(k) or {}
             # 'candidatos' trae mas contexto que 'top_riesgo': que no lo pise
             fuera[k] = {**c, **{x: y for x, y in prev.items() if y and not c.get(x)}}
@@ -5796,7 +6535,7 @@ DNSBL = [
     ("psbl.surriel.com", "PSBL"),
     ("dnsbl-1.uceprotect.net", "UCEPROTECT-1"),
 ]
-DNSBL_HIST = "/var/log/suricata-publicas-dnsbl.json"
+DNSBL_HIST = nodos.ruta("estado", "publicas-dnsbl.json")
 DNSBL_MAX_IPS = 256            # un /24 entero; por encima se revisa el principio y se dice
 DNSBL_HILOS = 8
 DNSBL_DIAS = 180
@@ -6732,7 +7471,7 @@ def _salida_html(entrada, bl, limpio, esc=None):
             + exp + plan + "</div>")
 
 # --------------------------------------------------------------- Groq (analisis con IA)
-# La clave vive donde las demas: /etc/suricata-feeds.conf, permisos 600, y NUNCA se
+# La clave vive donde las demas: conf/feeds.conf (cifrada), permisos 600, y NUNCA se
 # devuelve a una pagina. Un secreto que se USA no se puede hashear, asi que lo unico que
 # se puede hacer es que no salga de aqui.
 GROQ_URL = "https://api.groq.com/openai/v1"
@@ -6804,8 +7543,8 @@ def groq_probar(key):
         return None, "Groq contesto pero no listo ningun modelo", []
     return True, "valida (%d modelos disponibles)" % len(ms), ms
 
-IA_CACHE = "/var/log/suricata-ia-cache.json"
-IA_ESTADO = "/var/log/suricata-ia-estado.json"
+IA_CACHE = nodos.ruta("estado", "ia-cache.json")
+IA_ESTADO = nodos.ruta("estado", "ia-estado.json")
 IA_CUOTA = 300          # consultas al dia: tope duro, para que un bucle no vacie la cuenta
 IA_TIMEOUT = 12         # la ficha la abre una persona esperando: mas de esto no se aguanta
 IA_CACHE_MAX = 400
@@ -7058,32 +7797,30 @@ def aidb_cats_txt(cats, sep=", "):
         out.append("%s (%d)" % (AIDB_CATS.get(c, "categoria %d" % c), n))
     return sep.join(out)
 
+_USR_LOCK = threading.RLock()
+
 def guardar_usuarios(lst):
-    tmp = USERS_FILE + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(lst, f, ensure_ascii=False, indent=2)
-    os.chmod(tmp, 0o600)
-    os.replace(tmp, USERS_FILE)
+    """Lista de usuarios (formato del dashboard) en conf/usuarios.json, 600 y atomico. La
+    usan tambien `ids-panel crear-admin|restablecer` desde otro proceso."""
+    with _USR_LOCK:
+        os.makedirs(os.path.dirname(USERS_FILE), mode=0o700, exist_ok=True)
+        tmp = "%s.%d.%d.tmp" % (USERS_FILE, os.getpid(), threading.get_ident())
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(lst, f, ensure_ascii=False, indent=2)
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, USERS_FILE)
 
 def cargar_usuarios():
-    """Lista de {user, salt, hash, role}. Si no existe, migra el usuario del .conf
-    (USER/PASS) como admin, hasheando su clave. Si el .conf no tiene PASS -> [] (sin auth)."""
+    """Lista de {user, salt, hash, role, nombre, correo, activo, avatar}. Sin fichero (o
+    vacio) devuelve []: NO hay modo sin autenticacion; el primer admin lo crea
+    `ids-panel crear-admin` (o `ids-orq panel crear-admin`). La migracion desde el
+    USER/PASS del .conf viejo ya no existe."""
     try:
         data = json.load(open(USERS_FILE, encoding="utf-8"))
-        if isinstance(data, list) and data:
-            return data
+        if isinstance(data, list):
+            return [r for r in data if isinstance(r, dict) and r.get("user")]
     except (OSError, ValueError):
         pass
-    u = CFG.get("USER", "admin"); p = CFG.get("PASS", "")
-    if p:
-        salt, h = _hash_pw(p)
-        lst = [{"user": u, "salt": salt, "hash": h, "role": "admin"}]
-        try:
-            guardar_usuarios(lst)
-            _blank_conf_pass()   # ya migrada y hasheada: borrar la clave en claro del .conf
-        except OSError:
-            pass
-        return lst
     return []
 
 def buscar_usuario(user):
@@ -7093,194 +7830,29 @@ def buscar_usuario(user):
     return None
 
 # ---- datos de la empresa (nombre + logo que se muestra en la barra) ----
-EMPRESA_FILE = "/etc/suricata-dashboard-empresa.json"
+EMPRESA_FILE = nodos.ruta("conf", "empresa.json")
 
 def cargar_empresa():
+    """Nombre y logo. Sin fichero, el nombre es el de IDS_EMPRESA (lo pone el instalador)."""
     try:
         d = json.load(open(EMPRESA_FILE, encoding="utf-8"))
         if isinstance(d, dict):
-            return {"nombre": d.get("nombre", ""), "logo": d.get("logo", "")}
+            return {"nombre": d.get("nombre", "") or (os.environ.get("IDS_EMPRESA") or "").strip()[:80],
+                    "logo": d.get("logo", "")}
     except (OSError, ValueError):
         pass
-    return {"nombre": "", "logo": ""}
+    return {"nombre": (os.environ.get("IDS_EMPRESA") or "").strip()[:80], "logo": ""}
 
-def panel_actualizado():
-    """Fecha de la ultima actualizacion del panel desde GitHub, o None.
+# La version es la de la imagen del contenedor (la actualizacion la hace el orquestador, no
+# el panel: ya no hay actualizador por git ni chequeo contra GitHub).
+PANEL_VERSION = (os.environ.get("IDS_MAAT_VERSION") or "dev").strip() or "dev"
 
-    La escribe el actualizador al TERMINAR bien, asi que vale tambien cuando la
-    actualizacion no salio del boton (por SSH, o la del cron): el registro de "de que
-    version a cual y por quien" solo existe si se disparo desde el panel."""
-    try:
-        return open("/etc/suricata-dashboard.updated", encoding="utf-8").read().strip() or None
-    except OSError:
-        return None
+def version_panel():
+    """Version del panel: la de la imagen, y la que publica el orquestador si la hay."""
+    v = (nodos.leer_estado() or {}).get("version") or ""
+    return v or PANEL_VERSION
 
-def panel_actualizado_txt():
-    """La fecha en corto, con cuanto hace. Sin la antiguedad, un panel actualizado hace
-    tres meses se lee igual que uno de esta manana."""
-    t = panel_actualizado()
-    if not t:
-        return ""
-    try:
-        seg = time.time() - time.mktime(time.strptime(t[:19], "%Y-%m-%d %H:%M:%S"))
-    except (ValueError, OverflowError):
-        return t
-    if seg < 0:
-        return t                                  # reloj movido: mejor no inventar
-    if seg < 3600:
-        hace = "hace %d min" % (seg // 60)
-    elif seg < 86400:
-        hace = "hace %d h" % (seg // 3600)
-    else:
-        hace = "hace %d dia(s)" % (seg // 86400)
-    return "%s (%s)" % (t[:16], hace)
-
-def firma_panel():
-    """Firma corta del codigo instalado (hash del panel + generador de reportes).
-    Si cambia tras 'Actualizar panel', es prueba de que se aplico codigo nuevo."""
-    h = hashlib.md5()
-    for f in ("/usr/local/bin/suricata-dashboard", "/usr/local/bin/suricata-html-report"):
-        try:
-            h.update(open(f, "rb").read())
-        except OSError:
-            pass
-    return h.hexdigest()[:10]
-
-# --- deteccion de actualizacion disponible (SHA instalado vs ultimo commit de GitHub) ---
-COMMIT_FILE = "/etc/suricata-dashboard.commit"      # SHA del commit aplicado (lo escribe el updater)
-UPDCHK_FILE = "/var/log/suricata-update-check.json"  # cache del ultimo chequeo contra GitHub
-_UPD_REPO = "mtandazo35/suricata-ids-lab"
-PANEL_VERSION = "1.1"   # version visible del panel (se sube a mano en cada release); el SHA es el 'build' exacto
-
-def _sha_local():
-    try:
-        return open(COMMIT_FILE, encoding="utf-8").read().strip() or None
-    except OSError:
-        return None
-
-def chequear_update(timeout=15):
-    """Consulta la API de GitHub (best-effort) y cachea si hay commits nuevos y cuales.
-    No lanza: si no hay red o la API falla, deja el cache como estaba (con el motivo)."""
-    local = _sha_local()
-    def _err(motivo):   # deja rastro del fallo en vez de salir mudo (rate limit, sin red, etc.)
-        try:
-            prev = {}
-            try:
-                prev = json.load(open(UPDCHK_FILE, encoding="utf-8"))
-            except Exception:
-                pass
-            prev.update({"disponible": bool(prev.get("disponible")), "local": local,
-                         "error": str(motivo)[:200], "checked": int(time.time())})
-            json.dump(prev, open(UPDCHK_FILE, "w", encoding="utf-8"))
-        except OSError:
-            pass
-    try:
-        req = urllib.request.Request(
-            f"https://api.github.com/repos/{_UPD_REPO}/commits?sha=main&per_page=20",
-            headers={"User-Agent": "suricata-panel", "Accept": "application/vnd.github+json"})
-        with urllib.request.urlopen(req, timeout=timeout) as r:
-            data = json.load(r)
-    except urllib.error.HTTPError as e:
-        _err("limite de la API de GitHub (403)" if e.code == 403 else f"HTTP {e.code}")
-        return
-    except Exception as e:
-        _err(e)
-        return
-    if not isinstance(data, list) or not data:
-        _err("respuesta inesperada de GitHub")
-        return
-    def _subj(c):
-        return (c.get("commit", {}).get("message", "") or "").split("\n", 1)[0].strip()
-    def _fecha(c):
-        d = (c.get("commit", {}).get("committer", {}) or {}).get("date") \
-            or (c.get("commit", {}).get("author", {}) or {}).get("date") or ""
-        return f"{d[8:10]}/{d[5:7]}/{d[0:4]}" if len(d) >= 10 else ""
-    latest = data[0].get("sha", "") or ""
-    mejoras = []
-    changelog = []
-    seen_local = False
-    for c in data[:12]:
-        sha = c.get("sha", "")
-        if sha == local:
-            seen_local = True
-        s = _subj(c)
-        if not s or s.lower().startswith("merge"):
-            continue
-        nuevo = bool(local) and not seen_local and sha != local
-        if nuevo:
-            mejoras.append(s)
-        changelog.append({"subject": s, "fecha": _fecha(c), "nuevo": nuevo})
-    disponible = bool(local) and latest != local and (len(mejoras) > 0 or local not in [c.get("sha") for c in data])
-    out = {"disponible": bool(disponible), "latest": latest, "local": local,
-           "ultimo": _subj(data[0]), "mejoras": mejoras[:12], "n": len(mejoras),
-           "changelog": changelog[:12], "checked": int(time.time())}
-    try:
-        json.dump(out, open(UPDCHK_FILE, "w", encoding="utf-8"))
-    except OSError:
-        pass
-    if not local and latest:
-        # caja sin SHA registrado (instalacion previa a esta funcion): fijar linea base
-        # para no marcar un falso "disponible" sin poder listar las mejoras. El primer
-        # 'Actualizar panel' registrara el SHA real y a partir de ahi el chequeo es exacto.
-        try:
-            open(COMMIT_FILE, "w", encoding="utf-8").write(latest)
-        except OSError:
-            pass
-
-UPDLAST_FILE = "/var/log/suricata-update-last.json"  # ultimo evento de actualizacion (de->a, por quien)
-
-def registrar_update_inicio(usuario):
-    """Antes de lanzar el updater: guarda desde que SHA y quien dispara la actualizacion.
-    El 'a' (SHA nuevo) se lee luego de COMMIT_FILE, que escribe el updater al terminar."""
-    try:
-        json.dump({"from": _sha_local() or "", "by": usuario or "", "at": int(time.time())},
-                  open(UPDLAST_FILE, "w", encoding="utf-8"))
-    except OSError:
-        pass
-
-def update_last():
-    try:
-        return json.load(open(UPDLAST_FILE, encoding="utf-8"))
-    except Exception:
-        return {}
-
-def update_info():
-    """Lee el cache completo del chequeo (haya o no update), para la tarjeta de Ajustes."""
-    try:
-        return json.load(open(UPDCHK_FILE, encoding="utf-8"))
-    except Exception:
-        return {}
-
-def update_estado():
-    """Lee el cache del chequeo; devuelve dict o None. Solo se muestra si 'disponible'."""
-    try:
-        d = json.load(open(UPDCHK_FILE, encoding="utf-8"))
-        return d if d.get("disponible") else None
-    except Exception:
-        return None
-
-_UPD_KICK_TS = 0.0
-_UPD_KICK_LOCK = threading.Lock()
-
-def _kick_update_check():
-    """Refresca el chequeo en segundo plano cuando un admin navega, como mucho cada 30 min,
-    para que el aviso aparezca poco despues de subir un cambio (sin esperar el ciclo de 6h)
-    y sin bloquear el request (la llamada de red va en un hilo aparte)."""
-    global _UPD_KICK_TS
-    now = time.time()
-    if now - _UPD_KICK_TS < 1800:
-        return
-    if not _UPD_KICK_LOCK.acquire(blocking=False):
-        return
-    _UPD_KICK_TS = now
-    def _run():
-        try:
-            chequear_update()
-        finally:
-            _UPD_KICK_LOCK.release()
-    threading.Thread(target=_run, daemon=True).start()
-
-TRUST_FILE = "/etc/suricata-dashboard-trust.json"
+TRUST_FILE = nodos.ruta("conf", "confianza.json")
 
 def cargar_confianza():
     """Lista de IPs/CIDR de confianza. Vacia = acceso abierto (con bloqueo por fallos)."""
@@ -7293,7 +7865,7 @@ def cargar_confianza():
     return []
 
 def guardar_confianza(lst):
-    tmp = TRUST_FILE + ".tmp"
+    tmp = "%s.%d.%d.tmp" % (TRUST_FILE, os.getpid(), threading.get_ident())
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(lst, f, ensure_ascii=False)
     os.chmod(tmp, 0o600)
@@ -7319,27 +7891,33 @@ def ip_confiable(ip):
     return True if not lst else ip_en_lista(ip, lst)
 
 def guardar_empresa(d):
-    tmp = EMPRESA_FILE + ".tmp"
+    tmp = "%s.%d.%d.tmp" % (EMPRESA_FILE, os.getpid(), threading.get_ident())
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump({"nombre": d.get("nombre", ""), "logo": d.get("logo", "")}, f, ensure_ascii=False)
-    os.chmod(tmp, 0o644)
+    os.chmod(tmp, 0o600)
     os.replace(tmp, EMPRESA_FILE)
 
 def verificar_login(user, pw):
-    """Devuelve el rol si user/clave son correctos y la cuenta esta activa; si no None."""
-    r = buscar_usuario(user)
+    """Devuelve el rol si user/clave son correctos y la cuenta esta activa; si no None.
+    Mismo coste con usuario inexistente que con clave mala (no se distingue por tiempo)."""
+    r = buscar_usuario(user) if isinstance(user, str) else None
+    if not isinstance(pw, str) or len(pw) > 256:
+        pw = ""
     if not r or r.get("activo", True) is False:
+        _hash_pw(pw or "x")                         # mismo trabajo que una clave mala
         return None
     try:
         _, h = _hash_pw(pw, r.get("salt", ""))
     except ValueError:
         return None
     if secrets.compare_digest(h, r.get("hash", "")):
-        return r.get("role", "admin")
+        rol = r.get("role", "admin")
+        return rol if rol in ROLES else None
     return None
-
-def newest_report():
-    fs = sorted(glob.glob(f"{LOGDIR}/report-*.html"), key=os.path.getmtime, reverse=True)
+def newest_report(nodo=None):
+    """El reporte mas nuevo del nodo que se mira (o del dado), o None."""
+    fs = glob.glob(os.path.join(logdir(nodo), "report-*.html"))
+    fs = sorted(fs, key=lambda p: os.path.getmtime(p) if os.path.exists(p) else 0, reverse=True)
     return fs[0] if fs else None
 
 _DETALLE_RE = re.compile(r'<section class="card">\s*<h2>Detalle:.*?</section>', re.S)
@@ -7378,39 +7956,17 @@ def partes_top():
     mt = _TOP_RE.search(doc)
     return css, (mt.group(0) if mt else "")
 
-# --- Auto-aprovisionamiento del mapa (assets + base GeoIP) ---
-# Para las cajas que actualizaron con un updater VIEJO (sin la logica de bajar el mapa): el
-# propio panel se auto-cura al arrancar. Best-effort, una sola vez, en 2do plano.
-_MAPA_DIR = "/var/lib/suricata-mapa"
-_GEOIP_BIN2 = "/var/lib/suricata-geoip/ipv4.bin"
-_REPO_RAW2 = "https://raw.githubusercontent.com/mtandazo35/suricata-ids-lab/main"
-_MAPA_ASSETS = {
-    "countries-110m.json": "a73ecc17bac82de28af19fa593f9e1a2e76619c51855490da735b7883ec48715",
-    "topojson-client.min.js": "ec362ac1599ef406ea9e79616a4ad47d4a3b3939882d47da7e4bc827a56f629c",
-}
+# --- Mapa (assets de la imagen) + base GeoIP (se baja en ejecucion) ---
+# Los ficheros del mapa (TopoJSON + topojson-client) van DENTRO de la imagen, en nodos.MAPA:
+# la raiz es de solo lectura y no se baja codigo en caliente. La base GeoIP IP->pais si se
+# baja (una vez, en segundo plano) a nodos.GEO, que es del panel.
+_MAPA_DIR = nodos.MAPA
+_GEOIP_BIN2 = os.path.join(nodos.GEO, "ipv4.bin")
 _GEO_CSV_URL = "https://raw.githubusercontent.com/sapics/ip-location-db/main/dbip-country/dbip-country-ipv4.csv"
 
 def _provisionar_geo():
-    """Asegura los assets del mapa y la base GeoIP si faltan. No bloquea el panel."""
-    # 1) assets del mapa (TopoJSON + topojson-client), verificando SHA256
-    try:
-        os.makedirs(_MAPA_DIR, exist_ok=True)
-        for fn, want in _MAPA_ASSETS.items():
-            dst = os.path.join(_MAPA_DIR, fn)
-            try:
-                if os.path.exists(dst) and hashlib.sha256(open(dst, "rb").read()).hexdigest() == want:
-                    continue
-                data = urllib.request.urlopen(f"{_REPO_RAW2}/vendor/mapa/{fn}", timeout=30).read()
-                if hashlib.sha256(data).hexdigest() == want:
-                    tmp = dst + ".tmp"
-                    with open(tmp, "wb") as f:
-                        f.write(data)
-                    os.replace(tmp, dst)
-            except Exception:
-                pass
-    except OSError:
-        pass
-    # 2) base GeoIP IP->pais (DB-IP lite via ip-location-db, CC-BY-4.0) -> binario compacto
+    """Asegura la base GeoIP si falta. No bloquea el panel."""
+    # base GeoIP IP->pais (DB-IP lite via ip-location-db, CC-BY-4.0) -> binario compacto
     try:
         if os.path.exists(_GEOIP_BIN2) and os.path.getsize(_GEOIP_BIN2) > 0:
             return
@@ -7446,14 +8002,82 @@ def _provisionar_geo():
     except Exception:
         pass
 
+# --- tareas de fondo ----------------------------------------------------------------------
+_PARAR = threading.Event()          # SIGTERM: los hilos de fondo terminan su vuelta y salen
+GEN_TIMEOUT = 600
+GEN_RLIMIT_AS = 1024 * 1024 * 1024  # el generador corre con 1 GiB de memoria como mucho (CONTRATO-F2 §6)
+_GEN_LOCK = threading.Lock()        # de un nodo en uno, nunca en paralelo
+
+def _limitar_generador():
+    try:
+        import resource
+        resource.setrlimit(resource.RLIMIT_AS, (GEN_RLIMIT_AS, GEN_RLIMIT_AS))
+    except Exception:
+        pass
+
+def generar_reporte(nodo, vmin):
+    """Corre el generador para UN punto (`--nodo pNNN`) o para «Todos» (`--todos`), como
+    subproceso con nice y tope de memoria, y de uno en uno. Devuelve lo que tardo (s)."""
+    if nodo == nodos.TODOS:
+        args = ["--todos"]
+    else:
+        args = ["--nodo", nodos.exigir_pid(nodo)]
+    cmd = ["nice", "-n", "15", sys.executable, GEN, str(int(vmin))] + args
+    t0 = time.time()
+    with _GEN_LOCK:
+        try:
+            subprocess.run(cmd, timeout=GEN_TIMEOUT, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                           preexec_fn=_limitar_generador if os.name == "posix" else None)
+        except subprocess.TimeoutExpired:
+            sys.stderr.write("generador %s: mas de %d s, se corta\n" % (nodo, GEN_TIMEOUT))
+        except OSError as e:
+            sys.stderr.write("generador %s: %s\n" % (nodo, e))
+    return time.time() - t0
+
+def _por_nodo(fn, pids, *args):
+    """Llama fn(pid) para cada punto con el contexto de ese punto puesto. Un fallo de un
+    punto no para a los demas ni deja el contexto puesto."""
+    for pid in pids:
+        if _PARAR.is_set():
+            return
+        try:
+            with nodos.contexto(pid):
+                fn(pid, *args)
+        except Exception as _e:
+            sys.stderr.write("%s(%s): %s\n" % (getattr(fn, "__name__", "?"), pid, _e))
+
+def _conducta_nodo(pid):
+    rep_ = hist_conducta(pid=pid)
+    if not rep_.get("filas"):
+        rep_ = conducta_recolectar(pid=pid)   # base aun vacia: primera vez
+    guardar_conducta(rep_, pid)
+
+def _ciclo_nodo(pid, vmin):
+    """Lo que en el heredado era el ciclo principal, para UN punto: generar su reporte y,
+    con el reporte nuevo, reconciliar, evaluar y aplicar politicas SOLO sobre sus claves."""
+    dur = generar_reporte(pid, vmin)
+    for paso in (reconciliar_cuarentena, evaluar_bloqueos, aplicar_politicas):
+        try:
+            paso(pid)
+        except Exception as _e:
+            sys.stderr.write("%s(%s): %s\n" % (paso.__name__, pid, _e))
+    return dur
+
 def refrescador():
-    """Hilo de fondo: regenera el reporte periodicamente, NUNCA en el request.
-    Asi 'En vivo' sirve siempre el ultimo archivo al instante aunque generar tarde."""
-    threading.Thread(target=_provisionar_geo, daemon=True).start()   # auto-cura mapa/GeoIP 1 vez
-    publicar_routers_map()   # que el generador sepa que interfaz es de que router
+    """Hilo de fondo: regenera los reportes periodicamente, NUNCA en el request.
+    Asi 'En vivo' sirve siempre el ultimo archivo al instante aunque generar tarde.
+
+    Cada tarea que mira o toca datos de un punto corre en un bucle por punto con
+    `nodos.contexto(pid)`; los reportes se generan de uno en uno, y despues una pasada
+    de «Todos» para la vista acumulada."""
+    threading.Thread(target=_provisionar_geo, daemon=True).start()   # base GeoIP 1 vez
+    publicar_routers_map()   # nombres de los puntos para el generador
     publicar_flags()         # y si las denuncias a AbuseIPDB estan activadas
+    try:
+        os.nice(10)          # UNA vez: el hilo de fondo no compite con las peticiones
+    except (OSError, AttributeError):
+        pass
     ult_poda = 0.0
-    ult_updchk = 0.0
     ult_sensor = 0.0
     ult_fast = 0.0
     ult_dur = 0.0       # lo que tardo la ultima generacion (para el freno de abajo)
@@ -7461,14 +8085,15 @@ def refrescador():
     ult_aidb = 0.0
     ult_pub = 0.0
     ult_diag = 0.0
+    ult_feeds = 0.0
     ult_forzado = 0.0   # ultima regeneracion pedida a mano/por cambios (ver REGEN_MIN_SECS)
     ult_cond = 0.0      # ultimo reporte de conducta (varios dias)
     ult_hist = 0.0      # ultima ingesta al historial persistente
-    while True:
+    while not _PARAR.is_set():
         global FORCE_REGEN
+        pids = nodos.pids()
         if time.time() - ult_fast > 60:        # cada ~60s: enviar YA los ALTO/infeccion confirmada
-            try: barrido_alto_rapido()
-            except Exception: pass
+            _por_nodo(barrido_alto_rapido, pids)
             ult_fast = time.time()
         if time.time() - ult_poda > 86400:     # 1x/dia: podar logs (15d) y reportes guardados (3d)
             try: podar_logs()
@@ -7476,19 +8101,18 @@ def refrescador():
             try: podar_reportes()
             except Exception: pass
             ult_poda = time.time()
-        if time.time() - ult_updchk > 3600:    # cada 1h: mirar si hay actualizacion en GitHub
-            try: chequear_update()
-            except Exception: pass
-            ult_updchk = time.time()
-        if time.time() - ult_sensor > 60:      # cada ~60s: medir salud del sensor (trafico/perdidas)
-            try: medir_sensor()
-            except Exception: pass
+        if time.time() - ult_sensor > 60:      # cada ~60s: salud del sensor de cada punto
+            _por_nodo(medir_sensor, pids)
             ult_sensor = time.time()
+        if time.time() - ult_feeds > FEEDS_CADA:   # cada 15 min: feeds de reputacion
+            try: actualizar_feeds_async()
+            except Exception as _e: sys.stderr.write("feeds: %s\n" % _e)
+            ult_feeds = time.time()
         if time.time() - ult_aidb > 300:       # cada ~5 min: unos pocos destinos a AbuseIPDB
             try: precargar_abuseipdb()
             except Exception as _e: sys.stderr.write("precarga abuseipdb: %s\n" % _e)
             ult_aidb = time.time()
-        if time.time() - ult_diag > 600:       # cada ~10 min: que le falta al router
+        if time.time() - ult_diag > 600:       # cada ~10 min: que le falta a cada router
             try: guardar_diagnostico()
             except Exception as _e: sys.stderr.write("diagnostico mikrotik: %s\n" % _e)
             ult_diag = time.time()
@@ -7499,34 +8123,25 @@ def refrescador():
             except Exception as _e: sys.stderr.write("vigilancia dnsbl: %s\n" % _e)
             ult_pub = time.time()
         # historial: barato porque es incremental (solo lo nuevo desde la marca).
-        # Va ANTES del informe para que el informe lea una base ya al dia.
+        # Va ANTES del informe para que el informe lea una base ya al dia. Una base por punto.
         if time.time() - ult_hist > HIST_CADA:
             ult_hist = time.time()
-            try:
-                hist_ingerir()
-            except Exception as _e:
-                sys.stderr.write("historial: %s\n" % _e)
-        # reporte de varios dias: caro (recorre los rotados), asi que espaciado y
-        # con nice; el boton de la pestana lo adelanta poniendo FORCE_CONDUCTA
+            _por_nodo(hist_ingerir, pids)
+        # reporte de varios dias: caro (recorre los rotados), asi que espaciado; el boton
+        # de la pestana lo adelanta poniendo FORCE_CONDUCTA
         if FORCE_CONDUCTA or (time.time() - ult_cond > CONDUCTA_CADA):
             globals()["FORCE_CONDUCTA"] = False
             ult_cond = time.time()
-            try:
-                os.nice(10)
-            except (OSError, AttributeError):
-                pass
-            try:
-                rep_ = hist_conducta()
-                if not rep_.get("filas"):
-                    rep_ = conducta_recolectar()   # base aun vacia: primera vez
-                guardar_conducta(rep_)
-            except Exception as _e:
-                sys.stderr.write("reporte de conducta: %s\n" % _e)
-        nr = newest_report()
+            _por_nodo(_conducta_nodo, pids)
         # una regeneracion FORZADA se atiende como mucho cada REGEN_MIN_SECS; la marca no
         # se pierde, solo se agrupa (un lote de cambios = una sola generacion)
         forzado = FORCE_REGEN and (time.time() - ult_forzado >= REGEN_MIN_SECS)
-        stale = forzado or (nr is None) or (time.time() - os.path.getmtime(nr) >= REFRESH_SECS)
+        stale = forzado
+        for nodo in pids + ([nodos.TODOS] if pids else []):
+            if stale:
+                break
+            nr = newest_report(nodo)
+            stale = (nr is None) or (time.time() - os.path.getmtime(nr) >= REFRESH_SECS)
         # FRENO: si una corrida tardo mas que el propio ciclo, esperar al menos lo que
         # tardo antes de lanzar la siguiente. Sin esto, en una caja donde generar lleva
         # 9 minutos y el ciclo son 5, se encadenan una tras otra y queda un nucleo al
@@ -7534,49 +8149,78 @@ def refrescador():
         # tiene que analizar el trafico se queda sin CPU. Como mucho, medio nucleo.
         if stale and ult_dur > REFRESH_SECS and (time.time() - ult_fin) < ult_dur:
             stale = False
-        if stale:
+        if stale and pids:
             if forzado:
                 ult_forzado = time.time()
             try:
-                mk_sync_enviados()   # el registro del panel refleja la lista real del MikroTik
+                mk_sync_enviados()   # el registro del panel refleja la lista real de cada MikroTik
             except Exception:
                 pass
             # se limpia DESPUES del sync: lo que cambie el sync ya entra en esta misma
             # generacion, asi no queda pidiendo otra identica para el ciclo siguiente
             FORCE_REGEN = False
             try:
-                refrescar_abonados()  # mapa IP->abonado (PPPoE/DHCP) para la ficha de evidencia
+                refrescar_abonados()  # mapa pid|IP->abonado (PPPoE/DHCP) para la ficha de evidencia
             except Exception:
                 pass
-            try:
-                # ventana del resumen en minutos (config VENTANA_MIN; por defecto 24h)
-                vmin = str(ventana_actual())
-                _t_gen = time.time()
-                subprocess.run(["nice", "-n", "15", GEN, vmin], timeout=600,
-                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                ult_dur = time.time() - _t_gen
-                ult_fin = time.time()
-                if ult_dur > REFRESH_SECS:
-                    # que quede dicho: si tarda mas que el ciclo, el operador tiene que
-                    # saberlo (suele ser un eve.json/dns.json enorme)
-                    sys.stderr.write("generar el reporte tardo %d s (ciclo %d s): se espaciaran las corridas\n"
-                                     % (ult_dur, REFRESH_SECS))
-            except Exception:
-                ult_fin = time.time()
-            try:
-                reconciliar_cuarentena()   # libera de la cuarentena a los que dejaron de atacar
-            except Exception:
-                pass
-            try:
-                evaluar_bloqueos()         # sella ultima evaluacion + si el CPE sigue activo
-            except Exception:
-                pass
-            try:
-                aplicar_politicas()        # aplica las politicas por banda de riesgo del Top
-            except Exception:
-                pass
-        time.sleep(10)   # poll corto para atender un cambio de ventana casi al instante
+            # ventana del resumen en minutos (config VENTANA_MIN; por defecto 24h)
+            vmin = ventana_actual()
+            _t_gen = time.time()
+            _por_nodo(_ciclo_nodo, pids, vmin)
+            if not _PARAR.is_set():
+                generar_reporte(nodos.TODOS, vmin)   # la vista acumulada, al final y sola
+            ult_dur = time.time() - _t_gen
+            ult_fin = time.time()
+            if ult_dur > REFRESH_SECS:
+                # que quede dicho: si tarda mas que el ciclo, el operador tiene que
+                # saberlo (suele ser un eve.json/dns.json enorme)
+                sys.stderr.write("generar los reportes tardo %d s (ciclo %d s): se espaciaran las corridas\n"
+                                 % (ult_dur, REFRESH_SECS))
+        _PARAR.wait(10)   # poll corto para atender un cambio de ventana casi al instante
 
+# --- Informe diario por Telegram (07:30 en IDS_TZ) ----------------------------------------
+INFORME_BIN = os.path.join(_AQUI, "informe_diario.py")
+INFORME_HORA = (7, 30)
+INFORME_ESTADO = nodos.ruta("estado", "informe-diario.json")
+
+def _proximo_informe(ahora=None):
+    """Siguiente 07:30 en la zona de la empresa (epoch)."""
+    ahora = datetime.fromtimestamp(ahora or time.time(), TZ_EC)
+    obj = ahora.replace(hour=INFORME_HORA[0], minute=INFORME_HORA[1], second=0, microsecond=0)
+    if obj <= ahora:
+        obj = obj + timedelta(days=1)
+    return obj.timestamp()
+
+def informe_diario_hilo():
+    """Hilo: a las 07:30 en IDS_TZ lanza informe_diario.py (un mensaje con una seccion por
+    punto). Recuerda el dia enviado, asi un reinicio a las 07:31 no lo manda dos veces."""
+    while not _PARAR.is_set():
+        espera = max(1.0, _proximo_informe() - time.time())
+        if _PARAR.wait(min(espera, 3600)):
+            return
+        if _proximo_informe() - time.time() < 23 * 3600:
+            continue                     # aun no toca (se desperto por el tope de una hora)
+        hoy = datetime.now(TZ_EC).strftime("%Y-%m-%d")
+        try:
+            if (json.load(open(INFORME_ESTADO, encoding="utf-8")) or {}).get("dia") == hoy:
+                continue
+        except (OSError, ValueError, AttributeError):
+            pass
+        try:
+            r = subprocess.run(["nice", "-n", "15", sys.executable, INFORME_BIN], timeout=900,
+                               stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+            ok = r.returncode == 0
+            bitacora("INFORME-DIARIO", "enviado" if ok else "fallo (rc=%d)" % r.returncode, quien="panel")
+        except (OSError, subprocess.TimeoutExpired) as e:
+            ok = False
+            bitacora("INFORME-DIARIO", "fallo: %s" % str(e)[:120], quien="panel")
+        try:
+            tmp = INFORME_ESTADO + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump({"dia": hoy, "ok": ok, "ts": int(time.time())}, f)
+            os.replace(tmp, INFORME_ESTADO)
+        except OSError:
+            pass
 _NAV_LINKS = [("/", "En vivo"), ("/top", "Top origenes"), ("/detalle", "Detalle"),
               ("/cuarentena", "Cuarentena"), ("/reputacion", "Consultar IP"),
               ("/historico", "Historico"), ("/conducta", "Reporte"),
@@ -7936,7 +8580,10 @@ _ASK = ('<div id=askov class=askov onmousedown="this._dn=event.target" onclick="
         "<script>var _askE=null;function askNo(){var m=document.getElementById('askov');if(m)m.style.display='none';_askE=null;}function _askAbrir(t,x,ok,tono,solo){document.getElementById('asktit').textContent=t;document.getElementById('asktxt').textContent=x||'';var k=document.getElementById('askok'),n=document.getElementById('askno');k.textContent=ok||'Confirmar';k.className='askok'+(tono?' '+tono:'');n.style.display=solo?'none':'';document.getElementById('askov').style.display='flex';k.focus();}function ask(e,t,x,ok,tono){if(e.dataset.ok){e.dataset.ok='';return true;}_askE=e;_askAbrir(t,x,ok,tono,0);return false;}function aviso(t,x){_askE=null;_askAbrir(t,x,'Entendido','',1);}document.getElementById('askok').addEventListener('click',function(){var e=_askE;askNo();if(!e)return;if(e.tagName==='FORM'){e.submit();return;}e.dataset.ok='1';e.click();});document.addEventListener('keydown',function(ev){if(ev.key==='Escape')askNo();});</script>")
 
 # compat: algunas plantillas todavia interpolan {NAV} (barra sin pestana activa marcada)
-NAV = nav()
+try:
+    NAV = nav()
+except Exception:          # la barra puede necesitar el nodo del contexto, que al importar no hay
+    NAV = ""
 
 # cabecera de pagina (titulo con presencia + subtitulo + indicador en vivo)
 _PAGEH_CSS = """<style>
@@ -7965,18 +8612,6 @@ def wrap(body_html, refresh=True, active=""):
         out = re.sub(r"</head>", meta + "</head>", out, count=1)
     return out
 
-def save_conf(user, pw):
-    """Reescribe /etc/suricata-dashboard.conf con el usuario/clave nuevos (conserva PORT)."""
-    port = CFG.get("PORT", "5637")
-    txt = ("# Panel de estadisticas de Suricata. Editado desde el apartado Perfil.\n"
-           "# Reiniciar tras cambios manuales: systemctl restart suricata-dashboard\n"
-           f"PORT={port}\nUSER={user}\nPASS={pw}\n")
-    tmp = CONF + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        f.write(txt)
-    os.chmod(tmp, 0o600)
-    os.replace(tmp, CONF)
-    CFG["USER"], CFG["PASS"], CFG["PORT"] = user, pw, port
 
 def _rol_badge(rl):
     if rl == "admin":
@@ -8026,687 +8661,22 @@ _IC_VPN   = _ic("M18 8h-1V6c0-2.76-2.24-5-5-5S7 3.24 7 6v2H6c-1.1 0-2 .9-2 2v10c
 _IC_FEED  = _ic("M12 1L3 5v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V5l-9-4zm0 4.5a2.5 2.5 0 0 1 2.5 2.5c0 1-.6 1.9-1.5 2.3V17h-2v-4.7A2.5 2.5 0 0 1 9.5 8 2.5 2.5 0 0 1 12 5.5z")
 
 # =====================================================================================
-# VPN (OpenVPN): el tunel por el que los MikroTik mandan el espejo. Lo monta y administra
-# /root/openvpn.sh (lo deja el instalador). El panel LEE el estado de sus archivos y le
-# PIDE los cambios por sus ordenes sin menu: asi todo se hace desde la web, sin consola, y
-# hay una sola logica (la del script) para crear usuarios y rutas. Antes de cada cambio,
-# respaldo de /etc/openvpn en /root/backups; despues, bitacora.
-OVPN_SH = "/root/openvpn.sh"
-OVPN_ETC = "/etc/openvpn"
-OVPN_SRV = "/etc/openvpn/server"
-OVPN_CCD = "/etc/openvpn/open-vpn"
-OVPN_LOG = "/var/log/suricata-openvpn.log"
-OVPN_BACKUPS = "/root/backups"
-OVPN_UNIDAD = "suricata-ovpn-instalar"          # nombre fijo: systemd rechaza un segundo
-OVPN_CERROJO = "/run/suricata-ovpn-instalar.lock"
-_RE_OVPN_USER = re.compile(r"^[a-z0-9][a-z0-9_-]{2,31}$")   # igual que valid_vpn_user del script
-_RE_ANSI = re.compile(r"\x1b\[[0-9;]*m")
-
-def _ovpn_conf():
-    """Lo que interesa de server.conf, o None si OpenVPN no esta instalado."""
-    out = {}
-    try:
-        for l in open(os.path.join(OVPN_SRV, "server.conf"), encoding="utf-8", errors="replace"):
-            p = l.split()
-            if len(p) >= 2 and p[0] in ("local", "port", "proto", "server"):
-                out[p[0]] = p[1:]
-    except OSError:
-        return None
-    return out
-
-def _ovpn_conectados():
-    """{usuario: {real, ip, rx, tx, desde}} del status de OpenVPN (status-version 2).
-    Con username-as-common-name el Common Name ES el usuario."""
-    out = {}
-    try:
-        lineas = open(os.path.join(OVPN_SRV, "openvpn-status.log"), encoding="utf-8",
-                      errors="replace").read().splitlines()
-    except OSError:
-        return out
-    for l in lineas:
-        c = l.split(",")
-        if c[0] == "CLIENT_LIST" and len(c) >= 9:
-            try:
-                out[c[1]] = {"real": c[2].rsplit(":", 1)[0], "ip": c[3], "rx": int(c[5] or 0),
-                             "tx": int(c[6] or 0), "desde": int(c[8] or 0)}
-            except ValueError:
-                continue
-    return out
-
-def ovpn_instalando():
-    """La instalacion corre como unidad propia de systemd (sigue aunque el panel reinicie)."""
-    try:
-        # el nombre fijo, y el de antes (suricata-ovpn-instalar-<hora>) de un panel viejo
-        r = subprocess.run(["systemctl", "list-units", "--type=service", "--state=active",
-                            "--no-legend", OVPN_UNIDAD + ".service", OVPN_UNIDAD + "-*"],
-                           capture_output=True, text=True, timeout=10)
-        return bool(r.stdout.strip())
-    except (OSError, subprocess.SubprocessError):
-        return False
-
-def ovpn_estado():
-    est = {"script": os.path.isfile(OVPN_SH), "instalado": False, "activo": False,
-           "puerto": "", "proto": "", "local": "", "red": "", "servidor": "", "usuarios": [],
-           "instalando": ovpn_instalando()}
-    conf = _ovpn_conf()
-    if conf is None:
-        return est
-    est["instalado"] = True
-    est["puerto"] = (conf.get("port") or [""])[0]
-    est["proto"] = (conf.get("proto") or [""])[0]
-    est["local"] = (conf.get("local") or [""])[0]
-    srv = conf.get("server") or []
-    if len(srv) >= 2:
-        try:
-            net = ipaddress.IPv4Network(srv[0] + "/" + srv[1], strict=False)
-            est["red"] = str(net)
-            est["servidor"] = str(next(net.hosts()))
-        except (ValueError, StopIteration):
-            pass
-    try:
-        est["activo"] = subprocess.call(["systemctl", "is-active", "--quiet", "openvpn-server@server"]) == 0
-    except OSError:
-        pass
-    con = _ovpn_conectados()
-    try:
-        nombres = sorted(os.listdir(OVPN_CCD))
-    except OSError:
-        nombres = []
-    for u in nombres:
-        ruta = os.path.join(OVPN_CCD, u)
-        if u == "rutas.sh" or not _RE_OVPN_USER.match(u) or not os.path.isfile(ruta):
-            continue
-        ip, redes = "", []
-        try:
-            for l in open(ruta, encoding="utf-8", errors="replace"):
-                p = l.split()
-                if len(p) >= 2 and p[0] == "ifconfig-push":
-                    ip = p[1]
-                elif len(p) >= 3 and p[0] == "iroute":
-                    try:
-                        redes.append(str(ipaddress.IPv4Network(p[1] + "/" + p[2], strict=False)))
-                    except ValueError:
-                        pass
-        except OSError:
-            continue
-        est["usuarios"].append({"usuario": u, "ip": ip, "redes": redes, "conexion": con.get(u)})
-    return est
-
-def _ovpn_gw():
-    """La puerta de enlace por defecto del servidor ("" si no hay)."""
-    try:
-        out = subprocess.run(["ip", "-o", "-4", "route", "show", "to", "default"],
-                             capture_output=True, text=True, timeout=5).stdout.split()
-        return out[out.index("via") + 1] if "via" in out else ""
-    except (OSError, subprocess.SubprocessError, IndexError):
-        return ""
-
-def ovpn_redes_validas(texto, usuario, est, gw=None):
-    """(nuevas normalizadas, errores, avisos) para agregar a ese MikroTik.
-
-    No pasa nada que el script no fuera a aceptar, y ademas lo que el script no mira:
-    una red enorme (/0 a /7) mandaria por el tunel la salida del propio servidor; pisar la
-    red del tunel lo rompe; y dos MikroTik con redes solapadas no se pueden enrutar."""
-    nuevas, errores, avisos = [], [], []
-    mias = set()
-    otras = {}
-    for x in est.get("usuarios") or []:
-        for r in x.get("redes") or []:
-            if x["usuario"] == usuario:
-                mias.add(r)
-            else:
-                otras[r] = x["usuario"]
-    try:
-        vpn = ipaddress.IPv4Network(est["red"]) if est.get("red") else None
-    except ValueError:
-        vpn = None
-    gw = _ovpn_gw() if gw is None else gw
-    for tok in re.split(r"[\s,;]+", texto or ""):
-        if not tok:
-            continue
-        try:
-            n = ipaddress.IPv4Network(tok if "/" in tok else tok + "/32", strict=False)
-        except ValueError:
-            errores.append("%s no es una red IPv4 (ejemplo: 192.168.10.0/24)" % tok)
-            continue
-        if n.prefixlen < 8:
-            errores.append("%s es demasiado grande: mandaria por el tunel casi todo internet, "
-                           "incluida la salida del propio servidor" % n)
-            continue
-        if vpn and n.overlaps(vpn):
-            errores.append("%s pisa la red del propio tunel (%s)" % (n, vpn))
-            continue
-        if str(n) in mias:
-            avisos.append("%s ya era de este MikroTik" % n)
-            continue
-        choque = next((u for r, u in otras.items() if ipaddress.IPv4Network(r).overlaps(n)), None)
-        if choque:
-            errores.append("%s se solapa con una red de %s: dos MikroTik no pueden tener la "
-                           "misma red" % (n, choque))
-            continue
-        try:
-            if gw and ipaddress.IPv4Address(gw) in n:
-                avisos.append("%s incluye la puerta de enlace del servidor (%s): la salida a "
-                              "internet sigue igual, pero el resto de esa red ira por el tunel" % (n, gw))
-        except ValueError:
-            pass
-        if str(n) not in nuevas:
-            nuevas.append(str(n))
-    return nuevas, errores, avisos
-
-def ovpn_respaldo():
-    """tar.gz de /etc/openvpn en /root/backups. Si no se puede, no se toca nada."""
-    import tarfile
-    os.makedirs(OVPN_BACKUPS, exist_ok=True)
-    ruta = os.path.join(OVPN_BACKUPS, "openvpn-%s.tar.gz" % time.strftime("%Y%m%d-%H%M%S"))
-    with tarfile.open(ruta + ".tmp", "w:gz") as t:
-        if os.path.isdir(OVPN_ETC):
-            t.add(OVPN_ETC, arcname="etc/openvpn")
-    os.chmod(ruta + ".tmp", 0o600)
-    os.replace(ruta + ".tmp", ruta)
-    return ruta
-
-OVPN_MARCA_CLI = "agregar_redes()"   # el openvpn.sh con ordenes sin menu (las que usa el panel)
-
-def ovpn_script_al_dia():
-    try:
-        return OVPN_MARCA_CLI in open(OVPN_SH, encoding="utf-8", errors="replace").read()
-    except OSError:
-        return False
-
-def ovpn_asegurar_script():
-    """(ok, mensaje). Si /root/openvpn.sh falta o es el viejo (solo menu), se baja del
-    instalador publicado, se verifica con su huella y se instala; el anterior se respalda.
-    Hace falta porque la PRIMERA actualizacion por boton la ejecuta el actualizador viejo,
-    que no sabe renovarlo: sin esto habria que actualizar dos veces."""
-    if ovpn_script_al_dia():
-        return True, ""
-    try:
-        txt = urllib.request.urlopen(_REPO_RAW2 + "/install-suricata.sh", timeout=30).read().decode("utf-8")
-    except Exception as ex:
-        return False, "no se pudo bajar el instalador para renovar %s: %s" % (OVPN_SH, ex)
-    m = re.search(r'^OVPN_SHA="([0-9a-f]{64})"$', txt, re.M)
-    ini = txt.find("<<'OVPNSH'\n")
-    fin = txt.find("\nOVPNSH\n", ini)
-    if not m or ini < 0 or fin < 0:
-        return False, "el instalador publicado no trae openvpn.sh"
-    cuerpo = txt[ini + len("<<'OVPNSH'\n"):fin + 1]
-    if hashlib.sha256(cuerpo.encode("utf-8")).hexdigest() != m.group(1):
-        return False, "openvpn.sh no coincide con su huella: no se instala"
-    if OVPN_MARCA_CLI not in cuerpo:
-        return False, "el openvpn.sh publicado no tiene las ordenes sin menu"
-    try:
-        if os.path.isfile(OVPN_SH):
-            viejo = open(OVPN_SH, "rb").read()
-            with open(OVPN_SH + ".bak-" + time.strftime("%Y%m%d-%H%M%S"), "wb") as f:
-                f.write(viejo)
-        with open(OVPN_SH + ".tmp", "w", encoding="utf-8", newline="\n") as f:
-            f.write(cuerpo)
-        os.chmod(OVPN_SH + ".tmp", 0o750)
-        os.replace(OVPN_SH + ".tmp", OVPN_SH)
-    except OSError as ex:
-        return False, "no se pudo instalar %s: %s" % (OVPN_SH, ex)
-    bitacora("VPN-SCRIPT", "renovado %s (verificado con su huella)" % OVPN_SH, quien="panel")
-    return True, "renovado"
-
-def ovpn_correr(args, timeout=240):
-    """Una orden del script, sin shell (los argumentos ya vienen validados)."""
-    r = subprocess.run(["bash", OVPN_SH] + list(args), capture_output=True, timeout=timeout)
-    out = _RE_ANSI.sub("", (r.stdout + r.stderr).decode("utf-8", "replace"))
-    return r.returncode, out.strip()
-
-def ovpn_accion(accion, usuario="", redes=(), quien="?"):
-    """usuario | redes | quitar-redes | borrar. (ok, mensaje, datos)."""
-    if not os.path.isfile(OVPN_SH):
-        return False, ("Falta %s. Actualiza el panel (Ajustes > Actualizaciones): el "
-                       "instalador lo deja." % OVPN_SH), {}
-    if accion != "usuario" and not _RE_OVPN_USER.match(usuario or ""):
-        return False, "usuario de VPN no valido", {}
-    okv, msgv = ovpn_asegurar_script()
-    if not okv:
-        return False, msgv, {}
-    try:
-        resp = ovpn_respaldo()
-    except Exception as ex:
-        return False, "no se pudo respaldar %s (%s): no se toca nada" % (OVPN_ETC, ex), {}
-    if accion == "usuario":
-        rc, out = ovpn_correr(["--usuario"])
-        kv = {}
-        for l in out.splitlines():
-            m = re.match(r"^([A-Z0-9]+)=(.*)$", l)
-            if m:
-                kv[m.group(1)] = m.group(2)
-        if rc != 0 or not kv.get("USUARIO"):
-            return False, "no se pudo crear el usuario: " + out[-400:], {}
-        # la clave NO va a la bitacora: se muestra una vez y queda solo en el sistema
-        bitacora("VPN-USUARIO", "%s ip=%s respaldo=%s" % (kv["USUARIO"], kv.get("IPVPN", ""), resp), quien=quien)
-        return True, "", {k: kv.get(k, "") for k in ("USUARIO", "IPVPN", "CLAVE", "CONECTAR", "MT7", "MT6")}
-    args = {"redes": ["--redes", usuario] + list(redes),
-            "quitar-redes": ["--quitar-redes", usuario] + list(redes),
-            "borrar": ["--borrar", usuario]}[accion]
-    rc, out = ovpn_correr(args)
-    bitacora("VPN-" + accion.upper(), "%s %s rc=%d respaldo=%s" % (usuario, " ".join(redes), rc, resp), quien=quien)
-    return rc == 0, out[-800:] or ("hecho" if rc == 0 else "fallo sin mensaje"), {}
-
-def ovpn_instalar(quien="?"):
-    """Lanza la instalacion del servidor en una unidad propia de systemd. (ok, mensaje)"""
-    if not os.path.isfile(OVPN_SH):
-        return False, "Falta %s. Actualiza el panel: el instalador lo deja." % OVPN_SH
-    if _ovpn_conf() is not None:
-        return False, "OpenVPN ya esta instalado."
-    # uno a la vez (cada peticion va en su hilo): cerrojo + nombre fijo de la unidad
-    with _UnaVez(OVPN_CERROJO) as cerrojo:
-        if not cerrojo.ok or ovpn_instalando():
-            return False, "Ya hay una instalacion en marcha."
-        okv, msgv = ovpn_asegurar_script()
-        if not okv:
-            return False, msgv
-        try:
-            resp = ovpn_respaldo() if os.path.isdir(OVPN_ETC) else ""
-        except Exception as ex:
-            return False, "no se pudo respaldar %s (%s): no se toca nada" % (OVPN_ETC, ex)
-        try:
-            with open(OVPN_LOG, "w", encoding="utf-8") as f:
-                f.write("Instalando OpenVPN (%s)\n" % time.strftime("%Y-%m-%d %H:%M:%S"))
-        except OSError:
-            pass
-        cmd = ["systemd-run", "--unit", OVPN_UNIDAD, "--collect",
-               "--property", "StandardOutput=append:" + OVPN_LOG,
-               "--property", "StandardError=append:" + OVPN_LOG,
-               "--setenv", "DEBIAN_FRONTEND=noninteractive",
-               "/bin/bash", "-c", 'bash "$0" --instalar; echo "FIN rc=$?"', OVPN_SH]
-        try:
-            r = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
-        except (OSError, subprocess.SubprocessError) as ex:
-            return False, "no se pudo lanzar la instalacion: %s" % ex
-        if r.returncode != 0:
-            return False, "no se pudo lanzar la instalacion: %s" % (r.stderr or r.stdout)[-300:]
-        bitacora("VPN-INSTALAR", "lanzada (%s) respaldo=%s" % (OVPN_UNIDAD, resp or "-"), quien=quien)
-        return True, "instalacion en marcha"
-
-def ovpn_log():
-    """El avance de la instalacion: {corriendo, rc, log}. rc sale de la marca FIN del final."""
-    try:
-        txt = open(OVPN_LOG, encoding="utf-8", errors="replace").read()
-    except OSError:
-        txt = ""
-    m = re.search(r"FIN rc=(\d+)\s*$", txt)
-    rc = int(m.group(1)) if m else None
-    return {"corriendo": rc is None and ovpn_instalando(), "rc": rc,
-            "log": _RE_ANSI.sub("", txt[-6000:])}
-
-# =====================================================================================
-# El espejo por la VPN, desde la web. Dos cosas que hasta ahora pedian consola:
-#   1) montar el espejo en un MikroTik (lista ids-vigilados, mangle de ida/vuelta/DNS con
-#      recorte, fasttrack) hacia la IP del sensor DENTRO del tunel. Lo hace
-#      suricata-mikrotik-init, la misma herramienta que usa el instalador con -k: una sola
-#      logica probada, con vista previa (--plan) antes de tocar nada;
-#   2) pasar el sensor a "recibir el espejo por la VPN": re-ejecutar el instalador con
-#      -t -e vpn -m <IPs de los MikroTik en el tunel>. Va en una unidad propia de systemd
-#      porque el instalador reinicia el panel a mitad (la web se corta unos segundos).
-MK_INIT_BIN = "/usr/local/bin/suricata-mikrotik-init"
-# La version de suricata-mikrotik-init que necesita este panel: la constante MKINIT_VERSION de
-# ese programa. Una opcion (--sin-registrar...) no vale de marca: sigue ahi en versiones que
-# ya no sirven, y una herramienta vieja que el actualizador no consiguio renovar pasaba por nueva.
-MK_INIT_MARCA = 'MKINIT_VERSION = "2026-10-10b"'
-CRED_DIR = "/root"                   # credenciales temporales: en /root, nunca en /tmp
-SURI_YAML = "/etc/suricata/suricata.yaml"
-IDS_FW_BIN = "/usr/local/sbin/suricata-ids-fw"
-EVEBOX_YAML = "/etc/evebox/evebox.yaml"
-INSTALADOR_LOCAL = "/root/install-suricata.sh"   # los instaladores van en /root
-ESPEJO_LOG = "/var/log/suricata-espejo-vpn.log"
-# Nombre FIJO de la unidad: systemd-run rechaza un segundo lanzamiento mientras el primero
-# exista (y --collect la descarga al terminar, aunque falle, para que se pueda repetir).
-ESPEJO_UNIDAD = "suricata-espejo-vpn"
-ESPEJO_CERROJO = "/run/suricata-espejo-vpn.lock"
-TZSP_PORT_DEF = 37008
-# lo que el instalador reescribe al cambiar de modo, para poder volver atras: la config de
-# Suricata, el receptor, el firewall de solo-tunel, los routers del panel (con sus claves:
-# el tar es 600), la config y los usuarios del panel, EveBox, el MikroTik de siempre y los
-# programas suricata-* (el instalador de main los reescribe todos). Admite comodines.
-ESPEJO_RESPALDAR = ("/etc/suricata/suricata.yaml", "/etc/systemd/system/tzsp-decap.service",
-                    "/usr/local/sbin/suricata-ids-fw", "/etc/systemd/system/suricata-ids-fw.service",
-                    "/etc/suricata-routers.json", "/etc/suricata-dashboard.conf",
-                    "/etc/suricata-dashboard-users.json", "/etc/evebox/evebox.yaml",
-                    "/etc/suricata-mikrotik.conf", "/usr/local/bin/suricata-*")
-
-class _UnaVez(object):
-    """Cerrojo de "solo uno a la vez" para lanzar algo como root desde la web.
-
-    El panel atiende cada peticion en su hilo (ThreadingHTTPServer): dos clics seguidos en
-    Lanzar corrian dos instaladores a la vez y el segundo truncaba el log del primero. Un
-    threading.Lock para los hilos de este proceso y flock sobre un archivo de /run para
-    otro proceso del panel (el que arranca mientras el viejo termina). No espera: si esta
-    cogido, .ok es False y quien llama dice que ya hay uno en marcha. Sin fcntl (Windows,
-    en las pruebas) queda el de los hilos; y el nombre fijo de la unidad de systemd."""
-    _hilos = {}
-
-    def __init__(self, ruta):
-        self.ruta = ruta
-        self.lock = _UnaVez._hilos.setdefault(ruta, threading.Lock())
-        self.fd = None
-        self.ok = False
-
-    def __enter__(self):
-        if not self.lock.acquire(False):
-            return self
-        try:
-            import fcntl
-        except ImportError:
-            fcntl = None
-        if fcntl is not None:
-            try:
-                self.fd = os.open(self.ruta, os.O_RDWR | os.O_CREAT, 0o600)
-                fcntl.flock(self.fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            except BlockingIOError:
-                os.close(self.fd)
-                self.fd = None
-                self.lock.release()
-                return self
-            except OSError:
-                # /run no escribible: quedan el cerrojo de los hilos y el nombre fijo de la unidad
-                if self.fd is not None:
-                    os.close(self.fd)
-                    self.fd = None
-        self.ok = True
-        return self
-
-    def __exit__(self, *_a):
-        if self.fd is not None:
-            os.close(self.fd)              # cerrar el descriptor suelta el flock
-            self.fd = None
-        if self.ok:
-            self.ok = False
-            self.lock.release()
-        return False
-
-# Lineas del log con una clave: el resumen final del instalador entrega las del panel y
-# EveBox, y el log se ensena en la web. Se enmascara el valor (el archivo, 600, no se toca).
-_RE_CLAVE_LOG = re.compile(
-    r"(?i)(\b(?:clave|password|passwd|pass|contrase(?:n|ñ)a)\b(?:\s*[:=]\s*|\s+)"
-    r"(?!(?:del|de|la|el|que|y|o|para|en|no|se|es|nueva|sin|ya|queda)\b))([^\s,;)]+)")
-
-def enmascarar_claves(txt):
-    return _RE_CLAVE_LOG.sub(lambda m: m.group(1) + "********", txt or "")
-
-def mkinit_asegurar():
-    """(ok, mensaje). Si suricata-mikrotik-init no es el de esta version (sin MK_INIT_MARCA),
-    se baja del instalador publicado y se instala; el anterior se respalda. Hace falta porque
-    la PRIMERA actualizacion por boton la ejecuta el actualizador viejo, que no renovaba esta
-    herramienta, y porque el actualizador nuevo puede no conseguir renovarla."""
-    try:
-        if MK_INIT_MARCA in open(MK_INIT_BIN, encoding="utf-8", errors="replace").read():
-            return True, ""
-    except OSError:
-        pass
-    try:
-        txt = urllib.request.urlopen(_REPO_RAW2 + "/install-suricata.sh", timeout=30).read().decode("utf-8")
-    except Exception as ex:
-        return False, "no se pudo bajar el instalador para renovar %s: %s" % (MK_INIT_BIN, ex)
-    ini = txt.find("<<'MKINIT'\n")
-    fin = txt.find("\nMKINIT\n", ini)
-    if ini < 0 or fin < 0:
-        return False, "el instalador publicado no trae suricata-mikrotik-init"
-    cuerpo = txt[ini + len("<<'MKINIT'\n"):fin + 1]
-    if MK_INIT_MARCA not in cuerpo:
-        return False, "el suricata-mikrotik-init publicado no es el de esta version del panel"
-    try:
-        compile(cuerpo, MK_INIT_BIN, "exec")
-    except SyntaxError as ex:
-        return False, "el suricata-mikrotik-init publicado no es Python valido (%s): no se instala" % ex
-    try:
-        if os.path.isfile(MK_INIT_BIN):
-            viejo = open(MK_INIT_BIN, "rb").read()
-            with open(MK_INIT_BIN + ".bak-" + time.strftime("%Y%m%d-%H%M%S"), "wb") as f:
-                f.write(viejo)
-        with open(MK_INIT_BIN + ".tmp", "w", encoding="utf-8", newline="\n") as f:
-            f.write(cuerpo)
-        os.chmod(MK_INIT_BIN + ".tmp", 0o755)
-        os.replace(MK_INIT_BIN + ".tmp", MK_INIT_BIN)
-    except OSError as ex:
-        return False, "no se pudo instalar %s: %s" % (MK_INIT_BIN, ex)
-    bitacora("MKINIT-RENOVADO", "renovado %s desde el instalador publicado" % MK_INIT_BIN, quien="panel")
-    return True, "renovado"
-
-def mkinit_correr(router, args, timeout=150):
-    """(rc, salida) de suricata-mikrotik-init contra ESE router.
-
-    Las credenciales van en un archivo temporal 600 en /root que se borra al terminar,
-    aunque falle: la clave NUNCA va en la linea de comandos (quedaria a la vista en `ps`)
-    ni se queda en disco fuera del registro de routers, que ya es 600."""
-    import tempfile
-    d = cargar_mk_de(router)
-    lineas = []
-    for k in ("HOST", "PORT", "TLS", "USER", "PASS", "CERT_FP"):
-        v = str(d.get(k) or "")
-        if any(c in v for c in "\r\n\0"):
-            # un salto de linea en un valor meteria otra clave en el archivo
-            return 1, "el valor de %s de ese router no es valido (lleva un salto de linea)" % k
-        # la clave, SIEMPRE entre comillas dobles: suricata-mikrotik-init quita ese par y nada
-        # mas, asi una clave que empiece o acabe en espacio o en comilla llega intacta
-        lineas.append(('%s="%s"\n' if k == "PASS" else "%s=%s\n") % (k, v))
-    fd, cred = tempfile.mkstemp(prefix=".suricata-mk-", suffix=".cred", dir=CRED_DIR)
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            f.write("".join(lineas))
-        os.chmod(cred, 0o600)
-        r = subprocess.run([MK_INIT_BIN, "-k", cred] + list(args), capture_output=True, timeout=timeout)
-        out = _RE_ANSI.sub("", (r.stdout + r.stderr).decode("utf-8", "replace")).strip()
-        return r.returncode, out
-    except (OSError, subprocess.SubprocessError) as ex:
-        return 1, "no se pudo ejecutar %s: %s" % (MK_INIT_BIN, ex)
-    finally:
-        try:
-            os.unlink(cred)
-        except OSError:
-            pass
-
-def _systemctl_env(unidad):
-    """{clave: valor} del Environment de una unidad de systemd ({} si no existe)."""
-    try:
-        out = subprocess.run(["systemctl", "show", unidad, "-p", "Environment"],
-                             capture_output=True, text=True, timeout=10).stdout
-    except (OSError, subprocess.SubprocessError):
-        return {}
-    env = {}
-    for tok in (out or "").replace("Environment=", " ").split():
-        if "=" in tok:
-            k, v = tok.split("=", 1)
-            env[k] = v
-    return env
-
-def _lista_csv(txt):
-    return [x for x in re.split(r"[\s,]+", txt or "") if x]
-
-def sensor_modo():
-    """Como recibe hoy el espejo este sensor: de que origenes (TZSP_ALLOW), con que recorte
-    (TZSP_BYTES), su HOME_NET, si el firewall de solo-tunel esta puesto y a quien deja
-    entrar a la web (-a). Todo leido de lo que dejo el instalador: es lo que esta en uso."""
-    env = _systemctl_env("tzsp-decap")
-    m = {"tzsp": bool(env.get("TZSP_ALLOW")), "allow": _lista_csv(env.get("TZSP_ALLOW")),
-         "bytes": 0, "puerto": TZSP_PORT_DEF, "home_net": [], "fw": False, "gestion": [],
-         "web": os.path.isfile(EVEBOX_YAML), "evebox_puerto": ""}
-    try:
-        m["bytes"] = int(env.get("TZSP_BYTES") or 0)
-    except ValueError:
-        pass
-    try:
-        m["puerto"] = int(env.get("TZSP_PORT") or TZSP_PORT_DEF)
-    except ValueError:
-        pass
-    try:
-        for l in open(SURI_YAML, encoding="utf-8", errors="replace"):
-            mm = re.match(r'^\s*HOME_NET:\s*"?\[?([^\]"]*)', l)
-            if mm:
-                m["home_net"] = _lista_csv(mm.group(1))
-                break
-    except OSError:
-        pass
-    try:
-        m["fw"] = subprocess.call(["systemctl", "is-active", "--quiet", "suricata-ids-fw"]) == 0
-    except OSError:
-        pass
-    try:
-        mm = re.search(r"ip saddr \{([^}]*)\}", open(IDS_FW_BIN, encoding="utf-8", errors="replace").read())
-        if mm:
-            m["gestion"] = _lista_csv(mm.group(1))
-    except OSError:
-        pass
-    if m["web"]:
-        try:
-            for l in open(EVEBOX_YAML, encoding="utf-8", errors="replace"):
-                mm = re.match(r"^\s+port:\s*(\d+)\s*$", l)
-                if mm:
-                    m["evebox_puerto"] = mm.group(1)
-                    break
-        except OSError:
-            pass
-    m["modo"] = ("vpn" if m["fw"] else "local") if m["tzsp"] else "sin espejo"
-    return m
-
-def _slot_iface(iface):
-    """ids-mon -> 1, ids-mon3 -> 3: la posicion de -m que crea esa interfaz (None si no)."""
-    mm = re.match(r"^%s(\d*)$" % re.escape(IFACE_BASE), iface or "")
-    if not mm:
-        return None
-    return int(mm.group(1)) if mm.group(1) else 1
-
-def espejo_vpn_origenes(est, routers):
-    """Las IPs en el tunel de los MikroTik, en el orden en que van en -m.
-
-    El orden NO es estetico: el instalador da al 1o de -m la interfaz ids-mon, al 2o
-    ids-mon2..., y el panel sabe de que router vino cada alerta por esa interfaz (el campo
-    iface de cada router). Un MikroTik ya dado de alta va en la posicion de SU interfaz;
-    los demas rellenan los huecos. [{ip, iface, usuario, router, conectado}]"""
-    vpn = [u for u in (est.get("usuarios") or []) if u.get("ip")]
-    de_ip = {u["ip"]: u for u in vpn}
-    fijos, nombre = {}, {}
-    for r in routers or []:
-        h = (r.get("HOST") or "").strip()
-        if h in de_ip:
-            nombre[h] = r.get("nombre") or h
-            p = _slot_iface(r.get("iface"))
-            if p and p not in fijos and h not in fijos.values():
-                fijos[p] = h
-    libres = [u["ip"] for u in vpn if u["ip"] not in fijos.values()]
-    orden, pos = [], 1
-    while fijos or libres:
-        if pos in fijos:
-            orden.append(fijos.pop(pos))
-        elif libres:
-            orden.append(libres.pop(0))
-        else:
-            # hueco que ningun MikroTik de la VPN ocupa: lo que queda va detras aunque cambie
-            # de interfaz (la vista previa lo avisa)
-            orden.extend(fijos.pop(k) for k in sorted(fijos))
-        pos += 1
-    return [{"ip": ip, "iface": IFACE_BASE if i == 1 else "%s%d" % (IFACE_BASE, i),
-             "usuario": de_ip[ip]["usuario"], "router": nombre.get(ip, ""),
-             "conectado": bool(de_ip[ip].get("conexion"))} for i, ip in enumerate(orden, 1)]
-
-def espejo_vpn_reasignar(origenes, routers):
-    """Lo que hay que corregir en los nodos del panel para que, tras lanzar, cada interfaz de
-    espejo sea del router que de verdad entra por ella. [{id, nombre, HOST, antes, despues,
-    apagar}]; vacio si no hay nada que tocar. No lleva claves: va tal cual a la vista previa.
-
-    El instalador reparte las interfaces por la posicion en -m (ids-mon al 1o, ids-mon2 al
-    2o...) y el panel atribuye cada alerta al nodo que tiene esa interfaz (rid_por_iface). Un
-    nodo que se quedara con una interfaz que ahora usa otro MikroTik recibiria las alertas y
-    las cuarentenas de ese otro. Por eso:
-      - el nodo de cada origen de -m (mismo HOST) toma la interfaz que le da -m;
-      - el que NO esta en -m deja de mandar espejo a este sensor: si tenia una interfaz que -m
-        da a otro, se queda sin ninguna; y su envio a cuarentena se apaga, porque nada de lo
-        que este sensor detecte a partir de ahora sera suyo."""
-    destino = {o["ip"]: o["iface"] for o in origenes}
-    en_m = set(destino.values())
-    cambios = []
-    for r in routers or []:
-        h = (r.get("HOST") or "").strip()
-        antes = r.get("iface") or ""
-        if h and h in destino:
-            despues, apagar = destino[h], False
-        else:
-            despues = "" if antes in en_m else antes
-            apagar = r.get("ENABLED") == "1"
-        if despues != antes or apagar:
-            cambios.append({"id": r.get("id", ""), "nombre": r.get("nombre") or h or r.get("id", ""),
-                            "HOST": h, "antes": antes, "despues": despues, "apagar": apagar})
-    return cambios
-
-def espejo_vpn_nodos_txt(cambios):
-    """Las correcciones de los nodos, en frases para la vista previa."""
-    out = []
-    for c in cambios:
-        quien = "Nodo '%s' (%s)" % (c["nombre"], c["HOST"] or "sin IP")
-        if c["despues"] and c["despues"] != c["antes"]:
-            out.append("%s: su espejo entrara por %s (ahora tiene %s)." % (quien, c["despues"], c["antes"] or "ninguna"))
-        elif c["antes"] != c["despues"]:
-            out.append("%s no esta en -m: deja de recibir espejo y se le quita la interfaz %s, que pasa a "
-                       "otro MikroTik." % (quien, c["antes"]))
-        if c["apagar"]:
-            out.append("%s no esta en -m: se apaga su envio a cuarentena (nada de lo que este sensor "
-                       "detecte sera suyo; se reactiva en Ajustes > MikroTik)." % quien)
-    return out
-
-def espejo_vpn_nodos_aplicar(routers, cambios):
-    """Los routers con las correcciones de la vista previa (por id y HOST: si el nodo cambio
-    entre medias, no se toca)."""
-    por_id = {c["id"]: c for c in cambios or []}
-    salida = []
-    for r in routers or []:
-        r = dict(r)
-        c = por_id.get(r.get("id"))
-        if c and (r.get("HOST") or "").strip() == c["HOST"]:
-            r["iface"] = c["despues"]
-            if c["apagar"]:
-                r["ENABLED"] = "0"
-        salida.append(r)
-    return salida
-
-def espejo_vpn_red_operador(ip, est):
-    """La red que hay que dejar entrar por -a para que quien esta usando la web no se quede
-    fuera, o "" si no hace falta (entra por la VPN o desde la propia maquina). `ip` es la
-    que LLEGA al sensor: detras de un proxy, la del proxy, que es la que ve el firewall."""
-    try:
-        a = ipaddress.IPv4Address((ip or "").strip())
-    except ValueError:
-        return ""
-    if a.is_loopback:
-        return ""
-    try:
-        if est.get("red") and a in ipaddress.IPv4Network(est["red"], strict=False):
-            return ""
-    except ValueError:
-        pass
-    return "%s/32" % a
-
-def espejo_vpn_a_defecto(modo, est, ip):
-    """-a prerrellenado: las que ya tenia el firewall + la de quien esta entrando ahora."""
-    redes = list(modo.get("gestion") or [])
-    mia = espejo_vpn_red_operador(ip, est)
-    if mia:
-        dentro = False
-        for r in redes:
-            try:
-                dentro = dentro or ipaddress.IPv4Address(mia[:-3]) in ipaddress.IPv4Network(r, strict=False)
-            except ValueError:
-                pass
-        if not dentro:
-            redes.append(mia)
-    return redes
-
-def espejo_vpn_n_defecto(est, modo):
-    """-n prerrellenado: la union de las redes de los MikroTik; sin ninguna, el HOME_NET actual."""
-    redes = []
-    for u in est.get("usuarios") or []:
-        for r in u.get("redes") or []:
-            if r not in redes:
-                redes.append(r)
-    return redes or list(modo.get("home_net") or [])
+# Espejo del punto ("Montar espejo" en la ficha del punto, CONTRATO-F2 §4 y OPERACION §2).
+# La VPN de cada MikroTik es la del contenedor vpn de su punto (la crea el orquestador) y el
+# alta, la baja y los comandos para pegar son del apartado Puntos: aqui no queda nada del
+# OpenVPN propio, del instalador ni del cambio de modo del sensor viejo.
+#
+# El espejo lo monta mikrotik_init.py como MODULO, por la API del router del punto (el rele
+# api.sock), con sensor = punto.sensor y puerto = punto.tzsp_puerto: address-list
+# ids-vigilados con los prefijos del punto, dos mangle sniff-tzsp con connection-bytes=0-10000
+# y el fasttrack ajustado, SIN ningun accept. Siempre: vista previa -> respaldo (/export del
+# router + JSON en RESPALDOS) -> aplicar. Todo queda en la bitacora con el punto.
+ESPEJO_LISTA = "ids-vigilados"
+ESPEJO_RESPALDOS = os.path.join(nodos.RESPALDOS, "espejo")
 
 def _redes_validas(txt, campo, minimo=8):
-    """(redes normalizadas, errores). Nada de /0 a /7: en -n seria medio internet como
-    'casa' y en -a abriria la web a casi todo internet, que es justo lo que se cierra."""
+    """(redes normalizadas, errores). Nada de /0 a /7: seria medio internet. Sirve para
+    validar los prefijos vigilados de un punto antes de pedir punto.ajustar."""
     redes, errores = [], []
     for tok in re.split(r"[\s,;]+", txt or ""):
         if not tok:
@@ -8723,679 +8693,193 @@ def _redes_validas(txt, campo, minimo=8):
             redes.append(str(n))
     return redes, errores
 
-def espejo_vpn_args(origenes, n_txt, a_txt, modo):
-    """(argumentos del instalador, errores, avisos). Todo validado antes: se ejecuta sin
-    shell, como lista, y NUNCA con -P (las claves de la web se conservan)."""
-    errores, avisos = [], []
-    m = []
-    for o in origenes:
-        try:
-            m.append(str(ipaddress.IPv4Address(o["ip"])))
-        except ValueError:
-            errores.append("IP del tunel no valida: %s" % o["ip"])
-    if not m and not errores:
-        errores.append("No hay ningun MikroTik en la VPN: agrega uno primero (+ Agregar un MikroTik).")
-    n, en = _redes_validas(n_txt, "-n (redes de abonados)")
-    errores += en
-    if not n and not en:
-        errores.append("-n no puede ir vacio: son las redes de tus abonados (HOME_NET)")
-    a, ea = _redes_validas(a_txt, "-a (acceso a la web)")
-    errores += ea
-    if errores:
-        return [], errores, avisos
-    args = ["-t", "-e", "vpn", "-m", ",".join(m), "-n", ",".join(n)]
-    if a:
-        args += ["-a", ",".join(a)]
-    b = int(modo.get("bytes") or 0)
-    if b and b != 10000:
-        args += ["-b", str(b)]              # el recorte que se habia elegido a mano se conserva
-    elif not b and modo.get("modo") == "vpn":
-        args += ["-b", "0"]                 # ya era vpn y sin recorte: se deja igual
-    if not modo.get("web"):
-        args.append("-W")                   # esta caja no tiene EveBox: no se instala ahora
-    elif (modo.get("evebox_puerto") or "5636") != "5636":
-        args += ["-p", str(int(modo["evebox_puerto"]))]
-    return args, errores, avisos
+def _mkinit():
+    import mikrotik_init
+    return mikrotik_init
 
-def espejo_vpn_comando(args):
-    import shlex
-    return "bash %s %s" % (INSTALADOR_LOCAL, " ".join(shlex.quote(x) for x in args))
+def _espejo_conexion(pid):
+    """(pid validado, router, socket abierto y con login) del router del punto."""
+    pid = nodos.exigir_pid(pid)
+    r = router_por_id(pid)
+    d = cargar_mk_de(r)
+    if not (d.get("USER") and d.get("PASS")):
+        raise ValueError("el punto %s no tiene usuario/clave de la API: configuralos en Puntos -> API" % pid)
+    return pid, r, mk_conectar(d, timeout=15)
 
-def _url_vpn(est):
-    return "http://%s:%s" % (est.get("servidor") or "100.64.0.1", CFG.get("PORT", "5637") or "5637")
+def _espejo_resultado(res, mensaje=""):
+    """Lo que devuelva mikrotik_init, en la forma que usa el apartado Puntos:
+    {"ok", "mensaje", "lineas": [str], "avisos": [str], "plan"?}."""
+    if isinstance(res, dict):
+        out = dict(res)
+    elif isinstance(res, tuple) and len(res) >= 2:
+        out = {"ok": bool(res[0]), "mensaje": str(res[1] or "")}
+        if len(res) > 2 and isinstance(res[2], dict):
+            out.update(res[2])
+    elif isinstance(res, (list, tuple)):
+        out = {"lineas": [str(x) for x in res]}
+    else:
+        out = {"mensaje": str(res or "")}
+    out.setdefault("ok", True)
+    out.setdefault("mensaje", mensaje)
+    lineas = out.get("lineas", out.get("rsc", []))
+    out["lineas"] = [str(x) for x in (lineas or [])]
+    out["avisos"] = [str(x) for x in (out.get("avisos") or [])]
+    return out
 
-def espejo_vpn_plan(n_txt, a_txt, ip, est=None, modo=None, routers=None):
-    """Lo que se va a ejecutar para recibir el espejo por la VPN, con sus avisos, SIN
-    ejecutar nada. La misma funcion sirve a la vista previa y al lanzamiento: lo que se
-    ensena es exactamente lo que se ejecuta."""
-    est = est if est is not None else ovpn_estado()
-    modo = modo if modo is not None else sensor_modo()
-    routers = routers if routers is not None else cargar_routers()
-    if not est.get("instalado"):
-        return {"ok": False, "msg": "OpenVPN no esta instalado: instalalo primero (arriba)."}
-    origenes = espejo_vpn_origenes(est, routers)
-    args, errores, avisos = espejo_vpn_args(origenes, n_txt, a_txt, modo)
-    if errores:
-        return {"ok": False, "msg": "\n".join(errores), "avisos": avisos}
-    url = _url_vpn(est)
-    a_redes = args[args.index("-a") + 1].split(",") if "-a" in args else []
-    mia = espejo_vpn_red_operador(ip, est)
-    if mia:
-        dentro = any(ipaddress.IPv4Address(mia[:-3]) in ipaddress.IPv4Network(r) for r in a_redes)
-        if not dentro:
-            avisos.insert(0, "Tu conexion de ahora (%s) NO esta en -a: al terminar perderas la web desde "
-                             "internet y tendras que entrar por la VPN (%s). SSH no se toca." % (mia[:-3], url))
-    # cada interfaz, de quien de verdad entra por ella: se ensena aqui y se guarda al lanzar
-    nodos = espejo_vpn_reasignar(origenes, routers)
-    for o in origenes:
-        if not o["conectado"]:
-            avisos.append("%s (%s) no esta conectado ahora: se le acepta igual y su espejo contara cuando "
-                          "conecte." % (o["usuario"], o["ip"]))
-    m_nuevo = args[args.index("-m") + 1].split(",")
-    for viejo in modo.get("allow") or []:
-        if viejo not in m_nuevo:
-            avisos.append("Deja de aceptarse el espejo de %s (no es un MikroTik de la VPN)." % viejo)
-    n_nuevo = args[args.index("-n") + 1].split(",")
-    if modo.get("home_net") and sorted(modo["home_net"]) != sorted(n_nuevo):
-        avisos.append("HOME_NET pasa de %s a %s." % (",".join(modo["home_net"]), ",".join(n_nuevo)))
-    confirmar = ("Se baja el instalador a %s y se ejecuta con estas opciones (sin -P: las claves no "
-                 "cambian). Tarda unos minutos y REINICIA el panel: la web se corta unos segundos. Al "
-                 "terminar, desde internet solo podran entrar a la web %s; el resto, por la VPN (%s). "
-                 "SSH no se toca." % (INSTALADOR_LOCAL, ("las redes de -a (%s)" % ", ".join(a_redes))
-                                       if a_redes else "NADIE (no hay -a)", url))
-    return {"ok": True, "msg": "", "args": args, "cmd": espejo_vpn_comando(args), "avisos": avisos,
-            "mapa": origenes, "confirmar": confirmar, "url_vpn": url,
-            "nodos": nodos, "nodos_txt": espejo_vpn_nodos_txt(nodos)}
+def _espejo_fallo(ex):
+    return {"ok": False, "mensaje": str(ex)[:300] or type(ex).__name__, "lineas": [], "avisos": []}
 
-def espejo_vpn_corriendo():
-    """El cambio de modo corre como unidad propia de systemd (sigue aunque el panel reinicie)."""
+def _espejo_datos(pid):
+    p = nodos.punto(pid) or {}
+    sensor, puerto = sensor_del_punto(pid)
+    if not sensor:
+        raise ValueError("el orquestador aun no publica la IP del sensor de %s" % pid)
+    return sensor, puerto, list(p.get("redes") or [])
+
+def espejo_plan(pid):
+    """Vista previa del espejo del punto, SIN tocar el router: mikrotik_init.plan(conexion,
+    pid, sensor, puerto, redes, lista). Devuelve {"ok", "mensaje", "lineas", "avisos", ...}
+    (los fallos tambien, con ok=False: nunca lanza). Un pid invalido si lanza (400/404)."""
+    pid = nodos.exigir_pid(pid)
     try:
-        # el nombre fijo, y el de antes (suricata-espejo-vpn-<hora>): el instalador lanzado por
-        # un panel viejo sigue corriendo cuando este ya ha arrancado con el codigo nuevo
-        r = subprocess.run(["systemctl", "list-units", "--type=service", "--state=active",
-                            "--no-legend", ESPEJO_UNIDAD + ".service", ESPEJO_UNIDAD + "-*"],
-                           capture_output=True, text=True, timeout=10)
-        return bool(r.stdout.strip())
-    except (OSError, subprocess.SubprocessError):
-        return False
-
-def espejo_vpn_respaldo():
-    """tar.gz en /root/backups de lo que el cambio de modo va a reescribir. Lleva las claves
-    de la API de los routers: se crea 600 desde el primer byte (nunca legible por otros)."""
-    import glob as _glob
-    import tarfile
-    os.makedirs(OVPN_BACKUPS, mode=0o700, exist_ok=True)
-    ruta = os.path.join(OVPN_BACKUPS, "espejo-vpn-%s.tar.gz" % time.strftime("%Y%m%d-%H%M%S"))
-    fd = os.open(ruta + ".tmp", os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "wb") as fo:
-        with tarfile.open(fileobj=fo, mode="w:gz") as t:
-            for patron in ESPEJO_RESPALDAR:
-                for f in sorted(_glob.glob(patron)):
-                    if os.path.isfile(f):
-                        t.add(f, arcname=f.replace("\\", "/").lstrip("/"))
-    os.chmod(ruta + ".tmp", 0o600)
-    os.replace(ruta + ".tmp", ruta)
-    return ruta
-
-def espejo_vpn_bajar_instalador():
-    """(ok, sha256 o motivo). Baja el instalador publicado a /root (nunca a /tmp)."""
-    try:
-        txt = urllib.request.urlopen(_REPO_RAW2 + "/install-suricata.sh", timeout=60).read()
+        pid, _r, s_ = _espejo_conexion(pid)
     except Exception as ex:
-        return False, "no se pudo bajar el instalador: %s" % ex
-    if not txt.startswith(b"#!/usr/bin/env bash") or b"<<'DASH'" not in txt:
-        return False, "lo bajado no parece el instalador: no se ejecuta"
+        return _espejo_fallo(ex)
     try:
-        with open(INSTALADOR_LOCAL + ".tmp", "wb") as f:
-            f.write(txt)
-        os.chmod(INSTALADOR_LOCAL + ".tmp", 0o700)
-        os.replace(INSTALADOR_LOCAL + ".tmp", INSTALADOR_LOCAL)
-    except OSError as ex:
-        return False, "no se pudo guardar %s: %s" % (INSTALADOR_LOCAL, ex)
-    return True, hashlib.sha256(txt).hexdigest()
+        sensor, puerto, redes = _espejo_datos(pid)
+        return _espejo_resultado(_mkinit().plan(s_, pid, sensor, puerto, redes, ESPEJO_LISTA),
+                                 "vista previa del espejo de %s" % pid)
+    except Exception as ex:
+        return _espejo_fallo(ex)
+    finally:
+        try: s_.close()
+        except Exception: pass
 
-def espejo_vpn_lanzar(args, quien="?", nodos=None):
-    """Lanza el instalador con esas opciones en una unidad propia de systemd. (ok, mensaje)
-
-    `nodos` son las correcciones de la vista previa (espejo_vpn_reasignar): se guardan justo
-    antes de lanzar, despues del respaldo (que ya lleva los routers), y se deshacen si el
-    lanzamiento falla. Uno a la vez: cerrojo + nombre fijo de la unidad."""
-    args = [str(x) for x in args]
-    if "-P" in args:
-        return False, "no se cambian las claves desde aqui (-P)"
-    with _UnaVez(ESPEJO_CERROJO) as cerrojo:
-        if not cerrojo.ok or espejo_vpn_corriendo():
-            return False, "Ya hay un cambio de modo en marcha."
-        try:
-            resp = espejo_vpn_respaldo()
-        except Exception as ex:
-            return False, "no se pudo respaldar la configuracion (%s): no se toca nada" % ex
-        okb, sha = espejo_vpn_bajar_instalador()
-        if not okb:
-            return False, sha
-        cmd_txt = espejo_vpn_comando(args)
-        try:
-            # 600: el resumen final del instalador puede llevar una clave nueva de EveBox
-            fd = os.open(ESPEJO_LOG, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
-                f.write("Recibir el espejo por la VPN (%s)\n$ %s\n\n" % (time.strftime("%Y-%m-%d %H:%M:%S"), cmd_txt))
-        except OSError:
-            pass
-        previos = None
-        if nodos:
-            try:
-                previos = cargar_routers()
-                guardar_routers(espejo_vpn_nodos_aplicar(previos, nodos))
-            except Exception as ex:
-                return False, "no se pudieron corregir los nodos del panel (%s): no se lanza nada" % ex
-        cmd = ["systemd-run", "--unit", ESPEJO_UNIDAD, "--collect",
-               "--property", "StandardOutput=append:" + ESPEJO_LOG,
-               "--property", "StandardError=append:" + ESPEJO_LOG,
-               "--setenv", "DEBIAN_FRONTEND=noninteractive",
-               "/bin/bash", "-c", 'bash "$0" "$@" </dev/null; echo "FIN rc=$?"', INSTALADOR_LOCAL] + args
-        try:
-            r = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
-            fallo = "" if r.returncode == 0 else (r.stderr or r.stdout or "rc=%d" % r.returncode)[-300:]
-        except (OSError, subprocess.SubprocessError) as ex:
-            fallo = str(ex)
-        if fallo:
-            if previos is not None:
-                try:
-                    guardar_routers(previos)      # no se lanzo: los nodos vuelven a como estaban
-                except Exception:
-                    pass
-            return False, "no se pudo lanzar el instalador: %s" % fallo
-        bitacora("ESPEJO-VPN", "lanzado (%s): %s | instalador sha256=%s respaldo=%s nodos=%s"
-                 % (ESPEJO_UNIDAD, cmd_txt, sha[:16], resp,
-                    ",".join("%s:%s->%s%s" % (c["id"], c["antes"] or "-", c["despues"] or "-",
-                                              " envio=no" if c["apagar"] else "") for c in nodos or []) or "-"),
-                 quien=quien)
-        return True, "en marcha"
-
-def espejo_vpn_avance():
-    """{corriendo, rc, log} del cambio de modo. rc sale de la marca FIN del final. Las claves
-    que imprima el instalador salen enmascaradas: este log se ensena en la web."""
+def espejo_aplicar(pid, usuario=None):
+    """Aplica el espejo del punto: se rehace el plan CONTRA EL ROUTER en ese momento (el mismo
+    calculo que espejo_plan; quien llama compara que sea el que vio el usuario) y
+    mikrotik_init respalda y aplica. Con `usuario`, deja linea en la bitacora."""
+    pid = nodos.exigir_pid(pid)
     try:
-        txt = open(ESPEJO_LOG, encoding="utf-8", errors="replace").read()
-    except OSError:
-        txt = ""
-    m = re.search(r"FIN rc=(\d+)\s*$", txt)
-    rc = int(m.group(1)) if m else None
-    return {"corriendo": rc is None and espejo_vpn_corriendo(), "rc": rc,
-            # se enmascara ANTES de recortar: un corte a mitad de "Clave : x" dejaria la x
-            "log": enmascarar_claves(_RE_ANSI.sub("", txt[-200000:]))[-8000:]}
+        pid, _r, s_ = _espejo_conexion(pid)
+    except Exception as ex:
+        return _espejo_fallo(ex)
+    try:
+        sensor, puerto, redes = _espejo_datos(pid)
+        mi = _mkinit()
+        plan = mi.plan(s_, pid, sensor, puerto, redes, ESPEJO_LISTA)
+        os.makedirs(ESPEJO_RESPALDOS, mode=0o700, exist_ok=True)
+        res = _espejo_resultado(mi.aplicar(s_, plan, ESPEJO_RESPALDOS), "espejo aplicado en %s" % pid)
+    except Exception as ex:
+        res = _espejo_fallo(ex)
+    finally:
+        try: s_.close()
+        except Exception: pass
+    if usuario:
+        bitacora("ESPEJO-APLICAR", "punto=%s %s: %s" % (pid, "ok" if res["ok"] else "fallo",
+                                                         res["mensaje"][:200]), quien=usuario)
+    return res
 
-def _router_libre(rs):
-    """Un router nuevo con el primer id e interfaz que no esten en uso (si se quito un nodo
-    del medio, len()+1 repetiria el id o la interfaz de otro)."""
-    usados = {r.get("id") for r in rs} | {r.get("iface") for r in rs}
-    i = 1
-    while True:
-        r = _router_vacio(i)
-        if r["id"] not in usados and r["iface"] not in usados:
-            return r
-        i += 1
+def _espejo_orden(pid, usuario, orden):
+    pid = nodos.exigir_pid(pid)
+    try:
+        pid, _r, s_ = _espejo_conexion(pid)
+    except Exception as ex:
+        return _espejo_fallo(ex)
+    try:
+        os.makedirs(ESPEJO_RESPALDOS, mode=0o700, exist_ok=True)
+        res = _espejo_resultado(getattr(_mkinit(), orden)(s_, pid, ESPEJO_RESPALDOS),
+                                "espejo de %s: %s hecho" % (pid, orden))
+    except Exception as ex:
+        res = _espejo_fallo(ex)
+    finally:
+        try: s_.close()
+        except Exception: pass
+    if usuario:
+        bitacora("ESPEJO-" + orden.upper(), "punto=%s %s: %s" % (
+            pid, "ok" if res["ok"] else "fallo", res["mensaje"][:200]), quien=usuario)
+    return res
 
-def _iface_en_uso(ip):
-    """La interfaz por la que el sensor recibe HOY el espejo de esa IP (TZSP_MAP del receptor:
-    ids-in -> ids-mon, ids-in2 -> ids-mon2...), o "" si no la recibe."""
-    for par in _lista_csv(_systemctl_env("tzsp-decap").get("TZSP_MAP")):
-        src, _s, din = par.partition("=")
-        m = re.match(r"^ids-in(\d*)$", din)
-        if m and src.split("/")[0] == ip:
-            return IFACE_BASE + m.group(1)
-    return ""
+def espejo_pausar(pid, usuario=None):
+    """Pausa: deshabilita los dos mangle del punto (por comentario). Fasttrack intacto.
+    mikrotik_init.pausar(conexion, pid, respaldo_dir)."""
+    return _espejo_orden(pid, usuario, "pausar")
 
-def _iface_vpn(ip, est, rs):
-    """La interfaz que le toca a un MikroTik de la VPN recien dado de alta: la que el sensor
-    ya usa para su espejo si lo esta recibiendo; si no, la de la posicion que tendra en -m
-    (espejo_vpn_origenes). NO la primera libre: si no coincide con la que le da -m, sus
-    alertas y cuarentenas acabarian en otro nodo."""
-    actual = _iface_en_uso(ip)
-    if actual:
-        return actual
-    return next((o["iface"] for o in espejo_vpn_origenes(est, rs) if o["ip"] == ip), "")
+def espejo_retirar(pid, usuario=None):
+    """Retirada: borra lo que lleva el comentario del punto y devuelve al fasttrack sus
+    valores originales (del respaldo). Nunca toca reglas ajenas.
+    mikrotik_init.retirar(conexion, pid, respaldo_dir)."""
+    return _espejo_orden(pid, usuario, "retirar")
 
-def router_de_ip(ip, routers=None):
-    if not ip:
-        return None
-    for r in (routers if routers is not None else cargar_routers()):
-        if (r.get("HOST") or "").strip() == ip:
-            return r
-    return None
-
-def _vpn_alta_soltar_iface(nuevo, rs):
-    """(textos para la bitacora, avisos para el mensaje). Si el sensor YA recibe por la
-    interfaz del nodo recien dado de alta el espejo de su IP (TZSP_MAP), esa interfaz es suya
-    y de nadie mas: otro nodo que la conservara (el MikroTik local de cuando el modo VPN se
-    monto por consola o con un panel anterior) se quedaria con sus alertas y sus cuarentenas
-    (rid_por_iface devuelve el primero que la tenga). A ese otro se le quita; y si su HOST no
-    es origen del espejo en el receptor, nada de lo que el sensor detecte es suyo: se apaga
-    su envio a cuarentena. Si es origen por otra interfaz que nadie tiene, se le da esa. Si
-    el receptor dice que es origen por ESA MISMA interfaz (no deberia pasar), no se toca y se
-    avisa. Cambia `rs` en sitio."""
-    iface = nuevo.get("iface") or ""
-    if not iface or _iface_en_uso((nuevo.get("HOST") or "").strip()) != iface:
-        return [], []
-    bit, avisos = [], []
-    for o in rs:
-        if o is nuevo or (o.get("iface") or "") != iface:
+def purgar_punto(pid):
+    """Baja de un punto en el PANEL (la del orquestador la pide el apartado Puntos): borra
+    sus claves `pid|...` de los registros globales (enviados, avisos, abonados, politicas),
+    sus publicas, sus exclusiones con nodo, su diagnostico, su entrada de routers.json y
+    nodos/<pid>/. El pid ya puede no estar en estado.json: solo se valida el formato.
+    Devuelve {registro: cuantas entradas quito}. Deja linea en la bitacora."""
+    if not nodos.pid_valido(pid):
+        raise nodos.NodoInvalido(pid)
+    pref = pid + "|"
+    hecho = {}
+    for path in (MK_SENT, MK_SENT_DNS, MK_SENT_GRAD):
+        with _ENV_LOCK:
+            env = cargar_enviados(path)
+            ks = [k for k in env if k.startswith(pref)]
+            for k in ks:
+                env.pop(k, None)
+            if ks:
+                guardar_enviados(env, path)
+        hecho[os.path.basename(path)] = len(ks)
+    for path in (NOTIF_CUAR_FILE, POL_NOTIF, THRESHOLD_ENVIADO, DIAG_FILE):
+        try:
+            d = json.load(open(path, encoding="utf-8"))
+        except (OSError, ValueError):
             continue
-        h = (o.get("HOST") or "").strip()
-        n = o.get("nombre") or h or o.get("id", "")
-        suya = _iface_en_uso(h) if h else ""
-        if suya == iface:
-            avisos.append("OJO: el nodo '%s' (%s) tambien tiene %s y el receptor dice que es suya: no se ha "
-                          "tocado; revisa las interfaces en Ajustes > MikroTik." % (n, h, iface))
+        if not isinstance(d, dict):
             continue
-        libre = suya and not any(x.get("iface") == suya for x in rs if x is not o)
-        o["iface"] = suya if libre else ""
-        apagar = not suya and o.get("ENABLED") == "1"
-        if apagar:
-            o["ENABLED"] = "0"
-        bit.append("nodo=%s host=%s %s->%s%s (el sensor recibe por %s el espejo de %s)" % (
-            o.get("id", ""), h or "-", iface, o["iface"] or "-", " enviar=no" if apagar else "",
-            iface, nuevo.get("HOST")))
-        avisos.append("El nodo '%s' (%s) tenia %s, por donde el sensor recibe el espejo de este MikroTik: "
-                      "se le quita%s%s." % (
-                          n, h or "sin IP", iface,
-                          " (pasa a %s, la suya en el receptor)" % o["iface"] if o["iface"] else "",
-                          " y se apaga su envio a cuarentena (nada de lo que este sensor detecte es suyo; "
-                          "se reactiva en Ajustes > MikroTik)" if apagar else ""))
-    return bit, avisos
-
-def vpn_mk_alta(usuario, nombre, user, clave, puerto, tls, quien="?"):
-    """(ok, mensaje). Da de alta como router del panel al MikroTik de la VPN, con HOST = su
-    IP en el tunel. Es el mismo registro que Ajustes > MikroTik (guardar_routers: archivo
-    600, la clave nunca vuelve al navegador). El envio a cuarentena queda APAGADO: que el
-    sistema empiece a cortar abonados lo decide una persona."""
-    est = ovpn_estado()
-    u = next((x for x in est["usuarios"] if x["usuario"] == usuario), None)
-    if not u or not u.get("ip"):
-        return False, "ese MikroTik no esta en la VPN"
-    user = (user or "").strip()
-    puerto = (puerto or "").strip() or ("8729" if tls else "8728")
-    if not re.match(r"^\S{1,64}$", user):
-        return False, "falta el usuario de la API (sin espacios)"
-    if not clave or len(clave) > 128 or any(c in clave for c in "\r\n\0"):
-        return False, "falta la clave de la API (o no es valida)"
-    if not puerto.isdigit() or not 1 <= int(puerto) <= 65535:
-        return False, "puerto de la API no valido"
-    nombre = re.sub(r"[\r\n<>\"']", "", (nombre or "").strip())[:40] or usuario
-    rs = cargar_routers()
-    if router_de_ip(u["ip"], rs):
-        return False, "%s ya esta dado de alta como router (%s)" % (usuario, u["ip"])
-    if len(rs) == 1 and not (rs[0].get("HOST") or "").strip():
-        r = rs[0]                 # sensor recien instalado: el unico nodo esta vacio, se usa ese
-    else:
-        if len(rs) >= 8:
-            return False, "Maximo 8 nodos por sensor."
-        r = _router_libre(rs)
-        rs.append(r)
-    r.update({"nombre": nombre, "HOST": u["ip"], "PORT": puerto, "TLS": "1" if tls else "0",
-              "USER": user, "PASS": clave, "ENABLED": r.get("ENABLED") or "0"})
-    # su interfaz: la que le dara -m (sin la suya, cuenta como uno que rellena hueco)
-    previa, r["iface"] = r.get("iface") or "", ""
-    r["iface"] = _iface_vpn(u["ip"], est, rs) or previa
-    reasignados, avisos = _vpn_alta_soltar_iface(r, rs)
-    guardar_routers(rs)
-    bitacora("CONFIG-NODO", "nodo=%s host=%s (MikroTik de la VPN %s) enviar=no" % (nombre, u["ip"], usuario),
-             quien=quien)
-    for t in reasignados:
-        bitacora("CONFIG-NODO", "reasignada %s" % t, quien=quien)
-    extra = "".join(" " + t for t in avisos)
-    # se prueba ya: mejor saber ahora que la clave esta mal que al montar el espejo
-    try:
-        s_ = mk_conectar(cargar_mk_de(r))
-        try:
-            s_.close()
-        except Exception:
-            pass
-        prueba = "La API responde."
-    except Exception as ex:
-        prueba = "OJO: guardado, pero la API no respondio (%s). Revisa usuario, clave, puerto y que " \
-                 "el servicio api este habilitado en el router." % ex
-    return True, "%s dado de alta como router '%s' (%s), con el envio a cuarentena apagado. %s%s" % (
-        usuario, nombre, u["ip"], prueba, extra)
-
-def vpn_mk_espejo(usuario, aplicar=False, quien="?"):
-    """(ok, mensaje). Monta el espejo en ese MikroTik hacia la IP del sensor DENTRO del
-    tunel (no la publica: por la publica el espejo viajaria en claro y el firewall de
-    solo-tunel lo tira). Sin aplicar es la vista previa: no se toca nada."""
-    est = ovpn_estado()
-    u = next((x for x in est["usuarios"] if x["usuario"] == usuario), None)
-    if not u:
-        return False, "ese MikroTik no esta en la VPN"
-    if not u.get("conexion"):
-        return False, ("%s no esta conectado a la VPN ahora. El sensor le habla por el tunel: "
-                       "conectalo primero (pega en el router el comando /interface ovpn-client)." % usuario)
-    if not est.get("servidor"):
-        return False, "no se sabe la IP del sensor en el tunel (revisa server.conf)"
-    r = router_de_ip(u.get("ip"))
-    if not r or not (r.get("USER") and r.get("PASS")):
-        return False, "%s no esta dado de alta como router: pulsa 'Dar de alta su API'." % usuario
-    okv, msgv = mkinit_asegurar()
-    if not okv:
-        return False, msgv
-    modo = sensor_modo()
-    args = ["-s", est["servidor"], "-e", "vpn", "-p", str(modo["puerto"]), "--sin-registrar"]
-    if u.get("redes"):
-        args += ["-r", ",".join(u["redes"])]
-    aviso = ""
-    if u["ip"] not in (modo.get("allow") or []):
-        aviso = ("OJO: el sensor todavia no acepta el espejo de %s. Cuando lo montes, pulsa "
-                 "'Recibir el espejo por la VPN' (abajo) para que lo reciba." % u["ip"])
-    if not aplicar:
-        rc, out = mkinit_correr(r, args + ["--plan"])
-        return rc == 0, out + (("\n\n" + aviso) if aviso else "")
-    try:
-        resp = respaldar_firewall(r)
-    except Exception as ex:
-        return False, "no se pudo respaldar el firewall del router (%s): no se toca nada" % ex
-    rc, out = mkinit_correr(r, args)
-    bitacora("ESPEJO-MIKROTIK", "%s (%s) sensor=%s redes=%s rc=%d respaldo=%s"
-             % (usuario, u["ip"], est["servidor"], ",".join(u.get("redes") or []) or "-", rc, resp), quien=quien)
-    return rc == 0, out + (("\n\n" + aviso) if aviso else "")
-
-def _vpn_celda_espejo(u, rmap, modo):
-    """Lo que se puede hacer con el espejo de ESE MikroTik, o por que todavia no."""
-    esc = html.escape
-    un = esc(u["usuario"])
-    if not u.get("conexion"):
-        return ("<div class=vpnesp><button type=button class=cancelbtn disabled>Montar el espejo</button>"
-                "<div class=vpnsub>Conectalo primero a la VPN: el sensor le habla por el tunel.</div></div>")
-    r = rmap.get(u.get("ip") or "")
-    if not r or not (r.get("USER") and r.get("PASS")):
-        return ("<div class=vpnesp><button type=button class=cancelbtn onclick=\"vpnAlta('%s')\">"
-                "Dar de alta su API</button><div class=vpnsub>Para montarle el espejo hace falta su "
-                "API (usuario y clave).</div></div>" % un)
-    falta = "" if u.get("ip") in (modo.get("allow") or []) else (
-        "<div class=vpnsub style='color:#a15c12'>El sensor aun no recibe su espejo: abajo, "
-        "<b>Recibir el espejo por la VPN</b>.</div>")
-    return ("<div class=vpnesp><button type=button class=primary onclick=\"vpnEspejoPlan('%s')\">"
-            "Montar el espejo</button><div class=vpnsub>API: router %s</div>%s</div>"
-            % (un, esc(r.get("nombre") or r.get("HOST", "")), falta))
-
-def _vpn_bloque_sensor(e, modo, rs):
-    """Como recibe el espejo este sensor y el formulario para pasarlo a 'por la VPN'."""
-    esc = html.escape
-    tit = "<div class=vpnsens><h3>Este sensor: recibir el espejo por la VPN</h3>"
-    url = _url_vpn(e)
-    js_url = "<script>var _vpnUrl=%s;</script>" % json.dumps(url).replace("</", "<\\/")
-    if espejo_vpn_corriendo():
-        return (tit + "<p><b>Cambio de modo en marcha.</b> El instalador tarda unos minutos y reinicia "
-                "el panel.</p><button type=button class=primary onclick='vpnSensorLog()'>Ver el avance"
-                "</button>" + js_url + "</div>")
-    if not e.get("usuarios"):
-        return tit + "<p class=hint>Agrega primero un MikroTik a la VPN.</p></div>"
-    origenes = espejo_vpn_origenes(e, rs)
-    ip_ve = getattr(CTX, "peer", "") or getattr(CTX, "ip", "") or ""
-    ip_real = getattr(CTX, "ip", "") or ip_ve
-    a = espejo_vpn_a_defecto(modo, e, ip_ve)
-    n = espejo_vpn_n_defecto(e, modo)
-    modo_txt = {"vpn": "<b style='color:#1a7f37'>por la VPN</b> (firewall de solo-tunel activo)",
-                "local": "<b>local</b> (sin el firewall de solo-tunel)",
-                "sin espejo": "<b>sin espejo</b> (no recibe TZSP)"}.get(modo.get("modo"), "?")
-    quien = "Entras desde <code>%s</code>" % esc(ip_real or "?")
-    if ip_ve and ip_ve != ip_real:
-        quien += (" a traves del proxy <code>%s</code>: el firewall ve al proxy, por eso va el proxy"
-                  % esc(ip_ve))
-    if not espejo_vpn_red_operador(ip_ve, e):
-        quien += ". Entras por la VPN o desde la propia maquina: no necesitas <code>-a</code>."
-    else:
-        quien += ". Esa IP va puesta en <code>-a</code>: si la quitas, al terminar perderas la web desde internet."
-    mapa = "".join("<li><code>%s</code> &rarr; <code>%s</code> &middot; %s%s%s</li>"
-                   % (esc(o["ip"]), esc(o["iface"]), esc(o["usuario"]),
-                      (" (router %s)" % esc(o["router"])) if o["router"] else "",
-                      "" if o["conectado"] else " &middot; <i>sin conectar</i>") for o in origenes)
-    return (tit +
-            "<p class=vpnsub>Ahora: %s &middot; acepta espejo de <code>%s</code> &middot; HOME_NET "
-            "<code>%s</code>%s</p>"
-            % (modo_txt, esc(", ".join(modo.get("allow") or []) or "nadie"),
-               esc(", ".join(modo.get("home_net") or []) or "?"),
-               (" &middot; recorte %d B/flujo" % modo["bytes"]) if modo.get("bytes") else "")
-            + "<p class=hint style='margin:6px 0'>Re-ejecuta el instalador por ti (lo mismo que el "
-              "one-liner con <code>-t -e vpn</code>): el sensor acepta el espejo de cada MikroTik por su IP "
-              "en el tunel y, desde internet, cierra el espejo y la web salvo a las redes de <code>-a</code>. "
-              "Tarda unos minutos y reinicia el panel.</p>"
-            + "<div class=vpnsub>-m (cada MikroTik por su interfaz):</div><ul class=vpnmap>" + mapa + "</ul>"
-            + "<div class=vpnform>"
-              "<label>-n &middot; redes de tus abonados (HOME_NET)<input id=vpn_n value=\"%s\"></label>"
-              "<label>-a &middot; quien entra a la web desde internet<input id=vpn_a value=\"%s\" "
-              "placeholder='203.0.113.0/24'></label></div>" % (esc(",".join(n)), esc(",".join(a)))
-            + "<div class=vpnsub>" + quien + "</div>"
-            + "<div class=actions style='margin-top:8px'><button type=button class=primary "
-              "onclick='vpnSensorPlan()'>Recibir el espejo por la VPN&hellip;</button></div>"
-            + js_url + "</div>")
-
-def _mb(n):
-    n = float(n or 0)
-    return ("%.1f GB" % (n / 1e9)) if n >= 1e9 else (("%.1f MB" % (n / 1e6)) if n >= 1e6 else ("%d KB" % (n / 1e3)))
-
-def _card_vpn():
-    """Ajustes > VPN: instalar el servidor, un usuario por MikroTik, sus redes. Todo desde
-    la web: el operador no tiene que entrar por consola."""
-    esc = html.escape
-    e = ovpn_estado()
-    cab = ("<section class=card><h2>VPN (OpenVPN) &mdash; el tunel de los MikroTik</h2>"
-           "<p class=hint style='margin:0 0 10px'>Los MikroTik mandan el espejo a este sensor "
-           "<b>por la VPN</b>. Aqui se instala el servidor, se da de alta cada MikroTik (te da "
-           "el comando para pegar en el router) y se le asignan las redes de sus abonados. "
-           "Cada cambio se respalda antes en <code>/root/backups/</code> y queda en la Bitacora.</p>")
-    if not e["script"]:
-        cuerpo = ("<p class=hint>Falta <code>/root/openvpn.sh</code>. Actualiza el panel "
-                  "(Actualizaciones): el instalador lo deja.</p>")
-    elif e["instalando"]:
-        cuerpo = ("<p><b>Instalacion de OpenVPN en marcha.</b> Tarda unos minutos.</p>"
-                  "<button type=button class=primary onclick='vpnVerLog()'>Ver el avance</button>")
-    elif not e["instalado"]:
-        cuerpo = ("<p>OpenVPN <b>no esta instalado</b> en este servidor.</p>"
-                  "<button type=button class=primary onclick=\"if(ask(this,'Instalar OpenVPN',"
-                  "'Se instala el servidor OpenVPN compatible con MikroTik (TCP 1194, red 100.64.0.0/24). "
-                  "Tarda unos minutos; sigue aunque cierres esta ventana.','Instalar',''))vpnInstalar()\">"
-                  "Instalar el servidor OpenVPN</button>")
-    else:
-        est_txt = ("<b style='color:#1a7f37'>&#9679; activo</b>" if e["activo"]
-                   else "<b style='color:#b52a2a'>&#9679; parado</b>")
-        filas = ""
-        rs = cargar_routers()
-        rmap = {(r.get("HOST") or "").strip(): r for r in rs}
-        modo = sensor_modo()
-        for u in e["usuarios"]:
-            un = u["usuario"]
-            c = u["conexion"]
-            if c:
-                cx = ("<b style='color:#1a7f37'>&#9679; conectado</b><div class=vpnsub>desde %s &middot; %s"
-                      "<br>&darr; %s &middot; &uarr; %s</div>"
-                      % (esc(c["real"]), time.strftime("%d/%m %H:%M", time.localtime(c["desde"])) if c["desde"] else "?",
-                         _mb(c["rx"]), _mb(c["tx"])))
-            else:
-                cx = "<span style='color:#8a8a86'>&#9675; sin conectar</span>"
-            cx += _vpn_celda_espejo(u, rmap, modo)
-            chips = "".join(
-                "<span class=vpnchip>%s<button type=button title='Quitar' onclick=\"if(ask(this,'Quitar %s',"
-                "'Se quita la ruta de %s hacia %s. Se reinicia OpenVPN: los tuneles se cortan unos segundos.',"
-                "'Quitar','danger'))vpnQuitarRed('%s','%s')\">&times;</button></span>"
-                % (esc(r), esc(r), esc(r), esc(un), esc(un), esc(r)) for r in u["redes"]) \
-                or "<span class=vpnsub>sin redes</span>"
-            filas += ("<tr><td class=mono>%s</td><td class=mono>%s</td><td>%s</td><td>%s"
-                      "<div class=vpnadd><input id=vpnr_%s placeholder='10.20.0.0/16, 192.168.50.0/24'>"
-                      "<button type=button class=cancelbtn onclick=\"if(ask(this,'Agregar redes a %s',"
-                      "'Esas redes iran por el tunel hacia este MikroTik. Se reinicia OpenVPN: los tuneles "
-                      "se cortan unos segundos (y el espejo con ellos).','Agregar',''))vpnRedes('%s')\">"
-                      "Agregar redes</button></div></td>"
-                      "<td><button type=button class='cancelbtn' style='color:#b52a2a' onclick=\"if(ask(this,"
-                      "'Eliminar %s de la VPN','Se borran su usuario, sus redes y sus rutas. Ese MikroTik "
-                      "ya no podra conectarse.','Eliminar','danger'))vpnBorrar('%s')\">Eliminar</button></td></tr>"
-                      % (esc(un), esc(u["ip"] or "?"), cx, chips, esc(un), esc(un), esc(un), esc(un), esc(un)))
-        tabla = ("<table><thead><tr><th>MikroTik (usuario)</th><th>IP en el tunel</th><th>Estado y espejo</th>"
-                 "<th>Redes de sus abonados</th><th></th></tr></thead><tbody>%s</tbody></table>"
-                 % filas) if filas else "<p class=hint>Todavia no hay ningun MikroTik dado de alta.</p>"
-        cuerpo = ("<p>Servidor %s &middot; %s %s en %s &middot; red <code>%s</code> &middot; "
-                  "este sensor es <code>%s</code> dentro del tunel</p>"
-                  % (est_txt, esc(e["proto"].upper()), esc(e["puerto"]), esc(e["local"] or "?"),
-                     esc(e["red"] or "?"), esc(e["servidor"] or "?"))
-                  + tabla
-                  + "<div class=actions style='margin-top:10px'><button type=button class=primary "
-                    "onclick=\"if(ask(this,'Agregar un MikroTik','Se crea su usuario de VPN y te da el "
-                    "comando para pegar en el router. La clave solo se muestra una vez.','Agregar',''))"
-                    "vpnUsuario()\">+ Agregar un MikroTik</button></div>"
-                  + _vpn_bloque_sensor(e, modo, rs))
-    return cab + cuerpo + _VPN_UI + "</section>"
-
-_VPN_UI = (
-    "<div id=vpnov class=vpnov><div class=vpnbox></div></div>"
-    "<style>.vpnov{display:none;position:fixed;inset:0;background:rgba(11,11,11,.5);z-index:130;"
-    "align-items:center;justify-content:center;padding:20px}"
-    ".vpnbox{background:#fff;border-radius:14px;padding:20px 22px;display:flex;gap:14px;align-items:flex-start;"
-    "max-width:780px;width:100%;max-height:calc(100vh - 40px);overflow:auto;box-shadow:0 12px 44px rgba(0,0,0,.3)}"
-    ".vpnspin{width:28px;height:28px;flex:none;border:3px solid #e7e6e2;border-top-color:#2a78d6;"
-    "border-radius:50%;animation:vpngira .8s linear infinite}@keyframes vpngira{to{transform:rotate(360deg)}}"
-    ".vpnico{font-size:28px;line-height:1;flex:none}"
-    ".vpnpre{background:#f8f9fa;border:1px solid #eaecf0;border-radius:6px;padding:8px 10px;margin:8px 0;"
-    "font:12px ui-monospace,Consolas,monospace;white-space:pre-wrap;word-break:break-all;max-height:42vh;overflow:auto}"
-    ".vpnsub{color:#52514e;font-size:12.5px;margin:3px 0}"
-    ".vpnwarn{background:#fff4e5;border:1px solid #f2d3ad;color:#7a4a12;border-radius:8px;padding:8px 10px;font-size:13px}"
-    ".vpnchip{display:inline-flex;align-items:center;gap:4px;background:#eef4fd;border:1px solid #cfe0f6;"
-    "border-radius:999px;padding:2px 4px 2px 9px;margin:2px;font:12px ui-monospace,Consolas,monospace}"
-    ".vpnchip button{border:0;background:none;cursor:pointer;color:#b52a2a;font-size:15px;line-height:1}"
-    ".vpnadd{display:flex;gap:6px;margin-top:6px;flex-wrap:wrap}"
-    ".vpnadd input{flex:1;min-width:170px;padding:6px 9px;border:1px solid #d7d6d2;border-radius:8px;"
-    "font:12.5px ui-monospace,Consolas,monospace}"
-    ".vpnav{margin:6px 0;padding-left:18px;font-size:13px;color:#a15c12}"
-    ".vpncmd{margin-top:8px}.vpncmd .cancelbtn{padding:3px 9px;font-size:12px;margin-left:6px}"
-    ".vpnesp{margin-top:6px}.vpnesp button{padding:4px 10px;font-size:12.5px}.vpnesp button[disabled]{opacity:.55;cursor:not-allowed}"
-    ".vpnsens{margin-top:18px;border-top:1px solid #eaecf0;padding-top:12px}.vpnsens h3{margin:0 0 6px;font-size:15px}"
-    ".vpnform{display:grid;grid-template-columns:1fr 1fr;gap:8px 14px;margin:10px 0}"
-    ".vpnform label{display:flex;flex-direction:column;gap:3px;font-size:12.5px;color:#52514e}"
-    ".vpnform input{padding:6px 9px;border:1px solid #d7d6d2;border-radius:8px;font:12.5px ui-monospace,Consolas,monospace}"
-    ".vpnform label.chk{flex-direction:row;align-items:center;gap:6px}"
-    ".vpnmap{margin:4px 0 8px;padding-left:18px;font-size:12.5px}"
-    "@media(max-width:640px){.vpnform{grid-template-columns:1fr}}</style>"
-    "<script>"
-    "function _vpnEsc(t){return String(t==null?'':t).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}"
-    "function _vpnBox(h){var m=document.getElementById('vpnov');m.querySelector('.vpnbox').innerHTML=h;m.style.display='flex';}"
-    # al cerrar se recarga y se vuelve a abrir este apartado (#vpn)
-    "function _vpnCerrar(r){document.getElementById('vpnov').style.display='none';"
-    "if(r){location.hash='vpn';location.reload();}}"
-    "function _vpnSpin(t,x){_vpnBox(\"<div class=vpnspin></div><div><b>\"+t+\"</b>\"+"
-    "(x?\"<div class=vpnsub>\"+x+\"</div>\":\"\")+\"</div>\");}"
-    "function _vpnRes(j,tit){var av=(j.avisos||[]).map(function(a){return '<li>'+_vpnEsc(a)+'</li>';}).join('');"
-    "_vpnBox(\"<div class=vpnico>\"+(j.ok?'&#9989;':'&#9940;')+\"</div><div style='flex:1;min-width:0'><b>\"+"
-    "(j.ok?tit:'No se hizo')+\"</b>\"+(j.msg?\"<pre class=vpnpre>\"+_vpnEsc(j.msg)+\"</pre>\":\"\")+"
-    "(av?\"<ul class=vpnav>\"+av+\"</ul>\":\"\")+"
-    "\"<div class=actions><button type=button class=cancelbtn onclick='_vpnCerrar(1)'>Cerrar</button></div></div>\");}"
-    "function _vpnPost(ruta,datos,fn){var d=new URLSearchParams();for(var k in datos)d.set(k,datos[k]);"
-    "fetch(ruta,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:d.toString()})"
-    ".then(function(r){return r.json();}).then(fn).catch(function(e){_vpnRes({ok:false,msg:String(e)},'');});}"
-    "function _vpnCopiar(id,b){var t=document.getElementById(id).textContent;"
-    "try{navigator.clipboard.writeText(t);b.textContent='Copiado';}catch(e){}}"
-    "function vpnUsuario(){_vpnSpin('Creando el usuario del MikroTik\\u2026');"
-    "_vpnPost('/vpn/usuario',{},function(j){if(!j.ok){_vpnRes(j,'');return;}var d=j.datos||{};"
-    "_vpnBox(\"<div class=vpnico>&#9989;</div><div style='flex:1;min-width:0'><b>MikroTik agregado a la VPN</b>\"+"
-    "\"<div class=vpnsub>IP en el tunel: <b>\"+_vpnEsc(d.IPVPN)+\"</b> &middot; usuario <b>\"+_vpnEsc(d.USUARIO)+"
-    "\"</b> &middot; clave <b>\"+_vpnEsc(d.CLAVE)+\"</b></div>\"+"
-    "\"<p class=vpnwarn>La clave <b>solo se muestra ahora</b>. Copia el comando de tu version de RouterOS y "
-    "pegalo en el MikroTik (Terminal). Cuando conecte, aparecera como conectado aqui.</p>\"+"
-    "\"<div class=vpncmd><b>RouterOS v7</b><button type=button class=cancelbtn onclick=\\\"_vpnCopiar('vpnmt7',this)\\\">Copiar</button>\"+"
-    "\"<pre id=vpnmt7 class=vpnpre>\"+_vpnEsc(d.MT7)+\"</pre></div>\"+"
-    "\"<div class=vpncmd><b>RouterOS v6</b><button type=button class=cancelbtn onclick=\\\"_vpnCopiar('vpnmt6',this)\\\">Copiar</button>\"+"
-    "\"<pre id=vpnmt6 class=vpnpre>\"+_vpnEsc(d.MT6)+\"</pre></div>\"+"
-    "\"<div class=actions><button type=button class=primary onclick='_vpnCerrar(1)'>Ya lo copie</button></div></div>\");});}"
-    "function vpnRedes(u){var i=document.getElementById('vpnr_'+u);var v=i?i.value:'';"
-    "if(!v.trim()){if(i)i.focus();return;}"
-    "_vpnSpin('Agregando redes\\u2026','Se reinicia OpenVPN: los tuneles se cortan unos segundos.');"
-    "_vpnPost('/vpn/redes',{usuario:u,redes:v},function(j){_vpnRes(j,'Redes agregadas');});}"
-    "function vpnQuitarRed(u,r){_vpnSpin('Quitando '+r+'\\u2026');"
-    "_vpnPost('/vpn/quitar-redes',{usuario:u,redes:r},function(j){_vpnRes(j,'Red quitada');});}"
-    "function vpnBorrar(u){_vpnSpin('Eliminando '+u+'\\u2026');"
-    "_vpnPost('/vpn/borrar',{usuario:u},function(j){_vpnRes(j,'MikroTik eliminado de la VPN');});}"
-    "function vpnInstalar(){_vpnSpin('Lanzando la instalacion\\u2026');"
-    "_vpnPost('/vpn/instalar',{},function(j){if(!j.ok){_vpnRes(j,'');return;}vpnVerLog();});}"
-    "function vpnVerLog(){_vpnBox(\"<div class=vpnspin id=vpnsp></div><div style='flex:1;min-width:0'>\"+"
-    "\"<b id=vpnlt>Instalando OpenVPN\\u2026</b><div class=vpnsub>Tarda unos minutos (genera las claves). \"+"
-    "\"Puedes cerrar esta ventana: sigue en el servidor.</div><pre id=vpnlog class=vpnpre></pre>\"+"
-    "\"<div class=actions><button type=button class=cancelbtn onclick='_vpnCerrar(1)'>Cerrar</button></div></div>\");"
-    "(function tic(){fetch('/vpn/log').then(function(r){return r.json();}).then(function(j){"
-    "var p=document.getElementById('vpnlog');if(!p)return;p.textContent=j.log||'';p.scrollTop=p.scrollHeight;"
-    "if(j.corriendo||j.rc===null){setTimeout(tic,2000);return;}"
-    "var s=document.getElementById('vpnsp');if(s){s.className='vpnico';s.innerHTML=(j.rc===0?'&#9989;':'&#9940;');}"
-    "document.getElementById('vpnlt').textContent=(j.rc===0?'OpenVPN instalado':'La instalacion fallo: mira el registro');})"
-    ".catch(function(){setTimeout(tic,4000);});})();}"
-    # --- el espejo desde la web: alta de la API, montar el espejo en el router y pasar el
-    # sensor a "recibir por la VPN". Las confirmaciones, con el modal propio (ask).
-    "var _vpnU='',_vpnA='',_vpnN='',_vpnConf='';"
-    "function _vpnVal(id){var i=document.getElementById(id);return i?i.value:'';}"
-    "function vpnAlta(u){_vpnU=u;_vpnBox(\"<div style='flex:1;min-width:0'><b>Dar de alta la API de \"+_vpnEsc(u)+\"</b>\"+"
-    "\"<div class=vpnsub>Queda como un router del panel con su IP en el tunel. La clave se guarda en el servidor \"+"
-    "\"(archivo 600) y no se vuelve a mostrar. El envio a cuarentena queda <b>apagado</b>: se activa en Ajustes &gt; MikroTik.</div>\"+"
-    "\"<div class=vpnform><label>Nombre del nodo<input id=vpn_nom maxlength=40 placeholder='Nodo Centro'></label>\"+"
-    "\"<label>Usuario de la API<input id=vpn_us autocomplete=off></label>\"+"
-    "\"<label>Clave de la API<input id=vpn_pw type=password autocomplete=new-password></label>\"+"
-    "\"<label>Puerto de la API<input id=vpn_pt value=8728></label>\"+"
-    "\"<label class=chk><input id=vpn_tls type=checkbox> API-SSL (TLS)</label></div>\"+"
-    "\"<div class=actions><button type=button class=cancelbtn onclick='_vpnCerrar(0)'>Cancelar</button> \"+"
-    "\"<button type=button class=primary onclick='vpnAltaGuardar()'>Guardar y probar</button></div></div>\");}"
-    "function vpnAltaGuardar(){var t=document.getElementById('vpn_tls');"
-    "var d={usuario:_vpnU,nombre:_vpnVal('vpn_nom'),user:_vpnVal('vpn_us'),pass:_vpnVal('vpn_pw'),"
-    "port:_vpnVal('vpn_pt'),tls:(t&&t.checked?'1':'')};"
-    "_vpnSpin('Guardando y probando la API\\u2026');"
-    "_vpnPost('/vpn/mk-alta',d,function(j){_vpnRes(j,'API dada de alta');});}"
-    "function vpnEspejoPlan(u){_vpnU=u;_vpnSpin('Leyendo el router\\u2026','Vista previa: todavia no se toca nada.');"
-    "_vpnPost('/vpn/mk-espejo-plan',{usuario:u},function(j){if(!j.ok){_vpnRes(j,'');return;}"
-    "_vpnBox(\"<div style='flex:1;min-width:0'><b>Montar el espejo en \"+_vpnEsc(u)+\"</b>\"+"
-    "\"<div class=vpnsub>Esto es lo que se haria (vista previa: todavia no se ha tocado nada).</div>\"+"
-    "\"<pre class=vpnpre>\"+_vpnEsc(j.msg)+\"</pre>\"+"
-    "\"<div class=actions><button type=button class=cancelbtn onclick='_vpnCerrar(0)'>Cancelar</button> \"+"
-    "\"<button type=button class=primary onclick=\\\"if(ask(this,'Montar el espejo','Se respalda antes el firewall \"+"
-    "\"del router y se aplican estos cambios. Repetirlo no duplica nada.','Aplicar',''))vpnEspejoAplicar()\\\">\"+"
-    "\"Aplicar en el router</button></div></div>\");});}"
-    "function vpnEspejoAplicar(){_vpnSpin('Montando el espejo\\u2026','Respaldo del firewall y cambios en el router.');"
-    "_vpnPost('/vpn/mk-espejo-aplicar',{usuario:_vpnU},function(j){_vpnRes(j,'Espejo montado en el router');});}"
-    "function vpnSensorPlan(){_vpnA=_vpnVal('vpn_a');_vpnN=_vpnVal('vpn_n');_vpnSpin('Preparando el comando\\u2026');"
-    "_vpnPost('/vpn/sensor-plan',{a:_vpnA,n:_vpnN},function(j){if(!j.ok){_vpnRes(j,'');return;}_vpnConf=j.confirmar||'';"
-    "var av=(j.avisos||[]).map(function(a){return '<li>'+_vpnEsc(a)+'</li>';}).join('');"
-    "var mp=(j.mapa||[]).map(function(o){return '<li><code>'+_vpnEsc(o.ip)+'</code> &rarr; <code>'+_vpnEsc(o.iface)+"
-    "'</code> '+_vpnEsc(o.usuario)+(o.router?' (router '+_vpnEsc(o.router)+')':'')+'</li>';}).join('');"
-    "var nd=(j.nodos_txt||[]).map(function(a){return '<li>'+_vpnEsc(a)+'</li>';}).join('');"
-    "_vpnBox(\"<div style='flex:1;min-width:0'><b>Recibir el espejo por la VPN</b>\"+"
-    "\"<div class=vpnsub>Se ejecutara en el servidor:</div><pre class=vpnpre id=vpncmd>\"+_vpnEsc(j.cmd)+\"</pre>\"+"
-    "(mp?\"<div class=vpnsub>Cada MikroTik entra por su interfaz:</div><ul class=vpnmap>\"+mp+\"</ul>\":\"\")+"
-    "(nd?\"<div class=vpnsub>Al lanzar se corrigen estos nodos del panel (antes se respaldan):</div>\"+"
-    "\"<ul class=vpnav>\"+nd+\"</ul>\":\"\")+"
-    "(av?\"<ul class=vpnav>\"+av+\"</ul>\":\"\")+\"<p class=vpnwarn>\"+_vpnEsc(_vpnConf)+\"</p>\"+"
-    "\"<div class=actions><button type=button class=cancelbtn onclick='_vpnCerrar(0)'>Cancelar</button> \"+"
-    "\"<button type=button class=primary onclick=\\\"if(ask(this,'Recibir el espejo por la VPN',_vpnConf,'Lanzar',\"+"
-    "\"'danger'))vpnSensorLanzar()\\\">Lanzar</button></div></div>\");});}"
-    "function vpnSensorLanzar(){_vpnSpin('Lanzando el instalador\\u2026');"
-    "_vpnPost('/vpn/sensor-aplicar',{a:_vpnA,n:_vpnN},function(j){if(!j.ok){_vpnRes(j,'');return;}vpnSensorLog();});}"
-    "function _vpnSt(t){var e=document.getElementById('vpnst');if(e)e.textContent=t;}"
-    # El instalador REINICIA el panel: durante unos segundos la web no contesta (o contesta
-    # el login si no hay sesion). Eso no es un fallo: se reintenta y se dice que pasa. Si
-    # no vuelve en 3 minutos, lo mas probable es que -a no incluyera al operador.
-    "function vpnSensorLog(){_vpnBox(\"<div class=vpnspin id=vpnsp></div><div style='flex:1;min-width:0'>\"+"
-    "\"<b id=vpnlt>Pasando el sensor a recibir el espejo por la VPN\\u2026</b>\"+"
-    "\"<div class=vpnsub>Tarda unos minutos y reinicia el panel: la web se corta unos segundos. Sigue en el \"+"
-    "\"servidor aunque cierres esta ventana.</div><div class=vpnsub id=vpnst></div><pre id=vpnlog class=vpnpre></pre>\"+"
-    "\"<div class=actions><button type=button class=cancelbtn onclick='_vpnCerrar(1)'>Cerrar</button></div></div>\");"
-    "var t0=0,muerto=0;"
-    "(function tic(){fetch('/vpn/sensor-log',{cache:'no-store',credentials:'same-origin'})"
-    ".then(function(r){if(!r.ok)throw new Error('http '+r.status);return r.json();}).then(function(j){"
-    "t0=0;var p=document.getElementById('vpnlog');if(!p)return;p.textContent=j.log||'';p.scrollTop=p.scrollHeight;_vpnSt('');"
-    "if(j.rc===null||j.rc===undefined){muerto=j.corriendo?0:muerto+1;"
-    "if(muerto>5){_vpnSt('El instalador ya no corre y no dejo marca de fin: mira el registro.');}"
-    "setTimeout(tic,2500);return;}"
-    "var s=document.getElementById('vpnsp');if(s){s.className='vpnico';s.innerHTML=(j.rc===0?'&#9989;':'&#9940;');}"
-    "document.getElementById('vpnlt').textContent=(j.rc===0?'Listo: el sensor recibe el espejo por la VPN':"
-    "'El instalador fallo: mira el registro');})"
-    ".catch(function(){if(!document.getElementById('vpnlog'))return;if(!t0)t0=Date.now();"
-    "var s=Math.round((Date.now()-t0)/1000);"
-    "_vpnSt(s<180?'El panel se esta reiniciando (lo hace el instalador): reintentando\\u2026 ('+s+' s)':"
-    "'La web no responde desde hace '+s+' s. Si tu IP no estaba en -a, entra por la VPN: '+"
-    "(window._vpnUrl||'la IP del sensor en el tunel')+' (SSH sigue abierto).');"
-    "setTimeout(tic,3000);});})();}"
-    "</script>")
-
+        ks = [k for k in d if k == pid or k.startswith(pref)]
+        for k in ks:
+            d.pop(k, None)
+        if ks:
+            tmp = "%s.%d.tmp" % (path, os.getpid())
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(d, f)
+            os.replace(tmp, path)
+        hecho[os.path.basename(path)] = len(ks)
+    ab = cargar_abonados()
+    mapa = ab.get("mapa") or {}
+    ks = [k for k in mapa if k.startswith(pref)]
+    if ks:
+        for k in ks:
+            mapa.pop(k, None)
+        tmp = "%s.%d.tmp" % (ABONADOS_FILE, os.getpid())
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump({"ts": ab.get("ts", 0), "mapa": mapa}, f)
+        os.replace(tmp, ABONADOS_FILE)
+    hecho["abonados"] = len(ks)
+    with _PUB_LOCK:
+        pubs = cargar_publicas()
+        if pubs.pop(pid, None) is not None:
+            guardar_publicas(pubs)
+            hecho["publicas"] = 1
+    excl = [r for r in cargar_exclusiones(incluir_vencidas=True) if r.get("motivo") != "(conf)"]
+    quedan = [r for r in excl if (r.get("nodo") or "") != pid]
+    if len(quedan) != len(excl):
+        _keys = ("tipo", "ip", "motivo", "puertos", "sid", "hasta", "autor", "creado", "nodo")
+        tmp = "%s.%d.tmp" % (EXCL_FILE, os.getpid())
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump([{k: r[k] for k in _keys if k in r} for r in quedan], f, ensure_ascii=False, indent=1)
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, EXCL_FILE)
+    hecho["exclusiones"] = len(excl) - len(quedan)
+    hecho["routers"] = 1 if olvidar_router(pid) else 0
+    import shutil
+    d = os.path.join(nodos.NODOS, pid)
+    if os.path.isdir(d) and not os.path.islink(d):
+        shutil.rmtree(d, ignore_errors=True)
+        hecho["nodos"] = 1
+    bitacora("PUNTO-PURGADO", "punto=%s %s" % (pid, " ".join("%s=%s" % kv for kv in sorted(hecho.items()) if kv[1])))
+    return hecho
 def _card_listas(m):
     """Las address-lists, separadas por tipo de abuso.
 
@@ -9406,7 +8890,7 @@ def _card_listas(m):
     (redirigir al resolutor), y por eso son listas distintas."""
     esc = html.escape
     filas = ""
-    routers = [r for r in cargar_routers() if (r.get("HOST") or "").strip()]
+    routers = cargar_routers()
     for cat, nom, _cats, por_defecto in CAT_CPE + [CAT_OTROS]:
         # el nombre por defecto va CARGADO en el campo (editable), no solo como pista: el
         # usuario queria ver y poder cambiar el nombre real, no un gris que no se guarda
@@ -9441,11 +8925,15 @@ def _card_listas(m):
                               cat, cat, ops, extra, cat, esc(nom), cat, cat, cat,
                               cat, cat, "block" if acc == "propias" else "none", esc(propias),
                               cat, "block" if acc == "propias" else "none", cat))
-    # con varios routers, a cual se le miran/aplican las reglas
+    # a que router (punto) se le miran/aplican las reglas: SIEMPRE explicito (el rid va en
+    # cada peticion; sin el no se toca ningun router). Preseleccionado el nodo que se mira.
     sel_router = ""
-    if len(routers) > 1:
-        sel_router = ("<div class=field><label>Router al que aplicar las reglas</label><select id=accrid onchange=accEstado()>"
-                      + "".join("<option value='%s'>%s</option>" % (esc(r.get("id", "")), esc(r.get("nombre") or r.get("HOST", "")))
+    if routers:
+        _actual = nodos.nodo_actual() if nodos.hay_nodo() else ""
+        sel_router = ("<div class=field><label>Router (punto) al que aplicar las reglas</label><select id=accrid onchange=accEstado()>"
+                      + "".join("<option value='%s'%s>%s</option>" % (
+                          esc(r.get("id", "")), " selected" if r.get("id") == _actual else "",
+                          esc("%s (%s)" % (r.get("nombre") or r.get("id", ""), r.get("id", ""))))
                                 for r in routers) + "</select></div>")
     js_acc = (
         "<style>.accrow{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:6px}"
@@ -9541,7 +9029,7 @@ def _card_listas(m):
         "vaya la lista; el comentario lo pone el panel). <b>Guarda</b> primero; despues "
         "<i>Ver / aplicar en el router</i> ensena las lineas exactas que se van a crear, "
         "corregir o quitar, y solo se toca el router si confirmas. Antes de cada cambio se "
-        "respalda su firewall en <code>/root/backups/panel/</code>. Nunca se toca una regla "
+        "respalda su firewall en los respaldos del panel. Nunca se toca una regla "
         "que no lleve el comentario del panel.</p>"
         + sel_router +
         "<div class=field><label>Interface-list de tus WAN</label>"
@@ -12823,10 +12311,12 @@ def bitacora_page(embed=False):
 
 METRICAS_FILE = "/var/log/suricata-metricas.json"
 
-def cargar_metricas():
-    """Contadores por dia que escribe el generador (sobreviven a la poda de reportes)."""
+def cargar_metricas(nodo=None):
+    """Contadores por dia que escribe el generador (sobreviven a la poda de reportes). Los
+    del nodo que se mira; en «Todos», los que escribe el generador con --todos."""
     try:
-        d = json.load(open(METRICAS_FILE, encoding="utf-8"))
+        nodo = nodo if nodo is not None else (nodos.nodo_actual() if nodos.hay_nodo() else nodos.TODOS)
+        d = json.load(open(nodos.salida("metricas.json", nodo), encoding="utf-8"))
         return d.get("dias") or {}
     except (OSError, ValueError, AttributeError):
         return {}
@@ -12943,7 +12433,7 @@ def _grafico(serie, esc):
 # mucho) y solo a los CPE que ya son candidatos. Para justificar un corte ante el
 # cliente, o para ver a quien se le repite el patron dia tras dia, hace falta mirar
 # VARIOS dias y TODOS los CPE, no solo los que hoy cruzaron el umbral.
-CONDUCTA_FILE = "/var/log/suricata-conducta.json"
+CONDUCTA_FILE = "conducta.json"     # por nodo: nodos/<pid>/conducta.json
 CONDUCTA_DIAS = 3          # ventana del reporte, en dias
 CONDUCTA_TOPE = 12         # cuantos destinos/firmas/dominios se guardan por CPE
 CONDUCTA_MAX = 3000        # tope de CPE en el reporte (una caja de ISP no tiene mas)
@@ -13001,17 +12491,19 @@ def _cd_podar(d, tope):
 # da el detalle fino de las ultimas 24 h; el detalle por DIA (firmas, destinos, puertos,
 # dominios) guarda solo el top de cada CPE, que es lo unico que se mira, y evita que la
 # base crezca con la cola larga de destinos que nadie va a leer.
-HIST_DB = "/var/lib/suricata-panel/historial.db"
+HIST_DB = "historial.db"     # por nodo: nodos/<pid>/historial.db
 HIST_DIAS = 30        # cuanto se conserva (el informe pide 3; sobra margen)
 HIST_TOP = 8          # cuantas claves por tipo y dia se guardan de cada CPE
 HIST_CADA = 300       # cada cuanto se ingiere lo nuevo, en segundos
 
-def _hist_con():
-    """Abre la base creando el esquema si hace falta. WAL para que ingerir no bloquee
-    la lectura del panel."""
+def _hist_con(pid=None):
+    """Abre la base DEL PUNTO (nodos/<pid>/historial.db) creando el esquema si hace falta.
+    WAL para que ingerir no bloquee la lectura del panel. Una base por punto: el CPE de la
+    tabla es la IP, y la misma IP en dos puntos son dos abonados."""
     import sqlite3
-    os.makedirs(os.path.dirname(HIST_DB), exist_ok=True)
-    c = sqlite3.connect(HIST_DB, timeout=20)
+    pid = nodos.exigir_pid(pid if pid is not None else nodos.nodo_actual())
+    ruta = nodos.salida(HIST_DB, pid)
+    c = sqlite3.connect(ruta, timeout=20)
     c.execute("PRAGMA journal_mode=WAL")
     c.execute("PRAGMA synchronous=NORMAL")
     c.executescript("""
@@ -13081,14 +12573,15 @@ def _hist_offsets(c, nuevos=None):
               (json.dumps(nuevos),))
     return nuevos
 
-def hist_ingerir(limite_lineas=4000000):
-    """Mete en la base lo ocurrido desde la ultima marca.
+def hist_ingerir(pid=None, limite_lineas=4000000):
+    """Mete en la base del punto lo ocurrido desde la ultima marca (sus eve.json*/dns.json*).
 
     De verdad incremental: cada archivo se reanuda por donde se quedo. Antes se abria
     por el principio y se descartaba por marca de tiempo despues de contar la linea,
     asi que con un log grande el tope de lineas se agotaba releyendo lo mismo y el
     historial no volvia a avanzar nunca."""
-    c = _hist_con()
+    pid = nodos.exigir_pid(pid if pid is not None else nodos.nodo_actual())
+    c = _hist_con(pid)
     try:
         desde = hist_marca(c)
         if not desde:
@@ -13106,8 +12599,8 @@ def hist_ingerir(limite_lineas=4000000):
         # por mtime ascendente: si el tope de lineas corta la pasada, lo que se queda
         # sin leer es lo MAS nuevo, que entra en la siguiente. Al reves (lo viejo sin
         # leer) la marca ya habria pasado de largo y esos eventos se perderian.
-        archivos = sorted(set(glob.glob(f"{LOGDIR}/eve.json*") + glob.glob(f"{LOGDIR}/dns.json*")),
-                          key=_mt)
+        archivos = sorted({f for _p, f in nodos.ficheros_eventos(pid)
+                           if not os.path.islink(f)}, key=_mt)   # nunca seguir un enlace de datos/
         for ruta in archivos:
             try:
                 st = os.stat(ruta)
@@ -13216,11 +12709,12 @@ def hist_ingerir(limite_lineas=4000000):
     finally:
         c.close()
 
-def hist_podar(c=None):
-    """Borra lo viejo y recorta la cola larga del detalle: de cada CPE, dia y tipo se
-    queda el top. Sin esto, un CPE que habla con 200.000 destinos llena la base."""
+def hist_podar(c=None, pid=None):
+    """Borra lo viejo (mas de HIST_DIAS, minimo 30) y recorta la cola larga del detalle: de
+    cada CPE, dia y tipo se queda el top. Sin esto, un CPE que habla con 200.000 destinos
+    llena la base."""
     propia = c is None
-    c = c or _hist_con()
+    c = c or _hist_con(pid)
     try:
         corte_h = time.time() - HIST_DIAS * 86400
         corte_d = time.strftime("%Y-%m-%d", time.localtime(corte_h))
@@ -13235,10 +12729,21 @@ def hist_podar(c=None):
         if propia:
             c.close()
 
-def hist_conducta(dias=None):
-    """El informe, leido de la base en vez de releer gigabytes de log."""
+def hist_conducta(dias=None, pid=None):
+    """El informe, leido de la base en vez de releer gigabytes de log. De UN punto; en
+    «Todos» (pid TODOS o el contexto) se unen las filas de cada punto con su `nodo`: la
+    misma IP en dos puntos son dos filas, nunca una suma."""
     dias = dias or CONDUCTA_DIAS
-    c = _hist_con()
+    nodo = pid if pid is not None else nodos.nodo_actual()
+    if nodo == nodos.TODOS:
+        partes = [hist_conducta(dias, p) for p in nodos.pids()]
+        filas = sorted((f for r in partes for f in r.get("filas", [])),
+                       key=lambda f: (-f["alertas"], -f["eventos"]))
+        return {"generado": int(time.time()), "dias": dias,
+                "lineas": sum(r.get("lineas", 0) for r in partes),
+                "cpes": len(filas), "filas": filas, "fuente": "base", "todos": True}
+    pid = nodos.exigir_pid(nodo)
+    c = _hist_con(pid)
     try:
         corte = time.time() - dias * 86400
         filas = {}
@@ -13246,7 +12751,7 @@ def hist_conducta(dias=None):
                 "SELECT cpe, SUM(alertas), SUM(eventos), SUM(bytes), MIN(hora), MAX(hora),"
                 " COUNT(DISTINCT date(hora,'unixepoch','localtime')) FROM resumen "
                 "WHERE hora >= ? GROUP BY cpe", (corte,)):
-            filas[cpe] = {"ip": cpe, "alertas": al or 0, "eventos": ev_ or 0,
+            filas[cpe] = {"ip": cpe, "nodo": pid, "alertas": al or 0, "eventos": ev_ or 0,
                           "bytes": by or 0, "dias": hs or 0,
                           "primera": int(pri or 0), "ultima": int((ult or 0) + 3599),
                           "destinos": [], "puertos": [], "firmas": [], "dominios": [],
@@ -13274,16 +12779,17 @@ def hist_conducta(dias=None):
     finally:
         c.close()
 
-def conducta_recolectar(dias=CONDUCTA_DIAS):
-    """Recorre eve.json/dns.json y sus rotados y resume lo que hizo cada CPE.
+def conducta_recolectar(dias=CONDUCTA_DIAS, pid=None):
+    """Recorre eve.json/dns.json y sus rotados DEL PUNTO y resume lo que hizo cada CPE.
 
     Se apoya en los rotados a proposito: logrotate parte los logs cada dia, asi que
     los 3 dias no estan en un solo archivo. Los que son mas viejos que la ventana se
     saltan por su mtime, sin abrirlos."""
+    pid = nodos.exigir_pid(pid if pid is not None else nodos.nodo_actual())
     corte = time.time() - dias * 86400
     cpes = {}
     leidos = 0
-    archivos = sorted(set(glob.glob(f"{LOGDIR}/eve.json*") + glob.glob(f"{LOGDIR}/dns.json*")))
+    archivos = sorted({f for _p, f in nodos.ficheros_eventos(pid) if not os.path.islink(f)})
     for ruta in archivos:
         try:
             if os.path.getmtime(ruta) < corte:
@@ -13348,7 +12854,7 @@ def conducta_recolectar(dias=CONDUCTA_DIAS):
                 d["bytes"] += int(fl.get("bytes_toserver") or 0)
     filas = []
     for ip, d in cpes.items():
-        filas.append({"ip": ip, "eventos": d["eventos"], "alertas": d["alertas"],
+        filas.append({"ip": ip, "nodo": pid, "eventos": d["eventos"], "alertas": d["alertas"],
                       "bytes": d["bytes"], "dias": len(d["dias"]),
                       "primera": int(d["primera"]), "ultima": int(d["ultima"]),
                       "destinos_n": len(d["destinos"]), "puertos_n": len(d["puertos"]),
@@ -13359,17 +12865,40 @@ def conducta_recolectar(dias=CONDUCTA_DIAS):
     return {"generado": int(time.time()), "dias": dias, "lineas": leidos,
             "cpes": len(filas), "filas": filas}
 
-def guardar_conducta(rep_):
-    tmp = CONDUCTA_FILE + ".tmp"
+def guardar_conducta(rep_, pid=None):
+    """El informe de conducta de UN punto, en nodos/<pid>/conducta.json."""
+    pid = nodos.exigir_pid(pid if pid is not None else nodos.nodo_actual())
+    ruta = nodos.salida(CONDUCTA_FILE, pid)
+    tmp = "%s.%d.%d.tmp" % (ruta, os.getpid(), threading.get_ident())
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(rep_, f, ensure_ascii=False)
-    os.replace(tmp, CONDUCTA_FILE)
+    os.replace(tmp, ruta)
 
-def cargar_conducta():
-    try:
-        return json.load(open(CONDUCTA_FILE, encoding="utf-8"))
-    except (OSError, ValueError):
+def cargar_conducta(nodo=None):
+    """El informe del nodo que se mira; en «Todos», las filas de todos los puntos juntas
+    (cada una con su `nodo`; la misma IP en dos puntos son dos filas)."""
+    nodo = nodo if nodo is not None else (nodos.nodo_actual() if nodos.hay_nodo() else nodos.TODOS)
+    if nodo != nodos.TODOS:
+        try:
+            rep_ = json.load(open(nodos.salida(CONDUCTA_FILE, nodos.exigir_pid(nodo)), encoding="utf-8"))
+        except (OSError, ValueError):
+            return {}
+        for f in rep_.get("filas", []):
+            f.setdefault("nodo", nodo)
+        return rep_
+    partes = []
+    for p in nodos.pids():
+        r = cargar_conducta(p)
+        if r:
+            partes.append(r)
+    if not partes:
         return {}
+    filas = sorted((f for r in partes for f in r.get("filas", [])),
+                   key=lambda f: (-f.get("alertas", 0), -f.get("eventos", 0)))
+    return {"generado": min(r.get("generado", 0) for r in partes),
+            "dias": max(r.get("dias", 0) for r in partes),
+            "lineas": sum(r.get("lineas", 0) for r in partes),
+            "cpes": len(filas), "filas": filas, "todos": True}
 
 def conducta_csv(rep_):
     """CSV con punto y coma: es lo que abre Excel en es-EC sin pedir nada. El BOM es
@@ -13377,12 +12906,15 @@ def conducta_csv(rep_):
     def q(v):
         v = str(v)
         return '"' + v.replace('"', '""') + '"' if any(c in v for c in ';"\n\r') else v
-    out = ["IP;Categoria;Alertas;Eventos;Dias activos;Destinos distintos;Puertos distintos;"
+    con_nodo = bool(rep_.get("todos"))       # en «Todos», la columna Nodo distingue las IP repetidas
+    out = [("Nodo;" if con_nodo else "") +
+           "IP;Categoria;Alertas;Eventos;Dias activos;Destinos distintos;Puertos distintos;"
            "Primera vez;Ultima vez;Top firmas;Top destinos;Top puertos;Top dominios"]
     for f in rep_.get("filas", []):
         def junta(k):
             return " | ".join("%s (%d)" % (a, b) for a, b in f.get(k, []))
-        out.append(";".join(q(x) for x in [
+        out.append(";".join(q(x) for x in ([nodos.nombre(f.get("nodo", "")) if f.get("nodo") else ""]
+                                           if con_nodo else []) + [
             f["ip"], nombre_categoria(conducta_categoria(f)),
             f["alertas"], f["eventos"], f["dias"], f["destinos_n"], f["puertos_n"],
             time.strftime("%Y-%m-%d %H:%M", time.localtime(f["primera"])),
@@ -15552,52 +15084,87 @@ class H(BaseHTTPRequestHandler):
         except Exception:
             return "?"
     def _proxy_confiable(self):
-        return self._peer_ip() in PROXIES_OK
+        # IDS_PROXY admite CIDR: la IP del proxy en la red de Docker puede cambiar
+        return proxy_confiable(self._peer_ip())
     def _cookie_secure(self):
         # Secure solo si la peticion llego por HTTPS; si no, el navegador descartaria
         # la cookie y no se podria entrar por HTTP. La cabecera del proxy solo cuenta
-        # si el proxy es de confianza.
+        # si el proxy es de confianza (X-Forwarded-Proto, o proto= de Forwarded).
         if not self._proxy_confiable():
             return ""
         proto = self.headers.get("X-Forwarded-Proto", "").split(",")[0].strip().lower()
+        if not proto:
+            for par in (self.headers.get("Forwarded") or "").split(",")[0].split(";"):
+                k, _s, v = par.strip().partition("=")
+                if k.strip().lower() == "proto":
+                    proto = v.strip().strip('"').lower()
         if proto == "https":
             return "; Secure"
         return ""
     def _client_ip(self):
-        # detras de un proxy inverso la IP real viene en X-Forwarded-For, pero esa
-        # cabecera la pone quien quiera: solo se acepta si la conexion viene de un
-        # proxy declarado en PROXIES. Si no, manda la IP del socket.
-        if self._proxy_confiable():
-            xff = self.headers.get("X-Forwarded-For", "")
-            if xff:
-                return xff.split(",")[0].strip()
-        return self._peer_ip()
+        # Detras de un proxy inverso la IP real viene en X-Forwarded-For, pero esa
+        # cabecera la pone quien quiera: solo se mira si la conexion viene de un proxy de
+        # confianza, y entonces se toma el ULTIMO salto que no es de confianza (de derecha
+        # a izquierda). El primero lo escribe el cliente si el proxy anade en vez de
+        # reemplazar: tomarlo era dejar que cualquiera eligiera su IP (y saltarse la
+        # lista de IPs de confianza o el bloqueo por intentos).
+        peer = self._peer_ip()
+        if not self._proxy_confiable():
+            return peer
+        saltos = [x.strip() for x in (self.headers.get("X-Forwarded-For") or "").split(",") if x.strip()]
+        for ip in reversed(saltos):
+            try:
+                ipaddress.ip_address(ip)
+            except ValueError:
+                return peer              # una cadena manipulada no da una IP
+            if not proxy_confiable(ip):
+                return ip
+        return saltos[0] if saltos else peer
     def _sesion(self):
-        return SESSIONS.get(self._sid()) or {}
+        # una vez por peticion: la sesion se valida contra el usuario (activo, marca de su
+        # clave) y el rol se relee de ahi; no se congela durante las 12 h de la sesion
+        if not hasattr(self, "_ses_cache"):
+            self._ses_cache = sesion_de(self._sid()) or {}
+        return self._ses_cache
     def _sesion_ok(self):
         s = self._sesion()
         return bool(s and s.get("exp", 0) > time.time())
     def _rol(self):
         return self._sesion().get("role")
     def _admin(self):
-        # admin real, o modo sin-auth (sin usuarios). operador/lectura -> False.
-        return self._rol() in (None, "admin")
+        # solo un admin con sesion. Ya no existe el modo sin autenticacion (rol None).
+        return self._sesion_ok() and self._rol() == "admin"
     def _operador(self):
-        # puede gestionar cuarentenas/incidentes: admin, operador o modo sin-auth.
-        return self._rol() in (None, "admin", "operador")
+        # puede gestionar cuarentenas/incidentes: admin u operador, con sesion.
+        return self._sesion_ok() and self._rol() in ("admin", "operador")
     def _set_ctx(self):
         s = self._sesion()
         CTX.user = s.get("user"); CTX.role = s.get("role"); CTX.ip = self._client_ip()
-        # la IP que LLEGA al socket (con proxy, la del proxy): es la que ve el firewall de
-        # solo-tunel, asi que es la que hay que dejar entrar con -a para no perder la web
         CTX.peer = self._peer_ip()
         CTX.exp = s.get("exp")   # el menu del usuario dice cuanto le queda a la sesion
+        # El nodo que se MIRA (CONTRATO-F2 §10.1): ?nodo= de la URL (y se recuerda en la
+        # sesion); sin parametro, el de la sesion; si no, la vista «Todos». Un nodo mal
+        # formado es 400 y uno que no existe 404 (NodoInvalido/NodoInexistente, que _seguro
+        # convierte): NUNCA se amplia a «Todos». El destino de una ACCION no sale de aqui.
+        q = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query, keep_blank_values=True)
+        if "nodo" in q:
+            nodo = nodos.poner_nodo(q["nodo"][0])
+            if s and s.get("nodo") != nodo:
+                with _SES_LOCK:
+                    e = SESSIONS.get(_hash_token(self._sid()))
+                    if e is not None:
+                        e["nodo"] = nodo
+        else:
+            guardado = s.get("nodo") if s else None
+            try:
+                nodos.poner_nodo(guardado if guardado else nodos.TODOS)
+            except (nodos.NodoInvalido, nodos.NodoInexistente):
+                nodos.poner_nodo(nodos.TODOS)      # el punto de la sesion se dio de baja
+        CTX.nodo = nodos.nodo_actual()
     def _auth_ok(self):
-        if not cargar_usuarios():
-            return True  # sin usuarios (PASS vacia en .conf): sin auth, solo tras VPN/proxy
-        # Solo sesion (cookie del formulario). NO se acepta auth basica del navegador:
-        # el navegador la cachea de por vida y anularia el boton Salir. Para scripts,
-        # hacer login por POST /login y reutilizar la cookie sid.
+        # Solo sesion (cookie del formulario). Sin usuarios NO se entra: no hay modo sin
+        # autenticacion (el primer admin lo crea `ids-panel crear-admin`). Tampoco auth
+        # basica del navegador: la cachea de por vida y anularia el boton Salir.
         return self._sesion_ok()
     def _redirect(self, location, cookie=None):
         self.send_response(303)
@@ -15615,7 +15182,12 @@ class H(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
     def _deny(self):
-        # sin sesion -> a la pagina de login (no el popup del navegador)
+        # sin sesion -> a la pagina de login (no el popup del navegador); con sesion pero
+        # sin el rol que pide la operacion -> 403 (ocultar el boton no es un control)
+        if self._sesion_ok():
+            return self._html("<!doctype html><meta charset=utf-8><title>Sin permiso</title>"
+                              "<h1>Sin permiso</h1><p>Tu usuario no tiene el rol que pide esta operacion.</p>"
+                              "<p><a href=/>Volver</a></p>", 403)
         self._redirect("/login")
     def _html(self, s, code=200):
         b = s.encode("utf-8")
@@ -15630,17 +15202,42 @@ class H(BaseHTTPRequestHandler):
         self._respondido = True
         BaseHTTPRequestHandler.send_response(self, code, message)
 
+    def _limpiar_ctx(self):
+        # El hilo se reutiliza entre peticiones de la misma conexion (keep-alive): nada del
+        # usuario ni del nodo de la peticion anterior puede quedar puesto.
+        for k in ("user", "role", "ip", "peer", "exp", "nodo"):
+            setattr(CTX, k, None)
+        nodos.quitar_nodo()
+        self.__dict__.pop("_ses_cache", None)
+
     def _seguro(self, fn):
         """Red de seguridad de TODA peticion.
 
         Si una pagina reventaba, el hilo moria y la conexion se cerraba sin responder
         nada. Detras de un proxy inverso (nginx/openresty) eso llega al navegador como
         un escueto "502 Bad Gateway" que no dice que fallo ni donde mirar. Ahora se
-        responde 500 con una explicacion y el fallo queda en el log y en la bitacora."""
+        responde 500 con una explicacion y el fallo queda en el log y en la bitacora.
+        Un nodo mal formado es 400 y uno que no existe 404 (CONTRATO-F2 §10.1). El
+        contexto (usuario y nodo) se pone y se quita en cada peticion, tambien con error."""
+        self._respondido = False
+        self._limpiar_ctx()
         try:
             fn()
         except (BrokenPipeError, ConnectionResetError, TimeoutError):
             raise                       # el cliente se fue: no hay a quien responderle
+        except (nodos.NodoInvalido, nodos.NodoInexistente) as ex:
+            if getattr(self, "_respondido", False):
+                self.close_connection = True
+                return
+            if isinstance(ex, nodos.NodoInvalido):
+                tit, txt, code = "Nodo invalido", "El identificador de nodo no es valido.", 400
+            else:
+                tit, txt, code = "Punto inexistente", "Ese punto no existe (o se dio de baja).", 404
+            try:
+                self._html("<!doctype html><meta charset=utf-8><title>%s</title><h1>%s</h1><p>%s</p>"
+                           "<p><a href='/?nodo=_todos'>Volver a todos los nodos</a></p>" % (tit, tit, txt), code)
+            except Exception:
+                self.close_connection = True
         except Exception:
             det = traceback.format_exc()
             ruta = self.path.split("?", 1)[0]
@@ -15668,11 +15265,13 @@ class H(BaseHTTPRequestHandler):
                     "<h1>Esta pagina del panel fallo</h1>"
                     "<p>La peticion <code>" + html.escape(ruta) + "</code> no se pudo generar. "
                     "El resto del panel sigue funcionando.</p>"
-                    "<p>El detalle queda en el registro del servicio:<br>"
-                    "<code>journalctl -u suricata-dashboard -n 50</code></p>"
+                    "<p>El detalle queda en el registro del contenedor:<br>"
+                    "<code>docker logs ids-panel</code></p>"
                     "</div></body></html>", 500)
             except Exception:
                 self.close_connection = True
+        finally:
+            self._limpiar_ctx()
 
     def do_GET(self):
         self._seguro(self._get)
@@ -15681,8 +15280,19 @@ class H(BaseHTTPRequestHandler):
         self._seguro(self._post_mismo_origen)
 
     def _post_mismo_origen(self):
-        # CSRF: TODO POST pasa por aqui (tambien el login y el modo sin usuarios)
-        motivo = origen_ajeno(self.headers, conf_dash_get("PANEL_URL", ""))
+        # CSRF: TODO POST pasa por aqui (tambien el login). X-Forwarded-Host y Forwarded
+        # solo cuentan si los pone un proxy de confianza: de cualquier otro los escribe el
+        # cliente, y valdrian para hacer pasar un Origin ajeno por el del panel.
+        cabeceras = self.headers
+        confiable = self._proxy_confiable()
+        if not confiable:
+            cabeceras = {k: v for k, v in self.headers.items()
+                         if k.lower() not in ("x-forwarded-host", "forwarded")}
+            cabeceras = _Cabeceras(cabeceras)
+        if _origen_con_proxy():
+            motivo = origen_ajeno(cabeceras, conf_dash_get("PANEL_URL", ""), proxy_confiable=confiable)
+        else:
+            motivo = origen_ajeno(cabeceras, conf_dash_get("PANEL_URL", ""))
         if motivo:
             try:
                 sys.stderr.write("POST rechazado %s: %s\n" % (self.path.split("?", 1)[0], motivo))
@@ -15693,7 +15303,6 @@ class H(BaseHTTPRequestHandler):
             return self._html("<!doctype html><meta charset=utf-8><h1>Peticion rechazada</h1>"
                               "<p>El formulario no viene de este panel (Origin/Referer de otro sitio).</p>", 403)
         return self._post()
-
     def _get(self):
         path = self.path.split("?", 1)[0]
         if path in ("/logo.png", "/favicon.ico"):
@@ -17554,13 +17163,60 @@ class H(BaseHTTPRequestHandler):
     def log_message(self, *a):
         pass
 
-def main():
-    port = int(CFG.get("PORT", "5637"))
-    cargar_usuarios()   # migra el usuario del .conf al almacen hasheado si aun no existe
-    threading.Thread(target=refrescador, daemon=True).start()
-    bind = CFG.get("BIND", "0.0.0.0") or "0.0.0.0"
+def _aplicar_tz():
+    """El contenedor corre con TZ=UTC: el panel y sus subprocesos (generador, informe) usan
+    la zona de la empresa (IDS_TZ)."""
+    os.environ["TZ"] = IDS_TZ
+    if hasattr(time, "tzset"):
+        time.tzset()
+
+def crear_servidor(bind=None, port=None):
+    port = int(port if port is not None else (CFG.get("PORT", "5637") or "5637"))
+    bind = bind if bind is not None else (CFG.get("BIND", "0.0.0.0") or "0.0.0.0")
     httpd = ThreadingHTTPServer((bind, port), H)
-    httpd.serve_forever()
+    httpd.daemon_threads = True
+    return httpd
+
+def main():
+    _aplicar_tz()
+    nodos.asegurar_dirs()
+    if not cargar_usuarios():
+        sys.stderr.write("panel: no hay usuarios: nadie puede entrar hasta crear uno con "
+                         "«ids-panel crear-admin --usuario admin»\n")
+    try:
+        n = migrar_secretos()
+        if n:
+            sys.stderr.write("panel: %d secreto(s) en claro quedaron cifrados\n" % n)
+    except Exception as _e:
+        sys.stderr.write("panel: migracion de secretos: %s\n" % _e)
+    if not secretos.disponible():
+        sys.stderr.write("panel: AVISO: no se puede leer la clave maestra (%s): las claves de "
+                         "la API, feeds, IA y Telegram guardadas no se pueden usar (no se borran)\n"
+                         % secretos.RUTA_CLAVE)
+    httpd = crear_servidor()
+
+    def _fin(*_):
+        # docker stop: los hilos de fondo terminan su vuelta y el servidor deja de aceptar
+        _PARAR.set()
+        threading.Thread(target=httpd.shutdown, daemon=True).start()
+    try:
+        import signal
+        signal.signal(signal.SIGTERM, _fin)
+        signal.signal(signal.SIGINT, _fin)
+    except (ValueError, AttributeError, OSError):
+        pass
+    threading.Thread(target=refrescador, name="refrescador", daemon=True).start()
+    threading.Thread(target=informe_diario_hilo, name="informe-diario", daemon=True).start()
+    sys.stderr.write("panel: escuchando en %s:%s (proxies de confianza: %s)\n" % (
+        httpd.server_address[0], httpd.server_address[1],
+        ", ".join(str(p) for p in PROXIES_OK) or "ninguno"))
+    try:
+        httpd.serve_forever(poll_interval=0.5)
+    finally:
+        _PARAR.set()
+        httpd.server_close()
+        _guardar_sesiones()
+    return 0
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
