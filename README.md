@@ -13,5 +13,5 @@ OpenVPN y su propio Suricata.
 
 Sucesor en contenedores de [suricata-ids-lab](https://github.com/mtandazo35/suricata-ids-lab).
 
-**Estado:** en diseno. La arquitectura esta en [docs/ARQUITECTURA.md](docs/ARQUITECTURA.md)
+**Estado:** en diseno. La arquitectura esta en [docs/ARQUITECTURA.md](docs/ARQUITECTURA.md) (con sus anexos en docs/)
 (en revision); el codigo viene despues.

@@ -1,0 +1,245 @@
+# Fases, canario y riesgos
+
+Anexo de [ARQUITECTURA.md](ARQUITECTURA.md). Este anexo cubre:
+
+- las fases, con su contenido, sus pruebas de comportamiento y su criterio de hecho;
+- qué se mide en el canario;
+- la tabla completa de riesgos.
+
+Reglas para todas las fases:
+
+- las pruebas viven **en el repo** (`tests/`), corren en CI y comprueban **que funciona**, no que
+  el código esté escrito;
+- `pyflakes` es obligatorio en CI, porque un `except` ancho tapa los `NameError`;
+- cada fase termina con un commit, un push y la nota de memoria del proyecto actualizada.
+
+## 1. Fases
+
+### F0 — Esqueleto, CI y GHCR
+
+- **Contenido:**
+  - estructura `panel/`, `orquestador/`, `imagenes/{panel,vpn,suricata}/`, `plantillas/`,
+    `tests/` y `docs/`;
+  - un `instalar.sh` mínimo:
+    - Docker con versión fijada y `daemon.json`;
+    - módulos y timesyncd;
+    - el firewall del host estático con las redes de gestión;
+    - `PasswordAuthentication no`;
+    - fail2ban para SSH;
+    - `master.key`, `orq_token` y `avisos.conf`;
+    - validación del pool de Docker;
+  - los workflows `ci.yml` y `release.yml` ([ACTUALIZACIONES.md](ACTUALIZACIONES.md) §2);
+  - los paquetes de GHCR hechos públicos.
+- **Pruebas:**
+  - en una VM limpia de Debian 13, `GET /salud` responde 200 con la versión del esquema;
+  - sin usuarios, solo se puede crear el primer admin;
+  - una imagen de panel que no corra como uid 10500 hace fallar CI;
+  - un `.sh` con CRLF hace fallar CI.
+- **Hecho cuando:** CI está en verde, las tres imágenes están en GHCR por digest y firmadas, y una
+  instalación limpia llega al login desde una red de gestión y **no** desde fuera.
+
+### F1a — Infraestructura de una instancia (canario real)
+
+- **Contenido:**
+  - la plantilla de compose y el `vpn` completo (entrypoint ordenado, s6, `tzsp-decap` con latido,
+    relé API-SSL, tablas nft);
+  - `suricata` con el yaml completo renderizado;
+  - el orquestador **por CLI** (`ids-orq punto crear|borrar|estado`), con la cola, la supervisión,
+    la comparación de netns y `estado.json`;
+  - la actualización de reglas con reinicio en serie;
+  - logrotate;
+  - **sin panel**: los eve se leen a mano.
+- **Pruebas:**
+  - un TZSP de prueba hacia `100.64.1.1` produce eventos con `host = p001` en el eve;
+  - un pcap reproducido produce la alerta esperada;
+  - sin tráfico, el `vpn` sigue sano (latido);
+  - matar `openvpn` no corta la captura;
+  - `docker restart ids-p001-vpn` hace que el orquestador detecte netns distintos y reinicie
+    `suricata`;
+  - tras reiniciar el VPS, `suricata` espera a `ids-mon` y captura;
+  - `systemctl restart docker` (con `live-restore`) mantiene túneles y captura;
+  - `reglas.actualizar` reinicia las instancias de una en una;
+  - desde fuera, solo se ve el puerto OpenVPN; desde el túnel, solo el 37008.
+- **Mediciones de capacidad** de §2, anotadas en el repo. **Con ellas se fijan los perfiles y el
+  número de puntos por VPS antes de invertir en el panel.**
+- **Hecho cuando:** un MikroTik real o un CHR manda el espejo por la VPN, Suricata alerta y la tabla
+  de capacidad tiene cifras medidas.
+
+### F1b — Panel modular con un punto
+
+- **Contenido:**
+  - el panel dividido en módulos ([PLAN-PANEL.md](PLAN-PANEL.md)), con **todas** las funciones
+    actuales contra `estado.db` y `eventos.db`, con el punto fijo `p001`;
+  - los servicios `web` y `worker`;
+  - sin EveBox.
+- **Pruebas:**
+  - el pcap aparece en Detalle y en `alerta` con `punto_id = p001`;
+  - el TZSP de prueba muestra Mbps y desperdicio en el panel;
+  - reiniciar a mitad de la ingesta no deja **ni duplicados ni huecos** (filas frente a líneas);
+  - rotar el eve no corta la ingesta;
+  - una cuarentena contra un CHR de laboratorio aparece con `comment=ids-maat:p001:<id>` y al
+    liberarla desaparece;
+  - si el CHR cae a mitad del envío, la cuarentena queda en `error` y se reintenta;
+  - la API va por el relé y con la huella fijada; una huella cambiada se rechaza.
+- **Hecho cuando:** se ven las alertas en el panel, la cuarentena funciona de ida y vuelta, y las
+  pruebas pasan en CI (las del CHR, en un job de laboratorio marcado).
+
+### F2 — Varios puntos y filtro
+
+- **Contenido:** dos instancias, el selector global, `alcance()` y `puede()` en todas las rutas, y
+  `CpeRef` en tablas y cachés.
+- **Pruebas**, todas con **la misma IP `10.0.0.5` en p001 y en p002**:
+  - con un pcap distinto en cada punto, la vista de p001 solo muestra lo de p001 y la de empresa
+    muestra **dos filas**;
+  - una cuarentena de `(p001, 10.0.0.5)` aparece solo en el CHR-1, y el CHR-2 no recibe ninguna
+    llamada a la API (se comprueba en su log);
+  - el nombre del abonado de p002 no aparece en la ficha de p001;
+  - la exclusión de p001 no silencia a p002, y una global silencia a los dos;
+  - el reporte de p001 no contiene datos de p002;
+  - cada función del repositorio llamada sin alcance lanza `AlcanceRequerido`;
+  - una línea con `host = p002` en el volumen de p001 genera `EVE-MEZCLA`;
+  - un `sw_id` cambiado hace rechazar la acción con `ROUTER-NO-COINCIDE`;
+  - el `vpn` de p001 no alcanza la red de p002.
+- **Hecho cuando:** todas las pruebas de mezcla pasan y una revisión manual con los dos CHR no
+  encuentra ningún dato cruzado.
+
+### F3 — Alta de punto desde el panel
+
+- **Contenido:**
+  - el socket del orquestador, con `SO_PEERCRED`, el token y todas las órdenes;
+  - el asistente, la pantalla Puntos, la baja, la pausa y el reinicio;
+  - el diagnóstico de CGNAT;
+  - los avisos directos del orquestador.
+- **Pruebas:**
+  - alta de principio a fin con un CHR v6 **y** con un CHR v7: los comandos generados se pegan y
+    el punto llega a `activo`;
+  - dos altas simultáneas obtienen `N` distintos;
+  - el mismo `op_id` dos veces produce una sola ejecución;
+  - si se mata el orquestador a mitad de `punto.crear`, al arrancar se deshace y el punto queda en
+    `reservado`;
+  - otro uid en el socket es rechazado;
+  - una orden desconocida o un parámetro fuera de rango devuelve `INVALIDO`;
+  - un alta que no cabe se niega con la capacidad por perfil;
+  - baja con cuarentenas vivas: con el router conectado, se liberan; con el router caído, quedan
+    `huerfana` y se entregan los comandos; las credenciales borradas ya no conectan;
+  - la pausa deshabilita el mangle y el `vpn` sigue sano;
+  - con la ruta blackhole y el túnel caído no sale TZSP por la WAN (captura en el CHR);
+  - una ruta estática del CHR dentro de `100.64.N.0/24` deshabilita el mangle y avisa;
+  - con el panel parado, un punto en error llega por Telegram desde el orquestador.
+- **Hecho cuando:** un operador sin consola da de alta, pausa y da de baja un punto solo desde la
+  web, y todo queda en la bitácora unido por `op_id`.
+
+### F4 — Seguridad, acceso, fail2ban y modo seguro
+
+- **Pruebas:**
+  - redes que excluyen la IP del operador: la reversión llega al vencer la ventana (5 min por
+    defecto) y el panel vuelve a responder;
+  - con confirmación, las reglas persisten;
+  - un reinicio del VPS durante la ventana deja las reglas anteriores;
+  - una red más ancha que /16 se rechaza en el orquestador;
+  - con `PasswordAuthentication yes`, `acceso.aplicar` se niega;
+  - 5 fallos de SSH bloquean la IP, **también si viene de una red de gestión**; la IP fija del
+    dueño que está en `ignoreip` no se bloquea;
+  - 5 `AUTH_FAILED` de OpenVPN bloquean la IP en el hook `forward`, y el túnel de otro punto sigue
+    arriba;
+  - más de 10 conexiones nuevas por minuto a un puerto VPN se descartan;
+  - 8 fallos de login en el panel bloquean la IP en el panel;
+  - un POST con `Sec-Fetch-Site: cross-site` o sin `X-CSRF` devuelve 403;
+  - cambiar la clave cierra las demás sesiones del usuario;
+  - `strings estado.db` no muestra ninguna clave API;
+  - `estado.db` copiada sin `master.key` no se descifra;
+  - el cifrado del punto A no se descifra copiado al punto B;
+  - `docker inspect` del panel no muestra `docker.sock`, sí `read_only` y ninguna capacidad;
+  - una cadena de bitácora alterada se detecta, también frente al anclaje de `orq.jsonl`;
+  - desde `100.64.x.x`, el panel y SSH no responden.
+- **Hecho cuando:** todas las pruebas pasan y una auditoría interna (otro agente) no encuentra
+  ningún hallazgo alto.
+
+### F5 — Documentación
+
+- **Contenido:**
+  - `README.md`;
+  - estos documentos actualizados;
+  - [OPERACION.md](OPERACION.md) completo;
+  - la sección Documentación del panel, reescrita sin EveBox, sin `systemctl` y sin `openvpn.sh`;
+  - el changelog en las etiquetas de las imágenes.
+- **Pruebas:** cada comando de OPERACION se ejecuta en una VM limpia siguiendo el texto al pie de
+  la letra, incluida una **recuperación completa desde el respaldo diario en otro VPS**. CI
+  comprueba los enlaces internos.
+- **Hecho cuando:** otra persona instala, da de alta un punto y recupera el VPS **solo con la
+  documentación**.
+
+### F6 — Importación desde suricata-ids-lab (opcional)
+
+- **Contenido:** `ids-maat importar --origen <tar.gz> [--aplicar]`. Por defecto hace un ensayo y
+  entrega un informe.
+- **Se importa solo configuración y bitácora:**
+  - cada router pasa a ser un punto en `esperando_vpn`;
+  - los enviados con clave `ip` o `rN|ip` pasan a `(punto, ip)`;
+  - la clave API se cifra al importarla;
+  - usuarios, exclusiones (globales), públicas por router y la lista de nunca bloquear;
+  - la bitácora se marca como `importada`.
+- **No se importan** los eventos ni `historial.db`.
+- **Pruebas:**
+  - muestras anonimizadas (un router, varios, JSON corruptos) producen el informe esperado;
+  - importar dos veces no duplica nada;
+  - una IP sin router en una instalación de varios routers se descarta con su motivo.
+- **Hecho cuando:** un sensor real anonimizado se importa en ensayo sin ningún «no sé a qué punto
+  va» que quede sin explicar.
+
+## 2. Qué se mide en el canario
+
+El canario es un VPS de pruebas con 2 puntos que **repiten la misma LAN** (dos CHR o MikroTik con
+`10.0.0.0/24`). Las mediciones 1–6 entran en F1a; las demás, en F1a y F3.
+
+| # | Medición | Para qué |
+|---|---|---|
+| 1 | RSS de Suricata cargado con ET completo `medium`, `low` y `reducido`, más el anillo | rellenar la tabla de [INSTANCIA.md](INSTANCIA.md) §10.2 y la fórmula de admisión |
+| 2 | Pico del `suricata -T` efímero por perfil | dimensionar la reserva única |
+| 3 | Tiempo sin captura al reiniciar cada perfil | confirmar los 30–90 s del reinicio en serie |
+| 4 | `capture.kernel_packets` con `netdev ingress drop` cargado | validar el descarte |
+| 5 | `kernel_drops` y `decoder.invalid` con `snaplen 32768` y tráfico real | validar el snaplen |
+| 6 | Si `suricata` captura sin `NET_ADMIN` | quitar la capacidad |
+| 7 | Desperdicio y Mbps reales por punto con el recorte | ancho de banda del VPS |
+| 8 | CPU del router con los dos `accept` antes del fasttrack | coste en el MikroTik |
+| 9 | El RouterOS v6 más antiguo de la flota: TLS por defecto, luego `SECLEVEL=0`, luego `legacy` | pregunta d |
+| 10 | `connect-to` por nombre DNS en ese mismo v6 | confirmar el nombre DNS por empresa |
+| 11 | v7 con `cipher=aes256-gcm` y `verify-server-certificate=yes` | perfil v7 recomendado |
+| 12 | Sintaxis del blackhole en v7 y, con el túnel caído, ningún TZSP por la WAN | ruta de seguridad |
+| 13 | `fail2ban-regex` de `ids-vpn` sobre fallos reales | jaula OpenVPN |
+| 14 | El encierro systemd del orquestador no rompe docker, nft ni `systemd-run` | `ReadWritePaths` |
+| 15 | Actualización de `vX` a `vX+1` y una reversión forzada (fallo de salud simulado en el punto 2) | flujo de actualización |
+
+## 3. Riesgos
+
+| # | Riesgo | Impacto | Mitigación |
+|---|---|---|---|
+| 1 | RAM: un ruleset por instancia | pocos puntos por VPS, OOM | perfiles, admisión con margen del 20 %, capacidad visible, medir en F1a |
+| 2 | El `-T` efímero coincide con otra carga | OOM | una sola reserva y cola en serie |
+| 3 | Autodetección dentro del contenedor ve el host | memcaps de 2 GB y 8 hilos por instancia | yaml completo con valores fijos |
+| 4 | Anillo af-packet fuera del cgroup | RAM sin contabilizar | `ring-size` y `snaplen` explícitos; se suma en la admisión |
+| 5 | Netns huérfano tras reiniciar el `vpn` | punto ciego y «sano» | comparación de inodos, `docker events`, espera a `ids-mon`; plan B «pause» |
+| 6 | Healthcheck ligado al espejo | reinicios en bucle de puntos pausados o sin tráfico | healthcheck solo de procesos con latido; la falta de espejo es salud funcional |
+| 7 | 30–90 s ciego por punto en cada cambio de reglas | huecos de detección | una vez al día de madrugada; threshold agrupado cada 15 min |
+| 8 | `flush ruleset` o `iptables-persistent` | se caen los puertos de Docker | tablas propias con `delete table`; ninguno de los dos se instala |
+| 9 | Red de túnel choca con el CGNAT | túnel roto o espejo mal enrutado | base configurable, validación al alta, diagnóstico periódico que deshabilita el mangle |
+| 10 | Espejo en claro por la WAN si cae el túnel | fuga de tráfico de abonados | blackhole /24 de distancia 250 |
+| 11 | Espejo por túnel TCP | latencia, colas, ancho de banda | recorte obligatorio, `TZSP_BYTES`, vigilar el desperdicio |
+| 12 | TZSP fragmentado en `tun0` | pérdidas silenciosas | `ipfrag_*` por netns |
+| 13 | Fasttrack del router | el mangle no ve la conexión o la CPU sube | dos `accept` con `connection-bytes` antes del fasttrack; medir |
+| 14 | OpenSSL 3 con RouterOS v6 antiguos | el v6 no conecta | `SECLEVEL=0` y después `legacy`, solo en ese punto |
+| 15 | Puertos OpenVPN abiertos a internet | fuerza bruta, CPU por scrypt | `meter` en el host, freno antes de scrypt, jaula `ids-vpn`, origen fijo opcional |
+| 16 | `/ip service … address=` pisa a otros sistemas | facturación sin API | usuario API exclusivo y regla de entrada propia; el panel nunca toca la lista |
+| 17 | API sin certificado (ADH) o en claro | suplantación del router | API-SSL con certificado y huella fijada; 8728 solo como excepción con aviso |
+| 18 | `tzsp-decap` en Python | techo de pps | `SO_RCVBUFFORCE`, comparar rx con tx; receptor en C/Go si hace falta |
+| 19 | Disco lleno | capturas vacías sin error | logrotate cada 15–60 min con `maxage 3`, `df` con aviso directo |
+| 20 | Actualización a medias o GHCR caído | instancias mezcladas | digests en `orq.db`, pull antes, serie y reversión |
+| 21 | Migración del panel sin vuelta atrás | datos perdidos al revertir | respaldo previo; revertir el panel exige restaurar y se avisa |
+| 22 | Montar el enlace `current` | las reglas nuevas nunca se ven | montar el padre, enlace relativo |
+| 23 | Dataset con `load` de un fichero inexistente | caen todas las reglas | el actualizador crea el fichero vacío |
+| 24 | `privileged` o `userns-remap` «para que funcione» | sin aislamiento, o tun y nft rotos | capacidades documentadas; prohibido en las plantillas |
+| 25 | fail2ban con el `journalmatch` por defecto | no banea nada | `_SYSTEMD_UNIT=ssh.service` y `fail2ban-regex` al instalar |
+| 26 | Datos de puntos mezclados | cuarentena al abonado equivocado | `CpeRef`, `AlcanceRequerido`, `EVE-MEZCLA`, `ROUTER-NO-COINCIDE`, pruebas F2 |
+| 27 | Feed envenenado | cuarentenas masivas | tope de cuarentenas automáticas por hora y punto, y aviso |
+| 28 | Panel caído sin avisos | ceguera sin que nadie se entere | avisos directos del orquestador |
+| 29 | VPS perdido | reconfigurar todos los MikroTik | respaldo diario con copia fuera, `connect-to` por nombre DNS, recuperación probada en F5 |
