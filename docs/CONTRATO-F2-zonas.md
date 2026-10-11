@@ -1,0 +1,764 @@
+# Zonas de `dashboard.py` por símbolo (F2)
+
+Generado del `dashboard.py` heredado en `af5fe35` (sin cambios hasta `e01b255`). Cada función, método de
+`class H` o constante de nivel de módulo tiene **un solo dueño**: N (núcleo) o P (pantallas). Lo nuevo que
+añada cada uno es suyo. Símbolos compartidos que **integra el coordinador**: `class H` como clase (cada
+método tiene su dueño), `CTX`, `_NAV_LINKS` (P), `nav` (P) y la lista de imports del principio (N).
+Para usar o cambiar algo de la otra zona: pedirlo en el informe con la firma exacta.
+
+Formato: `línea símbolo`.
+
+## N — núcleo (674 símbolos)
+
+```
+   15 TZ_EC
+   17 hora_ec
+   35 SESSIONS
+   36 SESSION_TTL
+   37 SESSIONS_FILE
+   39 _cargar_sesiones
+   49 _guardar_sesiones
+   62 SESSIONS
+   65 LOGIN_FAILS
+   66 LOGIN_MAX
+   67 LOGIN_WINDOW
+   69 login_bloqueado
+   80 login_fallo
+   91 LOGIN_LOG
+   93 login_registrar
+  109 login_recientes
+  123 ips_bloqueadas
+  132 EVE
+  134 EXCL_FILE
+  136 cargar_exclusiones
+  176 THRESHOLD_FILE
+  177 THRESHOLD_MARCA
+  179 threshold_desde_exclusiones
+  207 _threshold_fusionar
+  220 escribir_threshold
+  276 guardar_exclusiones
+  289 _excluido
+  300 _RE
+  309 rid_por_iface
+  320 SEV
+  329 sev
+  336 _SEVRANK
+  338 _ipnum
+  350 _TRAD
+  390 _TRAD_CACHE
+  391 _TRAD_CACHE_MAX
+  393 traducir
+  405 _traducir_lento
+  416 tail_grupos
+  454 live_feed_html
+  535 top_origenes
+  580 _top_cards_tail
+  606 top_page
+  649 LOGDIR
+  650 GEN
+  651 CONF
+  652 REFRESH_SECS
+  653 FORCE_REGEN
+  654 REGEN_MIN_SECS
+  656 pedir_regen
+  664 _CONF_CACHE
+  665 _REDES_CACHE
+  667 _SELLO_VISTO
+  668 _SELLO_CADA
+  670 _sello
+  696 conf
+  721 CFG
+  723 PROXIES_OK
+  730 MK_CONF
+  731 MK_SENT
+  732 MK_SENT_DNS
+  733 MK_SENT_GRAD
+  734 MK_LOG
+  739 GRAD_REGLAS
+  752 GRUPOS_SALIDA
+  780 GRUPOS_CONDUCTA
+  794 _RE_ROS_RARO
+  796 ros_lista
+  810 reglas_conducta_texto
+  861 GRUPOS_CONTROL
+  870 analisis_control
+  891 reglas_p2p_texto
+  920 analisis_conducta
+  946 _CPES_CACHE
+  948 _cpes_de_reporte
+  980 analisis_salida
+ 1012 regla_salida
+ 1023 reglas_salida_texto
+ 1033 grad_reglas_texto
+ 1042 cargar_mk
+ 1051 cargar_mk_de
+ 1082 ROUTERS_CONF
+ 1083 IFACE_BASE
+ 1084 CAMPOS_ROUTER
+ 1088 _router_vacio
+ 1097 _mk_globales
+ 1110 cargar_routers
+ 1137 guardar_routers
+ 1155 ROUTERS_MAP
+ 1157 publicar_routers_map
+ 1172 router_por_id
+ 1178 router_por_iface
+ 1186 router_defecto
+ 1195 guardar_mk
+ 1216 mk_configurado
+ 1220 mk_listo
+ 1226 _mk_len
+ 1233 _mk_word
+ 1237 _mk_send
+ 1242 _mk_rlen
+ 1254 _mk_read
+ 1268 _mk_reply
+ 1286 _MK_TLS_OK
+ 1288 _mk_tls_wrap
+ 1326 mk_conectar
+ 1371 mk_probar
+ 1389 mk_add
+ 1410 mk_remove
+ 1440 ACCIONES
+ 1451 ACCIONES_POR_CAT
+ 1465 ACCION_DEFECTO
+ 1467 DNS_PROTEGIDO_DEFECTO
+ 1469 T_FILTER
+ 1470 _TABLA_RSC
+ 1472 _RSC_TABLA
+ 1473 REGLAS_DIR
+ 1475 _PROPS_TABLA
+ 1484 RESPALDOS_MK
+ 1487 accion_de_clase
+ 1494 reglas_de_accion
+ 1561 _RE_KV
+ 1562 _RE_FIND_COMMENT
+ 1563 _RE_FIND_CHAIN
+ 1566 reglas_desde_rsc
+ 1629 _CADENAS_BASE
+ 1632 _ACCIONES_TABLA
+ 1645 _TERMINALES
+ 1648 _NO_CRITERIO
+ 1651 _PROTO_CON_PUERTO
+ 1652 _LISTAS_IF_SISTEMA
+ 1655 verificar_reglas
+ 1746 _mk_contar
+ 1752 verificar_en_router
+ 1779 lineas_verificacion
+ 1784 cargar_reglas_propias
+ 1791 guardar_reglas_propias
+ 1807 _com_regla
+ 1811 _prefijo_regla
+ 1815 _rsc_val
+ 1820 rsc_de
+ 1833 _reglas_nuestras
+ 1847 _params_accion
+ 1854 _plan
+ 1879 _plan_en
+ 1931 plan_reglas
+ 1943 estado_reglas
+ 1972 _mk_print_todo
+ 1987 respaldar_firewall
+ 2012 aplicar_reglas
+ 2029 _aplicar_en
+ 2104 quitar_reglas
+ 2114 _ENV_LOCK
+ 2116 cargar_enviados
+ 2122 quitar_enviados
+ 2137 guardar_enviados
+ 2162 BITACORA_LOG
+ 2164 bitacora
+ 2177 ACCIONES_FILE
+ 2178 ACCIONES_DIAS
+ 2179 _ACC_LOCK
+ 2181 cargar_acciones
+ 2188 contar_accion
+ 2209 mk_log
+ 2218 _ttl_efectivo
+ 2223 reconciliar_cuarentena
+ 2258 mk_lista_en_uso
+ 2279 _a_cidr
+ 2306 _ifaces_de_ruta
+ 2345 _redes_de
+ 2360 mk_publicas_detectadas
+ 2518 publicas_ya_no_detectadas
+ 2551 _REP_AVISOS
+ 2552 _REP_AVISOS_TTL
+ 2554 rep_aviso_guardar
+ 2566 rep_aviso_tomar
+ 2573 rep_aviso_url
+ 2576 cuar_aviso_url
+ 2583 ENTRANTES_FILE
+ 2584 BL_LISTA
+ 2585 BL_MIN_ALERTAS
+ 2586 BL_MIN_DESTINOS
+ 2587 BL_TOPE
+ 2589 _REP_CACHE
+ 2590 _REP_MAX
+ 2592 rep_fuente
+ 2616 _REP_CAT_CACHE
+ 2618 rep_categoria
+ 2644 DESTINOS_FILE
+ 2645 MK_SENT_DST
+ 2649 DST_CONFIABLES
+ 2651 cargar_destinos_malos
+ 2657 destino_bloqueable
+ 2670 destinos_malos
+ 2700 DST_FEED_OK
+ 2701 DST_FEED_TOPE
+ 2703 destinos_feed
+ 2752 destinos_rsc
+ 2766 destinos_reglas
+ 2780 cargar_entrantes
+ 2786 blocklist_borde
+ 2812 blocklist_rsc
+ 2830 ip_del_sensor
+ 2866 blocklist_reglas
+ 2889 _mk_print
+ 2908 DIAG_FILE
+ 2910 guardar_diagnostico
+ 2935 diagnostico_de
+ 2942 mk_diagnostico
+ 3069 mk_list_ips
+ 3088 ABONADOS_FILE
+ 3090 _mk_re_dicts
+ 3103 mk_abonados
+ 3129 refrescar_abonados
+ 3159 ABON_HIST_FILE
+ 3160 _ABON_HIST_MAX
+ 3162 _registrar_hist_abonados
+ 3200 historial_abonado
+ 3215 cargar_abonados
+ 3221 abonado_de
+ 3244 _mk_ips_listas_en
+ 3257 _mk_ips_listas
+ 3265 _rid_entrada
+ 3268 mk_sync_enviados
+ 3348 recargar_listas
+ 3427 NUNCA_FILE
+ 3429 cargar_nunca
+ 3435 guardar_nunca
+ 3456 _chip_nodo_panel
+ 3465 _suf_nodo
+ 3472 clave_cpe
+ 3477 ip_de
+ 3481 rid_de
+ 3485 router_de_clave
+ 3490 mis_redes
+ 3515 es_mi_cpe
+ 3524 _NUNCA_CACHE
+ 3526 _nunca_listas
+ 3549 nunca_bloquear
+ 3562 DEST_OK_FILE
+ 3564 cargar_dest_ok
+ 3570 _DEST_OK_CACHE
+ 3572 _dest_ok_set
+ 3585 guardar_dest_ok_set
+ 3597 RESOLUTORES_FILE
+ 3598 RESOLUTORES_DEFECTO
+ 3602 cargar_resolutores
+ 3611 _RESOL_CACHE
+ 3613 _resolutores_redes
+ 3632 guardar_resolutores
+ 3655 es_via_resolutor
+ 3669 excluir_destino
+ 3714 CAT_CPE
+ 3732 CAT_OTROS
+ 3734 lista_de_categoria
+ 3742 nombre_categoria
+ 3748 categoria_de_cats
+ 3760 categoria_cpe
+ 3767 listas_en_uso
+ 3784 cpes_por_lista
+ 3804 listas_cpe_reglas
+ 3861 _motivo_bloqueo
+ 3891 evaluar_bloqueos
+ 3911 SENSOR_FILE
+ 3912 REPORT_CONF
+ 3914 _hostname
+ 3920 enviar_telegram
+ 3942 NOTIF_CUAR_FILE
+ 3944 notificar_cuarentena
+ 3981 _suricatasc
+ 3988 _svc_activo
+ 3995 SALUD_DROPS
+ 3996 SALUD_EVE_MUDO
+ 3997 SALUD_DISCO
+ 3998 SALUD_COBERTURA
+ 4000 suricata_stats
+ 4024 salud_memcaps
+ 4045 TZSP_ESTADO
+ 4046 COBERTURA_MUDO
+ 4047 COBERTURA_RECHAZO
+ 4049 cobertura_tzsp
+ 4084 DESPERDICIO_AVISO
+ 4086 desperdicio_espejo
+ 4108 medir_sensor
+ 4269 estado_sensor
+ 4275 POL_NOTIF
+ 4276 POL_ACCIONES
+ 4279 POL_CLASE
+ 4284 POL_CLASE_VALORES
+ 4285 _BANDA_NIVEL
+ 4286 _POL_UMBRAL
+ 4288 _politica_heredada
+ 4303 politica_de_clase
+ 4311 accion_para
+ 4318 aplicar_politicas
+ 4424 _FAST_LAST
+ 4425 _FAST_CNC
+ 4431 _FAST_REP_C2
+ 4432 _FAST_REP_CONTEXTO
+ 4433 _FAST_REP_OTRAS
+ 4443 barrido_alto_rapido
+ 4548 LOG_RETENCION_DIAS
+ 4550 _ev_ts
+ 4556 _cola_lineas
+ 4564 accesos_recientes
+ 4574 podar_logs
+ 4601 REPORTES_RETENCION_DIAS
+ 4603 podar_reportes
+ 4621 USERS_FILE
+ 4622 CTX
+ 4623 ROLES
+ 4625 _hash_pw
+ 4631 _blank_conf_pass
+ 4648 VENTANAS
+ 4651 ventana_generada
+ 4664 etiqueta_ventana
+ 4670 ventana_actual
+ 4676 set_ventana
+ 4697 conf_dash_get
+ 4706 conf_dash_set
+ 4728 FEEDS_CONF
+ 4729 FEEDS_META
+ 4731 _feeds_conf_get
+ 4743 _feeds_conf_set
+ 4762 feeds_auth_configurada
+ 4766 feeds_auth_set
+ 4769 feeds_auth_probar
+ 4791 cargar_feeds_meta
+ 4797 actualizar_feeds_async
+ 4817 AIDB_CACHE
+ 4818 AIDB_ESTADO
+ 4819 AIDB_TTL_LIMPIA
+ 4820 AIDB_TTL_SUCIA
+ 4821 AIDB_CUOTA
+ 4822 AIDB_CUOTA_BLOQUE
+ 4823 AIDB_PREFIJO_MIN
+ 4824 AIDB_RESERVA_MANUAL
+ 4825 AIDB_MAX_LOTE
+ 4826 AIDB_MAX_CACHE
+ 4827 _AIDB_LOCK
+ 4831 AIDB_CATS
+ 4840 AIDB_REMEDIO
+ 4855 aidb_key
+ 4858 aidb_configurada
+ 4861 aidb_set
+ 4864 _aidb_estado
+ 4876 _aidb_guardar_estado
+ 4885 aidb_restantes
+ 4889 aidb_restantes_bloque
+ 4893 _AIDB_MEM
+ 4895 _aidb_sello
+ 4903 _aidb_cache
+ 4928 _aidb_guardar_cache
+ 4941 aidb_ip_valida
+ 4952 aidb_red_valida
+ 4968 _aidb_pedir_red
+ 5003 _aidb_resumen_red
+ 5018 aidb_consultar_red
+ 5051 aidb_lote
+ 5072 _aidb_pedir
+ 5105 _aidb_resumen
+ 5130 aidb_consultar
+ 5180 precargar_abuseipdb
+ 5233 AIDB_DENUNCIAS
+ 5234 AIDB_REDENUNCIA
+ 5235 PANEL_FLAGS
+ 5240 AIDB_FIRMA_CAT
+ 5259 aidb_reportar_activo
+ 5262 aidb_set_reportar
+ 5267 publicar_flags
+ 5278 aidb_cats_de_firma
+ 5296 aidb_comentario
+ 5312 _aidb_denuncias
+ 5318 _aidb_guardar_denuncias
+ 5328 aidb_denunciar
+ 5395 PUBLICAS_CONF
+ 5396 PUB_HIST
+ 5397 PUB_HIST_DIAS
+ 5398 PUB_UMBRAL_AVISO
+ 5399 _PUB_LOCK
+ 5401 cargar_publicas
+ 5412 origen_publicas
+ 5427 guardar_publicas
+ 5439 es_publica_declarada
+ 5461 publicas_texto
+ 5464 cubrir_publicas
+ 5499 guardar_publicas_de
+ 5539 _pub_hist
+ 5545 _guardar_pub_hist
+ 5554 _peor_de
+ 5563 _cats_de
+ 5569 vigilar_publicas
+ 5619 AIDB_SENAL
+ 5641 AIDB_CIEGAS
+ 5643 senal_de_categorias
+ 5652 _cats_int
+ 5661 por_que_sin_culpables
+ 5689 _cpes_del_nodo
+ 5708 DNSBL_SENAL
+ 5720 _DNSBL_SIN_CULPABLE
+ 5722 senal_de_listas
+ 5748 culpables_de
+ 5752 culpables_por_senal
+ 5791 DNSBL
+ 5799 DNSBL_HIST
+ 5800 DNSBL_MAX_IPS
+ 5801 DNSBL_HILOS
+ 5802 DNSBL_DIAS
+ 5804 ZEN_COD
+ 5815 _PBL
+ 5817 _invertida
+ 5820 dnsbl_una
+ 5837 dnsbl_revisar
+ 5889 _dnsbl_hist
+ 5895 DNSBL_EVENTOS_MAX
+ 5897 dnsbl_cambios
+ 5952 _dura
+ 5962 dnsbl_historial_html
+ 5988 culpables_lista_html
+ 6034 RANGO_TOPE
+ 6039 _RANGO_JS
+ 6056 rango_detalle_html
+ 6104 vigilar_dnsbl
+ 6175 DNSBL_SALIDA
+ 6192 DNSBL_DIAS_LIMPIO
+ 6194 dias_sin_abuso
+ 6212 dnsbl_tendencia
+ 6231 dnsbl_listas_afectadas
+ 6248 dnsbl_salida
+ 6281 dnsbl_expediente
+ 6317 _SAL_COLOR
+ 6320 _SAL_POL
+ 6325 PUERTOS_NOMBRE
+ 6344 que_es_puerto
+ 6350 perfil_abuso
+ 6375 reglas_puertos
+ 6401 IA_PLAN_SISTEMA
+ 6415 IA_DENUNCIA_SISTEMA
+ 6428 ia_senal_denuncias
+ 6514 ia_plan_bloqueo
+ 6603 plan_bloqueo_html
+ 6680 _salida_html
+ 6738 GROQ_URL
+ 6740 groq_key
+ 6743 groq_configurada
+ 6746 groq_set
+ 6749 groq_modelo
+ 6754 groq_set_modelo
+ 6757 groq_modelos
+ 6777 groq_probar
+ 6807 IA_CACHE
+ 6808 IA_ESTADO
+ 6809 IA_CUOTA
+ 6810 IA_TIMEOUT
+ 6811 IA_CACHE_MAX
+ 6812 _IA_LOCK
+ 6813 _RE_IP
+ 6815 ia_activa
+ 6819 _ia_estado
+ 6829 _ia_guardar_estado
+ 6838 ia_restantes
+ 6841 _ia_apuntar
+ 6854 ia_estado_txt
+ 6874 ia_datos
+ 6916 _ia_huella
+ 6921 _ia_cache
+ 6928 _ia_guardar_cache
+ 6939 IA_SISTEMA
+ 6950 ia_preguntar
+ 7026 aidb_probar
+ 7050 aidb_cats_txt
+ 7061 guardar_usuarios
+ 7068 cargar_usuarios
+ 7089 buscar_usuario
+ 7096 EMPRESA_FILE
+ 7098 cargar_empresa
+ 7107 panel_actualizado
+ 7118 panel_actualizado_txt
+ 7138 firma_panel
+ 7150 COMMIT_FILE
+ 7151 UPDCHK_FILE
+ 7152 _UPD_REPO
+ 7153 PANEL_VERSION
+ 7155 _sha_local
+ 7161 chequear_update
+ 7230 UPDLAST_FILE
+ 7232 registrar_update_inicio
+ 7241 update_last
+ 7247 update_info
+ 7254 update_estado
+ 7262 _UPD_KICK_TS
+ 7263 _UPD_KICK_LOCK
+ 7265 _kick_update_check
+ 7283 TRUST_FILE
+ 7285 cargar_confianza
+ 7295 guardar_confianza
+ 7302 ip_en_lista
+ 7316 ip_confiable
+ 7321 guardar_empresa
+ 7328 verificar_login
+ 7341 newest_report
+ 7345 _DETALLE_RE
+ 7346 _TOP_RE
+ 7348 partes_reporte
+ 7367 partes_top
+ 7384 _MAPA_DIR
+ 7385 _GEOIP_BIN2
+ 7386 _REPO_RAW2
+ 7387 _MAPA_ASSETS
+ 7391 _GEO_CSV_URL
+ 7393 _provisionar_geo
+ 7449 refrescador
+ 7850 _ROL_TXT
+ 7852 _mu_ic
+ 7854 _MU_CUENTA
+ 7855 _MU_CLAVE
+ 7856 _MU_SALIR
+ 7858 _MU_JS
+ 7874 _menu_usuario
+ 7920 foto_de
+ 7935 _ASK
+ 7939 NAV
+ 7942 _PAGEH_CSS
+ 7958 wrap
+ 7968 save_conf
+ 7981 _rol_badge
+ 7990 _AV_COLORS
+ 7993 _iniciales
+ 8000 _avatar
+ 8007 _IC_EDIT
+ 8010 _IC_DEL
+ 8013 _ic
+ 8015 _IC_USER
+ 8016 _IC_BLD
+ 8017 _IC_USERS
+ 8018 _IC_SHIELD
+ 8019 _IC_RTR
+ 8020 _IC_DL
+ 8021 _IC_LOG
+ 8022 _IC_BOOK
+ 8023 _IC_AUDIT
+ 8024 _IC_DNS
+ 8025 _IC_VPN
+ 8026 _IC_FEED
+ 8034 OVPN_SH
+ 8035 OVPN_ETC
+ 8036 OVPN_SRV
+ 8037 OVPN_CCD
+ 8038 OVPN_LOG
+ 8039 OVPN_BACKUPS
+ 8040 OVPN_UNIDAD
+ 8041 OVPN_CERROJO
+ 8042 _RE_OVPN_USER
+ 8043 _RE_ANSI
+ 8045 _ovpn_conf
+ 8057 _ovpn_conectados
+ 8076 ovpn_instalando
+ 8087 ovpn_estado
+ 8135 _ovpn_gw
+ 8144 ovpn_redes_validas
+ 8197 ovpn_respaldo
+ 8209 OVPN_MARCA_CLI
+ 8211 ovpn_script_al_dia
+ 8217 ovpn_asegurar_script
+ 8252 ovpn_correr
+ 8258 ovpn_accion
+ 8291 ovpn_instalar
+ 8327 ovpn_log
+ 8347 MK_INIT_BIN
+ 8351 MK_INIT_MARCA
+ 8352 CRED_DIR
+ 8353 SURI_YAML
+ 8354 IDS_FW_BIN
+ 8355 EVEBOX_YAML
+ 8356 INSTALADOR_LOCAL
+ 8357 ESPEJO_LOG
+ 8360 ESPEJO_UNIDAD
+ 8361 ESPEJO_CERROJO
+ 8362 TZSP_PORT_DEF
+ 8367 ESPEJO_RESPALDAR
+ 8373 _UnaVez
+ 8425 _RE_CLAVE_LOG
+ 8429 enmascarar_claves
+ 8432 mkinit_asegurar
+ 8471 mkinit_correr
+ 8504 _systemctl_env
+ 8518 _lista_csv
+ 8521 sensor_modo
+ 8567 _slot_iface
+ 8574 espejo_vpn_origenes
+ 8607 espejo_vpn_reasignar
+ 8636 espejo_vpn_nodos_txt
+ 8651 espejo_vpn_nodos_aplicar
+ 8666 espejo_vpn_red_operador
+ 8683 espejo_vpn_a_defecto
+ 8698 espejo_vpn_n_defecto
+ 8707 _redes_validas
+ 8726 espejo_vpn_args
+ 8760 espejo_vpn_comando
+ 8764 _url_vpn
+ 8767 espejo_vpn_plan
+ 8810 espejo_vpn_corriendo
+ 8822 espejo_vpn_respaldo
+ 8840 espejo_vpn_bajar_instalador
+ 8857 espejo_vpn_lanzar
+ 8915 espejo_vpn_avance
+ 8928 _router_libre
+ 8939 _iface_en_uso
+ 8949 _iface_vpn
+ 8959 router_de_ip
+ 8967 _vpn_alta_soltar_iface
+ 9007 vpn_mk_alta
+ 9061 vpn_mk_espejo
+ 9100 _vpn_celda_espejo
+ 9119 _vpn_bloque_sensor
+ 9171 _mb
+ 9175 _card_vpn
+ 9246 _VPN_UI
+ 9399 _card_listas
+12826 cargar_metricas
+12834 _serie
+12845 tendencia_txt
+12878 _media
+12882 _DIAS_SEM
+12884 _grafico
+12946 CONDUCTA_FILE
+12947 CONDUCTA_DIAS
+12948 CONDUCTA_TOPE
+12949 CONDUCTA_MAX
+12950 CONDUCTA_CADA
+12951 FORCE_CONDUCTA
+12953 _cd_abrir
+12961 _CD_TS
+12963 _cd_ts
+12982 _cd_top
+12985 _cd_podar
+13004 HIST_DB
+13005 HIST_DIAS
+13006 HIST_TOP
+13007 HIST_CADA
+13009 _hist_con
+13038 hist_marca
+13048 _hist_huella
+13062 _hist_offsets
+13084 hist_ingerir
+13219 hist_podar
+13238 hist_conducta
+13277 conducta_recolectar
+13362 guardar_conducta
+13368 cargar_conducta
+13374 conducta_csv
+13396 CONDUCTA_GUIA
+15540 H._sid
+15549 H._peer_ip
+15554 H._proxy_confiable
+15556 H._cookie_secure
+15566 H._client_ip
+15575 H._sesion
+15577 H._sesion_ok
+15580 H._rol
+15582 H._admin
+15585 H._operador
+15588 H._set_ctx
+15595 H._auth_ok
+15602 H._redirect
+15609 H._json
+15617 H._deny
+15620 H._html
+15627 H.send_response
+15633 H._seguro
+15677 H.do_GET
+15680 H.do_POST
+15683 H._post_mismo_origen
+17554 H.log_message
+17557 main
+```
+
+## P — pantallas (71 símbolos)
+
+```
+ 7580 _NAV_LINKS
+15697 H._get
+ 7585 _NAV_CSS
+ 7697 _SORT_JS
+ 7729 _POS_JS
+ 7751 BASE_CSS
+ 7776 nav
+ 9575 _card_politicas
+ 9602 _form_nodo
+ 9645 _card_nodos
+ 9676 perfil_page
+10418 exclusiones_page
+10610 LOGO_IMG
+10611 LOGO_BYTES
+10612 FAVICON_BYTES
+10614 login_page
+10658 RULES_FILE
+10659 UPDATE
+10661 ultima_actualizacion_reglas
+10668 _run_rules_update
+10678 update_box
+10712 documentacion_page
+12144 log_page
+12216 rid_de_publica
+12235 _nombres_de_comportamiento
+12240 culpables_ficha_html
+12307 ficha_ip_html
+12367 reputacion_page
+12749 bitacora_page
+12824 METRICAS_FILE
+13421 conducta_categoria
+13433 _CD_CSS
+13672 _CD_AZUL
+13673 _CD_AZUL_OSC
+13677 PUERTO_NOMBRE
+13696 nombre_puerto
+13700 _cd_agrupa
+13712 _cd_minibarras
+13727 conducta_barras
+13749 _CD_JS
+13776 GLOSARIO
+13817 glosario_html
+13831 CPE_INDICIOS
+13851 CONFIANZA
+13854 indicios_cpe
+13876 confianza_cpe
+13886 indicios_html
+13902 _cd_doc
+13915 CONDUCTA_POR_PAGINA
+13916 CONDUCTA_OPCIONES
+13918 _cd_por
+13927 conducta_paginador
+13960 RUIDO_ALTO
+13961 RUIDO_MEDIO
+13962 RUIDO_MIN_CPES
+13964 firmas_ruidosas
+13991 ruidosas_html
+14012 conducta_page
+14160 historico_page
+14512 _salud_html
+14559 agrupar_pruebas
+14591 ficha_page
+14805 _cfb
+14819 cuarentena_page
+15453 _host_puerto
+15461 _forwarded_host
+15471 origen_ajeno
+15987 H._post
+17196 H._post_perfil
+17408 H._post_exclusiones
+17548 H.do_HEAD
+```

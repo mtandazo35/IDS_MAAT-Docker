@@ -96,24 +96,48 @@ En los dos bloques, el certificado de la API-SSL es el de §1.1.
 
 ## 2. Espejo
 
-Lo aplica el panel desde la ficha del punto, siempre después de la vista previa y del respaldo. Es
-equivalente a:
+Lo aplica el panel desde la ficha del punto, siempre después de la vista previa y del respaldo
+(`/export` en el router y copia JSON en el panel). Requisito que manda sobre todo lo demás:
+
+> **Instalar, actualizar, pausar o retirar el espejo no autoriza tráfico que la política original del
+> router rechazaba.** Por eso el espejo **nunca añade reglas `accept`**: en RouterOS un `accept` termina
+> la cadena y los paquetes se saltarían los `drop` que vienen detrás (incluidos los de cuarentena).
+
+Es equivalente a:
 
 ```
 /ip firewall address-list add list=ids-vigilados address=10.0.0.0/24 comment="IDS ids-maat:p003"
-/ip firewall mangle add chain=forward src-address-list=ids-vigilados connection-bytes=0-10000 \
-    action=sniff-tzsp sniff-target=100.64.3.1 sniff-target-port=37008 comment="IDS ids-maat:p003"
-/ip firewall mangle add chain=forward dst-address-list=ids-vigilados connection-bytes=0-10000 \
-    action=sniff-tzsp sniff-target=100.64.3.1 sniff-target-port=37008 comment="IDS ids-maat:p003"
-# solo si hay regla de fasttrack: los primeros 10 KB no se aceleran (el panel resuelve el .id)
-/ip firewall filter add chain=forward action=accept connection-bytes=0-10000 \
-    src-address-list=ids-vigilados place-before=<id-fasttrack> comment="IDS ids-maat:p003"
-/ip firewall filter add chain=forward action=accept connection-bytes=0-10000 \
-    dst-address-list=ids-vigilados place-before=<id-fasttrack> comment="IDS ids-maat:p003"
+/ip firewall mangle add chain=forward src-address-list=ids-vigilados connection-bytes=0-10000     action=sniff-tzsp sniff-target=100.64.3.1 sniff-target-port=37008 comment="IDS ids-maat:p003"
+/ip firewall mangle add chain=forward dst-address-list=ids-vigilados connection-bytes=0-10000     action=sniff-tzsp sniff-target=100.64.3.1 sniff-target-port=37008 comment="IDS ids-maat:p003"
 ```
 
-- No hay regla de DNS aparte.
-- La pausa deshabilita los dos mangle con `disabled=yes`, filtrando por el comentario.
+**FastTrack.** Los paquetes acelerados no pasan por mangle, así que sin tocar el fasttrack el espejo solo
+vería el primer paquete de cada conexión. Solo se cambian **condiciones de reglas `fasttrack-connection`**,
+que deciden qué conexiones se aceleran y nunca qué tráfico pasa:
+
+```
+# 1) la regla fasttrack existente (<id-ft>) deja fuera a los vigilados (se respalda su valor original)
+/ip firewall filter set <id-ft> src-address-list=!ids-vigilados dst-address-list=!ids-vigilados
+# 2) los vigilados se aceleran a partir de los 10 KB, con las MISMAS condiciones que <id-ft>
+#    (connection-state, hw-offload, interfaces...), justo detrás de ella
+/ip firewall filter add chain=forward action=fasttrack-connection <condiciones de id-ft>     src-address-list=ids-vigilados connection-bytes=10000-0 place-before=<siguiente a id-ft>     comment="IDS ids-maat:p003"
+/ip firewall filter add chain=forward action=fasttrack-connection <condiciones de id-ft>     dst-address-list=ids-vigilados connection-bytes=10000-0 place-before=<siguiente a id-ft>     comment="IDS ids-maat:p003"
+```
+
+- Por qué no amplía nada: un paquete que no se acelera sigue recorriendo el filtro entero, así que con
+  el espejo se evalúan **las mismas reglas o más** que antes, nunca menos. El veredicto de cada paquete
+  lo siguen dando las reglas del operador.
+- Si la regla fasttrack ya usa `src-address-list` o `dst-address-list`, el panel **no la modifica**: lo
+  muestra en la vista previa y pide resolverlo a mano. Si hay varias reglas fasttrack, se tratan todas
+  igual. Sin regla fasttrack, solo van la address-list y los dos mangle.
+- No hay regla de DNS aparte. IPv6 queda fuera de esta versión: no se toca el fasttrack de `/ipv6`.
+- **Idempotente**: aplicar dos veces no duplica nada (se busca por comentario y por las condiciones).
+- **Pausa**: deshabilita los dos mangle (`disabled=yes`, por comentario). El fasttrack queda como está.
+- **Retirada**: borra lo que lleva el comentario del punto y devuelve a `<id-ft>` sus valores originales de
+  `src-address-list`/`dst-address-list` (del respaldo). Nunca borra reglas sin el comentario del punto.
+- **Prueba de aceptación** (laboratorio, con un MikroTik real de cada versión): mismo resultado antes y
+  después en tráfico permitido, bloqueado y en cuarentena; espejo en las dos direcciones; aceleración
+  pasados los 10 KB; aplicar dos veces sin duplicar; retirar sin tocar reglas ajenas.
 
 ### 2.1 Quitar todo lo del IDS de un router
 
@@ -123,6 +147,8 @@ certificado `ids-promax` no se borra.
 ```
 /ip firewall mangle remove [find comment~"ids-maat:p003"]
 /ip firewall filter remove [find comment~"ids-maat:p003"]
+# y devolver a la regla fasttrack sus valores originales (los da el respaldo del panel), p. ej.:
+/ip firewall filter set <id-ft> !src-address-list !dst-address-list
 /ip firewall address-list remove [find comment~"ids-maat:p003"]
 /ip route remove [find comment~"ids-maat:p003"]
 /interface ovpn-client remove [find name=ids-vpn]

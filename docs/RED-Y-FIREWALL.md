@@ -107,10 +107,12 @@ Reglas del espejo:
   reglas.
 - **En `forward`, no en `prerouting`.** En `prerouting`, con NAT, el destino todavía es la IP
   pública.
-- **Fasttrack.** No se saca la lista vigilada del fasttrack. Antes de la regla de fasttrack se
-  ponen dos `accept` (`src-address-list` y `dst-address-list`) con `connection-bytes=0-10000`. Los
-  primeros 10 KB de cada conexión pasan por la ruta lenta y el mangle los ve; el resto vuelve al
-  fasttrack. El coste de CPU en el router se mide en el canario.
+- **Fasttrack, sin ningún `accept`.** Un `accept` termina la cadena y saltaría los `drop` posteriores
+  (cuarentena incluida), así que el espejo no añade ninguno. Solo cambia condiciones de las reglas
+  `fasttrack-connection`: la existente deja fuera a `ids-vigilados` y se añaden dos fasttrack con sus
+  mismas condiciones para los vigilados a partir de `connection-bytes=10000-0`. Los primeros 10 KB de cada
+  conexión pasan por la ruta lenta y el mangle los ve; el resto se acelera. Nunca cambia qué tráfico pasa
+  ([OPERACION.md](OPERACION.md) §2). El coste de CPU en el router se mide en el canario.
 - **Vista previa = lo que se aplica.** El panel guarda el plan y su sha256, y vuelve a generar el
   plan al aplicar. **Antes de aplicar se respalda el firewall del router.**
 - **El receptor recorta por su cuenta** con `TZSP_BYTES=10000`, por si al router le falta el

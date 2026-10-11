@@ -237,7 +237,7 @@ El canario es un VPS de pruebas con 2 puntos que **repiten la misma LAN** (dos C
 | 5 | `kernel_drops` y `decoder.invalid` con `snaplen 32768` y tráfico real | validar el snaplen |
 | 6 | Si `suricata` captura sin `NET_ADMIN` | quitar la capacidad |
 | 7 | Desperdicio y Mbps reales por punto con el recorte | ancho de banda del VPS |
-| 8 | CPU del router con los dos `accept` antes del fasttrack | coste en el MikroTik |
+| 8 | CPU del router con los vigilados acelerados solo a partir de 10 KB | coste en el MikroTik |
 | 9 | **RouterOS 6.49** (el más antiguo de la flota y la versión mínima): TLS moderno; si falla, `SECLEVEL=0` y luego `legacy` | decisión d de ARQUITECTURA §10 |
 | 10 | `connect-to` por nombre DNS y el certificado `ids-promax` en 6.49 (tiempo del `sign`, flags K/T) | nombre DNS por empresa y alta de la API-SSL |
 | 11 | v7 con `cipher=aes256-gcm` y `verify-server-certificate=yes` | perfil v7 recomendado |
@@ -262,7 +262,7 @@ El canario es un VPS de pruebas con 2 puntos que **repiten la misma LAN** (dos C
 | 10 | Espejo en claro por la WAN si cae el túnel | fuga de tráfico de abonados | blackhole /24 de distancia 250 |
 | 11 | Espejo por túnel TCP | latencia, colas, ancho de banda | recorte obligatorio, `TZSP_BYTES`, vigilar el desperdicio |
 | 12 | TZSP fragmentado en `tun0` | pérdidas silenciosas | `ipfrag_*` por netns |
-| 13 | Fasttrack del router | el mangle no ve la conexión o la CPU sube | dos `accept` con `connection-bytes` antes del fasttrack; medir |
+| 13 | Fasttrack del router | el mangle no ve la conexión o la CPU sube | fasttrack de los vigilados a partir de `connection-bytes=10000-0`, sin `accept`; medir |
 | 14 | OpenSSL 3 con RouterOS 6.49 | el v6 no conecta | prueba en F1a; `SECLEVEL=0` y después `legacy`, solo en ese punto; nada anterior a 6.49 |
 | 15 | Puertos OpenVPN abiertos a internet | fuerza bruta, CPU por scrypt | `meter` en el host, freno antes de scrypt, jaula `ids-vpn`, origen fijo opcional |
 | 16 | `/ip service … address=` pisa a otros sistemas | facturación sin API | usuario API exclusivo y regla de entrada propia; el panel nunca toca la lista |

@@ -186,7 +186,7 @@ MikroTik en [OPERACION.md](OPERACION.md).
 | 4 | Comandos del MikroTik, en bloques v7 y v6 separados: `ovpn-client`, blackhole, certificado API-SSL `ids-promax` (se reutiliza si ya existe), usuario API y regla de entrada ([OPERACION.md](OPERACION.md) §1). La clave VPN se muestra **una sola vez**. | `esperando_vpn` | «Ver comando» los vuelve a mostrar sin la clave. «Regenerar credencial» invalida la anterior. |
 | 5 | Indicador en vivo con `estado.json`: «Conectado desde 203.0.113.45». **[B] VPN-CONECTADA** | `→ esperando_api` | Sin conexión en 30 min: diagnóstico (puerto alcanzable desde fuera, usuario rechazado en el log, handshake TLS fallido en 6.49 → «compatibilidad v6», IP baneada por fail2ban). |
 | 6 | **API-SSL:** usuario, clave y «Probar». **Primera conexión (TOFU):** el panel muestra la huella SHA-256 del certificado `ids-promax` para compararla con `/certificate print detail` y, al confirmar, la fija; desde entonces rechaza cualquier otro certificado. Se guardan `identidad`, `sw_id` y `version_ros`, con la clave cifrada. `envio_habilitado = 0`. Revisión de CGNAT ([RED-Y-FIREWALL.md](RED-Y-FIREWALL.md) §6). **[B] API-ALTA** | `→ esperando_espejo` | **Timeout:** falta la regla de entrada del router. **Conexión cortada al instante:** `/ip service api-ssl` tiene un `address=` sin `100.64.N.1`, y se muestra el comando para añadirla conservando la lista; **el panel no toca esa lista**. **Sin certificado (ADH):** se muestra el bloque de `ids-promax`. **RouterOS anterior a 6.49:** se rechaza, porque no está soportado. En cualquier error **no se guarda nada**. |
-| 7 | **Vista previa del espejo:** el generador único produce los comandos exactos (address-list, dos mangle, dos `accept` antes del fasttrack). Se guardan el plan y su sha256. | `esperando_espejo` | — |
+| 7 | **Vista previa del espejo:** el generador único produce los comandos exactos (address-list, dos mangle y el ajuste del fasttrack sin ningún `accept`). Se guardan el plan y su sha256. | `esperando_espejo` | — |
 | 8 | **Aplicar:** el POST lleva `plan_sha` y el plan **se regenera**; si el hash no coincide, se rechaza y se muestra el nuevo. Después: respaldo del firewall del router (si falla, no se toca nada), aplicación y **[B] ESPEJO-APLICADO** con los sha. | `esperando_espejo` | Si falla a mitad, se quita todo lo que lleva `ids-maat:<pid>` y se informa. El respaldo no se restaura solo. |
 | 9 | **Verificación** (hasta 120 s): llegan paquetes desde `ip_mk` y hay eventos con `host == pid`. Se calculan los Mbps y el desperdicio. **[B] ESPEJO-VERIFICADO** | `→ activo` | Contador mangle a 0: no hay tráfico. Contador mayor que 0 sin llegada: túnel o ruta. Desperdicio mayor del 50 %: falta el recorte. El punto queda `activo` con aviso. |
 
@@ -207,8 +207,8 @@ está en [DATOS.md](DATOS.md) §8. No hay botón «Purgar» ni retención poster
    - un respaldo del firewall **en el propio router** (`/export file=ids-maat-baja-<pid>`), para
      que no quede nada en el VPS;
    - se retira todo lo que lleva `ids-maat:<pid>`: las cuarentenas vivas, `ids-vigilados`, los
-     mangle del espejo, los `accept` del fasttrack, la regla de entrada de la API y la ruta
-     blackhole;
+     mangle del espejo, los dos fasttrack de los vigilados, la regla de entrada de la API y la ruta
+     blackhole; y la regla fasttrack del operador recupera sus valores originales (del respaldo);
    - se entregan los comandos para quitar el `ovpn-client` y el usuario `ids-api`, que el panel no
      borra porque los usa para hablar con el router. **El certificado `ids-promax` no se toca**:
      puede usarlo otro servicio del router.

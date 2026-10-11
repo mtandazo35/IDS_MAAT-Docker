@@ -13,6 +13,11 @@ Lo comparten dashboard.py y html_report.py: los dos leen y escriben los mismos f
 
 El nodo que se está mirando va en un contexto por hilo: el servidor lo pone en cada petición
 (`?nodo=` o la sesión) y los hilos de fondo con `contexto(pid)` al recorrer los nodos.
+
+Reglas (CONTRATO-F2 §3.1): «Todos» solo se mira si se pide expresamente (`TODOS`); un nodo mal
+formado o que no existe es un error, NUNCA se amplía a «Todos». Sin contexto puesto no hay nodo:
+`nodo_actual()` falla en vez de suponer uno. El contexto solo decide qué se MIRA; el destino de una
+acción sale de la propia operación (`pid|ip` o el pid del formulario), validado con `exigir_pid()`.
 """
 
 import contextlib
@@ -112,7 +117,40 @@ def punto(pid):
 
 
 def pid_valido(pid):
+    """Solo el FORMATO (p001..p999). Que exista lo dice `existe()`."""
     return isinstance(pid, str) and bool(RE_PID.match(pid))
+
+
+def existe(pid):
+    return pid_valido(pid) and pid in pids()
+
+
+class NodoInvalido(ValueError):
+    """Identificador de nodo mal formado: la petición se rechaza (400)."""
+
+
+class NodoInexistente(LookupError):
+    """Formato correcto pero ese punto no existe (o ya se dio de baja): 404."""
+
+
+class SinContexto(RuntimeError):
+    """Se pidió el nodo del hilo sin haberlo puesto: error de programación."""
+
+
+def exigir_pid(pid):
+    """Destino de una acción: un pid con formato válido y que existe. Nunca TODOS."""
+    if not pid_valido(pid):
+        raise NodoInvalido(pid)
+    if pid not in pids():
+        raise NodoInexistente(pid)
+    return pid
+
+
+def validar_nodo(nodo):
+    """Lo que se puede MIRAR: TODOS (pedido expresamente) o un pid existente."""
+    if nodo == TODOS:
+        return TODOS
+    return exigir_pid(nodo)
 
 
 def nombre(pid):
@@ -129,46 +167,64 @@ _CTX = threading.local()
 
 
 def nodo_actual():
-    """pid del nodo que se mira, o TODOS (la vista acumulada, también por defecto)."""
-    return getattr(_CTX, "nodo", None) or TODOS
+    """pid del nodo que se mira, o TODOS. Sin contexto puesto es un error (SinContexto)."""
+    n = getattr(_CTX, "nodo", None)
+    if n is None:
+        raise SinContexto("no hay nodo en el contexto de este hilo")
+    return n
+
+
+def hay_nodo():
+    return getattr(_CTX, "nodo", None) is not None
 
 
 def poner_nodo(nodo):
-    """Fija el nodo del hilo. Lo que no sea un pid válido es la vista acumulada."""
-    _CTX.nodo = nodo if pid_valido(nodo) else TODOS
+    """Fija el nodo del hilo tras validarlo (NodoInvalido / NodoInexistente si no vale)."""
+    _CTX.nodo = validar_nodo(nodo)
     return _CTX.nodo
+
+
+def quitar_nodo():
+    _CTX.nodo = None
 
 
 @contextlib.contextmanager
 def contexto(nodo):
+    """Pone el nodo durante el bloque y deja el anterior al salir, también con excepción."""
     previo = getattr(_CTX, "nodo", None)
-    poner_nodo(nodo)
     try:
+        poner_nodo(nodo)
         yield _CTX.nodo
     finally:
         _CTX.nodo = previo
 
 
 def es_todos(nodo=None):
-    return (nodo or nodo_actual()) == TODOS
+    return (nodo if nodo is not None else nodo_actual()) == TODOS
 
 
 def nodos_de(nodo=None):
-    """Los pids que abarca un nodo: él mismo, o todos los puntos en la vista acumulada."""
-    nodo = nodo or nodo_actual()
+    """Los pids que abarca un nodo: él mismo (si existe), o todos en la vista acumulada."""
+    nodo = validar_nodo(nodo if nodo is not None else nodo_actual())
     return pids() if nodo == TODOS else [nodo]
 
 
 # --------------------------------------------------------------------------------------------
 # Rutas por nodo
 # --------------------------------------------------------------------------------------------
+def _pid_ruta(pid):
+    if not pid_valido(pid):                        # nunca una ruta con un id sin validar
+        raise NodoInvalido(pid)
+    return pid
+
+
 def dir_eventos(pid):
     """Directorio de eventos de un punto (solo lectura)."""
-    return os.path.join(DATOS, pid)
+    return os.path.join(DATOS, _pid_ruta(pid))
 
 
 def eve_vivo(pid):
-    return os.path.join(DATOS, pid, "eve.json")
+    return os.path.join(DATOS, _pid_ruta(pid), "eve.json")
 
 
 def ficheros_eventos(nodo=None, patrones=("eve.json*", "dns.json*")):
@@ -186,7 +242,10 @@ def ficheros_eventos(nodo=None, patrones=("eve.json*", "dns.json*")):
 
 def dir_salida(nodo=None, crear=True):
     """Salidas del nodo (o de la vista acumulada): report-*.html, cuarentena.json..."""
-    d = os.path.join(NODOS, nodo or nodo_actual())
+    nodo = nodo if nodo is not None else nodo_actual()
+    if nodo != TODOS and not pid_valido(nodo):     # nunca una ruta con un id sin validar
+        raise NodoInvalido(nodo)
+    d = os.path.join(NODOS, nodo)
     if crear:
         try:
             os.makedirs(d, mode=0o700, exist_ok=True)
@@ -201,13 +260,15 @@ def salida(nombre_fichero, nodo=None):
 
 def api_sock(pid):
     """Relé del API-SSL del MikroTik de ese punto (socat en su contenedor vpn)."""
-    return os.path.join(RUN, pid, "api.sock")
+    return os.path.join(RUN, exigir_pid(pid), "api.sock")
 
 
 def tzsp_json(pid):
-    return os.path.join(RUN, pid, "tzsp.json")
+    return os.path.join(RUN, _pid_ruta(pid), "tzsp.json")
 
 
 def clave(pid, ip):
     """Identidad de un CPE: SIEMPRE `pid|ip`, aunque haya un solo punto."""
+    if not pid_valido(pid):
+        raise NodoInvalido(pid)
     return "%s|%s" % (pid, ip)

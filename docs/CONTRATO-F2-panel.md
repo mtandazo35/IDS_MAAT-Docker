@@ -88,8 +88,8 @@ está en `inv_A.md` §1 y `inv_C.md` §1; se respeta salvo motivo que se explica
 - **Espejo**: «Montar espejo» en la ficha del punto, con vista previa del plan, respaldo (`/export` en el
   router + JSON local en `RESPALDOS`) y aplicar. Lo hace `mikrotik_init.py` como módulo, por el relé, con
   sensor = `punto.sensor` y puerto `punto.tzsp_puerto`, y las reglas de [OPERACION.md](OPERACION.md) §2
-  (comentario `IDS ids-maat:<pid>`, `connection-bytes=0-10000`, accept antes del fasttrack, **sin** regla de DNS
-  aparte). Si OPERACION.md y mkinit chocan, manda OPERACION.md.
+  (comentario `IDS ids-maat:<pid>`, `connection-bytes=0-10000`, fasttrack ajustado **sin ningún `accept`**, **sin**
+  regla de DNS aparte). Si OPERACION.md y mkinit chocan, manda OPERACION.md.
 - `/destinos.rsc` y `/blocklist.rsc` (`/tool fetch` del MikroTik): el MikroTik no llega al panel por el túnel.
   Se quitan las instrucciones de `fetch` y los destinos se siguen enviando por API (ya existe).
 
@@ -160,25 +160,119 @@ Respuestas al documento «Suricata IDS Lab: definición de la evolución multiso
   (texto o SID), severidad, IP origen/destino, puerto, protocolo y tipo de evento; resultados paginados, más
   recientes primero; detalle con el JSON completo del evento; columna Nodo en «Todos». Lee los `eve.json*`/
   `dns.json*` del nodo (también los `.gz` rotados) con tope de bytes leídos y de tiempo por consulta.
-- **Retención: 30 días de eventos** (`eve.json` y `dns.json` de cada punto): rotación diaria, `rotate 30`,
-  `maxage 30`, comprimidos, nombres con fecha y hora para las rotaciones por tamaño. Si el disco baja del 15 %
-  libre, el orquestador borra primero los rotados más viejos de todos los puntos y avisa (`DISCO`). Las bases
-  derivadas del panel (historial, conducta, métricas) se podan a 30 días como mínimo y siguen sus tiempos actuales
-  si son mayores.
+- **Retención: objetivo 30 días de eventos** (`eve.json` y `dns.json` de cada punto). `rotate`/`maxage` cuentan
+  ficheros y edad, no garantizan días: la poda es **por fecha** (se borra lo que tiene más de 30 días según la
+  marca de tiempo de sus eventos), con las rotaciones por tamaño fechadas (fecha y hora) y sin tope de número que
+  corte días antes. **Protección de disco:** si `/srv/ids` baja del 15 % libre, el orquestador borra primero los
+  rotados más viejos (de cualquier punto), registra cada borrado anticipado y avisa (`DISCO`). **Retención efectiva
+  visible por nodo** (desde qué fecha hay eventos) en Puntos y en Eventos; nunca se promete 30 días si hubo
+  borrado anticipado. Las bases derivadas del panel (historial, conducta, métricas) se podan a 30 días como mínimo y
+  siguen sus tiempos actuales si son mayores.
 - **Fuera de esta versión:** IPv6 y el respaldo/restauración por sonda (basta el respaldo del VPS).
 - Todo se prueba en el VPS de laboratorio.
 
-## 10. Reparto (constructores en paralelo, cada uno solo en sus zonas)
+## 10. Correcciones de la revisión (instrucciones del coordinador, 2026-10-11)
 
-Números de línea del `dashboard.py` heredado (commit `af5fe35`). Quien necesite algo de otra zona lo pide en
-su informe en vez de tocarlo.
+### 10.1 Nodos inválidos (`nodos.py`, YA HECHO con `tests/test_nodos.py`)
+
+| Situación | Respuesta |
+|---|---|
+| `?nodo=_todos` (selección expresa de Todos) | vista consolidada |
+| Sin `?nodo=` | el de la sesión; si no hay, la vista consolidada (valor por defecto de la interfaz, documentado) |
+| Identificador mal formado | `NodoInvalido` → **400**, sin ampliar el alcance |
+| Formato correcto pero no existe | `NodoInexistente` → **404** «punto inexistente» |
+| Sin contexto en un hilo | `SinContexto` (error de programación; nunca se supone un nodo) |
+| Acción | destino = el de la propia operación (`pid|ip` o pid del formulario) validado con `exigir_pid()`; **nunca** el selector, la sesión ni `TODOS`. Sin destino inequívoco no se ejecuta |
+
+El contexto se restablece también con excepción. Dos pestañas en nodos distintos: cada petición lleva su nodo y
+cada acción su destino; cambiar el selector en una no cambia lo que hace la otra.
+
+### 10.2 Permisos en el servidor (cada operación)
+
+Roles del dashboard (se conservan): **admin**, **operador**, **lectura**. Se comprueban en el servidor en cada
+ruta (GET y POST), con `_admin()`/`_operador()` (sin el antiguo `None` = sin autenticación). Ocultar un botón no
+cuenta como control. Cambiar el nodo en URL/formulario no da más permisos: todos los usuarios de la empresa ven
+todos sus puntos (decisión del usuario), pero cada operación exige su rol.
+
+| Operación | lectura | operador | admin |
+|---|---|---|---|
+| Ver En vivo, Top, Detalle, Cuarentena, Consultar IP, Histórico, Reporte, **Eventos** (lista y detalle), descargar CSV/reportes, cambiar de nodo | sí | sí | sí |
+| Cambiar su propia clave | sí | sí | sí |
+| Cuarentena: enviar, quitar, graduada, masivas; excluir/quitar destino de confianza; DNS sospechoso; consultar/denunciar reputación | no | sí | sí |
+| Exclusiones de detección, MikroTik (conexión, listas, reglas, políticas), públicas, feeds y claves, DNS, IA, empresa | no | no | sí |
+| **Puntos**: ver la gestión, alta, baja, arrancar/parar/reiniciar, regenerar VPN, ajustar prefijos, API, **espejo** (plan/aplicar/pausar/retirar), logs | no | no | sí |
+| Usuarios y roles, log de accesos, bitácora, actualizar reglas | no | no | sí |
+
+La vista de estado de cada punto (colores del selector) la ven todos. Toda operación deja en la bitácora:
+usuario o proceso, punto, objetivo, operación, fecha y resultado, sin secretos. Una masiva desde «Todos» se
+descompone por punto y da el resultado por punto.
+
+### 10.3 Secretos cifrados con la clave maestra (decisión del usuario: opción a)
+
+Las claves de la API de cada router, las claves de AbuseIPDB/abuse.ch/Groq y el token de Telegram se guardan
+**cifrados** con `/etc/ids-maat/master.key` ([DATOS.md](DATOS.md) §6), montada en el panel en
+`/run/secrets/master_key` (ro). AES-GCM con `cryptography` instalada en la imagen con `--require-hashes`. En disco
+solo va el texto cifrado; se descifra en memoria al usarlo; nunca sale en logs, bitácora, CI ni pantallas. Sin
+la clave maestra el panel arranca y avisa de que no puede usar esos secretos (no los borra). Los ficheros de
+configuración siguen en 0600. La clave maestra se respalda aparte (OPERACION §3) y su recuperación forma parte de
+la prueba de restauración del VPS.
+
+Módulo `secretos.py` YA ESCRITO (interfaz fija, con `tests/test_secretos.py`): `cifrar(texto, asociado)`,
+`descifrar(valor, asociado)`, `necesita_cifrar(valor)`, `disponible()`, `SecretoNoDisponible`. `asociado` liga el
+valor a su campo (p. ej. `router:p001:PASS`, `feeds:ABUSEIPDB_KEY`).
+
+### 10.4 Evidencia reciente antes de actuar
+
+Antes de enviar a cuarentena (manual, masiva o automática) una IP de abonado, se comprueba que la evidencia que la
+justifica es **reciente** (alertas de ese `pid|ip` dentro de la ventana del reporte y como máximo de las últimas
+24 h por defecto, configurable). Si la evidencia es más vieja, la acción automática no se ejecuta y la manual pide
+confirmación explícita indicando la antigüedad (la IP puede haber cambiado de abonado).
+
+### 10.5 Pruebas y auditoría
+
+- Tres tipos de prueba: **conservación** (la capacidad original pasa en la base y en la adaptada), **corrección
+  de defecto** (reproduce el defecto antes y demuestra la corrección después) y **capacidad nueva** (demuestra el
+  requisito con resultados concretos). Un fallo de importación no cuenta como prueba de nada.
+- Las pruebas de suricata-ids-lab se clasifican una a una: conservadas, adaptadas o retiradas con motivo.
+- Casos obligatorios:
+
+  | Caso | Resultado |
+  |---|---|
+  | Misma IP y mismo flujo en dos puntos | eventos y resultados separados por punto |
+  | Acción sobre una IP repetida | solo cambia el MikroTik del destino de esa operación |
+  | Dos operadores o tareas a la vez | sin mezcla de contexto ni pérdida de actualizaciones |
+  | Doble clic o reintento | no duplica reglas, acciones ni puntos (idempotencia por destino y operación) |
+  | Baja con trabajos pendientes | se cancelan o rechazan; nada alcanza a un punto creado después (los pid no se reutilizan) |
+  | Timeout de la API tras enviar una orden | se relee el router antes de repetir; no se da por hecha sin comprobarla |
+  | Recarga de reglas/threshold fallida | se conserva o recupera una configuración válida y se avisa |
+  | Consulta que llega a su límite | se dice que es parcial y hasta dónde llegó; nunca «sin coincidencias» |
+  | Rotación mientras se lee | sin mezcla, pérdida silenciosa ni duplicados sin control |
+  | Saturación de un punto | se mide el efecto en los demás (cuotas de CPU/memoria por contenedor) |
+  | Eventos: rutas manipuladas, enlaces simbólicos, JSON incompleto, `.gz` que descomprime mucho, HTML/JS en campos capturados | se rechaza o se escapa; límites por volumen descomprimido |
+- Auditoría iterativa: hallazgo → reproducción → corrección → prueba → revisión independiente, hasta cerrar.
+- Estados de cada afirmación: observado, riesgo pendiente, reproducido, corregido, verificado, bloqueado.
+- Matriz de conservación (capacidad original → destino → prueba → estado) como entregable.
+
+### 10.6 Salud por etapas
+
+Por punto y por separado: VPN conectada, TZSP recibido, tráfico procesado por Suricata (contadores de captura y
+descartes con su alcance), eventos actualizados, datos consultables. Estados: operativa, degradada, sin datos,
+desconectada, deshabilitada, desconocido. VPN arriba, contenedor en marcha o cero alertas **no** son «sano». La
+captura reducida (10 KB por conexión, prefijos elegidos) se muestra como tal.
+
+## 11. Reparto (constructores en paralelo, cada uno solo en sus zonas)
+
+Las zonas de `dashboard.py` van **por símbolo** (funciones y métodos) en
+[CONTRATO-F2-zonas.md](CONTRATO-F2-zonas.md); los números de línea solo orientan sobre el commit base. Quien necesite
+algo de otra zona lo pide en su informe en vez de tocarlo. Integración por etapas: N → P y E → R.
 
 | | Zonas | Entrega |
 |---|---|---|
-| **N (núcleo)** | `dashboard.py` 1–7580, 7801–9399, 12825–13420, 15534–15697 (infra de `class H`: `_seguro`, `_set_ctx`, auth, proxy, CSRF), 17549–fin (`do_HEAD`, `main`); `idspanel/cli.py` | rutas por `nodos`, contexto, routers = puntos, cliente API por relé, tareas de fondo por nodo, eventos/historial/conducta por nodo y «Todos», usuarios y sesiones, quitar OpenVPN/espejo_vpn/mkinit/updater/systemctl/EveBox de sus zonas |
-| **P (pantallas)** | `dashboard.py` 7581–7800 (`_NAV_LINKS`, `nav`), 9400–12824 (Ajustes, Documentación), 13421–15533 (páginas), 15698–17548 (`_get`, `_post`, `_post_perfil`, `_post_exclusiones`); nuevo `puntos_web.py` | selector de nodo, columnas/chips de Nodo en «Todos», apartado Puntos, Ajustes, quitar rutas/tarjetas/textos de lo eliminado, Documentación reescrita donde nombra lo viejo |
+| | **Todos**: rol comprobado en cada ruta propia (§10.2), secretos con `secretos.py` donde los toquen (§10.3), destinos con `nodos.exigir_pid()` (§10.1), pruebas de su zona en ficheros propios (`tests/test_n_*.py`, `test_p_*.py`, `test_eventos_*.py`, R el resto) |
+| **N (núcleo)** | `dashboard.py` 1–7580, 7801–9399, 12825–13420, 15534–15697 (infra de `class H`: `_seguro`, `_set_ctx`, auth, proxy, CSRF), 17549–fin (`do_HEAD`, `main`); `idspanel/cli.py` | rutas por `nodos`, contexto, routers = puntos, cliente API por relé, tareas de fondo por nodo, eventos/historial/conducta por nodo y «Todos», usuarios y sesiones, evidencia reciente (§10.4), salud por etapas (§10.6, datos), quitar OpenVPN/espejo_vpn/mkinit/updater/systemctl/EveBox de sus zonas |
+| **P (pantallas)** | `dashboard.py` 7581–7800 (`_NAV_LINKS`, `nav`), 9400–12824 (Ajustes, Documentación), 13421–15533 (páginas), 15698–17548 (`_get`, `_post`, `_post_perfil`, `_post_exclusiones`); nuevo `puntos_web.py` | selector de nodo (400/404 de §10.1), columnas/chips de Nodo en «Todos», apartado Puntos con salud por etapas y retención efectiva, Ajustes, quitar rutas/tarjetas/textos de lo eliminado, Documentación reescrita donde nombra lo viejo |
 | **E (eventos)** | nuevo `eventos_web.py` | búsqueda y detalle de eventos (§9); P registra `GET /eventos` y la pestaña |
-| **R (resto)** | `html_report.py`, `feeds_update.py`, `mikrotik_init.py`, `informe_diario.py`, `orquestador/`, `images/panel/Dockerfile`, `images/panel/rootfs/usr/local/bin/ids-panel`, `idspanel/` salvo `cli.py`, `tests/`, `.github/`, docs salvo este contrato | generador por nodo y «Todos», feeds sin dataset, retención de 30 días (logrotate + poda por disco), espejo como módulo por relé, informe, `punto.threshold`, memoria, imagen, borrar el panel F1b-min que sobra, pruebas (port de las 87 de suricata-ids-lab que sigan aplicando + nuevas), e2e paso 7 |
+| **R (resto)** | `html_report.py`, `feeds_update.py`, `mikrotik_init.py`, `informe_diario.py`, `orquestador/`, `images/panel/Dockerfile`, `images/panel/rootfs/usr/local/bin/ids-panel`, `idspanel/` salvo `cli.py`, `tests/`, `.github/`, docs salvo este contrato | generador por nodo y «Todos», feeds sin dataset, retención objetivo 30 días por fecha + poda por disco registrada + retención efectiva en estado.json (§9), `master.key` montada en el panel y `cryptography` en la imagen (§10.3), espejo sin `accept` (OPERACION §2), espejo como módulo por relé, informe, `punto.threshold`, memoria, imagen, borrar el panel F1b-min que sobra, pruebas (port de las 87 de suricata-ids-lab que sigan aplicando + nuevas), e2e paso 7 |
 
 Cada constructor: trabaja en su worktree sin commitear, escribe pruebas de **comportamiento** de lo suyo en
 `tests/`, y entrega un informe con lo hecho, lo que pide a otros y lo que no pudo cerrar.
