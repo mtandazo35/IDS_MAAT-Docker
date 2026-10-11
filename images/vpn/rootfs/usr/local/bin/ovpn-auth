@@ -1,0 +1,271 @@
+#!/usr/bin/env python3
+"""ovpn-auth: verificación de usuario y clave para OpenVPN (`auth-user-pass-verify ... via-file`).
+
+CONTRATO-F1a §5.6. OpenVPN lo llama con la ruta de un fichero temporal de 2 líneas
+(usuario y clave) y con `untrusted_ip`/`untrusted_port` en el entorno. Sale con 0 si acepta
+y con 1 si rechaza. Escribe UNA línea por stderr, que fail2ban (jaula `ids-vpn`) lee:
+
+    <ip>:<puerto> ovpn-auth: rechazado usuario=<usuario|-> motivo=<motivo>
+    <ip>:<puerto> ovpn-auth: aceptado usuario=<usuario>
+
+Nunca se escribe texto del atacante: el usuario solo sale si pasa `^vpn[0-9a-f]{6}$`.
+
+Orden (cada paso que rechaza lo hace sin calcular scrypt, salvo el 5):
+  1. lee el entorno y el fichero;
+  2. formato de usuario y clave                    -> motivo=formato
+  3. freno, ANTES de scrypt y sin dormir:
+     por IP: >= 5 rechazos en 600 s               -> motivo=freno
+     global: >= 30 scrypt en 60 s                 -> motivo=freno-global
+  4. el usuario existe en /etc/ids/vpn/usuarios    -> motivo=usuario
+  5. scrypt + hmac.compare_digest                  -> motivo=clave
+  6. registra en el estado del freno: cada scrypt calculado y cada rechazo de los pasos
+     2, 4 y 5 (los rechazos por freno no se cuentan: así la IP sale del freno 600 s después
+     de su último intento de verdad).
+
+Solo stdlib. Importable en Windows: `fcntl` se importa dentro de la función (sin él, p. ej.
+en las pruebas de Windows, el freno funciona igual pero sin cerrojo entre procesos).
+"""
+import contextlib
+import hashlib
+import hmac
+import ipaddress
+import json
+import os
+import re
+import sys
+import time
+
+RUTA_USUARIOS = "/etc/ids/vpn/usuarios"
+DIR_FRENO = "/run/ovpn-auth"
+FRENO_LOCK = DIR_FRENO + "/freno.lock"
+FRENO_JSON = DIR_FRENO + "/freno.json"
+
+FRENO_IP_MAX = 5           # rechazos por IP ...
+FRENO_IP_VENTANA = 600     # ... en estos segundos
+FRENO_GLOBAL_MAX = 30      # scrypt calculados en total ...
+FRENO_GLOBAL_VENTANA = 60  # ... en estos segundos
+FRENO_IPS_MAX = 4096       # tope de IPs recordadas (acota el tamaño del estado)
+
+RE_USUARIO = re.compile(r"vpn[0-9a-f]{6}")
+RE_CLAVE = re.compile(r"[\x20-\x7e]{1,128}")          # 1-128 caracteres ASCII imprimibles
+RE_HASH = re.compile(r"scrypt\$([0-9]{1,8})\$([0-9]{1,3})\$([0-9]{1,3})\$([0-9a-f]{32})\$([0-9a-f]{64})")
+
+# Cotas para no dejar que una línea rara del fichero dispare un scrypt enorme.
+SCRYPT_N_MAX = 1 << 20
+SCRYPT_R_MAX = 32
+SCRYPT_P_MAX = 16
+SCRYPT_MAXMEM = 64 * 1024 * 1024
+
+
+def ahora():
+    return time.time()
+
+
+# --- registro -------------------------------------------------------------------------------
+
+def prefijo(env):
+    """`<ip>:<puerto>` de OpenVPN, validado. Si no es válido, `-:-` (fail2ban no lo casa)."""
+    ip = env.get("untrusted_ip", "")
+    puerto = env.get("untrusted_port", "")
+    try:
+        ip = str(ipaddress.ip_address(ip))
+    except ValueError:
+        ip = "-"
+    if not (puerto.isascii() and puerto.isdigit() and 0 < len(puerto) <= 5):
+        puerto = "-"
+    return ip, f"{ip}:{puerto}"
+
+
+def linea(pref, aceptado, usuario, motivo=None):
+    if aceptado:
+        return f"{pref} ovpn-auth: aceptado usuario={usuario}"
+    return f"{pref} ovpn-auth: rechazado usuario={usuario} motivo={motivo}"
+
+
+# --- credenciales ---------------------------------------------------------------------------
+
+def leer_credenciales(ruta):
+    """(usuario, clave) del fichero de OpenVPN, o (None, None) si no se puede leer."""
+    try:
+        with open(ruta, "rb") as fh:
+            crudo = fh.read(4096)
+        texto = crudo.decode("utf-8")
+    except (OSError, UnicodeDecodeError, TypeError):
+        return None, None
+    partes = texto.split("\n")
+    if len(partes) < 2:
+        return None, None
+    return partes[0].rstrip("\r"), partes[1].rstrip("\r")
+
+
+def formato_valido(usuario, clave):
+    return (usuario is not None and clave is not None
+            and RE_USUARIO.fullmatch(usuario) is not None
+            and RE_CLAVE.fullmatch(clave) is not None)
+
+
+def buscar_usuario(usuario, ruta=None):
+    """Parámetros scrypt del usuario: (n, r, p, sal, hash) o None si no está o la línea es mala."""
+    ruta = RUTA_USUARIOS if ruta is None else ruta
+    try:
+        with open(ruta, "r", encoding="utf-8") as fh:
+            lineas = fh.read().splitlines()
+    except (OSError, UnicodeDecodeError):
+        print("ovpn-auth: aviso: no se puede leer el fichero de usuarios", file=sys.stderr)
+        return None
+    for l in lineas:
+        l = l.strip()
+        if not l or l.startswith("#"):
+            continue
+        nombre, sep, resto = l.partition(":")
+        if not sep or nombre != usuario:
+            continue
+        m = RE_HASH.fullmatch(resto)
+        if not m:
+            print(f"ovpn-auth: aviso: línea de {usuario} mal formada en usuarios", file=sys.stderr)
+            return None
+        n, r, p = int(m.group(1)), int(m.group(2)), int(m.group(3))
+        if (n < 2 or n > SCRYPT_N_MAX or n & (n - 1) or not 1 <= r <= SCRYPT_R_MAX
+                or not 1 <= p <= SCRYPT_P_MAX):
+            print(f"ovpn-auth: aviso: parámetros scrypt de {usuario} fuera de rango", file=sys.stderr)
+            return None
+        return n, r, p, bytes.fromhex(m.group(4)), bytes.fromhex(m.group(5))
+    return None
+
+
+def clave_correcta(clave, params):
+    n, r, p, sal, esperado = params
+    calculado = hashlib.scrypt(clave.encode("utf-8"), salt=sal, n=n, r=r, p=p,
+                               maxmem=SCRYPT_MAXMEM, dklen=len(esperado))
+    return hmac.compare_digest(calculado, esperado)
+
+
+# --- freno ----------------------------------------------------------------------------------
+
+@contextlib.contextmanager
+def cerrojo():
+    """flock exclusivo sobre FRENO_LOCK. Sin fcntl (Windows) no hay cerrojo entre procesos."""
+    os.makedirs(DIR_FRENO, mode=0o700, exist_ok=True)
+    try:
+        import fcntl
+    except ImportError:
+        fcntl = None
+    fd = os.open(FRENO_LOCK, os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        if fcntl is not None:
+            fcntl.flock(fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        os.close(fd)        # cerrar el descriptor suelta el flock
+
+
+def leer_estado():
+    try:
+        with open(FRENO_JSON, "r", encoding="utf-8") as fh:
+            est = json.load(fh)
+        if not isinstance(est, dict):
+            raise ValueError
+        rech = est.get("rechazos", {})
+        glob = est.get("scrypt", [])
+        if not isinstance(rech, dict) or not isinstance(glob, list):
+            raise ValueError
+        return {"rechazos": {str(k): [float(t) for t in v] for k, v in rech.items()
+                             if isinstance(v, list)},
+                "scrypt": [float(t) for t in glob]}
+    except (OSError, ValueError, TypeError):
+        return {"rechazos": {}, "scrypt": []}
+
+
+def podar(est, t):
+    est["scrypt"] = [x for x in est["scrypt"] if t - x < FRENO_GLOBAL_VENTANA][-FRENO_GLOBAL_MAX * 4:]
+    vivos = {}
+    for ip, lista in est["rechazos"].items():
+        lista = [x for x in lista if t - x < FRENO_IP_VENTANA][-FRENO_IP_MAX * 2:]
+        if lista:
+            vivos[ip] = lista
+    if len(vivos) > FRENO_IPS_MAX:
+        orden = sorted(vivos, key=lambda k: vivos[k][-1], reverse=True)[:FRENO_IPS_MAX]
+        vivos = {k: vivos[k] for k in orden}
+    est["rechazos"] = vivos
+    return est
+
+
+def guardar_estado(est):
+    tmp = FRENO_JSON + ".tmp"
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        json.dump(est, fh, separators=(",", ":"))
+    os.replace(tmp, FRENO_JSON)
+
+
+def registrar_rechazo(ip, t):
+    try:
+        with cerrojo():
+            est = leer_estado()
+            est["rechazos"].setdefault(ip, []).append(t)
+            guardar_estado(podar(est, t))
+    except OSError as e:
+        print(f"ovpn-auth: aviso: no se pudo registrar el rechazo en el freno: {e.strerror}",
+              file=sys.stderr)
+
+
+# --- decisión -------------------------------------------------------------------------------
+
+def autenticar(ruta_credenciales, env):
+    """Devuelve (aceptado, línea de log). Implementa los pasos 1-6 de §5.6."""
+    ip, pref = prefijo(env)
+    usuario, clave = leer_credenciales(ruta_credenciales)
+
+    # 2. formato, sin scrypt y sin escribir texto del atacante
+    if not formato_valido(usuario, clave):
+        registrar_rechazo(ip, ahora())
+        return False, linea(pref, False, "-", "formato")
+
+    # 3 y 4. freno ANTES de scrypt; luego el usuario. Si se va a calcular scrypt, se apunta
+    # dentro del mismo cerrojo para que el límite global no se pueda rebasar en paralelo.
+    t = ahora()
+    params = None
+    try:
+        with cerrojo():
+            est = podar(leer_estado(), t)
+            if len(est["rechazos"].get(ip, [])) >= FRENO_IP_MAX:
+                return False, linea(pref, False, "-", "freno")
+            if len(est["scrypt"]) >= FRENO_GLOBAL_MAX:
+                return False, linea(pref, False, "-", "freno-global")
+            params = buscar_usuario(usuario)
+            if params is not None:
+                est["scrypt"].append(t)
+                guardar_estado(est)
+    except OSError as e:
+        # /run sin espacio o similar: se sigue sin freno (fail2ban sigue cubriendo) en vez de
+        # dejar fuera al MikroTik legítimo por un fallo propio.
+        print(f"ovpn-auth: aviso: freno no disponible: {e.strerror}", file=sys.stderr)
+        if params is None:
+            params = buscar_usuario(usuario)
+
+    if params is None:
+        registrar_rechazo(ip, ahora())
+        return False, linea(pref, False, usuario, "usuario")
+
+    # 5. scrypt con los parámetros de la línea
+    if not clave_correcta(clave, params):
+        registrar_rechazo(ip, ahora())
+        return False, linea(pref, False, usuario, "clave")
+    return True, linea(pref, True, usuario)
+
+
+def main(argv=None, env=None):
+    argv = sys.argv[1:] if argv is None else argv
+    env = os.environ if env is None else env
+    ruta = argv[-1] if argv else None
+    if ruta is None:
+        _, pref = prefijo(env)
+        print(linea(pref, False, "-", "formato"), file=sys.stderr, flush=True)
+        return 1
+    ok, texto = autenticar(ruta, env)
+    print(texto, file=sys.stderr, flush=True)
+    return 0 if ok else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

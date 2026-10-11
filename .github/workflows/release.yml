@@ -1,0 +1,114 @@
+# ids-maat — release (CONTRATO-F1a §6.4). Solo con etiquetas v*. Imágenes firmadas con cosign keyless;
+# release.json firmado con sign-blob. El instalador verifica la identidad de este workflow.
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+env:
+  COSIGN_VERSION: v2.6.5
+  COSIGN_SHA256: c3b4f5410e608af03a5eb0aaac84a4313d8da131248e08ff1759ac70c79d1644
+
+jobs:
+  pruebas:
+    uses: ./.github/workflows/ci.yml
+    permissions:
+      contents: read
+
+  imagen:
+    needs: pruebas
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    strategy:
+      fail-fast: true
+      matrix:
+        img: [vpn, suricata]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: base fijada
+        id: base
+        run: echo "imagen=$(sed -n 's/^BASE_IMAGE=//p' images/base.env)" >> "$GITHUB_OUTPUT"
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: meta
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+        with:
+          images: ghcr.io/mtandazo35/ids-maat-${{ matrix.img }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=sha,prefix=sha-,format=short
+      - id: build
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: images/${{ matrix.img }}
+          platforms: linux/amd64
+          push: true
+          provenance: mode=max
+          sbom: true
+          build-args: |
+            BASE_IMAGE=${{ steps.base.outputs.imagen }}
+            VERSION=${{ steps.meta.outputs.version }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+      - name: cosign sign (keyless)
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+          IMG: ${{ matrix.img }}
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/cosign" "https://github.com/sigstore/cosign/releases/download/${COSIGN_VERSION}/cosign-linux-amd64"
+          echo "${COSIGN_SHA256}  $RUNNER_TEMP/cosign" | sha256sum -c -
+          chmod 0755 "$RUNNER_TEMP/cosign"
+          "$RUNNER_TEMP/cosign" sign --yes "ghcr.io/mtandazo35/ids-maat-${IMG}@${DIGEST}"
+
+  release:
+    needs: imagen
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      packages: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: release.json, tar del host y firma
+        env:
+          ETIQUETA: ${{ github.ref_name }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          v="${ETIQUETA#v}"
+          curl -fsSL -o "$RUNNER_TEMP/cosign" "https://github.com/sigstore/cosign/releases/download/${COSIGN_VERSION}/cosign-linux-amd64"
+          echo "${COSIGN_SHA256}  $RUNNER_TEMP/cosign" | sha256sum -c -
+          chmod 0755 "$RUNNER_TEMP/cosign"
+          digest() {
+            docker buildx imagetools inspect "ghcr.io/mtandazo35/ids-maat-$1:$v" --format '{{json .Manifest}}' \
+              | python3 -c 'import json, sys; print(json.load(sys.stdin)["digest"])'
+          }
+          ref_vpn="ghcr.io/mtandazo35/ids-maat-vpn@$(digest vpn)"
+          ref_suricata="ghcr.io/mtandazo35/ids-maat-suricata@$(digest suricata)"
+          tar_nombre="ids-maat-host-$v.tar.gz"
+          git archive --format=tar.gz -o "$tar_nombre" HEAD orquestador host install.sh
+          python3 .github/scripts/release_json.py --version "$v" --vpn "$ref_vpn" \
+            --suricata "$ref_suricata" --tar "$tar_nombre" > release.json
+          cat release.json
+          "$RUNNER_TEMP/cosign" sign-blob --yes --bundle release.json.bundle release.json
+          gh release create "$ETIQUETA" --title "ids-maat $ETIQUETA" --verify-tag \
+            --notes "Imágenes por digest y tar del host en release.json (firma: release.json.bundle)." \
+            release.json release.json.bundle "$tar_nombre"

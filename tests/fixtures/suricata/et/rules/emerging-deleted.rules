@@ -1,0 +1,1 @@
+alert tcp any any -> any any (msg:"ET DELETED Prueba regla borrada"; content:"borrada"; sid:2900090; rev:1;)

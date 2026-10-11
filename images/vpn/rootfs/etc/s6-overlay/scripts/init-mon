@@ -1,0 +1,10 @@
+#!/bin/sh
+# init-mon (oneshot 4/4): carga la tabla `netdev ids_mon`. Necesita que ids-mon exista.
+# Descarta en el ingreso de ids-mon lo inyectado: AF_PACKET (Suricata) recibe su copia
+# antes del hook, y la pila IP / conntrack no lo procesan.
+set -eu
+umask 027
+mkdir -p /run/ids-vpn
+python3 /usr/local/lib/ids-vpn/render.py nft-mon > /run/ids-vpn/ids_mon.nft
+nft -f /run/ids-vpn/ids_mon.nft
+echo "init-mon: tabla netdev ids_mon cargada" >&2

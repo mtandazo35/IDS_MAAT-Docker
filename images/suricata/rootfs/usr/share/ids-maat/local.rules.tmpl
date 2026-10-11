@@ -1,0 +1,21 @@
+# local.rules — ids-maat (generado por ids-reglas desde local.rules.tmpl; no editar).
+# Actividad saliente de CPE infectados. Rango de sid 9000000+ (reglas propias).
+#
+# Aquí NO hay una regla genérica de «todo SYN saliente»: sobre un espejo de ISP una regla
+# que casa cada paquete con track by_src mantiene un contador por cada IP de la red y agota
+# la memoria. Solo puertos concretos y raros (botnets IoT, gusanos).
+#
+# Dominios de los feeds como DETECCIÓN: la consulta DNS a un dominio fichado es una alerta.
+# El dataset es el de esta misma release y se carga solo con load (sin save/state); existe
+# siempre, aunque esté vacío, porque un load de un fichero inexistente tumba todas las reglas.
+alert dns $HOME_NET any -> any any (msg:"LOCAL DNS a dominio fichado en feeds de reputacion"; dns.query; dataset:isset,feeds-dominios,type string,load @@DATASET@@; classtype:trojan-activity; sid:9000050; rev:1;)
+
+# Puertos típicos de botnets IoT y gusanos (Mirai y familia) hacia afuera.
+alert tcp $HOME_NET any -> $EXTERNAL_NET [23,2323] (msg:"LOCAL CPE escanea Telnet saliente (botnet IoT/Mirai)"; flags:S,12; flow:to_server; threshold:type both, track by_src, count 15, seconds 60; classtype:attempted-recon; sid:9000010; rev:1;)
+alert tcp $HOME_NET any -> $EXTERNAL_NET 7547 (msg:"LOCAL CPE escanea TR-069/CWMP saliente (Mirai)"; flags:S,12; flow:to_server; threshold:type both, track by_src, count 10, seconds 60; classtype:attempted-recon; sid:9000011; rev:1;)
+alert tcp $HOME_NET any -> $EXTERNAL_NET [5555,7777] (msg:"LOCAL CPE escanea ADB/router saliente"; flags:S,12; flow:to_server; threshold:type both, track by_src, count 10, seconds 60; classtype:attempted-recon; sid:9000012; rev:1;)
+alert tcp $HOME_NET any -> $EXTERNAL_NET 445 (msg:"LOCAL Escaneo SMB saliente (gusano/ransomware)"; flags:S,12; flow:to_server; threshold:type both, track by_src, count 10, seconds 60; classtype:attempted-recon; sid:9000013; rev:1;)
+alert tcp $HOME_NET any -> $EXTERNAL_NET [3389,5900] (msg:"LOCAL Escaneo RDP/VNC saliente"; flags:S,12; flow:to_server; threshold:type both, track by_src, count 10, seconds 60; classtype:attempted-recon; sid:9000014; rev:1;)
+
+# SMTP directo desde clientes (spambot): un CPE no debería hablar 25/tcp con internet.
+alert tcp $HOME_NET any -> $EXTERNAL_NET 25 (msg:"LOCAL SMTP directo saliente desde cliente (posible spambot)"; flags:S,12; flow:to_server; threshold:type both, track by_src, count 5, seconds 120; classtype:bad-unknown; sid:9000020; rev:1;)

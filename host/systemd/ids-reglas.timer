@@ -1,0 +1,11 @@
+# ids-maat: reglas cada día a las 08:15 UTC (03:15 en UTC-5).
+[Unit]
+Description=IDS-MAAT: actualización diaria de reglas
+
+[Timer]
+OnCalendar=*-*-* 08:15:00 UTC
+RandomizedDelaySec=10m
+Persistent=true
+
+[Install]
+WantedBy=timers.target

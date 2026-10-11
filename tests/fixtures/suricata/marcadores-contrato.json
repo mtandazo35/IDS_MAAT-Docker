@@ -1,0 +1,4 @@
+{"_origen": "CONTRATO-F1a §4.6 (copia literal de la lista de marcadores)",
+ "marcadores": ["SENSOR_NAME","HOME_NET","RULE_PATH","CLUSTER_ID","HILOS","RING_SIZE","BLOCK_SIZE",
+                "SNAPLEN","DETECT_PROFILE","SGH_MPM_CONTEXT","MPM_ALGO","SPM_ALGO",
+                "FLOW_MEMCAP","STREAM_MEMCAP","REASSEMBLY_MEMCAP","DEFRAG_MEMCAP"]}

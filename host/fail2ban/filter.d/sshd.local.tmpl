@@ -1,0 +1,5 @@
+# ids-maat — /etc/fail2ban/filter.d/sshd.local (lo copia install.sh).
+# OpenSSH >= 9.8 (Debian 13) registra la autenticación desde «sshd-session»; el filtro sshd de
+# fail2ban solo espera «sshd» en algunas versiones. Se admiten los dos.
+[DEFAULT]
+_daemon = sshd(?:-session)?

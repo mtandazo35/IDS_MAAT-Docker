@@ -1,0 +1,2 @@
+alert udp $HOME_NET any -> $EXTERNAL_NET 3478 (msg:"ET INFO Session Traversal Utilities for NAT (STUN Binding Request)"; content:"|00 01|"; depth:2; classtype:attempted-user; sid:2016149; rev:2;)
+alert dns $HOME_NET any -> any any (msg:"ET INFO Prueba consulta a dominio dinamico"; dns.query; content:".duckdns.org"; endswith; classtype:misc-activity; sid:2900030; rev:1;)

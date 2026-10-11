@@ -1,0 +1,19 @@
+# ids-maat: firewall del host (tabla inet ids_host). Orden de arranque: ids-host-fw -> docker -> ids-orq.
+# Nunca «flush ruleset»: el fichero borra y recrea solo su tabla. Sin ExecStop: parar la unidad no
+# deja el host abierto.
+[Unit]
+Description=IDS-MAAT: firewall del host (inet ids_host)
+Documentation=https://github.com/mtandazo35/IDS_MAAT-Docker/blob/main/docs/RED-Y-FIREWALL.md
+DefaultDependencies=no
+After=local-fs.target
+Wants=network-pre.target
+Before=network-pre.target docker.service shutdown.target
+Conflicts=shutdown.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/sbin/nft -f /srv/ids/fw/ids_host.nft
+
+[Install]
+WantedBy=multi-user.target

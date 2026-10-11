@@ -1,0 +1,5 @@
+table netdev ids_mon
+delete table netdev ids_mon
+table netdev ids_mon {
+  chain ingreso { type filter hook ingress device "ids-mon" priority -500; policy drop; }
+}

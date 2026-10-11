@@ -1,0 +1,10 @@
+#!/bin/sh
+# init-nft (oneshot 2/4): carga la tabla `inet ids_punto` ANTES de crear nada.
+# El netns queda cerrado antes de que exista ningún servicio. Nunca `flush ruleset`:
+# en este netns Docker tiene las reglas NAT de su DNS embebido.
+set -eu
+umask 027
+mkdir -p /run/ids-vpn
+python3 /usr/local/lib/ids-vpn/render.py nft-punto > /run/ids-vpn/ids_punto.nft
+nft -f /run/ids-vpn/ids_punto.nft
+echo "init-nft: tabla inet ids_punto cargada" >&2

@@ -1,0 +1,1 @@
+alert tcp $HOME_NET any -> $EXTERNAL_NET 27015 (msg:"ET GAMES Prueba juego"; flow:established,to_server; content:"|ff ff ff ff|"; depth:4; classtype:policy-violation; sid:2900050; rev:1;)

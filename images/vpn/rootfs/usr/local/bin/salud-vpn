@@ -1,0 +1,36 @@
+#!/bin/sh
+# salud-vpn: healthcheck del contenedor vpn (CONTRATO-F1a §5.7). Sano (0) si:
+#   - s6 da `up` para openvpn, tzsp-decap y rele-api;
+#   - /run/ids/tzsp.json tiene menos de 90 s (latido de tzsp-decap cada 30 s);
+#   - existe la tabla `inet ids_punto` (un netns sin su firewall no es sano).
+# Nunca falla por falta de espejo, punto pausado ni MikroTik desconectado.
+# IDS_SVSTAT, IDS_SERVICIOS, IDS_TZSP e IDS_AHORA solo existen para las pruebas.
+set -u
+svstat="${IDS_SVSTAT:-/command/s6-svstat}"
+servicios="${IDS_SERVICIOS:-/run/service}"
+tzsp="${IDS_TZSP:-/run/ids/tzsp.json}"
+
+for s in openvpn tzsp-decap rele-api; do
+  estado="$("$svstat" -o up "$servicios/$s" 2>/dev/null || true)"
+  if [ "$estado" != "true" ]; then
+    echo "salud-vpn: servicio $s caído"
+    exit 1
+  fi
+done
+
+if ! mtime="$(stat -c %Y "$tzsp" 2>/dev/null)"; then
+  echo "salud-vpn: no existe $tzsp"
+  exit 1
+fi
+ahora="${IDS_AHORA:-$(date +%s)}"
+edad=$((ahora - mtime))
+if [ "$edad" -ge 90 ]; then
+  echo "salud-vpn: latido de tzsp-decap viejo (${edad} s)"
+  exit 1
+fi
+
+if ! nft list table inet ids_punto >/dev/null 2>&1; then
+  echo "salud-vpn: falta la tabla inet ids_punto"
+  exit 1
+fi
+exit 0

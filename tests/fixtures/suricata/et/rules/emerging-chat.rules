@@ -1,0 +1,1 @@
+alert tcp $HOME_NET any -> $EXTERNAL_NET 6667 (msg:"ET CHAT Prueba IRC"; flow:established,to_server; content:"NICK "; depth:5; classtype:policy-violation; sid:2900060; rev:1;)

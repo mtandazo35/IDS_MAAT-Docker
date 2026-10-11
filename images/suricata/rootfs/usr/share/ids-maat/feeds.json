@@ -1,0 +1,30 @@
+{
+  "v": 1,
+  "max_dominios": 100000,
+  "fuentes": [
+    {
+      "nombre": "urlhaus",
+      "url": "https://urlhaus.abuse.ch/downloads/hostfile/",
+      "tipo": "hosts",
+      "licencia": "CC0-1.0",
+      "ttl_horas": 48,
+      "nota": "abuse.ch: dominios que distribuyen malware. Si exige Auth-Key, la fuente queda vacía (fallo suave)."
+    },
+    {
+      "nombre": "threatfox",
+      "url": "https://threatfox.abuse.ch/downloads/hostfile/",
+      "tipo": "hosts",
+      "licencia": "CC0-1.0",
+      "ttl_horas": 48,
+      "nota": "abuse.ch: dominios de C2 e IOC de malware. Si exige Auth-Key, la fuente queda vacía (fallo suave)."
+    },
+    {
+      "nombre": "hagezi-tif-mini",
+      "url": "https://raw.githubusercontent.com/hagezi/dns-blocklists/main/wildcard/tif.mini-onlydomains.txt",
+      "tipo": "dominios",
+      "licencia": "GPL-3.0",
+      "ttl_horas": 72,
+      "nota": "HaGeZi Threat Intelligence Feeds (mini): agregado sin clave; malware, C2 y phishing."
+    }
+  ]
+}

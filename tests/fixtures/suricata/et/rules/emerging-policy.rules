@@ -1,0 +1,2 @@
+alert http $HOME_NET any -> $EXTERNAL_NET any (msg:"ET POLICY Prueba agente de usuario raro"; flow:established,to_server; http.user_agent; content:"curl/"; classtype:policy-violation; sid:2900020; rev:1;)
+alert udp $HOME_NET any -> $EXTERNAL_NET 3478 (msg:"ET POLICY Prueba STUN"; content:"|00 01|"; depth:2; classtype:policy-violation; sid:2033078; rev:1;)

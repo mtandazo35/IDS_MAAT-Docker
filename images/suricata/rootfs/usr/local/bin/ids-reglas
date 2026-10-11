@@ -1,0 +1,469 @@
+#!/usr/bin/env python3
+"""ids-reglas — genera una release de reglas y feeds (CONTRATO-F1a §5.9).
+
+    ids-reglas descargar --ts 20261010T081500Z [--imagen REF]
+
+Lo lanza el orquestador en un contenedor efímero de la imagen suricata (la única pieza con
+salida a las fuentes), con /srv/ids/reglas montado en /reglas (rw) y la raíz de solo
+lectura. Escribe SOLO en /reglas/releases/<ts>/ y /reglas/cache/; nunca toca current.
+
+    /reglas/releases/<ts>/
+    ├── completo/{suricata.rules, local.rules, classification.config}
+    ├── reducido/{suricata.rules, local.rules, classification.config}
+    ├── feeds/{domains.dataset, domains.lst}
+    ├── MANIFEST.json
+    └── LISTO                       se escribe el ÚLTIMO
+
+- ET Open se descarga UNA vez (suricata-update, perfil completo) y reducido sale de la
+  misma descarga con --offline y disable-reducido.conf. Sin -T y sin recarga: valida y
+  reinicia el orquestador.
+- El dataset existe siempre, vacío si los feeds fallan: un load de un fichero inexistente
+  tumba la carga de todas las reglas.
+- El sid 2100498 (regla de la prueba de extremo a extremo) tiene que estar activo en los
+  dos perfiles; si falta, no hay release.
+- La última línea de stdout es el resumen en JSON (el mismo texto que LISTO). Código 0 solo
+  si todo está escrito; si algo falla, se borra la release a medias.
+"""
+import argparse
+import base64
+import fnmatch
+import hashlib
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+import time
+import urllib.error
+import urllib.request
+
+RAIZ = "/reglas"
+SHARE = "/usr/share/ids-maat"
+CLASIFICACION_SISTEMA = "/etc/suricata/classification.config"
+PERFILES = ("completo", "reducido")
+SID_E2E = 2100498
+RE_TS = re.compile(r"^\d{8}T\d{6}Z$")
+RE_NOMBRE_FUENTE = re.compile(r"^[a-z0-9][a-z0-9-]{0,40}$")
+TIPOS_FEED = ("hosts", "dominios")
+MAX_BYTES_FEED = 64 * 1024 * 1024
+MAX_DOMINIOS = 100000
+TIMEOUT_FEED = 30
+TIMEOUT_SURICATA_UPDATE = 1800
+AGENTE = "ids-maat-reglas/1"
+
+
+class ErrorReglas(Exception):
+    pass
+
+
+def log(msg):
+    print("ids-reglas: %s" % msg, file=sys.stderr, flush=True)
+
+
+# --------------------------------------------------------------------------- ficheros
+def escribir(ruta, datos, modo=0o644):
+    """Escritura atómica dentro del mismo directorio (tmp + fsync + rename)."""
+    if isinstance(datos, str):
+        datos = datos.encode("utf-8")
+    tmp = ruta + ".tmp"
+    with open(tmp, "wb") as f:
+        f.write(datos)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, ruta)
+    os.chmod(ruta, modo)
+
+
+def fsync_dir(ruta):
+    try:
+        fd = os.open(ruta, os.O_RDONLY)
+    except OSError:
+        return                       # Windows: no se puede abrir un directorio
+    try:
+        os.fsync(fd)
+    except OSError:
+        pass
+    finally:
+        os.close(fd)
+
+
+def sha256_fichero(ruta):
+    h = hashlib.sha256()
+    with open(ruta, "rb") as f:
+        for bloque in iter(lambda: f.read(1 << 20), b""):
+            h.update(bloque)
+    return h.hexdigest()
+
+
+# --------------------------------------------------------------------------- dominios
+_RE_ETIQUETA = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")
+_NO_DOMINIOS = {"localhost", "localhost.localdomain", "local", "broadcasthost", "localdomain"}
+
+
+def dominio_valido(texto):
+    """El dominio normalizado (minúsculas, sin punto final) o None si no es válido."""
+    d = texto.strip().lower().rstrip(".")
+    if d.startswith("*."):
+        d = d[2:]
+    if not d or len(d) > 253 or d in _NO_DOMINIOS:
+        return None
+    etiquetas = d.split(".")
+    if len(etiquetas) < 2:
+        return None
+    if not all(_RE_ETIQUETA.match(e) for e in etiquetas):
+        return None
+    tld = etiquetas[-1]
+    if not (tld.isalpha() or tld.startswith("xn--")):
+        return None                  # también descarta IPv4
+    return d
+
+
+def parsear_feed(texto, tipo):
+    """Conjunto de dominios válidos de un feed. tipo: hosts ("IP dominio") o dominios."""
+    if tipo not in TIPOS_FEED:
+        raise ErrorReglas("tipo de feed desconocido: %s" % tipo)
+    out = set()
+    for linea in texto.splitlines():
+        linea = linea.split("#", 1)[0].strip()
+        if not linea or linea[0] in "!;[":
+            continue
+        partes = linea.split()
+        if tipo == "hosts":
+            if len(partes) < 2:
+                continue
+            candidatos = partes[1:]
+        else:
+            candidatos = partes[:1]
+        for c in candidatos:
+            d = dominio_valido(c)
+            if d:
+                out.add(d)
+    return out
+
+
+def es_html(datos):
+    cab = datos.lstrip()[:512].lower()
+    return cab.startswith(b"<!doctype html") or cab.startswith(b"<html") or b"<head" in cab
+
+
+def bajar_url(url, timeout=TIMEOUT_FEED, max_bytes=MAX_BYTES_FEED):
+    """Descarga real (urllib). Devuelve los bytes; lanza ErrorReglas si no vale."""
+    if not url.startswith("https://"):
+        raise ErrorReglas("solo https: %s" % url)
+    req = urllib.request.Request(url, headers={"User-Agent": AGENTE, "Accept": "text/plain"})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            tipo = (r.headers.get("Content-Type") or "").lower()
+            datos = r.read(max_bytes + 1)
+    except urllib.error.HTTPError as e:
+        raise ErrorReglas("HTTP %d" % e.code)
+    except (urllib.error.URLError, OSError) as e:
+        raise ErrorReglas(str(getattr(e, "reason", e)))
+    if len(datos) > max_bytes:
+        raise ErrorReglas("más de %d bytes" % max_bytes)
+    if "text/html" in tipo:
+        raise ErrorReglas("respuesta HTML, no una lista")
+    return datos
+
+
+def cargar_feeds_json(ruta):
+    with open(ruta, encoding="utf-8") as f:
+        cfg = json.load(f)
+    if cfg.get("v") != 1 or not isinstance(cfg.get("fuentes"), list):
+        raise ErrorReglas("%s: esquema desconocido" % ruta)
+    vistos = set()
+    for fu in cfg["fuentes"]:
+        nombre = fu.get("nombre", "")
+        if not RE_NOMBRE_FUENTE.match(nombre) or nombre in vistos:
+            raise ErrorReglas("%s: nombre de fuente inválido o repetido: %r" % (ruta, nombre))
+        vistos.add(nombre)
+        if not str(fu.get("url", "")).startswith("https://"):
+            raise ErrorReglas("%s: %s: la url tiene que ser https" % (ruta, nombre))
+        if fu.get("tipo") not in TIPOS_FEED:
+            raise ErrorReglas("%s: %s: tipo inválido" % (ruta, nombre))
+    return cfg
+
+
+def obtener_feed(fuente, dir_cache, bajar, ahora):
+    """(datos, sha256, origen) de una fuente: descarga; si falla, la caché si no ha caducado
+    (ttl_horas); si no, (None, None, motivo)."""
+    nombre = fuente["nombre"]
+    cache = os.path.join(dir_cache, nombre + ".txt")
+    try:
+        datos = bajar(fuente["url"])
+        if es_html(datos):
+            raise ErrorReglas("respuesta HTML, no una lista")
+        escribir(cache, datos)
+        return datos, hashlib.sha256(datos).hexdigest(), "descarga"
+    except ErrorReglas as e:
+        motivo = str(e)
+    except Exception as e:           # cualquier fallo de una fuente es un fallo suave
+        motivo = "%s: %s" % (type(e).__name__, e)
+    ttl = float(fuente.get("ttl_horas", 48)) * 3600
+    try:
+        edad = ahora - os.path.getmtime(cache)
+        if edad < ttl:
+            with open(cache, "rb") as f:
+                datos = f.read()
+            log("feed %s: %s; uso la caché (%d h)" % (nombre, motivo, edad // 3600))
+            return datos, hashlib.sha256(datos).hexdigest(), "cache"
+        log("feed %s: %s; caché caducada" % (nombre, motivo))
+    except OSError:
+        log("feed %s: %s; sin caché" % (nombre, motivo))
+    return None, None, motivo
+
+
+def generar_feeds(cfg, dir_feeds, dir_cache, bajar, ahora):
+    """Escribe domains.lst y domains.dataset (SIEMPRE, vacío si todo falla).
+    Devuelve (fuentes_manifest, n_dominios)."""
+    os.makedirs(dir_cache, exist_ok=True)
+    tope = int(cfg.get("max_dominios", MAX_DOMINIOS))
+    elegidos = set()
+    fuentes = []
+    for fu in cfg["fuentes"]:
+        datos, sha, _origen = obtener_feed(fu, dir_cache, bajar, ahora)
+        fuentes.append({"nombre": fu["nombre"], "url": fu["url"], "sha256": sha})
+        if datos is None:
+            continue
+        doms = parsear_feed(datos.decode("utf-8", "replace"), fu["tipo"])
+        nuevos = sorted(doms - elegidos)
+        hueco = max(0, tope - len(elegidos))
+        if len(nuevos) > hueco:
+            log("feed %s: tope de %d dominios; se descartan %d" % (fu["nombre"], tope, len(nuevos) - hueco))
+            nuevos = nuevos[:hueco]
+        elegidos.update(nuevos)
+    lista = sorted(elegidos)
+    lst = "".join(d + "\n" for d in lista)
+    dataset = "".join(base64.b64encode(d.encode("ascii")).decode("ascii") + "\n" for d in lista)
+    escribir(os.path.join(dir_feeds, "domains.lst"), lst)
+    escribir(os.path.join(dir_feeds, "domains.dataset"), dataset)
+    return fuentes, len(lista)
+
+
+# --------------------------------------------------------------------------- reglas
+def leer_conf_disable(texto):
+    """Entradas de un disable.conf de suricata-update (sin comentarios ni vacías)."""
+    out = []
+    for linea in texto.splitlines():
+        linea = linea.strip()
+        if linea and not linea.startswith("#"):
+            out.append(linea)
+    return out
+
+
+def _sid_gid(regla):
+    m = re.search(r"\bsid\s*:\s*(\d+)\s*;", regla)
+    g = re.search(r"\bgid\s*:\s*(\d+)\s*;", regla)
+    return (int(m.group(1)) if m else None), (int(g.group(1)) if g else 1)
+
+
+def casa_disable(entrada, regla, grupo):
+    """Si una entrada de disable.conf casa con la regla (semántica de suricata-update:
+    sid, gid:sid, group:<glob del fichero>, filename:<glob>, re:<regex sin mayúsculas>)."""
+    sid, gid = _sid_gid(regla)
+    if entrada.startswith("re:"):
+        return re.search(entrada[3:], regla, re.I) is not None
+    if entrada.startswith("group:"):
+        return grupo is not None and fnmatch.fnmatch(os.path.basename(grupo), entrada[6:].strip())
+    if entrada.startswith("filename:"):
+        return grupo is not None and fnmatch.fnmatch(grupo, entrada[9:].strip())
+    m = re.fullmatch(r"(?:(\d+):)?(\d+)", entrada)
+    if m:
+        return sid == int(m.group(2)) and (m.group(1) is None or gid == int(m.group(1)))
+    return False
+
+
+def filtrar(reglas_por_grupo, entradas):
+    """Aplica un disable.conf: {grupo: [reglas]} -> [reglas activas que quedan]."""
+    out = []
+    for grupo, reglas in reglas_por_grupo.items():
+        for r in reglas:
+            if not any(casa_disable(e, r, grupo) for e in entradas):
+                out.append(r)
+    return out
+
+
+def reglas_activas(texto):
+    """Líneas de regla activas (ni vacías ni comentadas)."""
+    return [l for l in texto.splitlines() if l.strip() and not l.lstrip().startswith("#")]
+
+
+def sid_activo(texto, sid):
+    pat = re.compile(r"\bsid\s*:\s*%d\s*;" % sid)
+    return any(pat.search(l) for l in reglas_activas(texto))
+
+
+def version_suricata(ejecutar=subprocess.run):
+    r = ejecutar(["suricata", "-V"], capture_output=True, text=True, timeout=60)
+    m = re.search(r"(\d+\.\d+\.\d+)", (r.stdout or "") + (r.stderr or ""))
+    if r.returncode != 0 or not m:
+        raise ErrorReglas("no se pudo leer la versión de suricata")
+    return m.group(1)
+
+
+def tarball_et(dir_datos, salida_log):
+    """(url, sha256) de la descarga de ET que usó suricata-update, o (url|None, None).
+    suricata-update la guarda en <data-dir>/update/cache/<md5(url)>-<nombre>."""
+    cache = os.path.join(dir_datos, "update", "cache")
+    urls = re.findall(r"https?://[^\s'\"]+?\.tar\.gz", salida_log or "")
+    url = urls[-1] if urls else None
+    if url:
+        ruta = os.path.join(cache, "%s-%s" % (hashlib.md5(url.encode("utf-8")).hexdigest(),
+                                              url.rsplit("/", 1)[-1]))
+        if os.path.isfile(ruta):
+            return url, sha256_fichero(ruta)
+    try:
+        cands = [os.path.join(cache, n) for n in os.listdir(cache) if n.endswith(".tar.gz")]
+    except OSError:
+        cands = []
+    if not cands:
+        return url, None
+    return url, sha256_fichero(max(cands, key=os.path.getmtime))
+
+
+def ejecutar_suricata_update(ejecutar, args, registro):
+    try:
+        r = ejecutar(["suricata-update"] + args, capture_output=True, text=True,
+                     timeout=TIMEOUT_SURICATA_UPDATE)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        raise ErrorReglas("suricata-update no se pudo ejecutar: %s" % e)
+    salida = (r.stdout or "") + (r.stderr or "")
+    with open(registro, "a", encoding="utf-8") as f:
+        f.write(salida)
+    if r.returncode != 0:
+        cola = "\n".join(salida.strip().splitlines()[-15:])
+        raise ErrorReglas("suricata-update salió con %d:\n%s" % (r.returncode, cola))
+    return salida
+
+
+def generar_perfiles(rel, raiz, share, tmp, ejecutar):
+    """suricata-update: completo (descarga) y reducido (--offline). Devuelve (url, sha256)."""
+    datos = os.path.join(raiz, "cache", "suricata-update")
+    os.makedirs(datos, exist_ok=True)
+    vacio = os.path.join(tmp, "vacio.conf")
+    escribir(vacio, "")
+    upd = os.path.join(tmp, "update.yaml")
+    escribir(upd, 'ignore:\n  - "*deleted.rules"\n')
+    with open(os.path.join(share, "disable-comun.conf"), encoding="utf-8") as f:
+        comun = f.read()
+    with open(os.path.join(share, "disable-reducido.conf"), encoding="utf-8") as f:
+        reducido = f.read()
+    dis = {"completo": os.path.join(tmp, "disable-completo.conf"),
+           "reducido": os.path.join(tmp, "disable-reducido.conf")}
+    escribir(dis["completo"], comun)
+    escribir(dis["reducido"], comun.rstrip("\n") + "\n" + reducido)
+    registro = os.path.join(tmp, "suricata-update.log")
+    url_sha = (None, None)
+    for perfil in PERFILES:
+        args = ["-c", upd, "--data-dir", datos, "-o", os.path.join(rel, perfil),
+                "--disable-conf", dis[perfil], "--enable-conf", vacio,
+                "--modify-conf", vacio, "--drop-conf", vacio,
+                "--etopen", "--no-test", "--fail"]
+        if perfil != "completo":
+            args.append("--offline")
+        log("suricata-update: perfil %s" % perfil)
+        salida = ejecutar_suricata_update(ejecutar, args, registro)
+        if perfil == "completo":
+            url_sha = tarball_et(datos, salida)
+    return url_sha
+
+
+def completar_perfil(rel, perfil, share, ts, raiz):
+    """local.rules, classification.config y comprobaciones. Devuelve el número de reglas."""
+    d = os.path.join(rel, perfil)
+    reglas = os.path.join(d, "suricata.rules")
+    if not os.path.isfile(reglas):
+        raise ErrorReglas("%s: suricata-update no dejó suricata.rules" % perfil)
+    with open(reglas, encoding="utf-8", errors="replace") as f:
+        texto = f.read()
+    if not sid_activo(texto, SID_E2E):
+        raise ErrorReglas("%s: falta el sid %d (prueba de extremo a extremo)" % (perfil, SID_E2E))
+    dataset = "/".join((raiz.rstrip("/"), "releases", ts, "feeds", "domains.dataset"))
+    with open(os.path.join(share, "local.rules.tmpl"), encoding="utf-8") as f:
+        local = f.read().replace("@@DATASET@@", dataset)
+    if "@@" in local:
+        raise ErrorReglas("local.rules.tmpl: queda un marcador sin sustituir")
+    escribir(os.path.join(d, "local.rules"), local)
+    clas = os.path.join(d, "classification.config")
+    if not os.path.isfile(clas):
+        if not os.path.isfile(CLASIFICACION_SISTEMA):
+            raise ErrorReglas("%s: no hay classification.config" % perfil)
+        shutil.copyfile(CLASIFICACION_SISTEMA, clas)
+    for nombre in os.listdir(d):
+        os.chmod(os.path.join(d, nombre), 0o644)
+    os.chmod(d, 0o755)
+    return len(reglas_activas(texto)) + len(reglas_activas(local))
+
+
+# --------------------------------------------------------------------------- release
+def descargar(ts, raiz=RAIZ, share=SHARE, ejecutar=subprocess.run, bajar=bajar_url,
+              ahora=time.time, imagen=None, salida=None):
+    """Genera releases/<ts>. Devuelve el código de salida; imprime el resumen JSON como
+    última línea de stdout."""
+    salida = sys.stdout if salida is None else salida
+    rel = None
+    creada = False
+    try:
+        if not RE_TS.fullmatch(ts or ""):
+            raise ErrorReglas("ts inválido: %r (UTC %%Y%%m%%dT%%H%%M%%SZ)" % ts)
+        time.strptime(ts, "%Y%m%dT%H%M%SZ")
+        releases = os.path.join(raiz, "releases")
+        os.makedirs(releases, exist_ok=True)
+        os.makedirs(os.path.join(raiz, "cache"), exist_ok=True)
+        rel = os.path.join(releases, ts)
+        try:
+            os.mkdir(rel, 0o755)
+        except FileExistsError:
+            raise ErrorReglas("la release %s ya existe" % ts)
+        creada = True
+        os.chmod(rel, 0o755)
+        version = version_suricata(ejecutar)
+        with tempfile.TemporaryDirectory(prefix="ids-reglas-") as tmp:
+            url_et, sha_et = generar_perfiles(rel, raiz, share, tmp, ejecutar)
+        dir_feeds = os.path.join(rel, "feeds")
+        os.makedirs(dir_feeds, 0o755, exist_ok=True)
+        cfg = cargar_feeds_json(os.path.join(share, "feeds.json"))
+        fuentes, n_dom = generar_feeds(cfg, dir_feeds, os.path.join(raiz, "cache", "feeds"),
+                                       bajar, ahora())
+        conteo = {p: completar_perfil(rel, p, share, ts, raiz) for p in PERFILES}
+        if imagen is None:
+            imagen = os.environ.get("IDS_IMAGEN") or (
+                "ghcr.io/mtandazo35/ids-maat-suricata:%s" % (os.environ.get("IDS_MAAT_VERSION") or "dev"))
+        manifest = {"v": 1, "ts": ts, "suricata_version": version, "imagen": imagen,
+                    "fuentes": [{"nombre": "et-open", "url": url_et, "sha256": sha_et}] + fuentes,
+                    "reglas": conteo, "dominios": n_dom}
+        escribir(os.path.join(rel, "MANIFEST.json"), json.dumps(manifest, indent=2) + "\n")
+        for d in (rel, dir_feeds):
+            fsync_dir(d)
+        resumen = dict(manifest, ok=True)
+        linea = json.dumps(resumen, separators=(",", ":"), sort_keys=True)
+        escribir(os.path.join(rel, "LISTO"), linea + "\n")
+        fsync_dir(rel)
+        print(linea, file=salida, flush=True)
+        return 0
+    except Exception as e:           # cualquier fallo: release fuera y código 1
+        log("FALLO: %s" % e)
+        if creada and rel:
+            shutil.rmtree(rel, ignore_errors=True)
+        print(json.dumps({"ok": False, "ts": ts, "error": str(e).splitlines()[0] if str(e) else type(e).__name__},
+                         separators=(",", ":"), sort_keys=True), file=salida, flush=True)
+        return 1
+
+
+def main(argv=None):
+    p = argparse.ArgumentParser(prog="ids-reglas")
+    sub = p.add_subparsers(dest="orden", required=True)
+    d = sub.add_parser("descargar", help="genera /reglas/releases/<ts>")
+    d.add_argument("--ts", required=True, help="UTC %%Y%%m%%dT%%H%%M%%SZ")
+    d.add_argument("--imagen", default=None, help="referencia de la imagen para MANIFEST.json")
+    a = p.parse_args(argv)
+    os.umask(0o022)
+    if a.orden == "descargar":
+        return descargar(a.ts, imagen=a.imagen)
+    return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -1,0 +1,28 @@
+# ids-maat — /etc/fail2ban/jail.d/10-ids.local, generado por install.sh; no editar.
+# RED-Y-FIREWALL §9 y CONTRATO-F1a §5.13. Las redes de gestión NO van en ignoreip.
+[DEFAULT]
+backend    = systemd
+banaction  = nftables[type=multiport]
+banaction_allports = nftables[type=allports]
+ignoreip   = 127.0.0.1/8 ::1 @@IGNOREIP_DUENO@@
+bantime    = 1h
+bantime.increment = true
+bantime.maxtime   = 1w
+findtime   = 10m
+maxretry   = 5
+
+[sshd]
+enabled      = true
+mode         = aggressive
+# Debian 13: los fallos los escribe sshd-session, hijo de ssh.service (el journalmatch del
+# filtro, _COMM=sshd, no los ve). filter.d/sshd.local admite el identificador sshd-session.
+journalmatch = _SYSTEMD_UNIT=ssh.service
+
+[ids-vpn]
+enabled      = true
+filter       = ids-vpn
+journalmatch = CONTAINER_TAG=ids-vpn
+# El DNAT conserva la IP de origen: se banea en el hook forward, antes que Docker.
+banaction    = nftables[type=allports, chain_hook=forward]
+# Cadena propia: la de sshd (f2b-chain) ya existe en la tabla f2b-table con el hook input.
+chain        = f2b-ids-vpn

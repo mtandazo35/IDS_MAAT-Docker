@@ -1,0 +1,1 @@
+alert http $HOME_NET any -> $EXTERNAL_NET any (msg:"ET HUNTING Prueba descarga ejecutable"; flow:established,to_server; http.uri; content:".exe"; endswith; classtype:bad-unknown; sid:2900040; rev:1;)

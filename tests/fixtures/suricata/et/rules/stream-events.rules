@@ -1,0 +1,1 @@
+alert tcp any any -> any any (msg:"SURICATA STREAM ESTABLISHED invalid ack"; stream-event:est_invalid_ack; classtype:protocol-command-decode; sid:2210029; rev:2;)

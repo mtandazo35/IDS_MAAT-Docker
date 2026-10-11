@@ -1,0 +1,361 @@
+%YAML 1.1
+---
+# ids-maat — suricata.yaml de un punto (plantilla_version 1).
+#
+# Plantilla COMPLETA (sin include:). El orquestador sustituye cada marcador de
+# plantilla.json con str.replace y falla si sobra o falta alguno. Nada se autodetecta:
+# dentro del contenedor /proc/meminfo y el número de CPU son los del host, así que hilos,
+# anillo y memcaps vienen fijados por punto.
+#
+# Ajustes de espejo (TZSP por la VPN, asimétrico y con pérdidas): midstream, async-oneside,
+# bypass, TLS en bypass tras el handshake, flujos TCP establecidos a 300 s, reensamblado a
+# 512kb por flujo y sin validar checksums (llegan rotos por offload).
+
+vars:
+  address-groups:
+    HOME_NET: "@@HOME_NET@@"
+    EXTERNAL_NET: "!$HOME_NET"
+    HTTP_SERVERS: "$HOME_NET"
+    SMTP_SERVERS: "$HOME_NET"
+    SQL_SERVERS: "$HOME_NET"
+    DNS_SERVERS: "$HOME_NET"
+    TELNET_SERVERS: "$HOME_NET"
+    AIM_SERVERS: "$EXTERNAL_NET"
+    DC_SERVERS: "$HOME_NET"
+    DNP3_SERVER: "$HOME_NET"
+    DNP3_CLIENT: "$HOME_NET"
+    MODBUS_CLIENT: "$HOME_NET"
+    MODBUS_SERVER: "$HOME_NET"
+    ENIP_CLIENT: "$HOME_NET"
+    ENIP_SERVER: "$HOME_NET"
+  port-groups:
+    HTTP_PORTS: "80"
+    SHELLCODE_PORTS: "!80"
+    ORACLE_PORTS: "1521"
+    SSH_PORTS: "22"
+    DNP3_PORTS: "20000"
+    MODBUS_PORTS: "502"
+    FILE_DATA_PORTS: "[$HTTP_PORTS,110,143]"
+    FTP_PORTS: "21"
+    GENEVE_PORTS: "6081"
+    VXLAN_PORTS: "4789"
+    TEREDO_PORTS: "3544"
+
+# Sale como "host" en cada evento del eve.
+sensor-name: @@SENSOR_NAME@@
+
+default-log-dir: /var/log/suricata
+
+# Reglas: /reglas es el directorio padre montado; current es un enlace relativo a la release.
+default-rule-path: @@RULE_PATH@@
+rule-files:
+  - suricata.rules
+  - local.rules
+
+# classification.config viaja con cada perfil de la release (lo deja ids-reglas): una regla
+# con un classtype desconocido no carga.
+classification-file: @@RULE_PATH@@/classification.config
+reference-config-file: /etc/suricata/reference.config
+threshold-file: /etc/ids/suricata/threshold.config
+
+# El dataset de feeds se carga solo con load (sin save/state) desde la release.
+datasets:
+  defaults:
+    memcap: 64mb
+    hashsize: 65536
+  rules:
+    allow-write: no
+    allow-absolute-filenames: yes
+
+stats:
+  enabled: yes
+  interval: 30
+
+outputs:
+  - fast:
+      enabled: no
+      filename: fast.log
+      append: yes
+
+  # eve principal: sin flow, dns, quic, anomaly, ike ni bittorrent-dht (con espejo real
+  # eran casi todo el volumen). stats con totales y sin hilos.
+  - eve-log:
+      enabled: yes
+      filetype: regular
+      filename: eve.json
+      community-id: yes
+      community-id-seed: 0
+      types:
+        - alert:
+            tagged-packets: yes
+        - http:
+            extended: yes
+        - tls:
+            extended: yes
+        - files:
+            force-magic: no
+        - smtp
+        - ftp
+        - rdp
+        - nfs
+        - smb
+        - tftp
+        - dcerpc
+        - krb5
+        - snmp
+        - rfb
+        - sip
+        - dhcp:
+            enabled: yes
+            extended: no
+        - ssh
+        - mqtt
+        - http2
+        - stats:
+            totals: yes
+            threads: no
+            deltas: no
+
+  # DNS aparte y solo consultas.
+  - eve-log:
+      enabled: yes
+      filetype: regular
+      filename: dns.json
+      types:
+        - dns:
+            requests: yes
+            responses: no
+
+  - stats:
+      enabled: no
+      filename: stats.log
+
+# Solo consola: va al log del contenedor. Nada de suricata.log en disco.
+logging:
+  default-log-level: notice
+  outputs:
+    - console:
+        enabled: yes
+
+# Captura en el extremo ids-mon del veth que alimenta tzsp-decap.
+af-packet:
+  - interface: ids-mon
+    threads: @@HILOS@@
+    cluster-id: @@CLUSTER_ID@@
+    cluster-type: cluster_flow
+    defrag: yes
+    use-mmap: yes
+    tpacket-v3: yes
+    ring-size: @@RING_SIZE@@
+    block-size: @@BLOCK_SIZE@@
+    snaplen: @@SNAPLEN@@
+    checksum-checks: no
+
+pcap-file:
+  checksum-checks: auto
+
+# Los offloads de ids-mon los apaga el contenedor vpn al crear el veth.
+capture:
+  disable-offloading: false
+
+host-mode: auto
+runmode: workers
+max-pending-packets: 1024
+default-packet-size: 1514
+
+unix-command:
+  enabled: yes
+  filename: /run/suricata/suricata-command.socket
+
+legacy:
+  uricontent: enabled
+
+app-layer:
+  protocols:
+    telnet:
+      enabled: yes
+    rfb:
+      enabled: yes
+      detection-ports:
+        dp: 5900, 5901, 5902, 5903, 5904, 5905, 5906, 5907, 5908, 5909
+    mqtt:
+      enabled: yes
+    krb5:
+      enabled: yes
+    bittorrent-dht:
+      enabled: yes
+    snmp:
+      enabled: yes
+    ike:
+      enabled: yes
+    tls:
+      enabled: yes
+      detection-ports:
+        dp: 443
+      encryption-handling: bypass
+    pgsql:
+      enabled: no
+    dcerpc:
+      enabled: yes
+    ftp:
+      enabled: yes
+    rdp:
+      enabled: yes
+    ssh:
+      enabled: yes
+    http2:
+      enabled: yes
+    smtp:
+      enabled: yes
+    imap:
+      enabled: detection-only
+    smb:
+      enabled: yes
+      detection-ports:
+        dp: 139, 445
+    nfs:
+      enabled: yes
+    tftp:
+      enabled: yes
+    dns:
+      tcp:
+        enabled: yes
+        detection-ports:
+          dp: 53
+      udp:
+        enabled: yes
+        detection-ports:
+          dp: 53
+    http:
+      enabled: yes
+      libhtp:
+        default-config:
+          personality: IDS
+          request-body-limit: 100kb
+          response-body-limit: 100kb
+    modbus:
+      enabled: no
+      detection-ports:
+        dp: 502
+    dnp3:
+      enabled: no
+      detection-ports:
+        dp: 20000
+    enip:
+      enabled: no
+      detection-ports:
+        dp: 44818
+        sp: 44818
+    ntp:
+      enabled: yes
+    quic:
+      enabled: yes
+    dhcp:
+      enabled: yes
+    sip:
+      enabled: yes
+
+asn1-max-frames: 256
+
+coredump:
+  max-dump: 0
+
+flow:
+  memcap: @@FLOW_MEMCAP@@
+  hash-size: 65536
+  prealloc: 10000
+  emergency-recovery: 30
+
+vlan:
+  use-for-tracking: true
+
+flow-timeouts:
+  default:
+    new: 30
+    established: 300
+    closed: 0
+    bypassed: 100
+    emergency-new: 10
+    emergency-established: 100
+    emergency-closed: 0
+    emergency-bypassed: 50
+  tcp:
+    new: 60
+    established: 300
+    closed: 60
+    bypassed: 100
+    emergency-new: 5
+    emergency-established: 100
+    emergency-closed: 10
+    emergency-bypassed: 50
+  udp:
+    new: 30
+    established: 300
+    bypassed: 100
+    emergency-new: 10
+    emergency-established: 100
+    emergency-bypassed: 50
+  icmp:
+    new: 30
+    established: 300
+    bypassed: 100
+    emergency-new: 10
+    emergency-established: 100
+    emergency-bypassed: 50
+
+stream:
+  memcap: @@STREAM_MEMCAP@@
+  checksum-validation: no
+  inline: no
+  midstream: true
+  async-oneside: true
+  bypass: yes
+  reassembly:
+    memcap: @@REASSEMBLY_MEMCAP@@
+    depth: 512kb
+    toserver-chunk-size: 2560
+    toclient-chunk-size: 2560
+    randomize-chunk-size: yes
+
+host:
+  hash-size: 4096
+  prealloc: 1000
+  memcap: 32mb
+
+defrag:
+  memcap: @@DEFRAG_MEMCAP@@
+  hash-size: 65536
+  trackers: 65535
+  max-frags: 65535
+  prealloc: yes
+  timeout: 60
+
+decoder:
+  teredo:
+    enabled: true
+    ports: $TEREDO_PORTS
+  vxlan:
+    enabled: true
+    ports: $VXLAN_PORTS
+  geneve:
+    enabled: true
+    ports: $GENEVE_PORTS
+
+detect:
+  profile: @@DETECT_PROFILE@@
+  custom-values:
+    toclient-groups: 3
+    toserver-groups: 25
+  sgh-mpm-context: @@SGH_MPM_CONTEXT@@
+  inspection-recursion-limit: 3000
+  prefilter:
+    default: mpm
+
+mpm-algo: @@MPM_ALGO@@
+spm-algo: @@SPM_ALGO@@
+
+# La afinidad la da el cpuset de Docker; hilos fijos en af-packet.
+threading:
+  set-cpu-affinity: no
+  detect-thread-ratio: 1.0
+

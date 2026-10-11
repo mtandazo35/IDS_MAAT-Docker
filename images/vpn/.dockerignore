@@ -1,0 +1,3 @@
+# Contexto de build de images/vpn: nada de cachés de Python de las pruebas.
+**/__pycache__
+**/*.pyc

@@ -1,0 +1,25 @@
+%YAML 1.1
+---
+# Ejemplo de plantilla de C (CONTRATO-F1a §8.1): solo lleva los marcadores de §4.6.1.
+sensor-name: @@SENSOR_NAME@@
+vars:
+  address-groups:
+    HOME_NET: "@@HOME_NET@@"
+default-rule-path: @@RULE_PATH@@
+rule-files: [suricata.rules, local.rules]
+threshold-file: /etc/ids/suricata/threshold.config
+af-packet:
+  - interface: ids-mon
+    cluster-id: @@CLUSTER_ID@@
+    threads: @@HILOS@@
+    ring-size: @@RING_SIZE@@
+    block-size: @@BLOCK_SIZE@@
+    snaplen: @@SNAPLEN@@
+detect:
+  profile: @@DETECT_PROFILE@@
+  sgh-mpm-context: @@SGH_MPM_CONTEXT@@
+mpm-algo: @@MPM_ALGO@@
+spm-algo: @@SPM_ALGO@@
+flow: {memcap: @@FLOW_MEMCAP@@}
+stream: {memcap: @@STREAM_MEMCAP@@, reassembly: {memcap: @@REASSEMBLY_MEMCAP@@}}
+defrag: {memcap: @@DEFRAG_MEMCAP@@}

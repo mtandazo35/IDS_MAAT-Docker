@@ -1,0 +1,10 @@
+# ids-maat: descarga, valida y activa las reglas ET y los feeds; reinicia los suricata en serie.
+[Unit]
+Description=IDS-MAAT: actualización de reglas (ids-orq reglas actualizar)
+After=ids-orq.service
+Requires=ids-orq.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/ids-orq reglas actualizar
+TimeoutStartSec=2h

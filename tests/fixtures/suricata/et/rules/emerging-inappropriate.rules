@@ -1,0 +1,1 @@
+alert http $HOME_NET any -> $EXTERNAL_NET any (msg:"ET INAPPROPRIATE Prueba"; flow:established,to_server; http.host; content:"adult.example"; classtype:policy-violation; sid:2900070; rev:1;)

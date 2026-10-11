@@ -1,0 +1,132 @@
+"""Ficheros del host: daemon.json, logrotate (con logrotate real si existe), módulos, sysctl, sshd y
+`ids-orq fw-render` (lo que usa install.sh para el firewall)."""
+
+import json
+import os
+import shutil
+import subprocess
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import _ayuda_orq as A  # noqa: E402
+
+REPO = Path(__file__).resolve().parents[1]
+H = REPO / "host"
+
+LOGROTATE_CONTRATO = """/srv/ids/datos/*/eve.json /srv/ids/datos/*/dns.json {
+    maxsize 1G
+    maxage 3
+    rotate 4
+    compress
+    delaycompress
+    missingok
+    notifempty
+    nocreate
+    sharedscripts
+    postrotate
+        /usr/local/bin/ids-orq reabrir-logs >/dev/null 2>&1 || true
+    endscript
+}
+/srv/ids/estado/orq.jsonl {
+    monthly
+    rotate 24
+    compress
+    missingok
+    notifempty
+    nocreate
+}
+"""
+
+
+class Ficheros(unittest.TestCase):
+    def test_daemon_json(self):
+        d = json.loads((H / "docker" / "daemon.json").read_text(encoding="utf-8"))
+        self.assertEqual(d, {"userland-proxy": False, "live-restore": True, "no-new-privileges": True,
+                             "log-driver": "local", "log-opts": {"max-size": "10m", "max-file": "3"},
+                             "default-address-pools": [{"base": "10.210.0.0/16", "size": 28}],
+                             "bip": "10.210.254.1/24"})
+
+    def test_logrotate_exacto(self):
+        txt = (H / "logrotate" / "ids-maat.conf").read_text(encoding="utf-8")
+        self.assertEqual(txt, LOGROTATE_CONTRATO)
+        self.assertNotIn("copytruncate", txt)
+
+    def test_modulos_sysctl_ssh(self):
+        mods = [x for x in (H / "modules" / "ids.conf").read_text(encoding="utf-8").splitlines()
+                if x and not x.startswith("#")]
+        self.assertEqual(mods, ["tun", "veth", "nft_ct"])
+        sysctl = [x for x in (H / "sysctl" / "90-ids.conf").read_text(encoding="utf-8").splitlines()
+                  if x and not x.startswith("#")]
+        self.assertEqual(sysctl, ["net.core.rmem_max=33554432"])
+        ssh = {x.split()[0].lower(): x.split()[1] for x in (H / "ssh" / "10-ids.conf").read_text(encoding="utf-8")
+               .splitlines() if x and not x.startswith("#")}
+        self.assertEqual(ssh["passwordauthentication"], "no")
+        self.assertEqual(ssh["kbdinteractiveauthentication"], "no")
+
+
+@unittest.skipUnless(sys.platform.startswith("linux") and shutil.which("logrotate"), "sin logrotate")
+class LogrotateReal(unittest.TestCase):
+    def test_rota_y_pide_reabrir(self):
+        d = Path(tempfile.mkdtemp(prefix="lr-"))
+        try:
+            marca = d / "reabierto"
+            orq = d / "ids-orq"
+            orq.write_text("#!/bin/sh\necho \"$@\" > %s\n" % marca, encoding="utf-8")
+            orq.chmod(0o755)
+            conf = LOGROTATE_CONTRATO.replace("/srv/ids", str(d / "srv/ids")).replace("/usr/local/bin/ids-orq", str(orq))
+            (d / "lr.conf").write_text(conf, encoding="utf-8")
+            eve = d / "srv/ids/datos/p001/eve.json"
+            eve.parent.mkdir(parents=True)
+            eve.write_text("x" * 100 + "\n", encoding="utf-8")
+            r = subprocess.run(["logrotate", "-f", "-s", str(d / "estado"), str(d / "lr.conf")],
+                               capture_output=True, text=True)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertTrue((d / "srv/ids/datos/p001/eve.json.1").exists())
+            self.assertFalse(eve.exists())                          # nocreate: lo reabre Suricata
+            self.assertEqual(marca.read_text().strip(), "reabrir-logs")
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+
+
+class FwRender(unittest.TestCase):
+    def setUp(self):
+        self.mod, self.e, self.s, self.orq = A.preparar()
+
+    def tearDown(self):
+        A.cerrar(self.orq, self.e)
+
+    def test_sin_puntos(self):
+        self.orq.db.close()
+        os.remove(self.e.ruta("/srv/ids/estado/orq.db"))
+        self.assertEqual(self.mod.main(["fw-render", "--aplicar"]), 0)
+        txt = self.e.ruta("/srv/ids/fw/ids_host.nft").read_text(encoding="utf-8")
+        self.assertIn("set puertos_vpn { type inet_service; }", txt)
+        self.assertEqual([a[:2] for a in self.s.llamadas], [["nft", "-c"], ["nft", "-f"]])
+        self.assertFalse(self.e.ruta("/srv/ids/fw/ids_host.nuevo.nft").exists())
+
+    def test_con_puntos_conserva_puertos(self):
+        A.ejecutar_orden(self.orq, "punto.crear", {"nombre": "norte", "redes_abonados": ["10.0.0.0/24"]})
+        conf = self.e.ruta("/etc/ids-maat/ids.conf")
+        conf.write_text(conf.read_text(encoding="utf-8").replace("REDES_GESTION=192.0.2.0/25,198.51.100.0/26",
+                                                                  "REDES_GESTION=192.0.2.0/24"), encoding="utf-8")
+        self.assertEqual(self.mod.main(["fw-render", "--aplicar"]), 0)
+        txt = self.e.ruta("/srv/ids/fw/ids_host.nft").read_text(encoding="utf-8")
+        self.assertIn("elements = { 192.0.2.0/24 }", txt)
+        self.assertIn("set puertos_vpn { type inet_service; elements = { 1194 } }", txt)
+        # respaldo del firewall anterior antes de cambiarlo
+        self.assertTrue(list(self.e.ruta("/root/backups").glob("ids-maat-fw-*.nft")))
+
+    def test_nft_rechaza_no_se_instala(self):
+        self.orq.db.close()
+        os.remove(self.e.ruta("/srv/ids/estado/orq.db"))
+        self.s.fallar["nft -c"] = 1
+        self.assertEqual(self.mod.main(["fw-render", "--aplicar"]), 1)
+        self.assertFalse(self.e.ruta("/srv/ids/fw/ids_host.nft").exists())
+        self.assertEqual([a[:2] for a in self.s.llamadas], [["nft", "-c"]])
+
+
+if __name__ == "__main__":
+    unittest.main()

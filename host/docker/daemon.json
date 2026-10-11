@@ -1,0 +1,9 @@
+{
+  "userland-proxy": false,
+  "live-restore": true,
+  "no-new-privileges": true,
+  "log-driver": "local",
+  "log-opts": { "max-size": "10m", "max-file": "3" },
+  "default-address-pools": [ { "base": "10.210.0.0/16", "size": 28 } ],
+  "bip": "10.210.254.1/24"
+}

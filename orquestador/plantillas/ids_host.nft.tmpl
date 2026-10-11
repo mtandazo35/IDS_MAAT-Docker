@@ -1,0 +1,28 @@
+# ids-maat — generado por ids-orq; no editar (RED-Y-FIREWALL §7, CONTRATO-F1a §4.8)
+# Nunca «flush ruleset»: se borra y se recrea solo esta tabla.
+table inet ids_host
+delete table inet ids_host
+table inet ids_host {
+  set gestion     { type ipv4_addr; flags interval; elements = { @@GESTION@@ } }   # SSH
+  set proxy       { type ipv4_addr; flags interval; elements = { @@PROXY@@ } }     # panel
+  set puertos_vpn { type inet_service; @@PUERTOS_VPN@@}      # lo mantiene el orquestador
+
+  chain input {
+    type filter hook input priority filter - 10; policy drop;
+    iif lo accept
+    ct state established,related accept
+    ct state invalid drop
+    meta l4proto icmp icmp type { echo-request, destination-unreachable, time-exceeded } limit rate 20/second accept
+    meta l4proto ipv6-icmp icmpv6 type { nd-neighbor-solicit, nd-neighbor-advert, nd-router-advert, echo-request, packet-too-big, time-exceeded, parameter-problem, destination-unreachable } accept
+    ip saddr @gestion tcp dport 22 accept
+    counter comment "resto al host"
+  }
+
+  chain forward {
+    type filter hook forward priority filter - 10; policy accept;    # SOLO descarta
+    meta l4proto tcp ct direction original ct status dnat ct original proto-dst @@PUERTO_PANEL@@ ip saddr != @proxy counter drop comment "panel solo proxy"
+    @@LINEAS_ORIGEN_FIJO@@
+    meta l4proto tcp ct direction original ct status dnat ct original proto-dst @puertos_vpn ct state new meter vpn_new { ip saddr limit rate over 10/minute } counter drop comment "freno OpenVPN"
+    meta l4proto { tcp, udp } ct direction original ct status dnat ct original proto-dst != @puertos_vpn ct original proto-dst != @@PUERTO_PANEL@@ counter drop comment "nada publicado fuera de lo previsto"
+  }
+}

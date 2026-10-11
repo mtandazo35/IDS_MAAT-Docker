@@ -1,0 +1,9 @@
+# ids-maat: rotación de eve.json, dns.json y orq.jsonl con su propio estado (CONTRATO-F1a §5.14).
+[Unit]
+Description=IDS-MAAT: logrotate de los eve y del diario del orquestador
+
+[Service]
+Type=oneshot
+ExecStart=/usr/sbin/logrotate --state /var/lib/logrotate/ids-maat.status /etc/ids-maat/logrotate.conf
+Nice=10
+IOSchedulingClass=idle

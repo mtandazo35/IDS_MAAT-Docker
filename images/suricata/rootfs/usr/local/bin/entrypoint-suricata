@@ -1,0 +1,110 @@
+#!/usr/bin/env python3
+"""entrypoint-suricata — arranque del contenedor suricata (CONTRATO-F1a §5.2).
+
+1. umask 027 (con el setgid de /srv/ids/datos/<pid>, eve.json y dns.json quedan 0640 del
+   grupo 10500).
+2. Valida el entorno (§4.1): PUNTO ^p\\d{3}$, IDS_ESPERA_MON_S entero 1-600.
+3. Espera hasta IDS_ESPERA_MON_S segundos, sondeando cada 1 s, a que exista ids-mon en el
+   netns del proceso (socket.if_nametoindex, no /sys). Cubre el arranque tras reiniciar el
+   VPS, cuando dockerd levanta los contenedores sin aplicar depends_on. Si no aparece:
+   "entrypoint-suricata: ids-mon no existe tras N s" y exit 1.
+4. Comprueba que existen el suricata.yaml del punto y el suricata.rules de su
+   default-rule-path: un Suricata sin reglas arrancaría «sano» y ciego.
+5. exec /usr/bin/suricata -c /etc/ids/suricata/suricata.yaml --af-packet
+   --pidfile /run/suricata.pid (el pidfile va al tmpfs /run; la raíz es de solo lectura).
+
+Suricata corre como root del contenedor, sin --user (no hay CAP_SETUID).
+"""
+import os
+import re
+import socket
+import sys
+import time
+
+YAML = "/etc/ids/suricata/suricata.yaml"
+SURICATA = "/usr/bin/suricata"
+ARGV = [SURICATA, "-c", YAML, "--af-packet", "--pidfile", "/run/suricata.pid"]
+IFAZ = "ids-mon"
+UMASK = 0o027
+
+
+class ErrorArranque(Exception):
+    pass
+
+
+def validar_entorno(env):
+    """(punto, espera_s) o ErrorArranque con el motivo."""
+    punto = env.get("PUNTO", "")
+    if not re.fullmatch(r"p\d{3}", punto):
+        raise ErrorArranque("PUNTO inválido: %r (se espera ^p\\d{3}$)" % punto)
+    texto = env.get("IDS_ESPERA_MON_S", "60")
+    if not re.fullmatch(r"\d{1,3}", texto) or not 1 <= int(texto) <= 600:
+        raise ErrorArranque("IDS_ESPERA_MON_S inválido: %r (entero 1-600)" % texto)
+    return punto, int(texto)
+
+
+def existe_ids_mon(nombre=IFAZ):
+    try:
+        socket.if_nametoindex(nombre)
+        return True
+    except OSError:
+        return False
+
+
+def esperar_mon(espera_s, existe=existe_ids_mon, dormir=time.sleep, reloj=time.monotonic):
+    """True si ids-mon aparece antes de espera_s segundos. Sondea cada 1 s."""
+    fin = reloj() + espera_s
+    while True:
+        if existe():
+            return True
+        if reloj() >= fin:
+            return False
+        dormir(1)
+
+
+def ruta_reglas(yaml_texto):
+    """El default-rule-path del yaml renderizado, o None."""
+    m = re.search(r"^default-rule-path:\s*(\S+)\s*$", yaml_texto, re.M)
+    return m.group(1).strip("'\"") if m else None
+
+
+def comprobar_config(yaml=YAML):
+    try:
+        with open(yaml, encoding="utf-8") as f:
+            texto = f.read()
+    except OSError as e:
+        raise ErrorArranque("no se puede leer %s: %s" % (yaml, e.strerror or e))
+    reglas = ruta_reglas(texto)
+    if not reglas:
+        raise ErrorArranque("%s no tiene default-rule-path" % yaml)
+    fichero = os.path.join(reglas, "suricata.rules")
+    if not os.path.isfile(fichero):
+        raise ErrorArranque("no existe %s (¿falta la release de reglas o el enlace current?)" % fichero)
+
+
+def main(env=None, existe=existe_ids_mon, dormir=time.sleep, reloj=time.monotonic,
+         execv=os.execv, umask=os.umask, yaml=YAML, err=None):
+    env = os.environ if env is None else env
+    err = sys.stderr if err is None else err
+    umask(UMASK)
+    try:
+        punto, espera = validar_entorno(env)
+    except ErrorArranque as e:
+        print("entrypoint-suricata: %s" % e, file=err, flush=True)
+        return 1
+    if not esperar_mon(espera, existe, dormir, reloj):
+        print("entrypoint-suricata: %s no existe tras %d s" % (IFAZ, espera), file=err, flush=True)
+        return 1
+    try:
+        comprobar_config(yaml)
+    except ErrorArranque as e:
+        print("entrypoint-suricata: %s" % e, file=err, flush=True)
+        return 1
+    print("entrypoint-suricata: punto %s, %s presente; arranca suricata" % (punto, IFAZ),
+          file=err, flush=True)
+    execv(SURICATA, ARGV)
+    return 1                       # solo si execv vuelve (en las pruebas)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -1,0 +1,12 @@
+#!/bin/sh
+# openvpn (longrun): CONTRATO-F1a §4.4 y §5.1. Sin user/group (no hay CAP_SETUID).
+# umask 027 y fichero de estado creado ANTES de openvpn: OpenVPN puede abrir el `status` con
+# modo 0600 propio, así que se crea aquí 0640 (grupo 10500 por el setgid de /run/ids) y OpenVPN
+# solo lo trunca y lo reescribe, sin cambiar el modo.
+exec 2>&1
+umask 027
+estado=/run/ids/openvpn-status.log
+if ! { : >> "$estado" && chmod 0640 "$estado"; }; then
+  echo "openvpn/run: aviso: no se pudo preparar $estado"
+fi
+exec openvpn --config /etc/ids/vpn/server.conf

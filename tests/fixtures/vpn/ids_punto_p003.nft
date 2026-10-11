@@ -1,0 +1,20 @@
+table inet ids_punto
+delete table inet ids_punto
+table inet ids_punto {
+  chain input {
+    type filter hook input priority filter; policy drop;
+    iif lo accept
+    ct state established,related accept
+    iifname "eth0" tcp dport 1194 accept comment "OpenVPN (DNAT del host)"
+    iifname "tun0" ip saddr 100.64.3.2 udp dport 37008 counter accept comment "espejo TZSP"
+    counter comment "resto"
+  }
+  chain output {
+    type filter hook output priority filter; policy drop;
+    oif lo accept
+    ct state established,related accept
+    oifname "tun0" ip daddr 100.64.3.2 tcp dport 8729 accept comment "API via rele"
+    counter comment "resto"
+  }
+  chain forward { type filter hook forward priority filter; policy drop; }
+}

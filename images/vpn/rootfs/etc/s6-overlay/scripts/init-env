@@ -1,0 +1,5 @@
+#!/bin/sh
+# init-env (oneshot 1/4): valida el entorno de CONTRATO-F1a §4.1.
+# Si falla, s6 detiene el contenedor (S6_BEHAVIOUR_IF_STAGE2_FAILS=2).
+set -eu
+exec python3 /usr/local/lib/ids-vpn/render.py validar

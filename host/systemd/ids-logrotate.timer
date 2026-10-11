@@ -1,0 +1,11 @@
+# ids-maat: logrotate cada 30 min (el maxsize 1G solo se mira cuando corre).
+[Unit]
+Description=IDS-MAAT: logrotate cada 30 min
+
+[Timer]
+OnCalendar=*:0/30
+AccuracySec=1min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

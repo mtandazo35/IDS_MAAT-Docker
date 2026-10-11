@@ -1,0 +1,6 @@
+203.0.113.45:51234 TLS Auth Error: Auth Username/Password verification failed for peer
+203.0.113.45:51234 TLS Error: TLS handshake failed
+203.0.113.45:51234 ovpn-auth: rechazado usuario=vpn3a9f2c motivo=clave
+203.0.113.45:51234 ovpn-auth: rechazado usuario=- motivo=freno
+203.0.113.45:51234 ovpn-auth: aceptado usuario=vpn3a9f2c
+tzsp-decap: rx=10 tx=10 descartados=0 muy_grandes=0 rechazados_origen=0 ultimo_origen=100.64.3.2

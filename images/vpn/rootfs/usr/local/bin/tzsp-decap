@@ -1,0 +1,335 @@
+#!/usr/bin/env python3
+"""tzsp-decap: recibe TZSP (UDP) del MikroTik y reinyecta las tramas Ethernet en `ids-in`.
+
+Adaptado de tzsp-decap.py de suricata-ids-lab @ 5b89110 (CONTRATO-F1a §5.4):
+un solo origen (`TZSP_ALLOW`), una sola interfaz (`TZSP_OUT_IF`), sin `TZSP_MAP`, latido
+cada 30 s en `TZSP_ESTADO` llegue o no tráfico, y esquema v1 de `tzsp.json`.
+
+Formato TZSP: version(1)=1 | type(1) 0=recibido,1=tx | encap(2) 1=Ethernet |
+tags: 0x00=padding (sin longitud), 0x01=END (sin longitud), otros: tipo(1)+len(1)+data |
+payload = trama Ethernet completa.
+
+Entorno (lo pone el `run` de s6): TZSP_PORT, TZSP_ALLOW, TZSP_OUT_IF, TZSP_ESTADO,
+TZSP_BYTES, PUNTO.
+
+Importable en Windows: nada de AF_PACKET ni de sockets a nivel de módulo.
+"""
+import ipaddress
+import json
+import os
+import socket
+import struct
+import sys
+import time
+
+LATIDO_S = 30              # tzsp.json se reescribe cada 30 s (lo usa salud-vpn: < 90 s)
+RESUMEN_S = 60             # una línea "tzsp-decap: ..." por stdout cada 60 s
+RECORTE_TTL = 120          # un flujo callado este tiempo se olvida
+RECORTE_MAX = 200000       # tope de flujos vivos; si se pasa, se limpia todo
+RECHAZADOS_MAX = 256       # tope de orígenes distintos en ventana.rechazados
+RCVBUF = 16 << 20          # 16 MB
+
+
+class ErrorConfig(ValueError):
+    """Configuración del receptor inválida: no se arranca (fail-closed)."""
+
+
+def decap(d):
+    """Saca la trama Ethernet de un datagrama TZSP. None si no es TZSP Ethernet válido."""
+    if len(d) < 5 or d[0] != 1 or d[1] not in (0, 1):
+        return None
+    if struct.unpack("!H", d[2:4])[0] != 1:
+        return None
+    i = 4
+    n = len(d)
+    while i < n:
+        tag = d[i]
+        if tag == 0x01:
+            i += 1
+            break
+        if tag == 0x00:
+            i += 1
+            continue
+        if i + 1 >= n:
+            return None
+        i += 2 + d[i + 1]
+    return d[i:] if i < n else None
+
+
+def leer_allow(texto):
+    """Lista de redes autorizadas (separadas por coma).
+
+    Fail-closed: una entrada inválida invalida la lista entera (ErrorConfig); el original la
+    ignoraba en silencio. Lista vacía = [] y quien llama no arranca."""
+    redes = []
+    for c in (texto or "").replace(" ", "").split(","):
+        if c:
+            try:
+                redes.append(ipaddress.ip_network(c, strict=False))
+            except ValueError:
+                raise ErrorConfig(f"TZSP_ALLOW contiene un origen inválido: {c!r}") from None
+    return redes
+
+
+def clave_flujo(f):
+    """Identidad del flujo a partir de la trama Ethernet, igual en los dos sentidos.
+
+    Devuelve None si no es IPv4/TCP/UDP legible: lo que no sepamos leer se reenvía siempre,
+    que es lo seguro. Recortar a ciegas algo que no entendemos crearía puntos ciegos.
+    Cambio respecto al original: un fragmento IP (MF o desplazamiento != 0) no tiene puertos
+    fiables, así que tampoco se recorta."""
+    if len(f) < 34:
+        return None
+    et = f[12] << 8 | f[13]
+    off = 14
+    if et == 0x8100 and len(f) >= 38:      # VLAN
+        et = f[16] << 8 | f[17]
+        off = 18
+    if et != 0x0800:
+        return None
+    ihl = (f[off] & 0x0F) * 4
+    if ihl < 20 or len(f) < off + ihl + 4:
+        return None
+    frag = (f[off + 6] << 8 | f[off + 7]) & 0x3FFF   # MF + desplazamiento
+    if frag:
+        return None
+    proto = f[off + 9]
+    if proto not in (6, 17):
+        return None
+    src = bytes(f[off + 12:off + 16])
+    dst = bytes(f[off + 16:off + 20])
+    sp = f[off + ihl] << 8 | f[off + ihl + 1]
+    dp = f[off + ihl + 2] << 8 | f[off + ihl + 3]
+    # el DNS no se recorta nunca: es diminuto y es donde más se detecta
+    if proto == 17 and (sp == 53 or dp == 53):
+        return None
+    a, b = (src, sp), (dst, dp)
+    if a > b:
+        a, b = b, a
+    return (proto, a[0], a[1], b[0], b[1])
+
+
+class Receptor:
+    """Estado del receptor: filtro de origen, recorte por flujo, contadores y tzsp.json."""
+
+    def __init__(self, allow, recorte=0, estado_json=None, punto="", ahora=None):
+        self.allow = list(allow)
+        self.recorte = int(recorte)
+        self.estado_json = estado_json
+        self.punto = punto
+        ahora = time.time() if ahora is None else ahora
+        self.inicio = int(ahora)
+        self.rx = self.tx = self.descartados = self.muy_grandes = 0
+        self.rechazados = self.recortados = 0
+        self.flujos = {}               # clave -> [bytes reenviados, visto por última vez]
+        self.ultima_limpia = ahora
+        self.ventana_aceptados = {}
+        self.ventana_rechazados = {}
+        self.ultimo_visto = {}         # origen autorizado -> epoch del último paquete
+        self.ultimo_origen = "-"
+        self.ultima_escritura = None
+        self.ultimo_resumen = ahora
+
+    # --- filtro de origen ---------------------------------------------------------------
+    def permitido(self, ip):
+        if not self.allow:
+            return False        # fail-closed: sin lista de orígenes no se acepta nada
+        try:
+            a = ipaddress.ip_address(ip)
+        except ValueError:
+            return False
+        return any(a.version == n.version and a in n for n in self.allow)
+
+    # --- recorte por flujo --------------------------------------------------------------
+    def recortar(self, f, ahora):
+        """True = este paquete NO hace falta: su flujo ya superó `recorte` bytes."""
+        if not self.recorte:
+            return False
+        k = clave_flujo(f)
+        if k is None:
+            return False
+        if ahora - self.ultima_limpia > 30:
+            self.ultima_limpia = ahora
+            viejos = [x for x, v in self.flujos.items() if ahora - v[1] > RECORTE_TTL]
+            for x in viejos:
+                del self.flujos[x]
+            if len(self.flujos) > RECORTE_MAX:
+                self.flujos.clear()      # mejor perder la cuenta que la memoria
+        v = self.flujos.get(k)
+        if v is None:
+            self.flujos[k] = [len(f), ahora]
+            return False
+        v[1] = ahora
+        if v[0] >= self.recorte:
+            return True
+        v[0] += len(f)
+        return False
+
+    # --- un datagrama -------------------------------------------------------------------
+    def procesar(self, d, origen, ahora, enviar):
+        """Procesa un datagrama TZSP de `origen`. `enviar(trama)` inyecta en ids-in."""
+        self.rx += 1
+        self.ultimo_origen = origen
+        if not self.permitido(origen):
+            self.rechazados += 1
+            if origen in self.ventana_rechazados or len(self.ventana_rechazados) < RECHAZADOS_MAX:
+                self.ventana_rechazados[origen] = self.ventana_rechazados.get(origen, 0) + 1
+            return "rechazado"
+        self.ventana_aceptados[origen] = self.ventana_aceptados.get(origen, 0) + 1
+        self.ultimo_visto[origen] = int(ahora)
+        f = decap(d)
+        if f is None or len(f) < 14:
+            self.descartados += 1
+            return "descartado"
+        if self.recortar(f, ahora):
+            self.recortados += 1
+            return "recortado"
+        try:
+            enviar(f)
+        except OSError:
+            self.muy_grandes += 1
+            return "muy_grande"
+        self.tx += 1
+        return "enviado"
+
+    # --- estado y resumen ---------------------------------------------------------------
+    def estado(self, ahora):
+        previa = self.ultima_escritura
+        return {
+            "v": 1,
+            "punto": self.punto,
+            "ts": int(ahora),
+            "inicio": self.inicio,
+            "rx": self.rx,
+            "tx": self.tx,
+            "descartados": self.descartados,
+            "muy_grandes": self.muy_grandes,
+            "rechazados": self.rechazados,
+            "recortados": self.recortados,
+            "recorte_bytes": self.recorte,
+            "ventana": {
+                "segundos": 0 if previa is None else max(0, int(round(ahora - previa))),
+                "aceptados": dict(self.ventana_aceptados),
+                "rechazados": dict(self.ventana_rechazados),
+            },
+            "ultimo_visto": dict(self.ultimo_visto),
+            "esperados": [str(r) for r in self.allow],
+        }
+
+    def escribir_estado(self, ahora):
+        """Escribe tzsp.json de forma atómica (tmp + os.replace) y abre una ventana nueva."""
+        datos = self.estado(ahora)
+        if self.estado_json:
+            tmp = self.estado_json + ".tmp"
+            try:
+                with open(tmp, "w", encoding="utf-8") as fh:
+                    json.dump(datos, fh, separators=(",", ":"))
+                os.replace(tmp, self.estado_json)
+            except OSError as e:
+                print(f"tzsp-decap: no se pudo escribir {self.estado_json}: {e.strerror}",
+                      file=sys.stderr, flush=True)
+        self.ventana_aceptados.clear()
+        self.ventana_rechazados.clear()
+        self.ultima_escritura = ahora
+        return datos
+
+    def resumen(self):
+        rec = f" recortados={self.recortados}" if self.recorte else ""
+        return (f"tzsp-decap: rx={self.rx} tx={self.tx} descartados={self.descartados} "
+                f"muy_grandes={self.muy_grandes} rechazados_origen={self.rechazados}{rec} "
+                f"ultimo_origen={self.ultimo_origen}")
+
+    # --- bucle --------------------------------------------------------------------------
+    def bucle(self, rx, enviar, reloj=time.time, salida=None, max_vueltas=None):
+        """Recibe, procesa y escribe el latido. `rx` es un socket UDP (o uno falso).
+
+        El socket lleva settimeout(30): sin tráfico, `socket.timeout` despierta el bucle
+        y se escribe igual. Con tráfico se escribe en cuanto vence el plazo; el timeout de
+        cada espera se acorta a lo que falta para el siguiente latido (nunca más de 30 s)."""
+        salida = sys.stdout if salida is None else salida
+        ahora = reloj()
+        self.escribir_estado(ahora)
+        self.ultimo_resumen = ahora
+        vueltas = 0
+        while max_vueltas is None or vueltas < max_vueltas:
+            vueltas += 1
+            falta = LATIDO_S - (reloj() - self.ultima_escritura)
+            rx.settimeout(min(LATIDO_S, max(0.5, falta)))
+            try:
+                d, peer = rx.recvfrom(65535)
+            except socket.timeout:
+                d = peer = None
+            ahora = reloj()
+            if d is not None:
+                self.procesar(d, peer[0], ahora, enviar)
+            if ahora - self.ultima_escritura >= LATIDO_S:
+                self.escribir_estado(ahora)
+            if ahora - self.ultimo_resumen >= RESUMEN_S:
+                print(self.resumen(), file=salida, flush=True)
+                self.ultimo_resumen = ahora
+
+
+def config_desde_entorno(env):
+    """Lee y valida el entorno. Lanza ErrorConfig (fail-closed) si algo no vale."""
+    try:
+        puerto = int(env.get("TZSP_PORT", "37008"))
+    except ValueError:
+        raise ErrorConfig(f"TZSP_PORT={env.get('TZSP_PORT')!r} no es un entero") from None
+    if not 1 <= puerto <= 65535:
+        raise ErrorConfig(f"TZSP_PORT={puerto} fuera de rango")
+    allow = leer_allow(env.get("TZSP_ALLOW", ""))   # lanza ErrorConfig si hay una inválida
+    if not allow:
+        raise ErrorConfig("TZSP_ALLOW vacío o inválido: sin orígenes autorizados cualquiera "
+                          "podría inyectar tráfico forjado en el IDS, así que no se arranca")
+    try:
+        recorte = int(env.get("TZSP_BYTES", "0"))
+    except ValueError:
+        raise ErrorConfig(f"TZSP_BYTES={env.get('TZSP_BYTES')!r} no es un entero") from None
+    if recorte < 0:
+        raise ErrorConfig(f"TZSP_BYTES={recorte} es negativo")
+    return {
+        "puerto": puerto,
+        "allow": allow,
+        "recorte": recorte,
+        "out_if": env.get("TZSP_OUT_IF", "ids-in"),
+        "estado": env.get("TZSP_ESTADO", "/run/ids/tzsp.json"),
+        "punto": env.get("PUNTO", ""),
+    }
+
+
+def abrir_rx(puerto):
+    rx = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    rx.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    try:
+        # ignora net.core.rmem_max (no es por netns) cuando hay CAP_NET_ADMIN
+        rx.setsockopt(socket.SOL_SOCKET, getattr(socket, "SO_RCVBUFFORCE", 33), RCVBUF)
+    except OSError:
+        rx.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, RCVBUF)
+    rx.bind(("0.0.0.0", puerto))
+    rx.settimeout(LATIDO_S)
+    return rx
+
+
+def main(env=None):
+    env = os.environ if env is None else env
+    try:
+        cfg = config_desde_entorno(env)
+    except ErrorConfig as e:
+        print(f"tzsp-decap: {e}", file=sys.stderr, flush=True)
+        return 2
+    rx = abrir_rx(cfg["puerto"])
+    tx = socket.socket(socket.AF_PACKET, socket.SOCK_RAW)
+    tx.bind((cfg["out_if"], 0))
+    receptor = Receptor(cfg["allow"], cfg["recorte"], cfg["estado"], cfg["punto"])
+    print(f"tzsp-decap: escuchando UDP {cfg['puerto']} -> {cfg['out_if']} "
+          f"(solo desde {','.join(str(r) for r in cfg['allow'])}, recorte {cfg['recorte']} B)",
+          flush=True)
+    receptor.bucle(rx, tx.send)
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main() or 0)
+    except KeyboardInterrupt:
+        sys.exit(0)

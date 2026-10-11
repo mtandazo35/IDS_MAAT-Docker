@@ -1,0 +1,27 @@
+# ids-maat: orquestador (servicio + socket /run/ids-orq/orq.sock). Encierro de ORQUESTADOR §1.1.
+[Unit]
+Description=IDS-MAAT: orquestador ids-orq
+Documentation=https://github.com/mtandazo35/IDS_MAAT-Docker/blob/main/docs/ORQUESTADOR.md
+After=docker.service ids-host-fw.service
+Requires=docker.service
+Wants=ids-host-fw.service
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/ids-orq servicio
+Restart=always
+RestartSec=5
+RuntimeDirectory=ids-orq
+RuntimeDirectoryMode=0750
+UMask=0027
+TimeoutStopSec=30
+# el CLI de docker escribe su configuración aquí, no en /root (ProtectHome=read-only)
+Environment=DOCKER_CONFIG=/srv/ids/estado/docker PYTHONUNBUFFERED=1
+ProtectSystem=strict
+ReadWritePaths=/srv/ids /root/backups /run/ids-orq
+PrivateTmp=yes
+ProtectHome=read-only
+NoNewPrivileges=yes
+
+[Install]
+WantedBy=multi-user.target
