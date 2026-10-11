@@ -93,6 +93,65 @@ class TextoNft(unittest.TestCase):
         self.assertEqual(render.nft_mon(), esperado)
 
 
+# Lo que imprime `nft list table` (nftables 1.1) de las tablas de los fixtures: otra forma,
+# comillas en iif/oif y contadores. test_vpn_arranque.sh lo compara con ay.comparar_nft.
+LISTADO_PUNTO = """table inet ids_punto {
+\tchain input {
+\t\ttype filter hook input priority filter; policy drop;
+\t\tiif "lo" accept
+\t\tct state established,related accept
+\t\tiifname "eth0" tcp dport 1194 accept comment "OpenVPN (DNAT del host)"
+\t\tiifname "tun0" ip saddr 100.64.3.2 udp dport 37008 counter packets 12 bytes 3456 accept comment "espejo TZSP"
+\t\tcounter packets 0 bytes 0 comment "resto"
+\t}
+
+\tchain output {
+\t\ttype filter hook output priority filter; policy drop;
+\t\toif "lo" accept
+\t\tct state established,related accept
+\t\toifname "tun0" ip daddr 100.64.3.2 tcp dport 8729 accept comment "API via rele"
+\t\tcounter packets 0 bytes 0 comment "resto"
+\t}
+
+\tchain forward {
+\t\ttype filter hook forward priority filter; policy drop;
+\t}
+}
+"""
+LISTADO_MON = """table netdev ids_mon {
+\tchain ingreso {
+\t\ttype filter hook ingress device "ids-mon" priority -500; policy drop;
+\t}
+}
+"""
+
+
+class CompararNft(unittest.TestCase):
+    def setUp(self):
+        self.punto = (ay.FIXTURES / "ids_punto_p003.nft").read_text(encoding="utf-8")
+
+    def test_listado_igual_al_cargado(self):
+        self.assertIsNone(ay.comparar_nft(self.punto, LISTADO_PUNTO))
+        mon = (ay.FIXTURES / "ids_mon.nft").read_text(encoding="utf-8")
+        self.assertIsNone(ay.comparar_nft(mon, LISTADO_MON))
+
+    def test_tabla_ausente(self):
+        dif = ay.comparar_nft(self.punto, "Error: No such file or directory\n")
+        self.assertIsNotNone(dif)
+        self.assertIsNotNone(ay.comparar_nft(self.punto, ""))
+        self.assertIsNotNone(ay.comparar_nft("", ""))
+
+    def test_regla_distinta_de_menos_o_de_mas(self):
+        self.assertIsNotNone(ay.comparar_nft(self.punto, LISTADO_PUNTO.replace("100.64.3.2 udp", "100.64.3.9 udp")))
+        sin_api = "\n".join(l for l in LISTADO_PUNTO.split("\n") if "8729" not in l)
+        self.assertIsNotNone(ay.comparar_nft(self.punto, sin_api))
+        de_mas = LISTADO_PUNTO.replace('\t\tcounter packets 0 bytes 0 comment "resto"\n\t}\n\n\tchain output',
+                                       '\t\ttcp dport 22 accept\n\t\tcounter comment "resto"\n\t}\n\n\tchain output')
+        self.assertNotEqual(de_mas, LISTADO_PUNTO)
+        self.assertIsNotNone(ay.comparar_nft(self.punto, de_mas))
+        self.assertIsNotNone(ay.comparar_nft(self.punto, LISTADO_PUNTO.replace("policy drop", "policy accept")))
+
+
 class Cli(unittest.TestCase):
     def ejecutar(self, orden, env):
         p = subprocess.run([sys.executable, str(ay.RENDER), orden], env={**os.environ, **env, "PYTHONUTF8": "1"},

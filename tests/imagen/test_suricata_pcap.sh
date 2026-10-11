@@ -54,12 +54,15 @@ fi
 printf '# ids-maat p003 — generado por ids-orq; no editar\n' > "$TMP/conf/threshold.config"
 chmod -R a+rX "$TMP/conf"
 
-# --- suricata -r con umask 027, como el entrypoint; eve en un tmpfs del contenedor
+# --- suricata -r con umask 027, como el entrypoint; eve en un tmpfs del contenedor.
+# Con -r Suricata corre en modo USER y, sin -l, ignora default-log-dir y escribe en el
+# directorio actual («.», la raíz de solo lectura). En producción (--af-packet, modo SYSTEM)
+# vale el default-log-dir de la plantilla; aquí se le da el mismo directorio con -l.
 DENTRO=$(cat <<'SH'
 umask 027
 mkdir -p /run/suricata
 /usr/bin/suricata -c /etc/ids/suricata/suricata.yaml -r /pcap/alerta-2100498.pcap \
-  --pidfile /run/suricata.pid > /tmp/suricata.out 2>&1
+  -l /var/log/suricata --pidfile /run/suricata.pid > /tmp/suricata.out 2>&1
 rc=$?
 echo "=== RC $rc"
 [ "$rc" -eq 0 ] || cat /tmp/suricata.out

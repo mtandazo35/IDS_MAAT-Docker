@@ -123,13 +123,42 @@ docker run -d --name ids-e2e-cliente --cap-add NET_ADMIN --device /dev/net/tun \
   -v "$R/cliente:/c:ro" -v "$CHECKOUT/tests:/t:ro" --entrypoint openvpn "$IDS_IMG_VPN" \
   --config /c/cliente.conf >/dev/null
 conectado() { docker logs ids-e2e-cliente 2>&1 | grep -q "Initialization Sequence Completed"; }
-if esperar 90 conectado; then ok "el cliente se autentica"; else mal "el cliente no conecta"; docker logs ids-e2e-cliente 2>&1 | tail -20; fi
+# Diagnóstico del paso 2: lo que dicen los dos extremos del túnel y el camino entre ellos.
+diag_vpn() {
+  local ip_vpn
+  echo "---- cliente (docker logs ids-e2e-cliente)"; docker logs ids-e2e-cliente 2>&1 | tail -n 40
+  echo "---- servidor (docker logs ids-p001-vpn)"
+  docker logs ids-p001-vpn 2>&1 | tail -n 80 \
+    || journalctl --no-pager -n 80 CONTAINER_NAME=ids-p001-vpn 2>&1
+  echo "---- ids-p001-vpn: direcciones, sysctls (arp_ignore/rp_filter) y ruleset"
+  docker exec ids-p001-vpn ip -br addr 2>&1
+  docker exec ids-p001-vpn sh -c 'for d in /proc/sys/net/ipv4/conf/*; do echo "${d##*/} arp_ignore=$(cat "$d/arp_ignore") rp_filter=$(cat "$d/rp_filter")"; done' 2>&1
+  docker exec ids-p001-vpn nft list ruleset 2>&1
+  ip_vpn=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' ids-p001-vpn)
+  echo "---- host: conexión directa a $ip_vpn:1194 y vecinos"
+  if timeout 6 bash -c "exec 3<>/dev/tcp/$ip_vpn/1194" 2>&1; then echo "TCP $ip_vpn:1194 abre"; else echo "TCP $ip_vpn:1194 NO abre"; fi
+  ip neigh show 2>&1 | grep -F "$ip_vpn" || echo "(sin entrada de vecino para $ip_vpn)"
+  ss -ltnp 2>/dev/null | grep -E ':1194\b' || true
+  iptables -t nat -S DOCKER 2>&1 | grep -E '1194|RETURN' || true
+  docker version --format 'docker {{.Server.Version}}' 2>&1
+}
+if esperar 90 conectado; then ok "el cliente se autentica"; else mal "el cliente no conecta"; diag_vpn; fi
 docker exec ids-e2e-cliente python3 /t/integracion/tzsp_enviar.py /t/fixtures/suricata/alerta-2100498.pcap 100.64.1.1 37008 5 \
   && ok "pcap enviado por TZSP" || mal "no se pudo enviar el TZSP"
 alerta() {
   grep '"signature_id":2100498' "$R/srv/ids/datos/p001/eve.json" 2>/dev/null | grep -q '"host":"p001"'
 }
-if esperar 120 alerta; then ok "alerta 2100498 con host = p001"; else mal "no apareció la alerta 2100498"; fi
+if esperar 120 alerta; then
+  ok "alerta 2100498 con host = p001"
+else
+  mal "no apareció la alerta 2100498"
+  echo "---- tzsp.json"; cat "$R/srv/ids/run/p001/tzsp.json" 2>&1
+  echo "---- eve.json (alertas)"; grep '"event_type":"alert"' "$R/srv/ids/datos/p001/eve.json" 2>&1 | tail -n 5
+  echo "---- suricata (docker logs ids-p001-suricata)"; docker logs ids-p001-suricata 2>&1 | tail -n 40
+  conectado && diag_vpn
+fi
+echo "  info memoria y CPU tras el paso 2:"
+docker stats --no-stream --format '         {{.Name}} {{.MemUsage}} cpu {{.CPUPerc}}' ids-p001-vpn ids-p001-suricata 2>&1
 
 echo "== 3. sin tráfico el vpn sigue sano"
 docker rm -f ids-e2e-cliente >/dev/null 2>&1

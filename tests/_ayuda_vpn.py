@@ -1,6 +1,7 @@
 """Ayudas compartidas de las pruebas de la imagen `vpn` (constructor A)."""
 import importlib.machinery
 import importlib.util
+import re
 import shutil
 import socket
 import struct
@@ -99,3 +100,44 @@ def tzsp(trama, tipo=0, encap=1, tags=b"\x01", version=1):
 
 def trama_tcp(src="10.0.0.5", dst="192.0.2.80", sp=40000, dp=443, datos=b"x" * 100):
     return ethernet(ipv4(src, dst, 6, tcp(sp, dp, datos)))
+
+
+# --- comparación de tablas nft ---------------------------------------------------------------
+
+def normalizar_nft(texto):
+    """Lista ordenada de las sentencias de una tabla nft, sin lo que `nft list` cambia.
+
+    Sirve para comparar el .nft que se carga (`table x; delete table x; table x { ... }`, cadenas
+    en una línea) con lo que devuelve `nft list table`: quita los contadores (`packets N bytes N`),
+    las comillas, las líneas `table`/`delete table` y la forma (llaves, `;`, sangría). Las reglas
+    quedan en orden, una por elemento: una regla de más, de menos o distinta cambia la lista."""
+    texto = re.sub(r"\bpackets \d+ bytes \d+", "", texto).replace('"', "")
+    out = []
+    for trozo in re.split(r"[{};\n]", texto):
+        t = " ".join(trozo.split())
+        if not t or t.startswith(("table ", "delete table ")) or t.startswith("#"):
+            continue
+        out.append(t)
+    return out
+
+
+def comparar_nft(esperado, obtenido):
+    """None si coinciden; si no, un texto con las dos listas normalizadas."""
+    a, b = normalizar_nft(esperado), normalizar_nft(obtenido)
+    if a and a == b:
+        return None
+    return ("esperado (%d sentencias):\n  %s\nobtenido (%d sentencias):\n  %s"
+            % (len(a), "\n  ".join(a), len(b), "\n  ".join(b) or "(nada)"))
+
+
+if __name__ == "__main__":
+    # python3 tests/_ayuda_vpn.py comparar-nft <esperado.nft> <obtenido.txt>  (lo usa test_vpn_arranque.sh)
+    if len(sys.argv) == 4 and sys.argv[1] == "comparar-nft":
+        dif = comparar_nft(Path(sys.argv[2]).read_text(encoding="utf-8"),
+                           Path(sys.argv[3]).read_text(encoding="utf-8"))
+        if dif:
+            print(dif, file=sys.stderr)
+            sys.exit(1)
+        sys.exit(0)
+    print("uso: _ayuda_vpn.py comparar-nft <esperado.nft> <obtenido.txt>", file=sys.stderr)
+    sys.exit(2)

@@ -134,11 +134,27 @@ grep -q PROMISC <<<"$mon" || fallo "ids-mon no está en promisc: $mon"
 grep -q "mtu 65535" <<<"$mon" || fallo "ids-mon sin mtu 65535: $mon"
 ok "veth ids-in/ids-mon"
 
-docker exec "$CTR" nft list table inet ids_punto | grep -q 'ip saddr 100.64.3.2 udp dport 37008' \
-  || fallo "tabla inet ids_punto ausente o distinta"
-docker exec "$CTR" nft list table netdev ids_mon | grep -q 'hook ingress device "ids-mon"' \
-  || fallo "tabla netdev ids_mon ausente o distinta"
-ok "tablas nft"
+# `nft list table` reescribe el formato (comillas, contadores, una cadena por bloque): se compara
+# regla a regla, normalizado, con el fixture que la prueba unitaria de render.py fija. Sin tubería
+# a `grep -q`: con pipefail, el SIGPIPE de docker exec daba un falso «ausente».
+tabla_igual() {  # $1 = "familia nombre", $2 = fixture
+  local salida
+  # shellcheck disable=SC2086  # $1 son dos palabras a propósito
+  if ! salida="$(docker exec "$CTR" nft list table $1 2>&1)"; then
+    fallo "tabla $1 ausente: nft list table dijo: $salida"
+  fi
+  printf '%s\n' "$salida" > "$TMP/listado.nft"
+  if ! python3 "$RAIZ/tests/_ayuda_vpn.py" comparar-nft "$FIX/$2" "$TMP/listado.nft"; then
+    echo "--- nft list table $1 (tal cual)" >&2
+    cat "$TMP/listado.nft" >&2
+    fallo "tabla $1 distinta de $2"
+  fi
+}
+tabla_igual "inet ids_punto" ids_punto_p003.nft
+tabla_igual "netdev ids_mon" ids_mon.nft
+ok "tablas nft (inet ids_punto y netdev ids_mon iguales a los fixtures)"
+echo "test_vpn_arranque: info: sysctls por interfaz (arp_ignore rp_filter):" \
+  "$(docker exec "$CTR" sh -c 'for d in /proc/sys/net/ipv4/conf/*; do printf "%s=%s/%s " "${d##*/}" "$(cat "$d/arp_ignore")" "$(cat "$d/rp_filter")"; done' 2>&1)"
 
 [ "$("${SUDO[@]}" stat -c '%a %g %F' "$RUN/api.sock")" = "660 10500 socket" ] \
   || fallo "api.sock: $("${SUDO[@]}" stat -c '%a %g %F' "$RUN/api.sock" 2>&1)"
