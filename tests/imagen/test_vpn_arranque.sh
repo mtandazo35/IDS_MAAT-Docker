@@ -201,7 +201,20 @@ for _ in $(seq 1 30); do
 done
 [ "$(docker inspect -f '{{.State.Running}}' "$CTR_MALO")" = "false" ] \
   || fallo "con TUN_MK inválido el contenedor sigue en marcha"
-docker logs "$CTR_MALO" 2>&1 | grep -q "TUN_MK" || fallo "el log no explica que TUN_MK es inválido"
+# Sin `grep -q`: sale en la primera coincidencia, docker logs recibe SIGPIPE y, con pipefail, la
+# tubería falla aunque el texto esté (el fallo intermitente de CI). Se reintenta hasta 10 s por si
+# el log llega un poco después de que el contenedor conste parado.
+explica=0
+for _ in $(seq 1 10); do
+  if docker logs "$CTR_MALO" 2>&1 | grep -F "TUN_MK" >/dev/null; then explica=1; break; fi
+  sleep 1
+done
+if [ "$explica" != 1 ]; then
+  echo "--- logs de $CTR_MALO ---" >&2
+  docker logs "$CTR_MALO" 2>&1 | tail -n 40 >&2 || true
+  docker inspect -f 'estado={{.State.Status}} código={{.State.ExitCode}} error={{.State.Error}}' "$CTR_MALO" >&2 || true
+  fallo "el log no explica que TUN_MK es inválido"
+fi
 codigo="$(docker inspect -f '{{.State.ExitCode}}' "$CTR_MALO")"
 [ "$codigo" != "0" ] || fallo "salió con código 0"
 ok "TUN_MK inválido: el contenedor sale (código $codigo)"

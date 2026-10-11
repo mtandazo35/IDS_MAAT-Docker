@@ -122,7 +122,7 @@ EOF
 docker run -d --name ids-e2e-cliente --cap-add NET_ADMIN --device /dev/net/tun \
   -v "$R/cliente:/c:ro" -v "$CHECKOUT/tests:/t:ro" --entrypoint openvpn "$IDS_IMG_VPN" \
   --config /c/cliente.conf >/dev/null
-conectado() { docker logs ids-e2e-cliente 2>&1 | grep -q "Initialization Sequence Completed"; }
+conectado() { docker logs ids-e2e-cliente 2>&1 | grep -F "Initialization Sequence Completed" >/dev/null; }
 # Diagnóstico del paso 2: lo que dicen los dos extremos del túnel y el camino entre ellos.
 diag_vpn() {
   local ip_vpn
@@ -146,7 +146,7 @@ if esperar 90 conectado; then ok "el cliente se autentica"; else mal "el cliente
 docker exec ids-e2e-cliente python3 /t/integracion/tzsp_enviar.py /t/fixtures/suricata/alerta-2100498.pcap 100.64.1.1 37008 5 \
   && ok "pcap enviado por TZSP" || mal "no se pudo enviar el TZSP"
 alerta() {
-  grep '"signature_id":2100498' "$R/srv/ids/datos/p001/eve.json" 2>/dev/null | grep -q '"host":"p001"'
+  grep '"signature_id":2100498' "$R/srv/ids/datos/p001/eve.json" 2>/dev/null | grep -F '"host":"p001"' >/dev/null
 }
 if esperar 120 alerta; then
   ok "alerta 2100498 con host = p001"

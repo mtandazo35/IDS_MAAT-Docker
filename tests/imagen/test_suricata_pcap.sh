@@ -42,7 +42,7 @@ chmod -R a+rX "$TMP/reglas"
 # --- yaml del punto con la plantilla de la imagen (no la del repo: la que va a correr)
 docker run --rm --entrypoint cat "$IMG" /usr/share/ids-maat/suricata.yaml.tmpl > "$TMP/plantilla.tmpl"
 docker run --rm --entrypoint cat "$IMG" /usr/share/ids-maat/plantilla.json > "$TMP/plantilla.json"
-if docker run --rm --entrypoint /usr/bin/suricata "$IMG" --build-info | grep -qE 'Hyperscan support: *yes'; then
+if docker run --rm --entrypoint /usr/bin/suricata "$IMG" --build-info | grep -E 'Hyperscan support: *yes' >/dev/null; then
   MPM=hs; SPM=hs
 else
   MPM=ac-ks; SPM=bm

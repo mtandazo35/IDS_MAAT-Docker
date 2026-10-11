@@ -66,7 +66,7 @@ done
 # --- validación con suricata -T de los dos perfiles (como hace el orquestador)
 docker run --rm --entrypoint cat "$IMG" /usr/share/ids-maat/suricata.yaml.tmpl > "$TMP/plantilla.tmpl"
 docker run --rm --entrypoint cat "$IMG" /usr/share/ids-maat/plantilla.json > "$TMP/plantilla.json"
-if docker run --rm --entrypoint /usr/bin/suricata "$IMG" --build-info | grep -qE 'Hyperscan support: *yes'; then
+if docker run --rm --entrypoint /usr/bin/suricata "$IMG" --build-info | grep -E 'Hyperscan support: *yes' >/dev/null; then
   MPM=hs; SPM=hs
 else
   MPM=ac-ks; SPM=bm
