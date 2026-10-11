@@ -46,14 +46,38 @@ def cargar_orq():
 
 
 def symlinks_posibles():
+    """¿Funciona aquí el enlace que crea producción (`os.symlink("releases/<ts>", current)`)?
+
+    No basta con poder crearlo: en Windows con privilegio de enlaces (runner de GitHub, que es
+    administrador) el enlace relativo con «/» se crea, pero Windows no lo resuelve (el «/» no es
+    separador para el kernel) y `current.exists()` da False. Producción corre en Linux; en ese
+    caso las pruebas que dependen de que producción cree `current` se omiten."""
     d = Path(tempfile.mkdtemp(prefix="ids-sl-"))
     try:
-        os.symlink("x", d / "y")
-        return True
+        (d / "releases" / "x").mkdir(parents=True)
+        os.symlink("releases/x", d / "current")
+        return (d / "current").is_dir()
     except (OSError, NotImplementedError):
         return False
     finally:
         shutil.rmtree(d, ignore_errors=True)
+
+
+def enlazar_current(reglas, ts):
+    """Crea reglas/current -> releases/<ts> para las pruebas (no es código de producción).
+
+    Usa el separador del sistema (en Windows «\\», que sí resuelve) y comprueba que el enlace
+    lleve a un directorio; si no se puede crear o no resuelve (Windows sin privilegio de enlaces,
+    WinError 1314), deja un directorio `current` en su lugar."""
+    cur = reglas / "current"
+    try:
+        os.symlink(os.path.join("releases", ts), cur, target_is_directory=True)
+        if cur.is_dir():
+            return
+        cur.unlink()
+    except (OSError, NotImplementedError):
+        pass
+    cur.mkdir()
 
 
 class Entorno:
@@ -77,10 +101,7 @@ class Entorno:
         for perfil in ("completo", "reducido"):
             (rel / perfil).mkdir(parents=True)
         (rel / "LISTO").write_text("", encoding="utf-8")
-        try:
-            os.symlink("releases/20261010T081500Z", reglas / "current")
-        except (OSError, NotImplementedError):
-            (reglas / "current").mkdir()
+        enlazar_current(reglas, "20261010T081500Z")
         self.ncpu = ncpu
 
     def ruta(self, p):
@@ -292,6 +313,24 @@ def ejecutar_orden(orq, orden, params=None, op_id=None):
     while orq.procesar_una():
         pass
     return orq.atender(peticion("op.estado", {"op_id": r["op_id"]}))["datos"]
+
+
+def explicar(r):
+    """Texto de diagnóstico de un resultado: código, mensaje y el paso que falló."""
+    pasos = [p for p in r.get("pasos", []) if p.get("estado") != "ok"]
+    return "%s: %s%s" % (r.get("codigo"), r.get("mensaje"),
+                         "" if not pasos else " (paso %s)" % ", ".join(
+                             "%s=%s %s" % (p.get("nombre"), p.get("estado"), p.get("detalle", ""))
+                             for p in pasos))
+
+
+def crear(test, orq, params, codigo="OK"):
+    """punto.crear que hace fallar la prueba con el código y el mensaje del orquestador si el
+    resultado no es el esperado (en lugar de un KeyError más adelante)."""
+    r = ejecutar_orden(orq, "punto.crear", params)
+    if r.get("codigo") != codigo:
+        test.fail("punto.crear %s esperaba %s; dio %s" % (params.get("nombre"), codigo, explicar(r)))
+    return r
 
 
 def cerrar(orq, e):

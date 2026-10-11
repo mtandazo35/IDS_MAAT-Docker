@@ -29,7 +29,7 @@ echo "== install.sh: sintaxis"
 if bash -n install.sh; then ok "bash -n install.sh"; else mal "bash -n install.sh"; fi
 
 echo "== install.sh: argumentos (--solo-validar)"
-V=(--version v0.1.0 --nombre ids.empresa.example --gestion 192.0.2.0/25,198.51.100.0/26 --proxy 203.0.113.50)
+V=(--version v0.1.0 --nombre ids.empresa.example --gestion "192.0.2.0/25,198.51.100.0/26" --proxy 203.0.113.50)
 export IDS_RAIZ="$T/vacio"
 mkdir -p "$IDS_RAIZ"
 esperar 0 "argumentos del ejemplo del contrato"            bash install.sh --solo-validar "${V[@]}"

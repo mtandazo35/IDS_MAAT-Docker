@@ -186,7 +186,8 @@ class Cli(unittest.TestCase):
         self.assertEqual(json.loads(out)["codigo"], "OK")
 
     def test_estado_tabla(self):
-        self.cli("punto", "crear", "--nombre", "norte", "--redes", "10.0.0.0/24")
+        rc, out = self.cli("punto", "crear", "--nombre", "norte", "--redes", "10.0.0.0/24")
+        self.assertEqual(rc, 0, out)
         rc, out = self.cli("estado")
         self.assertEqual(rc, 0, out)
         lineas = out.splitlines()

@@ -26,7 +26,7 @@ def tipo_ok(v, tipos):
 class Estado(unittest.TestCase):
     def setUp(self):
         self.mod, self.e, self.s, self.orq = A.preparar()
-        r = A.ejecutar_orden(self.orq, "punto.crear", {"nombre": "norte", "redes_abonados": ["10.0.0.0/24"]})
+        r = A.crear(self, self.orq, {"nombre": "norte", "redes_abonados": ["10.0.0.0/24"]})
         self.assertEqual(r["codigo"], "OK")
 
     def tearDown(self):
@@ -125,7 +125,7 @@ class Estado(unittest.TestCase):
 class Netns(unittest.TestCase):
     def setUp(self):
         self.mod, self.e, self.s, self.orq = A.preparar()
-        A.ejecutar_orden(self.orq, "punto.crear", {"nombre": "norte", "redes_abonados": ["10.0.0.0/24"]})
+        A.crear(self, self.orq, {"nombre": "norte", "redes_abonados": ["10.0.0.0/24"]})
 
     def tearDown(self):
         A.cerrar(self.orq, self.e)
@@ -186,7 +186,7 @@ class Netns(unittest.TestCase):
 class Supervision(unittest.TestCase):
     def setUp(self):
         self.mod, self.e, self.s, self.orq = A.preparar()
-        A.ejecutar_orden(self.orq, "punto.crear", {"nombre": "norte", "redes_abonados": ["10.0.0.0/24"]})
+        A.crear(self, self.orq, {"nombre": "norte", "redes_abonados": ["10.0.0.0/24"]})
 
     def tearDown(self):
         A.cerrar(self.orq, self.e)

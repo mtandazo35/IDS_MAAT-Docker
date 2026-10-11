@@ -15,7 +15,7 @@ NORTE = {"nombre": "norte", "redes_abonados": ["10.0.0.0/24"]}
 class Operaciones(unittest.TestCase):
     def setUp(self):
         self.mod, self.e, self.s, self.orq = A.preparar(ncpu=8)
-        r = A.ejecutar_orden(self.orq, "punto.crear", NORTE)
+        r = A.crear(self, self.orq, NORTE)
         self.assertEqual(r["codigo"], "OK")
         self.clave = r["resultado"]["clave"]
         self.s.llamadas.clear()
@@ -109,12 +109,13 @@ class Operaciones(unittest.TestCase):
         self.assertIn("ids-p001-suricata", self.s.contenedores)
 
 
-@unittest.skipUnless(A.symlinks_posibles(), "este sistema no deja crear enlaces simbólicos")
+@unittest.skipUnless(A.symlinks_posibles(),
+                     "aquí no resuelve el enlace relativo «releases/<ts>» que crea producción (Windows)")
 class Reglas(unittest.TestCase):
     def setUp(self):
         self.mod, self.e, self.s, self.orq = A.preparar()
         for nombre in ("norte", "sur"):
-            r = A.ejecutar_orden(self.orq, "punto.crear", {"nombre": nombre, "redes_abonados": ["10.0.0.0/24"]})
+            r = A.crear(self, self.orq, {"nombre": nombre, "redes_abonados": ["10.0.0.0/24"]})
             self.assertEqual(r["codigo"], "OK")
         self.s.llamadas.clear()
 
@@ -169,7 +170,7 @@ class Reglas(unittest.TestCase):
 class Medir(unittest.TestCase):
     def setUp(self):
         self.mod, self.e, self.s, self.orq = A.preparar()
-        A.ejecutar_orden(self.orq, "punto.crear", NORTE)
+        A.crear(self, self.orq, NORTE)
 
     def tearDown(self):
         A.cerrar(self.orq, self.e)

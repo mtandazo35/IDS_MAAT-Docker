@@ -47,7 +47,7 @@ class Pki(unittest.TestCase):
         self.assertEqual(sorted(x.name for x in (pki / "servidores").iterdir()), ["p004.crt", "p004.key"])
 
     def test_crear_copia_pki_al_punto(self):
-        r = A.ejecutar_orden(self.orq, "punto.crear", {"nombre": "norte", "redes_abonados": ["10.0.0.0/24"]})
+        r = A.crear(self, self.orq, {"nombre": "norte", "redes_abonados": ["10.0.0.0/24"]})
         self.assertEqual(r["codigo"], "OK", r)
         vpn = self.e.ruta("/srv/ids/puntos/p001/vpn")
         self.assertEqual(sorted(x.name for x in vpn.iterdir()),

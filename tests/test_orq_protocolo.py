@@ -93,7 +93,7 @@ class Protocolo(unittest.TestCase):
         self.assertNotIn(clave, usuarios)
 
     def test_lecturas_no_se_encolan(self):
-        A.ejecutar_orden(self.orq, "punto.crear", {"nombre": "norte", "redes_abonados": ["10.0.0.0/24"]})
+        A.crear(self, self.orq, {"nombre": "norte", "redes_abonados": ["10.0.0.0/24"]})
         antes = self.orq.q1("SELECT COUNT(*) FROM op")[0]
         for orden, params in (("punto.estado", {"pid": "*"}), ("punto.comandos", {"pid": "p001"}),
                               ("sistema.estado", {}), ("sistema.capacidad", {}),
@@ -105,7 +105,7 @@ class Protocolo(unittest.TestCase):
         self.assertEqual(r["codigo"], "NO_EXISTE")
 
     def test_logs_sin_password_ni_key(self):
-        A.ejecutar_orden(self.orq, "punto.crear", {"nombre": "norte", "redes_abonados": ["10.0.0.0/24"]})
+        A.crear(self, self.orq, {"nombre": "norte", "redes_abonados": ["10.0.0.0/24"]})
         r = self.orq.atender(A.peticion("punto.logs", {"pid": "p001", "parte": "vpn", "lineas": 50}))
         self.assertEqual(r["datos"]["lineas"], ["linea normal", "otra linea"])
 

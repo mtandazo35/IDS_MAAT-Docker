@@ -108,7 +108,7 @@ class FwRender(unittest.TestCase):
         self.assertFalse(self.e.ruta("/srv/ids/fw/ids_host.nuevo.nft").exists())
 
     def test_con_puntos_conserva_puertos(self):
-        A.ejecutar_orden(self.orq, "punto.crear", {"nombre": "norte", "redes_abonados": ["10.0.0.0/24"]})
+        A.crear(self, self.orq, {"nombre": "norte", "redes_abonados": ["10.0.0.0/24"]})
         conf = self.e.ruta("/etc/ids-maat/ids.conf")
         conf.write_text(conf.read_text(encoding="utf-8").replace("REDES_GESTION=192.0.2.0/25,198.51.100.0/26",
                                                                   "REDES_GESTION=192.0.2.0/24"), encoding="utf-8")

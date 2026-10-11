@@ -21,10 +21,10 @@ class Asignacion(unittest.TestCase):
     def tearDown(self):
         A.cerrar(self.orq, self.e)
 
-    def crear(self, nombre, **extra):
+    def crear(self, nombre, codigo="OK", **extra):
         params = {"nombre": nombre, "redes_abonados": ["10.0.0.0/24"]}
         params.update(extra)
-        return A.ejecutar_orden(self.orq, "punto.crear", params)
+        return A.crear(self, self.orq, params, codigo)
 
     def test_derivar_ejemplos_del_contrato(self):
         d = self.mod.derivar(3, "100.64")
@@ -64,7 +64,7 @@ class Asignacion(unittest.TestCase):
         r = self.crear("centro")
         self.assertEqual((r["resultado"]["pid"], r["resultado"]["n"]), ("p004", 1))
         # pedir un pid ya usado es CONFLICTO
-        r = self.crear("viejo", pid="p001")
+        r = self.crear("viejo", "CONFLICTO", pid="p001")
         self.assertEqual(r["codigo"], "CONFLICTO")
 
     def test_n_mas_bajo_libre_y_n_pedido(self):
@@ -72,7 +72,7 @@ class Asignacion(unittest.TestCase):
         self.assertEqual(r["resultado"]["n"], 5)
         r = self.crear("sur")
         self.assertEqual(r["resultado"]["n"], 1)
-        r = self.crear("dup", n=5)
+        r = self.crear("dup", "CONFLICTO", n=5)
         self.assertEqual(r["codigo"], "CONFLICTO")
 
     def test_base_198_18(self):
@@ -88,7 +88,7 @@ class Asignacion(unittest.TestCase):
 
     def test_puerto_ocupado_conflicto_puerto(self):
         self.s.puertos_ocupados.add(1194)
-        r = self.crear("norte")
+        r = self.crear("norte", "CONFLICTO_PUERTO")
         self.assertEqual(r["codigo"], "CONFLICTO_PUERTO")
         self.assertIsNone(self.orq.punto("p001"))
 
@@ -101,7 +101,7 @@ class Borrado(unittest.TestCase):
         A.cerrar(self.orq, self.e)
 
     def test_borrar_elimina_todo_lo_del_punto(self):
-        r = A.ejecutar_orden(self.orq, "punto.crear", NORTE)
+        r = A.crear(self, self.orq, NORTE)
         self.assertEqual(r["codigo"], "OK")
         # el contenedor suricata escribiría su eve; el vpn su tzsp.json
         self.e.ruta("/srv/ids/datos/p001/eve.json").write_text("{}\n", encoding="utf-8")
@@ -153,33 +153,33 @@ class Deshacer(unittest.TestCase):
 
     def test_fallo_en_compose_up_deshace_todo(self):
         self.s.fallar["compose -p ids-p001 -f"] = 1
-        r = A.ejecutar_orden(self.orq, "punto.crear", NORTE)
+        r = A.crear(self, self.orq, NORTE, "REVERTIDA")
         self.assertEqual(r["codigo"], "REVERTIDA")
         self.assertIn("compose up", r["mensaje"])
         self.assert_sin_rastro("p001")
         self.assertIsNone(r["resultado"].get("clave"))
         # el siguiente alta no reutiliza el pid; N=1 sí (nunca se publicó)
         del self.s.fallar["compose -p ids-p001 -f"]
-        r = A.ejecutar_orden(self.orq, "punto.crear", NORTE)
+        r = A.crear(self, self.orq, NORTE)
         self.assertEqual((r["codigo"], r["resultado"]["pid"], r["resultado"]["n"]), ("OK", "p002", 1))
 
     def test_fallo_en_suricata_T_deshace(self):
         self.s.fallar["-T -c /etc/ids/suricata/suricata.yaml"] = 1
-        r = A.ejecutar_orden(self.orq, "punto.crear", NORTE)
+        r = A.crear(self, self.orq, NORTE, "REVERTIDA")
         self.assertEqual(r["codigo"], "REVERTIDA")
         self.assertEqual([p["estado"] for p in r["pasos"]][-1], "fallo")
         self.assert_sin_rastro("p001")
 
     def test_no_sano_deshace(self):
         self.s.salud_inicial = "starting"
-        r = A.ejecutar_orden(self.orq, "punto.crear", NORTE)
+        r = A.crear(self, self.orq, NORTE, "REVERTIDA")
         self.assertEqual(r["codigo"], "REVERTIDA")
         self.assertIn("esperar salud", r["mensaje"])
         self.assert_sin_rastro("p001")
         self.assertEqual(self.s.contenedores, {})
 
     def test_alta_interrumpida_se_deshace_al_arrancar(self):
-        r = A.ejecutar_orden(self.orq, "punto.crear", NORTE)
+        r = A.crear(self, self.orq, NORTE)
         self.assertEqual(r["codigo"], "OK")
         self.orq.x("UPDATE punto SET estado='creando'")
         self.orq.x("UPDATE op SET estado='en_curso'")
@@ -197,13 +197,13 @@ class Idempotencia(unittest.TestCase):
         A.cerrar(self.orq, self.e)
 
     def test_crear_lo_que_ya_existe(self):
-        r = A.ejecutar_orden(self.orq, "punto.crear", NORTE)
+        r = A.crear(self, self.orq, NORTE)
         self.assertIn("clave", r["resultado"])
-        r2 = A.ejecutar_orden(self.orq, "punto.crear", NORTE)
+        r2 = A.crear(self, self.orq, NORTE)
         self.assertEqual((r2["codigo"], r2["mensaje"]), ("OK", "ya existe"))
         self.assertNotIn("clave", r2["resultado"])
         self.assertIn("<CLAVE-VPN>", r2["resultado"]["comandos"])
-        r3 = A.ejecutar_orden(self.orq, "punto.crear", {"nombre": "norte", "redes_abonados": ["10.9.0.0/24"]})
+        r3 = A.crear(self, self.orq, {"nombre": "norte", "redes_abonados": ["10.9.0.0/24"]}, "CONFLICTO")
         self.assertEqual(r3["codigo"], "CONFLICTO")
 
     def test_redes_invalidas(self):

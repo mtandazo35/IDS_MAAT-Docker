@@ -692,10 +692,9 @@ imagenes() {
 }
 
 arrancar() {
-  local i
   systemctl enable ids-orq.service >/dev/null
   systemctl restart ids-orq.service
-  for i in $(seq 1 30); do
+  for _ in $(seq 1 30); do
     [ -S "${R}/run/ids-orq/orq.sock" ] && break
     sleep 1
   done
