@@ -332,8 +332,10 @@ class Nft(unittest.TestCase):
         aceptan = [r for r in entrada if r.endswith("accept")]
         for r in aceptan:
             self.assertTrue(r.startswith(("iif lo", "ct state established", "meta l4proto icmp",
-                                          "meta l4proto ipv6-icmp", "ip saddr @gestion")), r)
-        icmp6 = [r for r in entrada if "ipv6-icmp" in r][0]
+                                          "icmpv6 type", "ip saddr @gestion")), r)
+        icmp6 = [r for r in entrada if r.startswith("icmpv6 type")][0]
+        # sin nombres de /etc/protocols (ipv6-icmp): en una imagen minima no existe y nft falla
+        self.assertNotIn("ipv6-icmp", txt)
         for t in ("nd-neighbor-solicit", "nd-neighbor-advert", "nd-router-advert"):
             self.assertIn(t, icmp6)
         reenvio = self.reglas(txt, "forward")

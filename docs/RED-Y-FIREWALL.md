@@ -226,7 +226,7 @@ table inet ids_host {
     ct state established,related accept
     ct state invalid drop
     meta l4proto icmp icmp type { echo-request, destination-unreachable, time-exceeded } limit rate 20/second accept
-    meta l4proto ipv6-icmp icmpv6 type { nd-neighbor-solicit, nd-neighbor-advert, nd-router-advert,
+    icmpv6 type { nd-neighbor-solicit, nd-neighbor-advert, nd-router-advert,
         echo-request, packet-too-big, time-exceeded, parameter-problem, destination-unreachable } accept
     ip saddr @gestion tcp dport 22 accept
     counter comment "resto al host"
