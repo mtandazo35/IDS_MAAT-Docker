@@ -104,8 +104,8 @@ networks:
 
 ## 3. Sysctls del netns
 
-Docker solo admite `net.*` con espacio de nombres. Se fijan los `default.*`, que heredan las
-interfaces que se crean después:
+Docker solo admite `net.*` con espacio de nombres. Los `default.*` también los hereda `eth0`:
+Docker la mete en el netns después de aplicar los sysctls.
 
 ```yaml
 sysctls:
@@ -113,7 +113,6 @@ sysctls:
   net.ipv6.conf.all.disable_ipv6: "1"
   net.ipv6.conf.default.disable_ipv6: "1"
   net.ipv4.conf.default.rp_filter: "1"
-  net.ipv4.conf.default.arp_ignore: "8"
   net.ipv4.ipfrag_high_thresh: "67108864"   # el TZSP llega FRAGMENTADO por tun0
   net.ipv4.ipfrag_time: "15"
 ```
@@ -121,6 +120,10 @@ sysctls:
 Sin `ipfrag_low_thresh`: está obsoleto desde Linux 4.17 y el kernel exige `low <= high`. runc escribe
 los sysctls en un orden aleatorio, y `low` (48 MB) antes que `high` (4 MB por defecto) da `EINVAL`
 y el contenedor no arranca.
+
+Sin `conf.default.arp_ignore=8`: `eth0` lo heredaba, dejaba de contestar ARP y el host no llegaba
+al contenedor (el DNAT a `:1194` daba «No route to host»). Lo que se quería, que el veth no hable
+ARP, lo hace `arp off` en `ids-in` e `ids-mon` (§4.1).
 
 `net.core.rmem_max` **no es por netns**. `tzsp-decap` pide 16 MB con `SO_RCVBUFFORCE`, que ignora
 ese límite cuando hay `NET_ADMIN`. Como respaldo, el host lo sube en `/etc/sysctl.d/90-ids.conf`.
@@ -135,8 +138,8 @@ ese límite cuando hay `NET_ADMIN`. Como respaldo, el host lo sube en `/etc/sysc
 
    ```sh
    ip link add ids-in type veth peer name ids-mon
-   ip link set ids-in  up mtu 65535
-   ip link set ids-mon up mtu 65535 promisc on
+   ip link set ids-in  up mtu 65535 arp off
+   ip link set ids-mon up mtu 65535 promisc on arp off
    ethtool -K ids-mon gro off lro off tso off gso off rx-gro-hw off 2>/dev/null || true
    ethtool -K ids-in  gro off tso off gso off 2>/dev/null || true
    ```

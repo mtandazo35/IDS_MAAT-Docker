@@ -101,7 +101,6 @@ arrancar() {  # $1 = nombre, $2 = TUN_MK
     --sysctl net.ipv6.conf.all.disable_ipv6=1 \
     --sysctl net.ipv6.conf.default.disable_ipv6=1 \
     --sysctl net.ipv4.conf.default.rp_filter=1 \
-    --sysctl net.ipv4.conf.default.arp_ignore=8 \
     --sysctl net.ipv4.ipfrag_high_thresh=67108864 \
     --sysctl net.ipv4.ipfrag_time=15 \
     --memory 192m --memory-swap 192m --pids-limit 64 \
@@ -131,7 +130,12 @@ docker exec "$CTR" ip link show ids-in >/dev/null || fallo "no existe ids-in"
 mon="$(docker exec "$CTR" ip link show ids-mon)" || fallo "no existe ids-mon"
 grep -q PROMISC <<<"$mon" || fallo "ids-mon no está en promisc: $mon"
 grep -q "mtu 65535" <<<"$mon" || fallo "ids-mon sin mtu 65535: $mon"
-ok "veth ids-in/ids-mon"
+grep -q NOARP <<<"$mon" || fallo "ids-mon sin arp off: $mon"
+grep -q NOARP <<<"$(docker exec "$CTR" ip link show ids-in)" || fallo "ids-in sin arp off"
+# eth0 tiene que contestar ARP: si no, el host no llega al contenedor (DNAT/docker-proxy a :1194).
+arp_eth0="$(docker exec "$CTR" cat /proc/sys/net/ipv4/conf/eth0/arp_ignore)"
+[ "$arp_eth0" = 0 ] || fallo "eth0 con arp_ignore=$arp_eth0: el host no resolvería la IP del contenedor"
+ok "veth ids-in/ids-mon (NOARP) y eth0 con ARP"
 
 # `nft list table` reescribe el formato (comillas, contadores, una cadena por bloque): se compara
 # regla a regla, normalizado, con el fixture que la prueba unitaria de render.py fija. Sin tubería
@@ -152,8 +156,6 @@ tabla_igual() {  # $1 = "familia nombre", $2 = fixture
 tabla_igual "inet ids_punto" ids_punto_p003.nft
 tabla_igual "netdev ids_mon" ids_mon.nft
 ok "tablas nft (inet ids_punto y netdev ids_mon iguales a los fixtures)"
-echo "test_vpn_arranque: info: sysctls por interfaz (arp_ignore rp_filter):" \
-  "$(docker exec "$CTR" sh -c 'for d in /proc/sys/net/ipv4/conf/*; do printf "%s=%s/%s " "${d##*/}" "$(cat "$d/arp_ignore")" "$(cat "$d/rp_filter")"; done' 2>&1)"
 
 [ "$("${SUDO[@]}" stat -c '%a %g %F' "$RUN/api.sock")" = "660 10500 socket" ] \
   || fallo "api.sock: $("${SUDO[@]}" stat -c '%a %g %F' "$RUN/api.sock" 2>&1)"

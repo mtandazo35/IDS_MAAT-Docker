@@ -77,6 +77,7 @@ Reglas del contrato:
 | 15 | §4.4 de este contrato (y INSTANCIA): `proto tcp-server` | `proto tcp4-server` | el contenedor `vpn` no usa IPv6; el socket solo IPv4 evita depender de IPv6 en el netns |
 | 16 | §5.13: tres `failregex` (TLS Auth Error, TLS Error, ovpn-auth) y «las cuatro primeras casan» | solo `ovpn-auth: rechazado` (con el prefijo opcional de journald) e `ignoreregex` para `motivo=freno-global`; de las 6 lineas del fixture casan la 3.a y la 4.a | un intento fallido escribia 2 lineas que casaban y baneaba al 3.er intento con maxretry 5; el freno global no es culpa de la IP que lo encuentra |
 | 17 | §4.3 de este contrato (e INSTANCIA §3): sysctls `ipfrag_high_thresh` 64 MB **y** `ipfrag_low_thresh` 48 MB | solo `ipfrag_high_thresh` (y `ipfrag_time`); sin `ipfrag_low_thresh` | runc escribe los sysctls en orden aleatorio y el kernel exige `low <= high`: `low` antes que `high` (4 MB por defecto) daba `EINVAL` y el `vpn` no arrancaba (CI, 2026-10-11); `low_thresh` está obsoleto desde Linux 4.17 |
+| 18 | §4.3 de este contrato (e INSTANCIA §3): sysctl `net.ipv4.conf.default.arp_ignore: "8"`; §5.1: `ip link set` del veth sin más | sin `arp_ignore` en el compose; el veth lleva `arp off` (`ip link set ids-in up mtu 65535 arp off`, `ip link set ids-mon up mtu 65535 promisc on arp off`) | Docker mete `eth0` en el netns después de aplicar los sysctls, así que `eth0` heredaba `arp_ignore=8`: el host no resolvía la IP del contenedor (`10.210.0.18 dev ids-p001 FAILED`) y la conexión a `:1194` daba «No route to host» (CI e2e, 2026-10-11). `arp off` deja sin ARP solo al veth |
 
 ---
 
@@ -307,7 +308,6 @@ services:
       net.ipv6.conf.all.disable_ipv6: "1"
       net.ipv6.conf.default.disable_ipv6: "1"
       net.ipv4.conf.default.rp_filter: "1"
-      net.ipv4.conf.default.arp_ignore: "8"
       net.ipv4.ipfrag_high_thresh: "67108864"
       net.ipv4.ipfrag_time: "15"
     ports: ["1196:1194/tcp"]
@@ -601,8 +601,8 @@ Con `"dev": false`, el orquestador **rechaza** cualquier referencia que no sea `
 
 ```sh
 ip link add ids-in type veth peer name ids-mon
-ip link set ids-in  up mtu 65535
-ip link set ids-mon up mtu 65535 promisc on
+ip link set ids-in  up mtu 65535 arp off
+ip link set ids-mon up mtu 65535 promisc on arp off
 ethtool -K ids-mon gro off lro off tso off gso off rx-gro-hw off 2>/dev/null || true
 ethtool -K ids-in  gro off tso off gso off 2>/dev/null || true
 ```

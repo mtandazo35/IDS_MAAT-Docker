@@ -30,7 +30,6 @@ services:
       net.ipv6.conf.all.disable_ipv6: "1"
       net.ipv6.conf.default.disable_ipv6: "1"
       net.ipv4.conf.default.rp_filter: "1"
-      net.ipv4.conf.default.arp_ignore: "8"
       net.ipv4.ipfrag_high_thresh: "67108864"
       net.ipv4.ipfrag_time: "15"
     ports: ["1196:1194/tcp"]
@@ -155,6 +154,13 @@ class Compose(unittest.TestCase):
         txt = self.mod.render_compose(punto3(self.mod), self.imgs, "0.1.0", nc=4)
         self.assertNotIn("ipfrag_low_thresh", txt)
         self.assertIn('net.ipv4.ipfrag_high_thresh: "67108864"', txt)
+
+    def test_sin_arp_ignore(self):
+        # Docker mete eth0 en el netns después de aplicar los sysctls: eth0 heredaba
+        # default.arp_ignore=8, el host no resolvía la IP del contenedor por ARP y el DNAT
+        # (o docker-proxy) a :1194 daba «No route to host». El veth lleva `arp off` en init-veth.
+        txt = self.mod.render_compose(punto3(self.mod), self.imgs, "0.1.0", nc=4)
+        self.assertNotIn("arp_ignore", txt)
 
     def test_pocas_cpu_omite_cpuset(self):
         txt = self.mod.render_compose(punto3(self.mod, cpuset_suricata=None), self.imgs, "0.1.0", nc=2)
