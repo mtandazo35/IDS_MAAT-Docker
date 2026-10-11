@@ -32,7 +32,6 @@ services:
       net.ipv4.conf.default.rp_filter: "1"
       net.ipv4.conf.default.arp_ignore: "8"
       net.ipv4.ipfrag_high_thresh: "67108864"
-      net.ipv4.ipfrag_low_thresh: "50331648"
       net.ipv4.ipfrag_time: "15"
     ports: ["1196:1194/tcp"]
     networks: [punto]
@@ -149,6 +148,13 @@ class Compose(unittest.TestCase):
     def test_texto_exacto_del_contrato(self):
         txt = self.mod.render_compose(punto3(self.mod), self.imgs, "0.1.0", nc=4)
         self.assertEqual(txt, COMPOSE_CONTRATO)
+
+    def test_sin_ipfrag_low_thresh(self):
+        # runc escribe los sysctls en orden de mapa (aleatorio): low (48 MB) antes que high daba
+        # EINVAL (low <= high, y high vale 4 MB por defecto) y el contenedor no arrancaba.
+        txt = self.mod.render_compose(punto3(self.mod), self.imgs, "0.1.0", nc=4)
+        self.assertNotIn("ipfrag_low_thresh", txt)
+        self.assertIn('net.ipv4.ipfrag_high_thresh: "67108864"', txt)
 
     def test_pocas_cpu_omite_cpuset(self):
         txt = self.mod.render_compose(punto3(self.mod, cpuset_suricata=None), self.imgs, "0.1.0", nc=2)

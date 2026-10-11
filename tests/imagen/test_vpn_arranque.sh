@@ -103,7 +103,6 @@ arrancar() {  # $1 = nombre, $2 = TUN_MK
     --sysctl net.ipv4.conf.default.rp_filter=1 \
     --sysctl net.ipv4.conf.default.arp_ignore=8 \
     --sysctl net.ipv4.ipfrag_high_thresh=67108864 \
-    --sysctl net.ipv4.ipfrag_low_thresh=50331648 \
     --sysctl net.ipv4.ipfrag_time=15 \
     --memory 192m --memory-swap 192m --pids-limit 64 \
     -e PUNTO=p003 -e N=3 -e TUN_NET=100.64.3.0/24 -e TUN_SENSOR=100.64.3.1 -e TUN_MK="$2" \

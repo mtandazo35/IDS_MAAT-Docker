@@ -115,9 +115,12 @@ sysctls:
   net.ipv4.conf.default.rp_filter: "1"
   net.ipv4.conf.default.arp_ignore: "8"
   net.ipv4.ipfrag_high_thresh: "67108864"   # el TZSP llega FRAGMENTADO por tun0
-  net.ipv4.ipfrag_low_thresh: "50331648"
   net.ipv4.ipfrag_time: "15"
 ```
+
+Sin `ipfrag_low_thresh`: está obsoleto desde Linux 4.17 y el kernel exige `low <= high`. runc escribe
+los sysctls en un orden aleatorio, y `low` (48 MB) antes que `high` (4 MB por defecto) da `EINVAL`
+y el contenedor no arranca.
 
 `net.core.rmem_max` **no es por netns**. `tzsp-decap` pide 16 MB con `SO_RCVBUFFORCE`, que ignora
 ese límite cuando hay `NET_ADMIN`. Como respaldo, el host lo sube en `/etc/sysctl.d/90-ids.conf`.

@@ -20,7 +20,6 @@ services:
       net.ipv4.conf.default.rp_filter: "1"
       net.ipv4.conf.default.arp_ignore: "8"
       net.ipv4.ipfrag_high_thresh: "67108864"
-      net.ipv4.ipfrag_low_thresh: "50331648"
       net.ipv4.ipfrag_time: "15"
     ports: ["@@PUERTO@@:1194/tcp"]
     networks: [punto]

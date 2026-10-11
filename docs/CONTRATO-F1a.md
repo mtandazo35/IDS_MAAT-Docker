@@ -76,6 +76,7 @@ Reglas del contrato:
 | 14 | §6.1 de este contrato: la etiqueta `ids-maat.suricata-version` lleva la versión real del paquete | la etiqueta lleva la **serie** (`7.0`, el `ARG SURICATA_VERSION` del `Dockerfile`, que `images/build.sh` y `release.yml` pasan con `--build-arg`); la versión exacta queda en `/usr/share/ids-maat/suricata-version`, en `release.json` (`"suricata_version": "7.0.x"`, leída de la imagen publicada) y en el `MANIFEST.json` de cada release de reglas | la versión exacta solo se conoce dentro del build, después de instalar el paquete; una etiqueta no se puede escribir desde un `RUN` |
 | 15 | §4.4 de este contrato (y INSTANCIA): `proto tcp-server` | `proto tcp4-server` | el contenedor `vpn` no usa IPv6; el socket solo IPv4 evita depender de IPv6 en el netns |
 | 16 | §5.13: tres `failregex` (TLS Auth Error, TLS Error, ovpn-auth) y «las cuatro primeras casan» | solo `ovpn-auth: rechazado` (con el prefijo opcional de journald) e `ignoreregex` para `motivo=freno-global`; de las 6 lineas del fixture casan la 3.a y la 4.a | un intento fallido escribia 2 lineas que casaban y baneaba al 3.er intento con maxretry 5; el freno global no es culpa de la IP que lo encuentra |
+| 17 | §4.3 de este contrato (e INSTANCIA §3): sysctls `ipfrag_high_thresh` 64 MB **y** `ipfrag_low_thresh` 48 MB | solo `ipfrag_high_thresh` (y `ipfrag_time`); sin `ipfrag_low_thresh` | runc escribe los sysctls en orden aleatorio y el kernel exige `low <= high`: `low` antes que `high` (4 MB por defecto) daba `EINVAL` y el `vpn` no arrancaba (CI, 2026-10-11); `low_thresh` está obsoleto desde Linux 4.17 |
 
 ---
 
@@ -308,7 +309,6 @@ services:
       net.ipv4.conf.default.rp_filter: "1"
       net.ipv4.conf.default.arp_ignore: "8"
       net.ipv4.ipfrag_high_thresh: "67108864"
-      net.ipv4.ipfrag_low_thresh: "50331648"
       net.ipv4.ipfrag_time: "15"
     ports: ["1196:1194/tcp"]
     networks: [punto]
