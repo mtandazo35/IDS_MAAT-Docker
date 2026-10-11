@@ -146,7 +146,29 @@ listadas en `inv_C.md` §5.1), pintada con `wrap()`/`nav()` del dashboard y sus 
 - Informe diario (`informe_diario.py`): hilo del panel a las 07:30 en `IDS_TZ`, por nodo, un mensaje de
   Telegram con una sección por nodo y `IDS_EMPRESA` como nombre.
 
-## 9. Reparto (constructores en paralelo, cada uno solo en sus zonas)
+## 9. Decisiones de la segunda ronda (usuario, 2026-10-11)
+
+Respuestas al documento «Suricata IDS Lab: definición de la evolución multisonda»:
+
+- Confirmado: 1 VPS = 1 empresa con todos los MikroTik que quiera; un contenedor OpenVPN por MikroTik; RouterOS
+  6.49+ y v7 con OpenVPN; por el túnel solo espejo y API; un punto = un MikroTik con identidad fija; almacenamiento
+  separado por sonda y baja = borrar todo; cada servicio independiente; alta desde el formulario con espejo por API.
+- **Prefijos del espejo: los elige el usuario por punto** (`redes` del alta, editables después con
+  `punto.ajustar`). Al cambiarlos, la ficha del punto ofrece volver a aplicar el espejo (la address-list
+  `ids-vigilados` del router) con la misma vista previa.
+- **Página «Eventos»** por nodo y en «Todos» (sustituye al buscador de EveBox): filtros por fecha/hora, firma
+  (texto o SID), severidad, IP origen/destino, puerto, protocolo y tipo de evento; resultados paginados, más
+  recientes primero; detalle con el JSON completo del evento; columna Nodo en «Todos». Lee los `eve.json*`/
+  `dns.json*` del nodo (también los `.gz` rotados) con tope de bytes leídos y de tiempo por consulta.
+- **Retención: 30 días de eventos** (`eve.json` y `dns.json` de cada punto): rotación diaria, `rotate 30`,
+  `maxage 30`, comprimidos, nombres con fecha y hora para las rotaciones por tamaño. Si el disco baja del 15 %
+  libre, el orquestador borra primero los rotados más viejos de todos los puntos y avisa (`DISCO`). Las bases
+  derivadas del panel (historial, conducta, métricas) se podan a 30 días como mínimo y siguen sus tiempos actuales
+  si son mayores.
+- **Fuera de esta versión:** IPv6 y el respaldo/restauración por sonda (basta el respaldo del VPS).
+- Todo se prueba en el VPS de laboratorio.
+
+## 10. Reparto (constructores en paralelo, cada uno solo en sus zonas)
 
 Números de línea del `dashboard.py` heredado (commit `af5fe35`). Quien necesite algo de otra zona lo pide en
 su informe en vez de tocarlo.
@@ -155,7 +177,8 @@ su informe en vez de tocarlo.
 |---|---|---|
 | **N (núcleo)** | `dashboard.py` 1–7580, 7801–9399, 12825–13420, 15534–15697 (infra de `class H`: `_seguro`, `_set_ctx`, auth, proxy, CSRF), 17549–fin (`do_HEAD`, `main`); `idspanel/cli.py` | rutas por `nodos`, contexto, routers = puntos, cliente API por relé, tareas de fondo por nodo, eventos/historial/conducta por nodo y «Todos», usuarios y sesiones, quitar OpenVPN/espejo_vpn/mkinit/updater/systemctl/EveBox de sus zonas |
 | **P (pantallas)** | `dashboard.py` 7581–7800 (`_NAV_LINKS`, `nav`), 9400–12824 (Ajustes, Documentación), 13421–15533 (páginas), 15698–17548 (`_get`, `_post`, `_post_perfil`, `_post_exclusiones`); nuevo `puntos_web.py` | selector de nodo, columnas/chips de Nodo en «Todos», apartado Puntos, Ajustes, quitar rutas/tarjetas/textos de lo eliminado, Documentación reescrita donde nombra lo viejo |
-| **R (resto)** | `html_report.py`, `feeds_update.py`, `mikrotik_init.py`, `informe_diario.py`, `orquestador/`, `images/panel/Dockerfile`, `images/panel/rootfs/usr/local/bin/ids-panel`, `idspanel/` salvo `cli.py`, `tests/`, `.github/`, docs salvo este contrato | generador por nodo y «Todos», feeds sin dataset, espejo como módulo por relé, informe, `punto.threshold`, memoria, imagen, borrar el panel F1b-min que sobra, pruebas (port de las 87 de suricata-ids-lab que sigan aplicando + nuevas), e2e paso 7 |
+| **E (eventos)** | nuevo `eventos_web.py` | búsqueda y detalle de eventos (§9); P registra `GET /eventos` y la pestaña |
+| **R (resto)** | `html_report.py`, `feeds_update.py`, `mikrotik_init.py`, `informe_diario.py`, `orquestador/`, `images/panel/Dockerfile`, `images/panel/rootfs/usr/local/bin/ids-panel`, `idspanel/` salvo `cli.py`, `tests/`, `.github/`, docs salvo este contrato | generador por nodo y «Todos», feeds sin dataset, retención de 30 días (logrotate + poda por disco), espejo como módulo por relé, informe, `punto.threshold`, memoria, imagen, borrar el panel F1b-min que sobra, pruebas (port de las 87 de suricata-ids-lab que sigan aplicando + nuevas), e2e paso 7 |
 
 Cada constructor: trabaja en su worktree sin commitear, escribe pruebas de **comportamiento** de lo suyo en
 `tests/`, y entrega un informe con lo hecho, lo que pide a otros y lo que no pudo cerrar.
