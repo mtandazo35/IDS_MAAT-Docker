@@ -11,7 +11,8 @@ Anexo de [ARQUITECTURA.md](ARQUITECTURA.md). Este anexo cubre:
 Los comandos que se pegan en el MikroTik están en [OPERACION.md](OPERACION.md).
 
 Ejemplos: VPS `203.0.113.10` (nombre `ids.empresa.example`), redes de gestión `192.0.2.0/25` y
-`198.51.100.0/26`, punto N=3 con túnel `100.64.3.0/24`.
+`198.51.100.0/26`, IP del proxy inverso externo `203.0.113.50`, punto N=3 con túnel
+`100.64.3.0/24`.
 
 ## 1. Docker en el host
 
@@ -48,7 +49,7 @@ Ejemplos: VPS `203.0.113.10` (nombre `ids.empresa.example`), redes de gestión `
  Internet ──► 203.0.113.10 (ids.empresa.example)
    │  host: nft inet ids_host ─── iptables-nft de Docker (DNAT de puertos publicados)
    ├─ tcp 22   ─────────────► sshd                                [solo @gestion]
-   ├─ tcp 8443 ──DNAT──► red ids-core ─► panel-web :8443          [solo @gestion]
+   ├─ tcp 5637 ──DNAT──► red ids-core ─► panel-web :5637 (HTTP)   [solo @proxy]
    ├─ tcp 1194 ──DNAT──► red ids-p001 ─► vpn-p001 :1194 ─ tun0 100.64.1.1/24
    └─ tcp 1196 ──DNAT──► red ids-p003 ─► vpn-p003 :1194 ─ tun0 100.64.3.1/24
 
@@ -79,7 +80,7 @@ Ejemplos: VPS `203.0.113.10` (nombre `ids.empresa.example`), redes de gestión `
 |---|---|---|
 | `N` | menor índice libre entre 1 y 250, fuera de los 7 días de enfriamiento tras una baja | 3 |
 | Puerto público | `1194 + N − 1` | 1196 |
-| Red de túnel | `<base>.N.0/24`; base `100.64` por defecto (pregunta a de ARQUITECTURA) | `100.64.3.0/24` |
+| Red de túnel | `<base>.N.0/24`; base `100.64` por defecto o `198.18` si hay CGNAT en `100.64/10` (decisión a de ARQUITECTURA §10) | `100.64.3.0/24` |
 | Sensor / MikroTik | `.1` / `.2` | `100.64.3.1` / `.2` |
 | Red Docker | la siguiente /28 libre del pool | `10.210.0.48/28` |
 | `cluster-id` | `100 + N` (solo por legibilidad: el fanout es por netns) | 103 |
@@ -149,7 +150,11 @@ socat UNIX-LISTEN:/run/ids/api.sock,fork,unlink-early,mode=660,max-children=4 \
 ```
 
 - **Un solo relé por punto, hacia 8729 (API-SSL).** La API-SSL es obligatoria, con el certificado
-  propio del router y su huella fijada en el alta (TOFU). Se descartan las dos alternativas:
+  autofirmado `ids-promax` del router (formato del dueño, válido en 6.49 y v7; comandos en
+  [OPERACION.md](OPERACION.md) §1.1). **Huella SHA-256 fijada en la primera conexión del alta
+  (TOFU):** el panel la muestra para compararla con `/certificate print detail` y, desde entonces,
+  rechaza cualquier otro certificado. Cambiarla es una acción explícita del admin en la ficha del
+  punto, con bitácora. Se descartan las dos alternativas:
   - la 8728 en claro;
   - la API-SSL con ADH (sin certificado).
 
@@ -191,8 +196,8 @@ socat UNIX-LISTEN:/run/ids/api.sock,fork,unlink-early,mode=660,max-children=4 \
 Muchos ISP usan `100.64.0.0/10` para el CGNAT de sus abonados. Si el MikroTik tiene rutas, pools o
 direcciones dentro de `100.64.N.0/24`, el túnel choca **dentro del router**.
 
-- **Base configurable por VPS** al instalar: `100.64` por defecto; `198.18` (RFC 2544) como
-  alternativa recomendada. Ver la pregunta a de ARQUITECTURA.
+- **Base elegida al instalar, antes del primer punto** (decisión a de ARQUITECTURA §10): `100.64`
+  por defecto; `198.18` (RFC 2544) si la empresa usa CGNAT en `100.64/10`.
 - **Al dar de alta**, se rechazan las `redes_abonados` que se solapen con el rango de túneles o con
   el pool de Docker.
 - **En el paso de la API del alta, y después en el diagnóstico periódico** de cada punto (cada
@@ -211,7 +216,8 @@ Tabla propia, cargada por `ids-host-fw.service` (`Before=docker.service`) desde
 table inet ids_host
 delete table inet ids_host
 table inet ids_host {
-  set gestion     { type ipv4_addr; flags interval; elements = { 192.0.2.0/25, 198.51.100.0/26 } }
+  set gestion     { type ipv4_addr; flags interval; elements = { 192.0.2.0/25, 198.51.100.0/26 } }   # SSH
+  set proxy       { type ipv4_addr; flags interval; elements = { 203.0.113.50 } }                   # panel
   set puertos_vpn { type inet_service; elements = { 1194, 1196 } }      # lo mantiene el orquestador
 
   chain input {
@@ -228,12 +234,12 @@ table inet ids_host {
 
   chain forward {
     type filter hook forward priority filter - 10; policy accept;    # SOLO descarta
-    meta l4proto tcp ct direction original ct status dnat ct original proto-dst 8443 \
-        ip saddr != @gestion counter drop comment "panel solo gestion"
+    meta l4proto tcp ct direction original ct status dnat ct original proto-dst 5637 \
+        ip saddr != @proxy counter drop comment "panel solo proxy"
     meta l4proto tcp ct direction original ct status dnat ct original proto-dst @puertos_vpn \
         ct state new meter vpn_new { ip saddr limit rate over 10/minute } counter drop comment "freno OpenVPN"
     meta l4proto { tcp, udp } ct direction original ct status dnat \
-        ct original proto-dst != @puertos_vpn ct original proto-dst != 8443 counter drop comment "nada publicado fuera de lo previsto"
+        ct original proto-dst != @puertos_vpn ct original proto-dst != 5637 counter drop comment "nada publicado fuera de lo previsto"
   }
 }
 ```
@@ -250,6 +256,12 @@ Por qué cada pieza:
 - **La última regla es un cinturón.** Si alguien añade un `ports:` por error, no queda expuesto.
 - **Origen fijo opcional por punto.** Si el punto declara la IP pública de su MikroTik, se añade
   una regla de descarte para ese puerto con `ip saddr != <IP>`.
+- **Dos listas distintas.** `@gestion` abre el SSH y `@proxy` abre el panel. El panel habla HTTP:
+  el TLS lo termina el proxy inverso externo y en el VPS no hay certificados. Las dos listas solo
+  cambian con el modo seguro (§10).
+- **El túnel SSH de emergencia no pasa por `forward`.** `ssh -L` hacia la IP fija del panel en la
+  red `ids-core` (`10.210.255.2`) sale del propio host por la cadena `output`, así que la regla
+  `@proxy` no lo bloquea. Solo puede abrirlo quien ya entró por SSH desde una red de gestión.
 - **IPv6:** `input` acepta ND/RA y los errores ICMPv6 para que el host no pierda conectividad. Las
   redes Docker son solo IPv4.
 
@@ -356,20 +368,25 @@ se bloquea. Solo se exceptúan 1 o 2 IP fijas del dueño, para no perder el acce
 - Si un MikroTik sigue reintentando con una clave vieja, se bloquea su IP. Es lo esperado: la ficha
   del punto lo muestra.
 
-**Panel:** fail2ban no lo cubre. El panel ya solo se alcanza desde las redes de gestión y tiene su
-propio freno de login (ver [PLAN-PANEL.md](PLAN-PANEL.md) §12).
+**Panel:** fail2ban no lo cubre, porque todas sus conexiones llegan desde la IP del proxy y banearla
+cortaría a todo el mundo. El panel tiene su propio freno de login por **IP real del cliente**,
+tomada de `X-Forwarded-For` solo cuando la conexión viene del proxy (ver
+[PLAN-PANEL.md](PLAN-PANEL.md) §12).
 
 ## 10. Modo seguro para cambiar el acceso
 
-Las redes de gestión, y el origen permitido de cada puerto VPN, solo se cambian con la orden
-`acceso.aplicar` del orquestador.
+Las redes de gestión (SSH), las IP del proxy (panel) y el origen permitido de cada puerto VPN solo
+se cambian con la orden `acceso.aplicar` del orquestador.
 
 ### Validaciones (las hace el orquestador; el panel solo las adelanta)
 
-- La lista no puede quedar vacía.
-- La IP del operador tiene que quedar incluida, salvo que marque a propósito «voy a entrar desde
-  otra red».
-- **No se aceptan redes más anchas que /16.** Para eso hace falta la consola, con
+- Ninguna de las dos listas puede quedar vacía.
+- **La IP del proxy por la que llega la petición tiene que seguir en la lista de proxies.** Si no,
+  el cambio dejaría al operador fuera del panel. Se acepta solo si marca a propósito «voy a entrar
+  por otro proxy».
+- **IP del proxy:** solo direcciones concretas o redes pequeñas (hasta /28). Un proxy no es una
+  red de clientes.
+- **No se aceptan redes de gestión más anchas que /16.** Para eso hace falta la consola, con
   `acceso-emergencia.sh`.
 - No puede haber solape con la base de túneles ni con el pool de Docker: por la VPN solo pasan
   datos.

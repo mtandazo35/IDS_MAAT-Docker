@@ -54,8 +54,8 @@ punto (`punto_id NULL` = toda la empresa).
 | Entidad | Ámbito | Clave / campos clave | Notas |
 |---|---|---|---|
 | `empresa` | G | `id=1`, nombre, logo, zona horaria | las horas se guardan en UTC y se muestran en la zona de la empresa |
-| `ajuste` / `ajuste_punto` | G / P | `clave` / `(punto_id, clave)` | política por bandas, acciones, listas y TTL, Telegram, AbuseIPDB, Groq, redes de gestión, retenciones, tope de cuarentenas automáticas |
-| `punto` | P (raíz) | `id` `p001…` (secuencia, **nunca se reutiliza**), `nombre` único, `n`, `red_tunel`, `ip_srv`, `ip_mk`, `puerto_vpn`, `ros_version`, `redes_abonados`, `perfil`, `hilos`, `tls_legacy`, `api_puerto`, `ip_publica_esperada`, `estado`, `fila_version` | `UNIQUE(n)` y `UNIQUE(puerto_vpn)` entre los que no están de baja; `n` se reutiliza 7 días después de la baja |
+| `ajuste` / `ajuste_punto` | G / P | `clave` / `(punto_id, clave)` | política por bandas, acciones, listas y TTL, Telegram, AbuseIPDB, Groq, redes de gestión, IP del proxy, retenciones, tope de cuarentenas automáticas |
+| `punto` | P (raíz) | `id` `p001…` (secuencia, **nunca se reutiliza**), `nombre` único, `n`, `red_tunel`, `ip_srv`, `ip_mk`, `puerto_vpn`, `ros_version`, `redes_abonados`, `perfil`, `hilos`, `tls_legacy`, `api_puerto`, `ip_publica_esperada`, `estado`, `fila_version` | `UNIQUE(n)` y `UNIQUE(puerto_vpn)`. El `id` sale de una secuencia monotónica (`secuencia_punto`) que no retrocede, ni siquiera tras una baja, en la que la fila se borra. `n` vuelve a estar libre 7 días después (enfriamiento en `orq.db`) |
 | `instancia` | P (1:1) | `estado_deseado` (activa / pausada / borrada), digests actual y previo, `observado` | el estado real lo publica el orquestador en `estado.json` |
 | `vpn_usuario` | P | `(punto_id, usuario)`, creado, rotado | el hash vive en el fichero del orquestador |
 | `mikrotik` | P (1:1) | `cert_fp`, usuario, `clave_cifrada`, `clave_kid`, `identidad`, `sw_id`, `version_ros`, listas, TTL, `envio_habilitado` (0 por defecto) | el destino es el relé del punto; no hay host configurable |
@@ -70,7 +70,7 @@ punto (`punto_id NULL` = toda la empresa).
 | `destino` / `destino_envio` | G / P | la IP externa es global; la entrega va por punto | — |
 | `exclusion`, `nunca_bloquear` | G/P | `punto_id NULL` = toda la empresa | el threshold de cada punto = las globales más las suyas |
 | `publica` / `publica_rep` | P / G | `(punto_id, entrada)` / `(entrada, ts)` | la reputación de una IP pública es igual para todos |
-| `bitacora`, `login_intento` | G con `punto_id` | `hash = sha256(hash_prev ‖ fila)` | en `bitacora.db` |
+| `bitacora`, `login_intento` | G y P | `hash = sha256(hash_prev ‖ fila)`, con **una cadena global** (`punto_id NULL`) y **una cadena por punto** | en `bitacora.db`; borrar la cadena de un punto no rompe la global (§7) |
 | `operacion` | P/G | `op_id` (uuid) | une el panel con el diario del orquestador |
 | Cachés de feeds, AbuseIPDB e IA | G | IP de internet | la cuota de AbuseIPDB es única por empresa |
 
@@ -80,7 +80,7 @@ Estados del punto (las transiciones están en [ORQUESTADOR.md](ORQUESTADOR.md) �
 borrador ─► reservado ─► creando ─► esperando_vpn ─► esperando_api ─► esperando_espejo ─► activo ◄─► pausado
                ▲             │                                                                │
                └── (deshace) ┘ error ◄──────────── cualquier paso ─────────────────────────────┘
-activo|pausado|error ─► dando_de_baja ─► baja (solo lectura)
+activo|pausado|error ─► dando_de_baja ─► (borrado total: no queda la fila, §8)
 ```
 
 ## 3. Identidad: `(punto_id, ip)`
@@ -133,10 +133,10 @@ trate un CPE recibe `CpeRef(punto_id, ip)`:
 | Global de la empresa | Por punto | Global con sobrescritura por punto |
 |---|---|---|
 | empresa, usuarios, roles, visibilidad, sesiones | punto, instancia, VPN, MikroTik | política automática |
-| redes de gestión y acceso | abonados y su historial | acciones por categoría |
+| redes de gestión, IP del proxy y acceso | abonados y su historial | acciones por categoría |
 | feeds, AbuseIPDB (cuota), Groq, Telegram | alertas, agregados, espejo, ingesta | listas y TTL |
 | reputación de IP públicas, destinos malos (la IP) | cuarentenas, entrega de destinos | exclusiones, nunca bloquear |
-| bitácora (con `punto_id`) | IP públicas declaradas, reportes | tope de cuarentenas automáticas por hora |
+| bitácora global (incluida la línea de cada baja) | IP públicas declaradas, reportes, bitácora del punto | tope de cuarentenas automáticas por hora |
 
 ## 5. Retenciones
 
@@ -153,6 +153,9 @@ trate un CPE recibe `CpeRef(punto_id, ip)`:
 | `sesion` | 12 h absolutas y 2 h de inactividad | limpieza cada hora |
 
 `auto_vacuum=INCREMENTAL` en `eventos.db`, con un vacuum incremental cada noche.
+
+Estas retenciones rigen **mientras el punto existe**. La baja lo borra todo de inmediato, sin
+retención posterior (§8).
 
 ## 6. Secretos cifrados
 
@@ -173,11 +176,18 @@ trate un CPE recibe `CpeRef(punto_id, ip)`:
 
 ## 7. Bitácora y auditoría
 
-- **Cadena de hashes:** `bitacora.db` encadena las filas (`hash = sha256(hash_prev ‖ fila)`) y
-  guarda `punto_id`, `op_id` y resultado.
-- **Anclaje diario.** El panel envía cada día la orden `bitacora.anclar {hash_cabeza, filas}` al
-  orquestador, que la escribe en `orq.jsonl`, un diario que el panel no puede modificar. Así, una
-  cadena reescrita entera desde el panel no casa con los anclajes.
+- **Dos tipos de cadena de hashes** (`hash = sha256(hash_prev ‖ fila)`), cada fila con `op_id` y
+  resultado:
+  - **la global** (`punto_id NULL`): usuarios, roles, acceso, actualizaciones, logins y las líneas
+    de baja de los puntos;
+  - **una por punto**: todo lo que se hace sobre ese punto y su router.
+
+  Así, borrar un punto elimina su cadena entera **sin romper la global**, que sigue verificándose.
+- **Anclaje diario.** El panel envía cada día la orden `bitacora.anclar {cabezas}` al orquestador,
+  con la cabeza y el número de filas de la cadena global y de cada cadena de punto. El orquestador
+  lo escribe en `orq.jsonl`, un diario que el panel no puede modificar, así que una cadena
+  reescrita entera desde el panel no casa con los anclajes. Los anclajes de un punto borrado son
+  solo hashes, sin datos.
 - **Qué se audita:**
   - los logins correctos y fallidos;
   - los cambios de usuarios, roles y visibilidad;
@@ -186,4 +196,33 @@ trate un CPE recibe `CpeRef(punto_id, ip)`:
   - los cambios de acceso, las actualizaciones y las exportaciones.
 - **Sin secretos:** un filtro sustituye por `***` cualquier campo `pass|clave|token|key|secret`.
 - **Exportación** firmada con sha256.
-- **Prueba:** recorre la cadena y detecta una fila alterada.
+- **Prueba:** recorre las cadenas y detecta una fila alterada.
+
+## 8. Baja de un punto: borrado total
+
+Decisión del dueño (ARQUITECTURA §10 b): **dar de baja un punto lo borra todo**, para que la
+información de un punto viejo nunca se mezcle con la de uno nuevo. El flujo está en
+[ORQUESTADOR.md](ORQUESTADOR.md) §11.2.
+
+| Dónde | Qué se borra |
+|---|---|
+| `estado.db` | la fila `punto` y todas las filas con su `punto_id`: `instancia`, `vpn_usuario`, `mikrotik` (clave cifrada incluida), `abonado`, `abonado_hist`, `cuarentena`, `destino_envio`, `exclusion` y `nunca_bloquear` del punto, `publica`, `ajuste_punto`, `operacion`, y las filas de `visibilidad` que lo nombran. Las sesiones que lo tenían seleccionado vuelven a «Toda la empresa» |
+| `eventos.db` | `alerta`, `resumen_hora`, `detalle_dia`, `espejo_hora` e `ingesta` del punto, seguido de un vacuum incremental |
+| `bitacora.db` | la cadena entera del punto |
+| `/srv/ids/panel/` | `reportes/<pid>/` y `respaldos/<pid>/` (los `.rsc` de su router) |
+| Orquestador (host) | `/srv/ids/puntos/<pid>/`, `/srv/ids/datos/<pid>/` (eve y dns, también los rotados), `/srv/ids/run/<pid>/` y `/srv/ids/ctl/<pid>/`; la clave y el certificado de servidor; el usuario VPN; las filas de `orq.db` del punto, salvo el enfriamiento de `N` (solo el número y una fecha) |
+
+**Lo único que queda:**
+
+- en la cadena global de la bitácora, **una sola línea**: «punto pNNN (nombre) eliminado por
+  <usuario> <fecha>»;
+- la secuencia de ids, para que `pNNN` no se reutilice nunca;
+- en `orq.jsonl`, las líneas técnicas de las órdenes del punto. Para que no quede nada del punto
+  en ese diario, las órdenes guardan el `pid`, el nombre de la orden, el `sha256` de los parámetros
+  y el resultado, **nunca los parámetros en claro** (redes, IP).
+
+**Límites que conviene saber:**
+
+- Los **respaldos ya hechos** en `/root/backups/`, y su copia fuera del VPS, contienen el punto
+  hasta que caducan por su retención (14 días por defecto). No se reescriben.
+- Los **avisos de Telegram** ya enviados no se pueden retirar.

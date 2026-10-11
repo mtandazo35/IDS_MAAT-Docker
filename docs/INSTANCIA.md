@@ -265,10 +265,11 @@ management /run/ids-ctl/ovpn-mgmt.sock unix
   porque vive en el netns y no en un proceso.
 - **Sin DCO:** el módulo no admite CBC, y el kernel 6.12 de trixie no trae `ovpn` (llega en 6.16).
   Con v7 en GCM y un kernel futuro sería posible. Hoy el techo de cifrado es un núcleo por punto.
-- **RouterOS v6 antiguos con OpenSSL 3 (SECLEVEL 2).** Si el handshake falla, se prueba primero
-  `tls-cipher "DEFAULT:@SECLEVEL=0"` y, si no basta, `tls-cert-profile legacy`. Las dos opciones
-  van **solo en esa instancia**, como parámetro `tls_legacy` del punto (pregunta d de
-  ARQUITECTURA).
+- **RouterOS 6.49, la versión mínima soportada, con OpenSSL 3 (SECLEVEL 2).** El canario (F1a) la
+  prueba con el TLS moderno. Si el handshake falla, se activa el interruptor «compatibilidad v6»
+  del punto (`tls_legacy`): primero `tls-cipher "DEFAULT:@SECLEVEL=0"` y, si no basta,
+  `tls-cert-profile legacy`. Las dos opciones van **solo en esa instancia** (decisión d de
+  ARQUITECTURA §10). No se admiten versiones anteriores a 6.49.
 
 ### 7.3 Usuarios sin cuentas del sistema
 
@@ -343,12 +344,14 @@ Reservas fijas: ~1 GB para el host y Docker, ~1 GB para el panel, y **una sola r
 
 | Perfil | Reglas / detección | `mem_limit` estimado de `suricata` | Puntos en 8 GB |
 |---|---|---|---|
-| `completo` | ET completo, `profile: medium` | 1,2–1,7 GB | **2–3** |
+| `reducido` (**por defecto en el alta**) | ~15–20k reglas útiles para un espejo de ISP | 0,6–0,9 GB | **5–7** |
 | `completo-low` | ET completo, `profile: low` y `sgh-mpm-context: single` | 1,0–1,3 GB | **3–4** |
-| `reducido` | ~15–20k reglas útiles para un espejo de ISP | 0,6–0,9 GB | **5–7** |
+| `completo` | ET completo, `profile: medium` | 1,2–1,7 GB | **2–3** |
 
 **A MEDIR EN EL CANARIO.**
 
+- **Decisión del dueño (ARQUITECTURA §10 e):** reglas reducidas por defecto en el alta y
+  `completo` solo donde quepa. Los perfiles y las cifras se fijan con las mediciones de F1a.
 - El perfil se elige por punto y se cambia con `punto.ajustar`, que pasa por la admisión.
 - `reducido` sale de la **misma descarga** que `completo`: `suricata-update --offline` con otro
   `disable.conf`, que quita `policy`, `info`, `games`, `chat`, `inappropriate`, `hunting`… La lista

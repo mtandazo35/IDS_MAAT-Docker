@@ -44,7 +44,7 @@ Son dos servicios de compose con **la misma imagen y sin s6**:
 
 | Servicio | Hace | Montajes |
 |---|---|---|
-| `panel-web` | servidor HTTP: páginas, `/api/v1`, `/salud` | `/data/panel` rw; `/data/puntos/datos` y `/data/puntos/run` ro; `/run/ids-orq`; secretos |
+| `panel-web` | servidor **HTTP** en el puerto 5637, con IP fija `10.210.255.2` en la red `ids-core`: páginas, `/api/v1`, `/salud`. El TLS lo termina el proxy inverso externo (§12) | `/data/panel` rw; `/data/puntos/datos` y `/data/puntos/run` ro; `/run/ids-orq`; secretos |
 | `panel-worker` | planificador (§6) | los mismos |
 
 Los dos:
@@ -158,11 +158,11 @@ Son los más importantes de los 30 inventariados:
 | Cuarentena | sí | sí; las acciones van por fila con su punto | masivas agrupadas por punto |
 | Ficha de CPE | obligatorio | — | `/puntos/p003/cpe/10.0.0.5` |
 | Consultar IP (reputación) | — | global | si se escribe una IP privada, pide el punto |
-| Histórico, Reporte (conducta) | sí | sí | el CSV lleva la columna `punto`; opción «incluir puntos de baja» |
+| Histórico, Reporte (conducta) | sí | sí | el CSV lleva la columna `punto`. Un punto dado de baja no aparece: sus datos se borraron |
 | Exclusiones | las del punto más las heredadas | todas, con columna Ámbito | aviso «se aplica en ≤ 15 min» |
 | **Puntos** (nueva) | — | global | §8 |
 | **Ficha del punto** (nueva) | sí | — | pestañas Resumen, VPN, MikroTik/API, Espejo (plan, aplicar, verificar, respaldos), Redes, Públicas, Política, Listas y TTL, Logs, Baja |
-| Ajustes | — | global | empresa, usuarios y roles, feeds y claves, política por defecto, **redes de gestión (modo seguro, ventana)**, actualizaciones, bitácora, accesos, documentación |
+| Ajustes | — | global | empresa, usuarios y roles, feeds y claves, política por defecto, **redes de gestión e IP del proxy (modo seguro, ventana)**, actualizaciones, bitácora, accesos, documentación |
 
 ## 8. Pantalla Puntos
 
@@ -188,11 +188,17 @@ punto. No llama al orquestador en cada carga.
 
 Los pasos y los errores están en [ORQUESTADOR.md](ORQUESTADOR.md) §11.1. En pantalla:
 
-1. **Datos:** nombre, redes, RouterOS, perfil (con la capacidad) e IP pública opcional.
+1. **Datos:** nombre, redes, RouterOS (6.49 o superior, o v7), perfil (**`reducido` por
+   defecto**, con la capacidad) e IP pública opcional.
 2. **Creación:** barra de avance alimentada por `op.estado`.
 3. **Conectar el MikroTik:** pestañas **v7** y **v6** con bloques separados para copiar
    ([OPERACION.md](OPERACION.md) §1) y el indicador «Esperando conexión…».
-4. **API-SSL:** usuario, clave y «Probar». Se muestran la identidad y la huella detectadas.
+4. **API-SSL:** usuario, clave y «Probar».
+   - Se muestran la identidad, la versión y la **huella SHA-256** del certificado `ids-promax`,
+     junto con la instrucción «compárala con `/certificate print detail` en el router».
+   - Al confirmar, la huella queda fijada (TOFU) y cualquier otro certificado se rechaza.
+   - Si falta el certificado, se muestra el bloque de `ids-promax` ([OPERACION.md](OPERACION.md)
+     §1).
 5. **Espejo:** el plan exacto y el aviso del respaldo, y después «Aplicar».
 6. **Verificación:** paquetes, Mbps, desperdicio y primer evento. Al terminar: «El envío a
    cuarentena está APAGADO: actívalo en la ficha del punto cuando lo decidas».
@@ -238,11 +244,13 @@ El avance se guarda en `punto.estado`. El asistente se puede cerrar y retomar de
 | Tema | Diseño |
 |---|---|
 | Primer arranque | **Prohibido el modo sin autenticación.** Solo se acepta «crear el primer admin», con un token de un solo uso que se imprime en el log de `panel-web` |
-| CSRF | `Origin`/`Sec-Fetch-Site` más un token por sesión en la cabecera `X-CSRF` en todo POST, PUT y DELETE |
-| Cookie | `__Host-ids_s`, `SameSite=Strict`, `HttpOnly`, `Secure` (exige HTTPS; pregunta c de ARQUITECTURA) |
+| Proxy inverso y cabeceras | El TLS lo termina un **proxy inverso externo** (decisión c de ARQUITECTURA §10). El panel habla HTTP y el firewall solo deja llegar a las IP del proxy. El panel **solo confía** en `X-Forwarded-For`, `X-Forwarded-Proto` y `X-Forwarded-Host` (o en `Forwarded`) cuando el par TCP es una IP de la lista de proxies; de `X-Forwarded-For` toma la entrada que añadió el proxy (la última). Si la conexión viene de cualquier otra IP, por ejemplo el túnel SSH de emergencia, esas cabeceras se ignoran y se usan la IP y el `Host` reales |
+| Uso de la IP real y del protocolo | La IP real alimenta el freno de login, la bitácora y los accesos. `X-Forwarded-Host`/`-Proto` alimentan la comprobación de origen del CSRF. Las cookies `Secure` y `__Host-` se emiten cuando `X-Forwarded-Proto=https` llega de un proxy de confianza |
+| CSRF | `Origin`/`Sec-Fetch-Site`, comparados con el host público (`X-Forwarded-Host` del proxy), más un token por sesión en la cabecera `X-CSRF` en todo POST, PUT y DELETE |
+| Cookie | `__Host-ids_s`, `SameSite=Strict`, `HttpOnly`, `Secure`. Por el túnel SSH de emergencia (`http://localhost:5637`), los navegadores tratan `localhost` como contexto seguro y la cookie funciona |
 | Sesiones | se guarda `sha256(token)` de 256 bits; 12 h absolutas y 2 h de inactividad; rotación al iniciar sesión; se invalidan al cambiar la clave, el rol o la visibilidad, o al desactivar al usuario; máximo 10 por usuario |
 | Claves | PBKDF2-SHA256 con 600 000 iteraciones; `iter` por fila con actualización transparente; mínimo 12 caracteres; `hmac.compare_digest` |
-| Fuerza bruta | 8 fallos en 10 min por IP y también por login, en el propio panel (fail2ban no ve los puertos de Docker) |
+| Fuerza bruta | 8 fallos en 10 min por **IP real del cliente** y también por login, en el propio panel. fail2ban no sirve aquí: todas las conexiones llegan desde la IP del proxy |
 | Cabeceras | CSP `default-src 'self'` con nonce, `X-Frame-Options: DENY`, `Referrer-Policy: same-origin`, `nosniff` |
-| Redes de gestión | se comprueban otra vez en el panel, además del nft del host |
+| Origen permitido | el panel vuelve a comprobar que el par TCP es una IP del proxy o la puerta de enlace de `ids-core` (el túnel SSH de emergencia), además del nft del host. Quién llega al proxy lo decide el propio proxy |
 | Secretos y bitácora | [DATOS.md](DATOS.md) §6 y §7 |

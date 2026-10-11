@@ -15,16 +15,42 @@ solo se muestran como referencia.
 
 ## 1. Preparar el MikroTik
 
-### 1.1 RouterOS v7
+Versiones soportadas: **RouterOS 6.49 o superior** en v6, y v7. Anteriores a 6.49, no.
+
+### 1.1 Certificado de la API-SSL: `ids-promax` (6.49 y v7)
+
+Es el formato del dueño y vale igual en 6.49 y en v7:
+
+```
+/certificate
+add name=ids-promax common-name=ids-promax \
+    key-usage=key-cert-sign,crl-sign,digital-signature,tls-server,tls-client,data-encipherment,key-encipherment \
+    days-valid=4576 trusted=yes
+/certificate sign ids-promax
+/certificate set ids-promax trusted=yes
+/ip service set api-ssl certificate=ids-promax
+```
+
+- **Si `ids-promax` ya existe en el router, se reutiliza.** No se vuelve a crear y basta con la
+  última línea.
+- **Sin `ca-crl-host`:** no se usa CRL.
+- **`sign` tarda unos segundos, sobre todo en v6.** Antes del `set`, hay que esperar a que
+  `/certificate print` lo muestre con los flags **K** (tiene clave privada) y **T** (de confianza).
+- Si el servicio está deshabilitado: `/ip service enable api-ssl`.
+- **Huella fijada (TOFU).** En la primera conexión del alta, el panel muestra la huella SHA-256
+  del certificado. Se compara con la que da `/certificate print detail where name=ids-promax` y, al
+  confirmar, queda fijada. Desde entonces el panel rechaza cualquier otro certificado. Si se
+  regenera `ids-promax`, hay que volver a fijar la huella desde la ficha del punto (admin, queda en
+  la bitácora).
+- **En una baja no se borra:** el certificado puede usarlo otro servicio del router.
+
+### 1.2 RouterOS v7
 
 ```
 /interface ovpn-client add name=ids-vpn connect-to=ids.empresa.example port=1196 protocol=tcp mode=ip \
     user=vpn3a9f2c password=<CLAVE-VPN> cipher=aes256-gcm auth=sha1 \
     add-default-route=no use-peer-dns=no disabled=no
 /ip route add dst-address=100.64.3.0/24 blackhole distance=250 comment="IDS ids-maat:p003"
-/certificate add name=ids-api-ssl common-name=ids-api-ssl key-size=2048 days-valid=3650
-/certificate sign ids-api-ssl
-/ip service set api-ssl certificate=ids-api-ssl disabled=no
 /user group add name=ids-api policy=read,write,api
 /user add name=ids-api group=ids-api address=100.64.3.1/32 password=<CLAVE-API>
 /ip firewall filter add chain=input in-interface=ids-vpn src-address=100.64.3.1 protocol=tcp \
@@ -39,25 +65,26 @@ solo se muestran como referencia.
   /interface ovpn-client set ids-vpn verify-server-certificate=yes
   ```
 
-### 1.2 RouterOS v6
+### 1.3 RouterOS v6 (6.49 o superior)
 
 ```
 /interface ovpn-client add name=ids-vpn connect-to=ids.empresa.example port=1196 mode=ip \
     user=vpn3a9f2c password=<CLAVE-VPN> cipher=aes256 auth=sha1 \
     add-default-route=no disabled=no
 /ip route add dst-address=100.64.3.0/24 type=blackhole distance=250 comment="IDS ids-maat:p003"
-/certificate add name=ids-api-ssl common-name=ids-api-ssl key-size=2048 days-valid=3650
-/certificate sign ids-api-ssl
-/ip service set api-ssl certificate=ids-api-ssl disabled=no
 /user group add name=ids-api policy=read,write,api
 /user add name=ids-api group=ids-api address=100.64.3.1/32 password=<CLAVE-API>
 /ip firewall filter add chain=input in-interface=ids-vpn src-address=100.64.3.1 protocol=tcp \
     dst-port=8729 action=accept place-before=0 comment="IDS ids-maat:p003"
 ```
 
-v6 solo admite TCP, así que no lleva `protocol=`, y no tiene `use-peer-dns`.
+v6 solo admite TCP, así que no lleva `protocol=`, y no tiene `use-peer-dns`. Si el handshake TLS
+falla en 6.49, se activa la «compatibilidad v6» del punto desde su ficha
+([INSTANCIA.md](INSTANCIA.md) §7.2).
 
-### 1.3 Notas
+En los dos bloques, el certificado de la API-SSL es el de §1.1.
+
+### 1.4 Notas
 
 - **La lista de `/ip service api-ssl address=` no se toca.** Si ya tiene direcciones y no incluye
   `100.64.3.1`, el paso API del asistente lo detecta y muestra el comando para **añadirla**
@@ -88,7 +115,10 @@ equivalente a:
 - No hay regla de DNS aparte.
 - La pausa deshabilita los dos mangle con `disabled=yes`, filtrando por el comentario.
 
-### 2.1 Quitar todo lo del IDS de un router (baja sin conexión)
+### 2.1 Quitar todo lo del IDS de un router
+
+Sirve para una baja sin API, o para terminar una baja con API (`ovpn-client` y usuario). El
+certificado `ids-promax` no se borra.
 
 ```
 /ip firewall mangle remove [find comment~"ids-maat:p003"]
@@ -141,10 +171,23 @@ rsync -a --chmod=F600 root@ids.empresa.example:/root/backups/ids-maat-diario-*.t
 
 ## 4. Acceso de emergencia
 
-- **Si las redes de gestión dejan fuera al dueño:**
+- **Si el proxy inverso está caído o mal configurado:** se entra al panel por un túnel SSH desde
+  una red de gestión, sin pasar por el proxy:
+
+  ```sh
+  ssh -L 5637:10.210.255.2:5637 root@ids.empresa.example
+  # y en el navegador del equipo de gestión: http://localhost:5637
+  ```
+
+  - `10.210.255.2` es la IP fija de `panel-web` en la red `ids-core`.
+  - La conexión llega al panel desde la puerta de enlace de esa red, no desde un proxy, así que el
+    panel ignora cualquier cabecera `X-Forwarded-*`.
+  - Los navegadores tratan `localhost` como contexto seguro, y la cookie `__Host-` funciona.
+- **Si las redes de gestión dejan fuera al dueño** (y, con ellas, el SSH):
   1. Entrar por la consola del proveedor del VPS.
   2. Ejecutar `/root/ids-maat/acceso-emergencia.sh` (restaura el ruleset anterior) o
-     `/root/ids-maat/acceso-emergencia.sh 203.0.113.20` (abre esa IP).
+     `/root/ids-maat/acceso-emergencia.sh 203.0.113.20` (abre esa IP para SSH). Con
+     `--proxy 203.0.113.50` abre el panel a esa IP de proxy.
   3. Revisar `/root/backups/` y la bitácora.
 - **Una red más ancha que /16 solo se puede abrir así**, desde la consola.
 
