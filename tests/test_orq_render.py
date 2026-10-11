@@ -101,7 +101,7 @@ networks:
 
 SERVER_CONTRATO = """# ids-maat p003 — generado por ids-orq; no editar
 port 1194
-proto tcp-server
+proto tcp4-server
 dev tun0
 topology subnet
 server 100.64.3.0 255.255.255.0
@@ -206,6 +206,14 @@ class ServerConf(unittest.TestCase):
 
     def test_v7_exacto(self):
         self.assertEqual(self.mod.render_server_conf("p003", "100.64.3.0", 7, "no"), SERVER_CONTRATO)
+
+    def test_solo_ipv4_e_igual_al_fixture_de_la_imagen(self):
+        # el netns del contenedor no tiene IPv6: tcp-server (dual stack) no sirve, tcp4-server sí
+        txt = self.mod.render_server_conf("p003", "100.64.3.0", 7, "no")
+        self.assertIn("\nproto tcp4-server\n", txt)
+        self.assertNotIn("proto tcp-server", txt)
+        fixture = A.REPO / "tests" / "fixtures" / "vpn" / "server.conf"     # el que arranca tests/imagen
+        self.assertEqual(txt, fixture.read_text(encoding="utf-8"))
 
     def test_v6(self):
         txt = self.mod.render_server_conf("p003", "100.64.3.0", 6, "no")

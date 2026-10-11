@@ -15,7 +15,8 @@
 #   --solo-validar     valida los argumentos y sale sin tocar nada
 #   --confirmar        desde una sesión SSH NUEVA: confirma el acceso y anula la reversión
 #   --sin-reversion    sin modo seguro (instalación desde la consola del proveedor)
-#   --forzar-acceso    sigue aunque la IP de tu sesión SSH no esté en --gestion
+#   --forzar-acceso    sigue aunque la IP de tu sesión SSH no esté en --gestion o no se pueda
+#                      averiguar
 #
 # Idempotente: volver a ejecutarlo cambia gestión/proxy. Respaldo en /root/backups antes de tocar
 # sshd, firewall, Docker o fail2ban. Nunca instala iptables-persistent ni ufw ni hace flush ruleset.
@@ -38,14 +39,14 @@ R="${R%/}"
 
 VERSION="" NOMBRE="" GESTION="" PROXY="" TUN_BASE="100.64" TUN_BASE_DADO=0 DUENO=""
 DESDE_REPO="" IMAGENES="" SOLO_VALIDAR=0 CONFIRMAR=0 SIN_REVERSION=0 FORZAR_ACCESO=0
-HOST_DIR="" IMG_VPN="" IMG_SUR="" DEV=false TS=""
+HOST_DIR="" IMG_VPN="" IMG_SUR="" DEV=false TS="" T0_REVERSION=""
 
 log()    { printf '\033[1;32m==>\033[0m %s\n' "$*"; }
 aviso()  { printf '\033[1;33m!!\033[0m  %s\n' "$*" >&2; }
 fallar() { printf '\033[1;31mERROR:\033[0m %s\n' "$*" >&2; exit 1; }
 
 uso() {
-  sed -n '2,24p' "$0" | sed 's/^# \{0,1\}//'
+  sed -n '2,22p' "$0" | sed 's/^# \{0,1\}//'
 }
 
 # ---------------------------------------------------------------------------------------------
@@ -233,17 +234,53 @@ claves_ssh_presentes() {
   return 1
 }
 
+ppid_de() {   # ppid_de <pid> -> PPid según ${R}/proc/<pid>/status
+  sed -n 's/^PPid:[[:space:]]*\([0-9][0-9]*\)[[:space:]]*$/\1/p' "${R}/proc/$1/status" 2>/dev/null | head -n1 || true
+}
+
+# IP de origen de la sesión SSH. Con «sudo -i» o «su -» se pierde SSH_CONNECTION: se busca en el
+# entorno de los procesos padre (/proc/<pid>/environ, subiendo por PPid) y, si no, en «who -m --ips».
+ip_sesion_ssh() {
+  local pid sc n=0 ip
+  if [ -n "${SSH_CONNECTION:-}" ]; then
+    echo "${SSH_CONNECTION%% *}"
+    return 0
+  fi
+  pid=$(ppid_de "$$")
+  while [[ "$pid" =~ ^[0-9]+$ ]] && [ "$pid" -gt 1 ] && [ "$n" -lt 64 ]; do
+    if [ -r "${R}/proc/$pid/environ" ]; then
+      sc=$(tr '\0' '\n' < "${R}/proc/$pid/environ" 2>/dev/null | sed -n 's/^SSH_CONNECTION=//p' | head -n1 || true)
+      if [ -n "$sc" ]; then
+        echo "${sc%% *}"
+        return 0
+      fi
+    fi
+    pid=$(ppid_de "$pid")
+    n=$((n + 1))
+  done
+  ip=$(who -m --ips 2>/dev/null | awk 'NF >= 5 {print $NF; exit}' | tr -d '()' || true)
+  if [ -n "$ip" ] && { ip_a_int "$ip" >/dev/null || [[ "$ip" =~ ^[0-9A-Fa-f]*:[0-9A-Fa-f]*:[0-9A-Fa-f:.]*$ ]]; }; then
+    echo "$ip"
+    return 0
+  fi
+  return 1
+}
+
 comprobar_acceso_ssh() {
   local ip
   if ! claves_ssh_presentes && ! sshd -T 2>/dev/null | grep -qi '^passwordauthentication no'; then
     fallar "no hay claves en authorized_keys: con PasswordAuthentication no te quedarías fuera"
   fi
-  if [ -z "${SSH_CONNECTION:-}" ]; then
-    aviso "no es una sesión SSH: no se comprueba que tu IP esté en --gestion"
-    return 0
+  if ! ip=$(ip_sesion_ssh); then
+    if [ "$FORZAR_ACCESO" = 1 ] || [ "$SIN_REVERSION" = 1 ]; then
+      aviso "no se pudo averiguar la IP de tu sesión SSH: no se comprueba que esté en --gestion"
+      return 0
+    fi
+    fallar "no se pudo averiguar la IP de tu sesión SSH (sudo -i y su - la pierden): ejecútalo como root en la sesión SSH, o usa --sin-reversion desde la consola del proveedor o --forzar-acceso"
   fi
-  ip="${SSH_CONNECTION%% *}"
-  if ip_en_lista "$ip" "$GESTION" || { [ -n "$DUENO" ] && [ "$ip" = "$DUENO" ]; }; then
+  # Solo cuenta --gestion: es lo único que el set @gestion de ids_host.nft deja entrar al 22
+  # (--dueno-ip solo va al ignoreip de fail2ban).
+  if ip_en_lista "$ip" "$GESTION"; then
     return 0
   fi
   if [ "$FORZAR_ACCESO" = 1 ]; then
@@ -545,6 +582,8 @@ armar_reversion() {
 # Generado por install.sh ($TS): vuelve al acceso anterior (firewall del host y sshd)
 # si nadie confirmó desde una sesión SSH nueva en ${VENTANA_REVERSION} s.
 set -u
+# Marcador primero: desde aquí ni --confirmar ni el instalador pueden darlo por confirmado.
+date -u +%s > /root/ids-maat/acceso-revertido
 D="/root/ids-maat/acceso-anterior-${TS}"
 if [ -f "\$D/ids_host.nft" ]; then
   cp -p "\$D/ids_host.nft" /srv/ids/fw/ids_host.nft
@@ -564,9 +603,10 @@ logger -t ids-maat "acceso revertido: install.sh no se confirmó a tiempo"
 echo "REVERTIDO \$(date -u)"
 EOF
   chmod 0700 "$script"
-  rm -f "${R}/root/ids-maat/acceso-confirmado"
+  rm -f "${R}/root/ids-maat/acceso-confirmado" "${R}/root/ids-maat/acceso-revertido"
   systemctl stop "${UNIDAD_REVERSION}.timer" >/dev/null 2>&1 || true
   systemctl reset-failed "${UNIDAD_REVERSION}.service" "${UNIDAD_REVERSION}.timer" >/dev/null 2>&1 || true
+  T0_REVERSION=$(date +%s)     # el timer vence en T0 + VENTANA: la espera se mide desde aquí
   systemd-run --quiet --unit "$UNIDAD_REVERSION" --on-active="$VENTANA_REVERSION" /bin/bash /root/ids-maat/revertir-acceso.sh
   log "modo seguro: si no se confirma en $((VENTANA_REVERSION / 60)) min, el acceso vuelve a como estaba"
 }
@@ -607,7 +647,7 @@ ssh_endurecer() {
   log "sshd: PasswordAuthentication no"
 }
 
-lineas_ids_vpn() {   # CONTRATO-F1a §5.13: las 4 primeras casan, las 2 últimas no
+lineas_ids_vpn() {   # CONTRATO-F1a §5.13. Solo casan las 2 de «ovpn-auth: rechazado» (una por intento)
   cat <<'EOF'
 203.0.113.45:51234 TLS Auth Error: Auth Username/Password verification failed for peer
 203.0.113.45:51234 TLS Error: TLS handshake failed
@@ -627,7 +667,7 @@ render_jaula() {
 }
 
 fail2ban_jaulas() {
-  local f2b="${R}/etc/fail2ban" tmp n i
+  local f2b="${R}/etc/fail2ban" tmp n
   log "fail2ban: jaulas sshd e ids-vpn"
   install -d -m 0755 "$f2b/jail.d" "$f2b/filter.d"
   render_jaula > "$f2b/jail.d/10-ids.local"
@@ -638,16 +678,29 @@ fail2ban_jaulas() {
   lineas_ids_vpn > "$tmp"
   n=$(casan "$tmp" "$f2b/filter.d/ids-vpn.conf")
   rm -f "$tmp"
-  [ "$n" = 4 ] || fallar "el filtro ids-vpn casa con ${n:-0} de las líneas del contrato (se esperaban 4)"
+  [ "$n" = 2 ] || fallar "el filtro ids-vpn casa con ${n:-0} de las líneas del contrato (se esperaban 2: ovpn-auth rechazado)"
   systemctl enable fail2ban >/dev/null 2>&1
   systemctl restart fail2ban
-  for i in $(seq 1 15); do
+  for _ in $(seq 1 15); do
     if fail2ban-client status sshd >/dev/null 2>&1 && fail2ban-client status ids-vpn >/dev/null 2>&1; then
       return 0
     fi
     sleep 1
   done
   fallar "fail2ban no levantó las jaulas sshd e ids-vpn (journalctl -u fail2ban)"
+}
+
+reversion_armada() {   # el timer de la reversión sigue pendiente (activo y sin vencer)
+  systemctl is-active --quiet "${UNIDAD_REVERSION}.timer" 2>/dev/null || return 1
+  [ "$(systemctl show -p SubState --value "${UNIDAD_REVERSION}.timer" 2>/dev/null || true)" != elapsed ]
+}
+
+reversion_en_marcha() {   # la reversión ya empezó (marcador) o su servicio está corriendo
+  [ -e "${R}/root/ids-maat/acceso-revertido" ] && return 0
+  case "$(systemctl is-active "${UNIDAD_REVERSION}.service" 2>/dev/null || true)" in
+    active|activating|deactivating|reloading) return 0 ;;
+  esac
+  return 1
 }
 
 esperar_confirmacion() {
@@ -657,11 +710,25 @@ esperar_confirmacion() {
   log "CONFIRMA EL ACCESO: abre una sesión SSH NUEVA desde una red de gestión y ejecuta"
   log "    bash $(readlink -f "$0") --confirmar"
   log "(si no llega en $((VENTANA_REVERSION / 60)) min, el firewall y sshd vuelven a como estaban)"
-  fin=$(( $(date +%s) + VENTANA_REVERSION - 10 ))
+  # El plazo cuenta desde que se armó el timer (T0), no desde ahora: firewall, sshd y fail2ban
+  # ya gastaron parte de la ventana. Se deja de esperar 10 s antes de que venza.
+  fin=$(( ${T0_REVERSION:-$(date +%s)} + VENTANA_REVERSION - 10 ))
   while [ "$(date +%s)" -lt "$fin" ]; do
+    if [ -e "${R}/root/ids-maat/acceso-revertido" ]; then
+      fallar "el acceso se revirtió (/root/ids-maat/acceso-revertido): ids-maat NO quedó instalado. Revisa --gestion y vuelve a ejecutar"
+    fi
     if [ -f "${R}/root/ids-maat/acceso-confirmado" ]; then
       log "acceso confirmado"
       return 0
+    fi
+    if ! reversion_armada; then
+      # --confirmar para el timer justo antes de escribir su marca: se le da un momento
+      sleep 2
+      if [ -f "${R}/root/ids-maat/acceso-confirmado" ] && [ ! -e "${R}/root/ids-maat/acceso-revertido" ]; then
+        log "acceso confirmado"
+        return 0
+      fi
+      fallar "el temporizador de la reversión ya no está activo y nadie confirmó: el acceso puede haberse revertido. Revisa --gestion y vuelve a ejecutar"
     fi
     sleep 2
   done
@@ -669,7 +736,17 @@ esperar_confirmacion() {
 }
 
 confirmar_acceso() {
+  if reversion_en_marcha; then
+    fallar "la reversión ya se ejecutó o está en marcha: el acceso vuelve a como estaba. Vuelve a ejecutar el instalador"
+  fi
+  if ! reversion_armada; then
+    fallar "no hay reversión pendiente (${UNIDAD_REVERSION}.timer no está activo): ya venció o no se armó; no se confirma nada"
+  fi
   systemctl stop "${UNIDAD_REVERSION}.timer" >/dev/null 2>&1 || true
+  # el timer pudo dispararse entre la comprobación y el stop
+  if reversion_en_marcha; then
+    fallar "la reversión empezó mientras se confirmaba: el acceso vuelve a como estaba. Vuelve a ejecutar el instalador"
+  fi
   systemctl reset-failed "${UNIDAD_REVERSION}.service" "${UNIDAD_REVERSION}.timer" >/dev/null 2>&1 || true
   install -d -m 0700 "${R}/root/ids-maat"
   date -u +%s > "${R}/root/ids-maat/acceso-confirmado"

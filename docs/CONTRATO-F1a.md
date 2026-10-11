@@ -73,6 +73,9 @@ Reglas del contrato:
 | 11 | tag journald `ids-vpn` | igual, **constante** para todos los puntos; el punto sale de `CONTAINER_NAME` | la jaula `ids-vpn` filtra por un solo `CONTAINER_TAG` |
 | 12 | `release.yml` con matriz `[panel, vpn, suricata]` | en F1a la matriz es `[vpn, suricata]`; `panel` entra en F1b | no hay panel |
 | 13 | órdenes de ORQUESTADOR §5 | se añaden `punto.comandos`, `punto.api.huella`, `punto.medir`, `logs.reabrir`, `sistema.reconciliar`, `sistema.estado` | las pide la CLI de F1a |
+| 14 | §6.1 de este contrato: la etiqueta `ids-maat.suricata-version` lleva la versión real del paquete | la etiqueta lleva la **serie** (`7.0`, el `ARG SURICATA_VERSION` del `Dockerfile`, que `images/build.sh` y `release.yml` pasan con `--build-arg`); la versión exacta queda en `/usr/share/ids-maat/suricata-version`, en `release.json` (`"suricata_version": "7.0.x"`, leída de la imagen publicada) y en el `MANIFEST.json` de cada release de reglas | la versión exacta solo se conoce dentro del build, después de instalar el paquete; una etiqueta no se puede escribir desde un `RUN` |
+| 15 | §4.4 de este contrato (y INSTANCIA): `proto tcp-server` | `proto tcp4-server` | el contenedor `vpn` no usa IPv6; el socket solo IPv4 evita depender de IPv6 en el netns |
+| 16 | §5.13: tres `failregex` (TLS Auth Error, TLS Error, ovpn-auth) y «las cuatro primeras casan» | solo `ovpn-auth: rechazado` (con el prefijo opcional de journald) e `ignoreregex` para `motivo=freno-global`; de las 6 lineas del fixture casan la 3.a y la 4.a | un intento fallido escribia 2 lineas que casaban y baneaba al 3.er intento con maxretry 5; el freno global no es culpa de la IP que lo encuentra |
 
 ---
 
@@ -975,7 +978,7 @@ Líneas que **A** garantiza en journald con `CONTAINER_TAG=ids-vpn` y que **C** 
 tzsp-decap: rx=10 tx=10 descartados=0 muy_grandes=0 rechazados_origen=0 ultimo_origen=100.64.3.2
 ```
 
-Las cuatro primeras casan y las dos últimas **no**. Filtro de C:
+**Sustituido (§0.2 fila 16):** casan solo la 3.a y la 4.a. Filtro original de C (historico):
 
 ```ini
 [Definition]

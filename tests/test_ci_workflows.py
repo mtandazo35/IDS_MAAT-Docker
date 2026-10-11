@@ -51,6 +51,24 @@ class ReleaseJson(unittest.TestCase):
                                           "sha256": hashlib.sha256(b"contenido del tar").hexdigest()},
                              "min_orq": "0.1.0", "migraciones": []})
 
+    def test_version_exacta_de_suricata(self):
+        vpn = "ghcr.io/mtandazo35/ids-maat-vpn@sha256:" + "1" * 64
+        sur = "ghcr.io/mtandazo35/ids-maat-suricata@sha256:" + "2" * 64
+        d = self.mod.construir("0.1.0", vpn, sur, self.tar, suricata_version="7.0.10")
+        self.assertEqual(d["suricata_version"], "7.0.10")
+        import io
+        import contextlib
+        import json
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            rc = self.mod.main(["--version", "0.1.0", "--vpn", vpn, "--suricata", sur, "--tar", str(self.tar),
+                                "--suricata-version", "7.0.10"])
+        self.assertEqual(rc, 0)
+        self.assertEqual(json.loads(out.getvalue())["suricata_version"], "7.0.10")
+        for mala in ("7.0", "", "7.0.10\n", "7.0.x"):
+            with self.assertRaises(ValueError, msg=repr(mala)):
+                self.mod.construir("0.1.0", vpn, sur, self.tar, suricata_version=mala)
+
     def test_rechaza_referencias_malas(self):
         buena = "ghcr.io/mtandazo35/ids-maat-vpn@sha256:" + "1" * 64
         for vpn, sur, ver in ((buena.replace("vpn@", "suricata@"), buena, "0.1.0"),
@@ -132,6 +150,20 @@ class BuildSh(unittest.TestCase):
         r = self.correr("vpn")
         self.assertIn("ids-maat-vpn:dev", self.reg.read_text(encoding="utf-8"))
 
+    @unittest.skipUnless((REPO / "images" / "suricata" / "Dockerfile").exists(), "falta images/suricata/Dockerfile (B)")
+    def test_suricata_pasa_la_serie(self):
+        r = self.correr("suricata", "ci")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        args = self.reg.read_text(encoding="utf-8").split("\n")
+        serie = re.search(r"^ARG SURICATA_VERSION=(\S+)$",
+                          (REPO / "images" / "suricata" / "Dockerfile").read_text(encoding="utf-8"), re.M).group(1)
+        self.assertRegex(serie, r"^\d+\.\d+$")
+        i = args.index("SURICATA_VERSION=%s" % serie)
+        self.assertEqual(args[i - 1], "--build-arg")
+        self.assertEqual([x for x in args if x][-3:], ["-t", "ids-maat-suricata:ci", "suricata"])
+        self.correr("vpn", "ci")
+        self.assertNotIn("SURICATA_VERSION", self.reg.read_text(encoding="utf-8"))
+
     def test_argumentos_malos(self):
         self.assertEqual(self.correr("panel").returncode, 2)
         self.assertEqual(self.correr().returncode, 2)
@@ -166,6 +198,16 @@ class Workflows(unittest.TestCase):
         self.assertIn("id-token: write", rel)
         self.assertIn("sign-blob --yes --bundle release.json.bundle release.json", rel)
         self.assertIn("git archive --format=tar.gz", rel)
+
+    def test_release_publica_la_version_exacta_de_suricata(self):
+        rel = self.leer("release.yml")
+        # imagen: la etiqueta lleva la serie del ARG del Dockerfile, solo en la imagen suricata
+        self.assertIn("sed -n 's/^ARG SURICATA_VERSION=//p' images/suricata/Dockerfile", rel)
+        self.assertIn("matrix.img == 'suricata' && format('SURICATA_VERSION={0}', "
+                      "steps.base.outputs.suricata_serie)", rel)
+        # release: la versión exacta sale de la imagen publicada y va a release.json
+        self.assertRegex(rel, r'--entrypoint cat "\$ref_suricata" \\\n\s+/usr/share/ids-maat/suricata-version')
+        self.assertIn('--suricata-version "$suricata_version"', rel)
 
     def test_cosign_igual_que_install(self):
         rel = self.leer("release.yml")

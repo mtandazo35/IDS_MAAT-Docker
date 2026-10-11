@@ -100,7 +100,7 @@ p_helpers() {
   ip_en_lista 198.51.100.7 192.0.2.0/25,198.51.100.0/26 || return 1
   ip_en_lista 198.51.100.70 192.0.2.0/25,198.51.100.0/26 && return 1
   ip_en_lista 2001:db8::1 192.0.2.0/25 && return 1
-  cidr_rango 1.2.3.4/33 >/dev/null && return 1
+  cidr_rango 192.0.2.4/33 >/dev/null && return 1
   return 0
 }
 
@@ -188,6 +188,145 @@ p_reversion_y_confirmar() {
   return 0
 }
 
+# Reloj simulado que avanza 5 s por llamada a «date +%s» (se llama dentro de $(…): estado en fichero)
+reloj_simulado() {   # reloj_simulado <segundos iniciales>
+  echo "$1" > "$T/reloj"
+  : > "$T/suenos"
+  sleep() { echo x >> "$T/suenos"; }
+  date() {
+    if [ "${1:-}" = +%s ]; then
+      local n
+      n=$(( $(cat "$T/reloj") + 5 ))
+      echo "$n" > "$T/reloj"
+      echo "$n"
+    else
+      command date "$@"
+    fi
+  }
+}
+
+suenos() { wc -l < "$T/suenos" | tr -d ' '; }
+
+p_revertir_escribe_marcador_primero() {
+  mkdir -p "$IDS_RAIZ/root/ids-maat"
+  TS=20261010T081500Z
+  armar_reversion >/dev/null || return 1
+  local s="$IDS_RAIZ/root/ids-maat/revertir-acceso.sh" l_marca l_nft
+  l_marca=$(grep -n 'date -u +%s > /root/ids-maat/acceso-revertido' "$s" | head -n1 | cut -d: -f1)
+  l_nft=$(grep -n 'nft ' "$s" | head -n1 | cut -d: -f1)
+  [ -n "$l_marca" ] || return 2
+  [ "$l_marca" -lt "$l_nft" ] || return 3                    # antes de tocar nada
+  : > "$IDS_RAIZ/root/ids-maat/acceso-revertido"
+  armar_reversion >/dev/null || return 4                     # rearmar borra el marcador viejo
+  [ -e "$IDS_RAIZ/root/ids-maat/acceso-revertido" ] && return 5
+  return 0
+}
+
+p_confirmar_tras_revertir_falla() {   # el marcador de la reversión existe: --confirmar no confirma
+  mkdir -p "$IDS_RAIZ/root/ids-maat"
+  TS=20261010T081500Z
+  armar_reversion >/dev/null || return 1
+  date -u +%s > "$IDS_RAIZ/root/ids-maat/acceso-revertido"
+  ( confirmar_acceso ) >"$T/conf" 2>&1 && { cat "$T/conf"; return 2; }
+  grep -q CONFIRMADO "$T/conf" && return 3
+  [ -f "$IDS_RAIZ/root/ids-maat/acceso-confirmado" ] && return 4
+  return 0
+}
+
+p_confirmar_sin_timer_falla() {   # el timer ya no está activo (venció): --confirmar no confirma
+  mkdir -p "$IDS_RAIZ/root/ids-maat"
+  systemctl() {
+    echo "systemctl $*" >> "$LLAMADAS"
+    case "$*" in *"is-active --quiet ids-maat-revertir-acceso.timer"*) return 3 ;; esac
+    return 0
+  }
+  ( confirmar_acceso ) >/dev/null 2>&1 && return 1
+  [ -f "$IDS_RAIZ/root/ids-maat/acceso-confirmado" ] && return 2
+  # vencido pero todavía «active (elapsed)»: tampoco
+  systemctl() {
+    echo "systemctl $*" >> "$LLAMADAS"
+    case "$*" in *"show -p SubState --value ids-maat-revertir-acceso.timer"*) echo elapsed ;; esac
+    return 0
+  }
+  ( confirmar_acceso ) >/dev/null 2>&1 && return 3
+  [ -f "$IDS_RAIZ/root/ids-maat/acceso-confirmado" ] && return 4
+  return 0
+}
+
+p_confirmar_carrera_con_el_timer() {   # el timer dispara entre la comprobación y el stop
+  mkdir -p "$IDS_RAIZ/root/ids-maat"
+  rm -f "$T/parado"
+  systemctl() {
+    echo "systemctl $*" >> "$LLAMADAS"
+    case "$*" in
+      "stop ids-maat-revertir-acceso.timer") : > "$T/parado" ;;
+      "is-active ids-maat-revertir-acceso.service") [ -e "$T/parado" ] && echo activating; return 3 ;;
+    esac
+    return 0
+  }
+  ( confirmar_acceso ) >/dev/null 2>&1 && return 1
+  [ -f "$IDS_RAIZ/root/ids-maat/acceso-confirmado" ] && return 2
+  return 0
+}
+
+p_esperar_revertido_aunque_confirmado() {   # confirmado tarde: la reversión ya corrió
+  mkdir -p "$IDS_RAIZ/root/ids-maat"
+  TS=20261010T081500Z
+  armar_reversion >/dev/null || return 1
+  date -u +%s > "$IDS_RAIZ/root/ids-maat/acceso-confirmado"
+  date -u +%s > "$IDS_RAIZ/root/ids-maat/acceso-revertido"
+  ( esperar_confirmacion ) >/dev/null 2>&1 && return 2
+  return 0
+}
+
+p_esperar_cuenta_desde_t0() {   # firewall+sshd+fail2ban tardan 280 s: quedan 10 s, no 290
+  mkdir -p "$IDS_RAIZ/root/ids-maat"
+  TS=20261010T081500Z
+  reloj_simulado 995
+  armar_reversion >/dev/null || return 1                     # T0 = 1000
+  [ "$T0_REVERSION" = 1000 ] || { echo "T0=$T0_REVERSION"; return 2; }
+  echo 1275 > "$T/reloj"                                     # ahora = 1280
+  ( esperar_confirmacion ) >/dev/null 2>&1 && return 3
+  [ "$(suenos)" -le 3 ] || { echo "esperó $(suenos) vueltas más allá de T0+290"; return 4; }
+  return 0
+}
+
+p_esperar_timer_inactivo_falla_ya() {   # nadie confirmó y el timer ya no está: no esperar a ciegas
+  mkdir -p "$IDS_RAIZ/root/ids-maat"
+  TS=20261010T081500Z
+  reloj_simulado 1000
+  armar_reversion >/dev/null || return 1
+  systemctl() {
+    echo "systemctl $*" >> "$LLAMADAS"
+    case "$*" in *"is-active --quiet ids-maat-revertir-acceso.timer"*) return 3 ;; esac
+    return 0
+  }
+  ( esperar_confirmacion ) >"$T/esp" 2>&1 && return 2
+  [ "$(suenos)" -le 2 ] || { echo "esperó $(suenos) vueltas con el timer parado"; return 3; }
+  return 0
+}
+
+p_principal_revertido_no_dice_instalado() {
+  # Todo simulado salvo el modo seguro: la reversión se dispara durante fail2ban (lento) y el
+  # dueño confirma tarde. El instalador debe fallar y no decir «instalado».
+  local paso
+  for paso in comprobar_sistema comprobar_tun_base comprobar_acceso_ssh respaldo paquetes obtener_release \
+              docker_ce docker_daemon modulos_sysctl_hora usuario_y_arbol escribir_ids_conf secretos pki \
+              instalar_orquestador firewall ssh_endurecer imagenes arrancar; do
+    eval "$paso() { :; }"
+  done
+  readlink() { echo /root/ids-maat-install.sh; }
+  mkdir -p "$IDS_RAIZ/root/ids-maat"
+  fail2ban_jaulas() {
+    date -u +%s > "$IDS_RAIZ/root/ids-maat/acceso-revertido"
+    date -u +%s > "$IDS_RAIZ/root/ids-maat/acceso-confirmado"
+  }
+  ( principal "${V[@]}" ) >"$T/principal" 2>&1 && { cat "$T/principal"; return 1; }
+  grep -q "ids-maat v0.1.0 instalado" "$T/principal" && { cat "$T/principal"; return 2; }
+  grep -q "se revirtió" "$T/principal" || { cat "$T/principal"; return 3; }
+  return 0
+}
+
 p_sin_confirmacion_falla() {
   VENTANA_REVERSION=11
   sleep() { :; }
@@ -206,18 +345,70 @@ p_sin_confirmacion_falla() {
   return 0
 }
 
-p_acceso_ssh() {
-  parsear_args "${V[@]}" && validar_args || return 1
+preparar_ssh() {   # claves presentes, sin SSH_CONNECTION heredada, sin /proc ni who reales
+  parsear_args "${V[@]}" "$@" && validar_args || return 1
   mkdir -p "$IDS_RAIZ/root/.ssh"
   echo "ssh-ed25519 AAAA prueba" > "$IDS_RAIZ/root/.ssh/authorized_keys"
   sshd() { echo "passwordauthentication yes"; }
+  who() { [ -f "$T/who" ] && cat "$T/who"; return 0; }
+  rm -f "$T/who"
+  unset SSH_CONNECTION
+}
+
+p_acceso_ssh() {
+  preparar_ssh || return 1
   SSH_CONNECTION="198.51.100.7 51000 203.0.113.10 22" comprobar_acceso_ssh || return 2
   ( SSH_CONNECTION="203.0.113.99 51000 203.0.113.10 22" comprobar_acceso_ssh ) >/dev/null 2>&1 && return 3
   ( SSH_CONNECTION="2001:db8::5 51000 2001:db8::1 22" comprobar_acceso_ssh ) >/dev/null 2>&1 && return 4
   FORZAR_ACCESO=1 SSH_CONNECTION="203.0.113.99 51000 203.0.113.10 22" comprobar_acceso_ssh 2>/dev/null || return 5
-  DUENO=203.0.113.99 SSH_CONNECTION="203.0.113.99 51000 203.0.113.10 22" comprobar_acceso_ssh || return 6
   rm -f "$IDS_RAIZ/root/.ssh/authorized_keys"
   ( SSH_CONNECTION="198.51.100.7 51000 203.0.113.10 22" comprobar_acceso_ssh ) >/dev/null 2>&1 && return 7
+  return 0
+}
+
+p_acceso_ssh_dueno_fuera_de_gestion() {
+  # --dueno-ip solo va al ignoreip de fail2ban; el firewall solo deja entrar a --gestion
+  preparar_ssh --dueno-ip 203.0.113.99 || return 1
+  ( SSH_CONNECTION="203.0.113.99 51000 203.0.113.10 22" comprobar_acceso_ssh ) >/dev/null 2>&1 && return 2
+  return 0
+}
+
+proc_simulado() {   # proc_simulado <ip SSH>: $$ -> 4321 (sudo, sin SSH_CONNECTION) -> 4000 (sshd-session)
+  local pr="$IDS_RAIZ/proc"
+  mkdir -p "$pr/$$" "$pr/4321" "$pr/4000"
+  printf 'Name:\tbash\nPPid:\t4321\n' > "$pr/$$/status"
+  printf 'Name:\tsudo\nPPid:\t4000\n' > "$pr/4321/status"
+  printf 'HOME=/root\0USER=root\0' > "$pr/4321/environ"
+  printf 'Name:\tbash\nPPid:\t1\n' > "$pr/4000/status"
+  printf 'HOME=/home/admin\0SSH_CONNECTION=%s 51000 203.0.113.10 22\0SSH_TTY=/dev/pts/0\0' "$1" > "$pr/4000/environ"
+}
+
+p_acceso_ssh_sudo_i_proc() {   # sudo -i: SSH_CONNECTION solo en el entorno de un proceso padre
+  preparar_ssh || return 1
+  proc_simulado 198.51.100.7
+  [ "$(ip_sesion_ssh)" = 198.51.100.7 ] || { echo "ip_sesion_ssh: $(ip_sesion_ssh)"; return 2; }
+  comprobar_acceso_ssh 2>/dev/null || return 3
+  proc_simulado 203.0.113.99                                # fuera de --gestion: no sigue
+  ( comprobar_acceso_ssh ) >/dev/null 2>&1 && return 4
+  return 0
+}
+
+p_acceso_ssh_who() {   # sin rastro en /proc: «who -m --ips»
+  preparar_ssh || return 1
+  echo "admin    pts/0        2026-10-11 09:00 (198.51.100.7)" > "$T/who"
+  comprobar_acceso_ssh 2>/dev/null || return 2
+  echo "admin    pts/0        2026-10-11 09:00 203.0.113.99" > "$T/who"
+  ( comprobar_acceso_ssh ) >/dev/null 2>&1 && return 3
+  echo "root     tty1         2026-10-11 09:00" > "$T/who"   # consola: la hora no es una IP
+  ( comprobar_acceso_ssh ) >/dev/null 2>&1 && return 4
+  return 0
+}
+
+p_acceso_ssh_ip_desconocida() {   # sin SSH_CONNECTION, /proc ni who: falla salvo con las opciones
+  preparar_ssh || return 1
+  ( comprobar_acceso_ssh ) >/dev/null 2>&1 && return 2
+  FORZAR_ACCESO=1 comprobar_acceso_ssh 2>/dev/null || return 3
+  SIN_REVERSION=1 comprobar_acceso_ssh 2>/dev/null || return 4
   return 0
 }
 
@@ -231,10 +422,10 @@ p_fail2ban() {
   HOST_DIR="$CHECKOUT" DUENO=203.0.113.20
   fail2ban-regex() {
     echo "fail2ban-regex $*" >> "$LLAMADAS"
-    printf 'Results\n=======\nLines: 6 lines, 0 ignored, %s matched, 2 missed\n[processed in 0.00 sec]\n' "${COINCIDEN:-4}"
+    printf 'Results\n=======\nLines: 6 lines, 0 ignored, %s matched, 4 missed\n[processed in 0.00 sec]\n' "${COINCIDEN:-2}"
   }
   fail2ban-client() { return 0; }
-  [ "$(casan /dev/null x)" = 4 ] || return 1
+  [ "$(casan /dev/null x)" = 2 ] || return 1
   mkdir -p "$IDS_RAIZ/root/ids-maat"
   fail2ban_jaulas >/dev/null || return 2
   local j="$IDS_RAIZ/etc/fail2ban/jail.d/10-ids.local"
@@ -245,7 +436,7 @@ p_fail2ban() {
   [ -f "$IDS_RAIZ/etc/fail2ban/filter.d/sshd.local" ] || return 7
   grep -q -- "-d {NONE}" "$LLAMADAS" || return 8
   grep -q "systemctl restart fail2ban" "$LLAMADAS" || return 9
-  COINCIDEN=3
+  COINCIDEN=4                                                 # el filtro viejo (TLS Auth Error también)
   ( fail2ban_jaulas ) >/dev/null 2>&1 && return 10
   return 0
 }
@@ -333,9 +524,21 @@ esperar 1 "--tun-base distinta con puntos: rechazo"       en_instalador p_tun_ba
 esperar 0 "respaldo antes de tocar nada"                  en_instalador p_respaldo
 esperar 0 "modo seguro: reversión armada y confirmación"  en_instalador p_reversion_y_confirmar
 esperar 1 "modo seguro: sin confirmación, aborta"         en_instalador p_sin_confirmacion_falla
+esperar 0 "modo seguro: la reversión marca antes de tocar" en_instalador p_revertir_escribe_marcador_primero
+esperar 0 "modo seguro: --confirmar tras revertir falla"  en_instalador p_confirmar_tras_revertir_falla
+esperar 0 "modo seguro: --confirmar sin timer falla"      en_instalador p_confirmar_sin_timer_falla
+esperar 0 "modo seguro: --confirmar en carrera falla"     en_instalador p_confirmar_carrera_con_el_timer
+esperar 0 "modo seguro: revertido gana a confirmado"      en_instalador p_esperar_revertido_aunque_confirmado
+esperar 0 "modo seguro: plazo desde T0, no desde ahora"   en_instalador p_esperar_cuenta_desde_t0
+esperar 0 "modo seguro: timer inactivo, falla enseguida"  en_instalador p_esperar_timer_inactivo_falla_ya
+esperar 0 "modo seguro: revertido, no dice «instalado»"   en_instalador p_principal_revertido_no_dice_instalado
 esperar 0 "acceso SSH: IP de gestión y claves"            en_instalador p_acceso_ssh
+esperar 0 "acceso SSH: IP del dueño fuera de --gestion"   en_instalador p_acceso_ssh_dueno_fuera_de_gestion
+esperar 0 "acceso SSH: sudo -i, IP desde /proc"           en_instalador p_acceso_ssh_sudo_i_proc
+esperar 0 "acceso SSH: IP desde who -m --ips"             en_instalador p_acceso_ssh_who
+esperar 0 "acceso SSH: IP desconocida falla sin opciones" en_instalador p_acceso_ssh_ip_desconocida
 esperar 1 "ufw instalado: no sigue"                       en_instalador p_paquetes_rechaza_ufw
-esperar 0 "fail2ban: jaulas y 4 coincidencias"            en_instalador p_fail2ban
+esperar 0 "fail2ban: jaulas y 2 coincidencias"            en_instalador p_fail2ban
 esperar 0 "líneas de §5.13 = fixture de C"                en_instalador p_lineas_contrato
 if [ -n "$PY" ]; then
   esperar 0 "daemon.json: fusión y comprobaciones"        en_instalador p_daemon_json

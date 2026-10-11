@@ -1,5 +1,6 @@
-"""fail2ban: el filtro ids-vpn casa con las líneas fijadas en el contrato (§5.13) — tal cual y con el
-prefijo que añade el backend systemd — y la jaula SSH ve las líneas de sshd-session (Debian 13).
+"""fail2ban: el filtro ids-vpn casa con las líneas de §5.13 — tal cual y con el prefijo que añade el
+backend systemd — solo en «ovpn-auth: rechazado» (una por intento fallido; «TLS Auth Error» es el
+mismo intento y no cuenta), y la jaula SSH ve las líneas de sshd-session (Debian 13).
 
 Sin fail2ban se emula su sustitución de <HOST> (la misma regex que usa fail2ban); con fail2ban
 instalado (CI de Linux) se ejecuta además `fail2ban-regex` de verdad."""
@@ -37,7 +38,16 @@ def regex_filtro():
     return out
 
 
+def regex_ignorar():
+    cp = leer_ini(F2B / "filter.d" / "ids-vpn.conf")
+    d = dict(cp.items("Definition"))
+    return [re.compile(x.strip()) for x in (d.get("ignoreregex") or "").splitlines() if x.strip()]
+
+
 def casa(regexes, linea):
+    # como fail2ban: una linea que casa con ignoreregex no cuenta aunque case con failregex
+    if any(r.search(linea) for r in regex_ignorar()):
+        return None
     for r in regexes:
         m = r.search(linea)
         if m:
@@ -53,14 +63,34 @@ class FiltroIdsVpn(unittest.TestCase):
     def test_lineas_del_contrato(self):
         self.assertEqual(len(self.lineas), 6)
         resultados = [casa(self.r, x) for x in self.lineas]
-        self.assertEqual(resultados[:4], ["203.0.113.45"] * 4)
-        self.assertEqual(resultados[4:], [None, None])
+        self.assertEqual(resultados, [None, None, "203.0.113.45", "203.0.113.45", None, None])
+
+    def test_freno_global_no_banea_a_quien_lo_encuentra(self):
+        # el freno global salta por la carga de todos: un MikroTik legitimo que reintenta no es culpable
+        linea = "203.0.113.45:51234 ovpn-auth: rechazado usuario=- motivo=freno-global"
+        self.assertIsNone(casa(self.r, linea))
+        self.assertIsNone(casa(self.r, "ids ids-vpn[812]: " + linea))
+        # el freno POR IP si cuenta (esa IP es la que insiste)
+        self.assertEqual(casa(self.r, "203.0.113.45:51234 ovpn-auth: rechazado usuario=- motivo=freno"),
+                         "203.0.113.45")
 
     def test_con_prefijo_del_backend_systemd(self):
         # formatJournalEntry: "<_HOSTNAME> <SYSLOG_IDENTIFIER>[<pid>]: <MESSAGE>"
         for prefijo in ("ids ids-vpn[812]: ", "ids-vpn[812]: ", "ids-vpn: "):
             resultados = [casa(self.r, prefijo + x) for x in self.lineas]
-            self.assertEqual(resultados, ["203.0.113.45"] * 4 + [None, None], prefijo)
+            self.assertEqual(resultados, [None, None, "203.0.113.45", "203.0.113.45", None, None], prefijo)
+
+    def test_un_intento_fallido_cuenta_una_vez(self):
+        # Lo que OpenVPN + ovpn-auth escriben por cada clave mala: con maxretry = 5 el ban llega al
+        # 5.º intento, no al 3.º (antes casaban también «TLS Auth Error» y «TLS Error»).
+        intento = ["203.0.113.45:51234 ovpn-auth: rechazado usuario=vpn3a9f2c motivo=clave",
+                   "203.0.113.45:51234 TLS Auth Error: Auth Username/Password verification failed for peer",
+                   "203.0.113.45:51234 TLS Error: TLS handshake failed"]
+        maxretry = int(Jaula.leer_jaula()["DEFAULT"]["maxretry"])
+        for n in range(1, 6):
+            fallos = sum(1 for _ in range(n) for x in intento if casa(self.r, "ids ids-vpn[812]: " + x))
+            self.assertEqual(fallos, n)
+            self.assertEqual(fallos >= maxretry, n >= 5, n)
 
     def test_no_se_puede_inyectar_otra_ip(self):
         # texto de un cliente dentro de una línea de OpenVPN no puede banear otra IP (regex anclada)
@@ -71,11 +101,16 @@ class FiltroIdsVpn(unittest.TestCase):
 
 
 class Jaula(unittest.TestCase):
-    def setUp(self):
+    @staticmethod
+    def leer_jaula():
         txt = (F2B / "jail.d" / "10-ids.local.tmpl").read_text(encoding="utf-8")
-        self.cp = configparser.RawConfigParser(strict=False, inline_comment_prefixes=None)
-        self.cp.optionxform = str
-        self.cp.read_string(txt.replace("@@IGNOREIP_DUENO@@", "203.0.113.20"))
+        cp = configparser.RawConfigParser(strict=False, inline_comment_prefixes=None)
+        cp.optionxform = str
+        cp.read_string(txt.replace("@@IGNOREIP_DUENO@@", "203.0.113.20"))
+        return cp
+
+    def setUp(self):
+        self.cp = self.leer_jaula()
 
     def test_jaulas(self):
         d = self.cp["DEFAULT"]
@@ -113,8 +148,8 @@ class Fail2banReal(unittest.TestCase):
         self.assertIsNotNone(m, r.stdout + r.stderr)
         return int(m.group(1))
 
-    def test_ids_vpn_cuatro_de_seis(self):
-        self.assertEqual(self.contar(FIX / "ids-vpn.log", F2B / "filter.d" / "ids-vpn.conf", ["-d", "{NONE}"]), 4)
+    def test_ids_vpn_dos_de_seis(self):
+        self.assertEqual(self.contar(FIX / "ids-vpn.log", F2B / "filter.d" / "ids-vpn.conf", ["-d", "{NONE}"]), 2)
 
     def test_ids_vpn_con_prefijo_journal(self):
         d = Path(tempfile.mkdtemp(prefix="f2b-"))
@@ -123,7 +158,7 @@ class Fail2banReal(unittest.TestCase):
             f.write_text("".join("ids ids-vpn[812]: " + x + "\n"
                                  for x in (FIX / "ids-vpn.log").read_text(encoding="utf-8").splitlines()),
                          encoding="utf-8")
-            self.assertEqual(self.contar(f, F2B / "filter.d" / "ids-vpn.conf", ["-d", "{NONE}"]), 4)
+            self.assertEqual(self.contar(f, F2B / "filter.d" / "ids-vpn.conf", ["-d", "{NONE}"]), 2)
         finally:
             shutil.rmtree(d, ignore_errors=True)
 

@@ -196,8 +196,25 @@ rsync -a --chmod=F600 root@ids.empresa.example:/root/backups/ids-maat-diario-*.t
 | Tarea | Cómo |
 |---|---|
 | Ver las jaulas de fail2ban | `fail2ban-client status sshd` y `fail2ban-client status ids-vpn` |
-| Desbanear una IP | `fail2ban-client set ids-vpn unbanip 203.0.113.45` |
+| Desbanear una IP | `fail2ban-client set ids-vpn unbanip 203.0.113.45` (OpenVPN) o `fail2ban-client set sshd unbanip 203.0.113.45` (SSH); ver abajo |
 | Estado de los puntos | `ids-orq punto estado '*'` o `cat /srv/ids/run/estado.json` |
 | Rotar la clave maestra | orden de mantenimiento en Ajustes; antes, guardar la clave nueva fuera del VPS |
 | Cambiar la IP del VPS | restaurar o mover y cambiar el registro DNS `ids.empresa.example`; los MikroTik no se tocan |
 | Actualizar el orquestador | `/root/ids-maat/actualizar-orquestador.sh <version>` |
+
+**Cuándo banea `ids-vpn` y cómo desbanear.** La jaula cuenta solo las líneas
+`<ip>:<puerto> ovpn-auth: rechazado …`, una por intento fallido (clave mala, usuario desconocido,
+formato, freno o freno global). La línea `TLS Auth Error` que OpenVPN escribe por el mismo intento
+no cuenta. Con `maxretry = 5` y `findtime = 10m`, una IP queda baneada al 5.º intento fallido en
+10 minutos, durante 1 h la primera vez y más en las siguientes (`bantime.increment`, hasta 1 semana).
+El ban se aplica en el hook `forward`, así que corta todos los puertos de esa IP hacia los
+contenedores.
+
+Si un MikroTik legítimo queda baneado (por ejemplo, tras regenerar la credencial sin actualizarla en el
+router):
+
+1. Ver qué IP está baneada: `fail2ban-client status ids-vpn`.
+2. Corregir la credencial en el MikroTik. Si no, vuelve a banearse.
+3. Desbanear: `fail2ban-client set ids-vpn unbanip <ip>`.
+4. Si la IP es fija y del dueño, puede ir en `--dueno-ip` (es el `ignoreip` de fail2ban). Las redes
+   de gestión nunca van en `ignoreip`.

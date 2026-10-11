@@ -2,7 +2,9 @@
 
 import json
 import os
+import shutil
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -149,6 +151,22 @@ class Reglas(unittest.TestCase):
         self.assertEqual(rel[-1], ts)
         descarga = [a for a in self.s.llamadas if "descargar" in a][0]
         self.assertEqual(descarga[descarga.index("--name") + 1], "ids-reglas-%s" % ts)
+        self.assertEqual(descarga[descarga.index("--imagen") + 1], A.IMG_SUR)
+
+    def test_poda_cuenta_solo_releases_con_listo(self):
+        base = self.e.ruta("/srv/ids/reglas")
+        for ts in ("20261001T081500Z", "20261002T081500Z", "20261003T081500Z"):
+            (base / "releases" / ts).mkdir(parents=True)
+            (base / "releases" / ts / "LISTO").write_text("", encoding="utf-8")
+        # huérfanas de descargas interrumpidas: sin LISTO, más nuevas que 20261003
+        for ts in ("20261005T000000Z", "20261009T000000Z"):
+            (base / "releases" / ts / "completo").mkdir(parents=True)
+        r = A.ejecutar_orden(self.orq, "reglas.actualizar", {})
+        self.assertEqual(r["codigo"], "OK", r)
+        ts = self.s.release_ts
+        rel = sorted(x.name for x in (base / "releases").iterdir())
+        # tres releases completas (la nueva y las dos anteriores con LISTO), ninguna huérfana
+        self.assertEqual(rel, ["20261003T081500Z", "20261010T081500Z", ts])
 
     def test_validacion_falla_no_toca_current(self):
         base = self.e.ruta("/srv/ids/reglas")
@@ -165,6 +183,103 @@ class Reglas(unittest.TestCase):
         self.assertEqual(r["codigo"], "OK", r)
         self.assertFalse([a for a in self.s.llamadas if "descargar" in a])
         self.assertEqual(r["resultado"]["ts"], "20261010T081500Z")
+
+
+class ReglasDescarga(unittest.TestCase):
+    """El paso «descargar» falla antes de tocar `current`: corre también donde no hay enlaces."""
+
+    def setUp(self):
+        self.mod, self.e, self.s, self.orq = A.preparar()
+        r = A.crear(self, self.orq, NORTE)
+        self.assertEqual(r["codigo"], "OK")
+        self.s.llamadas.clear()
+
+    def tearDown(self):
+        A.cerrar(self.orq, self.e)
+
+    def test_timeout_quita_el_contenedor_antes_de_borrar_la_release(self):
+        real = self.mod.ejecutar
+        visto = {}
+
+        def falso(args, entrada=None, timeout=600):
+            a = [str(x) for x in args]
+            if "descargar" in a:
+                self.s.llamadas.append(a)
+                ts = a[a.index("--ts") + 1]
+                visto["rel"] = self.e.ruta("/srv/ids/reglas/releases/%s" % ts)
+                (visto["rel"] / "completo").mkdir(parents=True)         # a medio escribir, sin LISTO
+                (visto["rel"] / "completo" / "suricata.rules").write_text("alert", encoding="utf-8")
+                return self.mod.Resultado(124, "", "tiempo agotado")
+            if a[:3] == ["docker", "rm", "-f"]:
+                visto["rel_al_quitar"] = visto["rel"].exists()
+            return real(args, entrada=entrada, timeout=timeout)
+
+        self.mod.ejecutar = falso
+        r = A.ejecutar_orden(self.orq, "reglas.actualizar", {})
+        self.assertEqual(r["codigo"], "FALLO")
+        descarga = [a for a in self.s.llamadas if "descargar" in a][0]
+        nombre = descarga[descarga.index("--name") + 1]
+        self.assertTrue(nombre.startswith("ids-reglas-"), nombre)
+        rm = [a for a in self.s.llamadas if a[:3] == ["docker", "rm", "-f"]]
+        self.assertEqual(rm, [["docker", "rm", "-f", nombre]])
+        self.assertTrue(visto.get("rel_al_quitar"), "docker rm -f debe ir ANTES de borrar la release")
+        self.assertFalse(visto["rel"].exists())
+        self.assertEqual(os.listdir(self.e.ruta("/srv/ids/reglas/releases")), ["20261010T081500Z"])
+
+    def test_sin_timeout_no_hace_rm(self):
+        self.s.fallar["descargar"] = 1
+        r = A.ejecutar_orden(self.orq, "reglas.actualizar", {})
+        self.assertEqual(r["codigo"], "FALLO")
+        self.assertFalse([a for a in self.s.llamadas if a[:3] == ["docker", "rm", "-f"]])
+
+    def test_descarga_lleva_la_imagen_por_digest(self):
+        self.s.fallar["descargar"] = 1
+        A.ejecutar_orden(self.orq, "reglas.actualizar", {})
+        descarga = [a for a in self.s.llamadas if "descargar" in a][0]
+        ts = descarga[descarga.index("--ts") + 1]
+        self.assertEqual(descarga[descarga.index("descargar"):], ["descargar", "--ts", ts, "--imagen", A.IMG_SUR])
+        self.assertRegex(A.IMG_SUR, r"@sha256:[0-9a-f]{64}$")
+
+
+class PodarReleases(unittest.TestCase):
+    def setUp(self):
+        self.mod = A.cargar_orq()
+        self.d = Path(tempfile.mkdtemp(prefix="ids-poda-"))
+
+    def tearDown(self):
+        shutil.rmtree(self.d, ignore_errors=True)
+
+    def release(self, ts, listo=True):
+        (self.d / ts / "completo").mkdir(parents=True)
+        if listo:
+            (self.d / ts / "LISTO").write_text("{}\n", encoding="utf-8")
+
+    def quedan(self):
+        return sorted(x.name for x in self.d.iterdir())
+
+    def test_conserva_tres_completas_y_borra_huerfanas(self):
+        for ts in ("20261001T000000Z", "20261002T000000Z", "20261003T000000Z", "20261004T000000Z"):
+            self.release(ts)
+        self.release("20261005T000000Z", listo=False)
+        self.release("20261006T000000Z", listo=False)
+        self.release("20261007T000000Z")
+        (self.d / "no-es-release").mkdir()
+        borradas = self.mod.podar_releases(self.d, "20261007T000000Z")
+        self.assertEqual(self.quedan(), ["20261003T000000Z", "20261004T000000Z", "20261007T000000Z", "no-es-release"])
+        self.assertEqual(sorted(borradas), ["20261001T000000Z", "20261002T000000Z", "20261005T000000Z",
+                                            "20261006T000000Z"])
+
+    def test_la_actual_nunca_se_borra(self):
+        # revalidar (sin_descarga) una release vieja, o podar con la nueva aún sin LISTO
+        for ts in ("20261001T000000Z", "20261002T000000Z", "20261003T000000Z", "20261004T000000Z"):
+            self.release(ts)
+        self.release("20261009T000000Z", listo=False)
+        self.mod.podar_releases(self.d, "20261001T000000Z")
+        self.assertIn("20261001T000000Z", self.quedan())
+        self.assertNotIn("20261009T000000Z", self.quedan())
+        self.release("20261010T000000Z", listo=False)
+        self.mod.podar_releases(self.d, "20261010T000000Z")
+        self.assertIn("20261010T000000Z", self.quedan())
 
 
 class Medir(unittest.TestCase):

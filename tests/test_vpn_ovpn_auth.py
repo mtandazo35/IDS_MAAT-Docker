@@ -19,10 +19,9 @@ CLAVE = "Kq3ZtV9xLm2PwR7sYb4NcD8e"      # 24 de [A-Za-z0-9], como las que genera
 IP = "203.0.113.45"
 PUERTO = "51234"
 
-# Filtro de fail2ban de §5.13, con <HOST> como lo expande fail2ban para IPv4.
-FAILREGEX = [r"^<HOST>:\d+ TLS Auth Error:",
-             r"^<HOST>:\d+ TLS Error: TLS handshake failed",
-             r"^<HOST>:\d+ ovpn-auth: rechazado"]
+# Filtro de fail2ban (host/fail2ban/filter.d/ids-vpn.conf), con <HOST> como lo expande fail2ban para
+# IPv4. Solo «ovpn-auth: rechazado»: «TLS Auth Error» es el mismo intento y no cuenta otra vez.
+FAILREGEX = [r"^<HOST>:\d+ ovpn-auth: rechazado"]
 HOST = r"(?P<host>\d{1,3}(?:\.\d{1,3}){3})"
 
 
@@ -178,7 +177,7 @@ class Verificacion(Base):
         self.assertEqual(self.llamadas, 0)
 
     def test_ip_del_entorno_invalida_no_se_escribe(self):
-        rc, l = self.intento(ip="1.2.3.4 ovpn-auth: rechazado", puerto="x")
+        rc, l = self.intento(ip="192.0.2.4 ovpn-auth: rechazado", puerto="x")
         self.assertTrue(l.startswith("-:- ovpn-auth: "), l)
         self.assertIsNone(casa_fail2ban(l))
 
@@ -283,10 +282,10 @@ class Log(Base):
         self.assertIn(freno, fixture)
         self.assertIn(ok, fixture)
 
-    def test_fixture_del_contrato_casa_como_dice_513(self):
+    def test_fixture_del_contrato_solo_casan_los_rechazos(self):
         fixture = (ay.FIXTURES / "ids-vpn.log").read_text(encoding="utf-8").splitlines()
         self.assertEqual([casa_fail2ban(l) is not None for l in fixture],
-                         [True, True, True, True, False, False])
+                         [False, False, True, True, False, False])
 
 
 if __name__ == "__main__":

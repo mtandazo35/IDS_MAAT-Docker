@@ -205,6 +205,22 @@ def borrar_arbol(path):
         shutil.rmtree(path)
 
 
+def podar_releases(releases, actual):
+    """Conserva las RELEASES_A_CONSERVAR releases completas (con LISTO) más recientes y `actual`
+    (la que se acaba de crear o revalidar); borra las demás, también las huérfanas sin LISTO que
+    dejó una descarga interrumpida. Devuelve los nombres borrados."""
+    releases = Path(releases)
+    rel = sorted(d.name for d in releases.iterdir() if d.is_dir() and RE_TS.match(d.name))
+    listas = [x for x in rel if (releases / x / "LISTO").is_file()]
+    conservar = set(listas[-RELEASES_A_CONSERVAR:]) | {actual}
+    borradas = []
+    for x in rel:
+        if x not in conservar:
+            borrar_arbol(releases / x)
+            borradas.append(x)
+    return borradas
+
+
 class ErrorOrden(Exception):
     def __init__(self, codigo, mensaje, datos=None):
         super().__init__(mensaje)
@@ -2272,13 +2288,20 @@ class Orquestador:
             ts = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
             with ctx.paso("descargar"):
                 creada = base / "releases" / ts
-                r = ejecutar(["docker", "run", "--rm", "--name", "ids-reglas-%s" % ts,
+                contenedor = "ids-reglas-%s" % ts
+                # --imagen: la referencia por digest de imagenes.json queda en el MANIFEST.json
+                r = ejecutar(["docker", "run", "--rm", "--name", contenedor,
                               "--network", "bridge", "--read-only", "--tmpfs", "/tmp:size=512m",
                               "--cap-drop", "ALL", "--security-opt", "no-new-privileges:true",
                               "--memory", "1g", "--memory-swap", "1g",
                               "-v", "%s:/reglas" % host_str("/srv/ids/reglas"),
                               "--entrypoint", "/usr/local/bin/ids-reglas", imagen,
-                              "descargar", "--ts", ts], timeout=3600)
+                              "descargar", "--ts", ts, "--imagen", imagen], timeout=3600)
+                if r.rc == 124:
+                    # El timeout mata el cliente docker, no el contenedor: seguiría escribiendo
+                    # en la release mientras se borra.
+                    ctx.registrar("tiempo agotado: docker rm -f %s" % contenedor)
+                    ejecutar(["docker", "rm", "-f", contenedor], timeout=60)
                 ultima = (r.out.strip().splitlines() or [""])[-1]
                 try:
                     resumen = json.loads(ultima)
@@ -2321,10 +2344,8 @@ class Orquestador:
                 fallos.append(p["pid"])
                 ctx.registrar("%s: %s" % (p["pid"], e.mensaje))
         with ctx.paso("podar releases"):
-            rel = sorted(d.name for d in (base / "releases").iterdir() if d.is_dir() and RE_TS.match(d.name))
-            for viejo in rel[:-RELEASES_A_CONSERVAR]:
-                if viejo != ts:
-                    borrar_arbol(base / "releases" / viejo)
+            for viejo in podar_releases(base / "releases", ts):
+                ctx.registrar("podada %s" % viejo)
         conteos = {}
         try:
             conteos = json.loads((base / "releases" / ts / "MANIFEST.json").read_text(encoding="utf-8")).get("reglas", {})

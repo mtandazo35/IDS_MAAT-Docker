@@ -33,9 +33,11 @@ jobs:
         img: [vpn, suricata]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: base fijada
+      - name: base fijada y serie de Suricata
         id: base
-        run: echo "imagen=$(sed -n 's/^BASE_IMAGE=//p' images/base.env)" >> "$GITHUB_OUTPUT"
+        run: |
+          echo "imagen=$(sed -n 's/^BASE_IMAGE=//p' images/base.env)" >> "$GITHUB_OUTPUT"
+          echo "suricata_serie=$(sed -n 's/^ARG SURICATA_VERSION=//p' images/suricata/Dockerfile)" >> "$GITHUB_OUTPUT"
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
       - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:
@@ -57,9 +59,12 @@ jobs:
           push: true
           provenance: mode=max
           sbom: true
+          # SURICATA_VERSION = serie (7.0) para la etiqueta ids-maat.suricata-version; la versión
+          # exacta la lee el job release de /usr/share/ids-maat/suricata-version y va en release.json
           build-args: |
             BASE_IMAGE=${{ steps.base.outputs.imagen }}
             VERSION=${{ steps.meta.outputs.version }}
+            ${{ matrix.img == 'suricata' && format('SURICATA_VERSION={0}', steps.base.outputs.suricata_serie) || '' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
       - name: cosign sign (keyless)
@@ -103,10 +108,14 @@ jobs:
           }
           ref_vpn="ghcr.io/mtandazo35/ids-maat-vpn@$(digest vpn)"
           ref_suricata="ghcr.io/mtandazo35/ids-maat-suricata@$(digest suricata)"
+          # versión exacta de Suricata: solo se conoce dentro de la imagen (la etiqueta lleva la serie)
+          docker pull -q "$ref_suricata" >/dev/null
+          suricata_version=$(docker run --rm --network none --entrypoint cat "$ref_suricata" \
+            /usr/share/ids-maat/suricata-version)
           tar_nombre="ids-maat-host-$v.tar.gz"
           git archive --format=tar.gz -o "$tar_nombre" HEAD orquestador host install.sh
           python3 .github/scripts/release_json.py --version "$v" --vpn "$ref_vpn" \
-            --suricata "$ref_suricata" --tar "$tar_nombre" > release.json
+            --suricata "$ref_suricata" --suricata-version "$suricata_version" --tar "$tar_nombre" > release.json
           cat release.json
           "$RUNNER_TEMP/cosign" sign-blob --yes --bundle release.json.bundle release.json
           gh release create "$ETIQUETA" --title "ids-maat $ETIQUETA" --verify-tag \
