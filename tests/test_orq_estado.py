@@ -62,9 +62,12 @@ class Estado(unittest.TestCase):
         p = disco["puntos"]["p001"]
         self.assertEqual(set(p), {"nombre", "n", "puerto", "tun_net", "perfil", "hilos", "ros_version", "compat_v6",
                                   "deseado", "estado", "contenedores", "netns", "vpn_cliente", "tzsp", "suricata",
-                                  "avisos"})
+                                  "avisos", "redes", "api_puerto", "sensor", "mk", "tzsp_puerto"})
         self.assertEqual((p["nombre"], p["n"], p["puerto"], p["tun_net"], p["estado"], p["deseado"]),
                          ("norte", 1, 1194, "100.64.1.0/24", "activo", "activo"))
+        # lo que usa el panel para hablar con el MikroTik y montar el espejo del punto
+        self.assertEqual((p["sensor"], p["mk"], p["tzsp_puerto"]), ("100.64.1.1", "100.64.1.2", 37008))
+        self.assertTrue(p["redes"] and isinstance(p["api_puerto"], int))
         for parte in ("vpn", "suricata"):
             c = p["contenedores"][parte]
             self.assertEqual(set(c), {"estado", "salud", "inicio", "reinicios_1h", "imagen"})

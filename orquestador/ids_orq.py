@@ -1697,6 +1697,9 @@ class Orquestador:
             "nombre": p["nombre"], "n": p["n"], "puerto": p["puerto"], "tun_net": p["tun_net"],
             "perfil": p["perfil"], "hilos": p["hilos"], "ros_version": p["ros_version"],
             "compat_v6": p["compat_v6"], "deseado": p["deseado"], "estado": p["estado"],
+            # lo que necesita el panel para hablar con el MikroTik y montar su espejo
+            "redes": list(p["redes"]), "api_puerto": p["api_puerto"], "sensor": p["sensor"],
+            "mk": p["mk"], "tzsp_puerto": TZSP_PUERTO,
             "contenedores": cont, "netns": ns,
             "vpn_cliente": leer_status_openvpn(ruta("/srv/ids/run/%s/openvpn-status.log" % pid)),
             "tzsp": tz, "suricata": su, "avisos": avisos,
