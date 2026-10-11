@@ -10,6 +10,10 @@
 #  4. docker restart ids-p001-vpn -> el orquestador ve netns distintos y reinicia suricata
 #  5. reglas actualizar --sin-descarga reinicia los suricata de uno en uno
 #  6. punto borrar no deja nada en {puntos,datos,run,ctl}/p001
+#  7. (con IDS_IMG_PANEL) panel: ids-orq panel aplicar -> healthy; crear-admin imprime CLAVE=;
+#     login HTTP por el puerto publicado con esa clave; la lista de puntos; alta de un punto desde
+#     la web (POST con Origin y token CSRF) que el orquestador crea; crear-admin otra vez no toca
+#     la clave; sin el contenedor, reconciliar lo levanta. Rutas: docs/CONTRATO-F1b.md «Panel (P)».
 #
 # El firewall del runner no se toca: un nft simulado en el PATH solo hace «nft -c» (si hay nft).
 set -uo pipefail
@@ -38,7 +42,11 @@ limpiar() {
   docker rm -f ids-e2e-cliente >/dev/null 2>&1
   # shellcheck disable=SC2046
   docker rm -f $(docker ps -aq --filter label=ids-maat.punto) >/dev/null 2>&1
-  for n in ids-p001 ids-p002; do docker network rm "$n" >/dev/null 2>&1; done
+  if [ "$FALLOS" -gt 0 ] && docker inspect ids-core-panel >/dev/null 2>&1; then
+    echo "---- panel (docker logs ids-core-panel)"; docker logs ids-core-panel 2>&1 | tail -n 60
+  fi
+  docker rm -f ids-core-panel >/dev/null 2>&1
+  for n in ids-p001 ids-p002 ids-p003 ids-core; do docker network rm "$n" >/dev/null 2>&1; done
   if [ "$FALLOS" -gt 0 ]; then
     echo "---- orq.log"; tail -n 80 "$R/orq.log" 2>/dev/null
   fi
@@ -67,9 +75,17 @@ IGNOREIP_DUENO=203.0.113.20
 PUERTO_PANEL=5637
 POOL_DOCKER=10.210.0.0/16
 EOF
-printf '{"v": 1, "version": "0.1.0", "dev": true, "imagenes": {"vpn": "%s", "suricata": "%s"}}\n' \
-  "$IDS_IMG_VPN" "$IDS_IMG_SURICATA" > "$R/etc/ids-maat/imagenes.json"
+PANEL=0
+if [ -n "${IDS_IMG_PANEL:-}" ] && docker image inspect "$IDS_IMG_PANEL" >/dev/null 2>&1 && command -v curl >/dev/null 2>&1; then
+  PANEL=1
+  printf '{"v": 1, "version": "0.1.0", "dev": true, "imagenes": {"vpn": "%s", "suricata": "%s", "panel": "%s"}}\n' \
+    "$IDS_IMG_VPN" "$IDS_IMG_SURICATA" "$IDS_IMG_PANEL" > "$R/etc/ids-maat/imagenes.json"
+else
+  printf '{"v": 1, "version": "0.1.0", "dev": true, "imagenes": {"vpn": "%s", "suricata": "%s"}}\n' \
+    "$IDS_IMG_VPN" "$IDS_IMG_SURICATA" > "$R/etc/ids-maat/imagenes.json"
+fi
 od -An -tx1 -N32 /dev/urandom | tr -d ' \n' > "$R/etc/ids-maat/orq_token"
+chown root:10500 "$R/etc/ids-maat/orq_token" && chmod 0640 "$R/etc/ids-maat/orq_token"   # como install.sh
 cat > "$R/_bin/nft" <<'EOF'
 #!/bin/sh
 # e2e: no se aplica nada al firewall del runner; solo se comprueba la sintaxis con el nft real.
@@ -194,6 +210,70 @@ for d in puntos datos run ctl; do
   [ -e "$R/srv/ids/$d/p001" ] && mal "queda $d/p001" || ok "no queda $d/p001"
 done
 docker inspect ids-p001-vpn >/dev/null 2>&1 && mal "queda el contenedor ids-p001-vpn" || ok "sin contenedores de p001"
+
+echo "== 7. panel: núcleo, primer admin, login y alta desde la web"
+if [ "$PANEL" = 0 ]; then
+  echo "  (omitido: falta IDS_IMG_PANEL, la imagen o curl)"
+else
+  # Rutas y campos del panel (los fija P en docs/CONTRATO-F1b.md «Panel (P)»): formulario
+  # POST /entrar (usuario, clave) -> 303 a /puntos con la cookie de sesión; GET /puntos; GET
+  # /puntos/nuevo trae el token CSRF en <input name="csrf">; POST /puntos/nuevo (csrf, nombre,
+  # redes, ros_version, perfil) -> 303 a /operaciones/<op_id>.
+  URL="http://127.0.0.1:5637"
+  J="$R/panel.cookies"
+  web() {   # web <ruta> [datos de formulario]: imprime «código destino» y deja el cuerpo en $R/web.html
+    if [ $# -gt 1 ]; then
+      curl -s -o "$R/web.html" -w '%{http_code} %{redirect_url}' -b "$J" -c "$J" -H "Origin: $URL" \
+        --data "$2" "$URL$1"
+    else
+      curl -s -o "$R/web.html" -w '%{http_code} %{redirect_url}' -b "$J" -c "$J" "$URL$1"
+    fi
+  }
+  if "${ORQ[@]}" panel aplicar > "$R/panel.log" 2>&1; then ok "ids-orq panel aplicar: ids-core-panel healthy"; else mal "panel aplicar"; cat "$R/panel.log"; fi
+  [ "$(docker inspect -f '{{(index .NetworkSettings.Networks "ids-core").IPAddress}}' ids-core-panel 2>/dev/null)" = 10.210.255.2 ] \
+    && ok "panel en 10.210.255.2 (red ids-core)" || mal "el panel no está en 10.210.255.2"
+  [ "$(docker inspect -f '{{.Config.User}}' ids-core-panel 2>/dev/null)" = "10500:10500" ] && ok "panel como 10500" || mal "panel no corre como 10500"
+  SAL=$("${ORQ[@]}" panel crear-admin --usuario admin 2>"$R/admin.err")
+  CLAVE_PANEL=$(sed -n 's/^CLAVE=\([^[:space:]]\{1,\}\)$/\1/p' <<<"$SAL")
+  [ -n "$CLAVE_PANEL" ] && [ "$(wc -l <<<"$SAL")" = 1 ] && ok "crear-admin imprime una sola línea CLAVE=" \
+    || { mal "crear-admin no dio CLAVE="; cat "$R/admin.err"; }
+  "${ORQ[@]}" panel crear-admin --usuario admin > "$R/admin2.out" 2>&1
+  rc=$?
+  [ "$rc" = 3 ] && ! grep -q '^CLAVE=' "$R/admin2.out" && ok "crear-admin otra vez: 3 y no regenera" || mal "crear-admin repetido dio $rc"
+  # la clave no queda en ningún log de Docker (contenedor de un solo uso con --log-driver none)
+  docker logs ids-core-panel 2>&1 | grep -F -- "$CLAVE_PANEL" >/dev/null && mal "la clave sale en docker logs" || ok "la clave no está en los logs del panel"
+  r=$(web /entrar "usuario=admin&clave=mala-$RANDOM")
+  [ "${r%% *}" = 401 ] && ok "clave mala: 401" || mal "clave mala dio $r"
+  r=$(web /entrar "usuario=admin&clave=$(python3 -c 'import sys, urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=""))' "$CLAVE_PANEL")")
+  [ "$r" = "303 $URL/puntos" ] && ok "login con la clave impresa" || mal "login dio $r"
+  r=$(web /puntos)
+  [ "${r%% *}" = 200 ] && grep -F "p002" "$R/web.html" >/dev/null && ok "lista de puntos (p002 sur)" || mal "lista de puntos: $r"
+  web /puntos/nuevo >/dev/null
+  CSRF=$(sed -n 's/.*name="csrf" value="\([^"]*\)".*/\1/p' "$R/web.html" | head -n1)
+  [ -n "$CSRF" ] && ok "token CSRF del formulario" || mal "sin token CSRF en /puntos/nuevo"
+  r=$(curl -s -o /dev/null -w '%{http_code}' -b "$J" -H "Origin: http://ajeno.example" \
+        --data "csrf=$CSRF&nombre=ajeno&redes=10.3.0.0/24&ros_version=7&perfil=reducido" "$URL/puntos/nuevo")
+  [ "$r" = 403 ] && ok "POST con Origin ajeno: 403" || mal "POST con Origin ajeno dio $r"
+  r=$(web /puntos/nuevo "csrf=$CSRF&nombre=web&redes=10.2.0.0/24&ros_version=7&perfil=reducido")
+  [[ "$r" =~ ^303\ $URL/operaciones/[0-9a-f-]{36}$ ]] && ok "alta desde la web aceptada (${r##*/})" || { mal "alta desde la web: $r"; head -c 2000 "$R/web.html"; }
+  punto_web() { web /puntos >/dev/null && grep -F ">web<" "$R/web.html" >/dev/null; }
+  if esperar 60 punto_web; then ok "el punto «web» aparece en la lista"; else mal "el punto web no aparece en /puntos"; fi
+  web_activo() { "${ORQ[@]}" punto estado p003 2>/dev/null | grep -x "estado: activo" >/dev/null; }
+  if esperar 400 web_activo; then ok "el orquestador creó p003 (web) desde el panel"; else mal "p003 no llegó a activo"; "${ORQ[@]}" punto estado p003; fi
+  if grep -E '"quien": ?"panel:admin"' "$R/srv/ids/estado/orq.jsonl" >/dev/null 2>&1; then
+    ok "orq.jsonl registra quien = panel:admin"
+  else
+    mal "orq.jsonl sin panel:admin"
+  fi
+  docker rm -f ids-core-panel >/dev/null
+  "${ORQ[@]}" reconciliar > "$R/reconciliar.log" 2>&1
+  panel_corre() { [ "$(docker inspect -f '{{.State.Running}}' ids-core-panel 2>/dev/null)" = true ]; }
+  if esperar 60 panel_corre; then
+    ok "reconciliar levanta el panel que faltaba"
+  else
+    mal "reconciliar no levantó el panel"; cat "$R/reconciliar.log"
+  fi
+fi
 
 echo
 [ "$FALLOS" -eq 0 ] || { echo "test_e2e: $FALLOS fallos"; exit 1; }

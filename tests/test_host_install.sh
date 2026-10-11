@@ -57,10 +57,18 @@ esperar 1 "dueño inválido"                                 bash install.sh --s
 esperar 1 "--imagenes sin --desde-repo"                    bash install.sh --solo-validar "${V[@]}" --imagenes vpn=a,suricata=b
 esperar 1 "opción desconocida"                             bash install.sh --solo-validar "${V[@]}" --nada
 esperar 1 "opción sin valor"                               bash install.sh --solo-validar "${V[@]}" --proxy
-esperar 0 "laboratorio --desde-repo (versión del repo)"    bash install.sh --solo-validar --nombre ids.empresa.example --gestion 192.0.2.0/25 --proxy 203.0.113.50 --desde-repo "$CHECKOUT" --imagenes vpn=ids-maat-vpn:ci,suricata=ids-maat-suricata:ci
-esperar 1 "--desde-repo sin --imagenes"                    bash install.sh --solo-validar --nombre ids.empresa.example --gestion 192.0.2.0/25 --proxy 203.0.113.50 --desde-repo "$CHECKOUT"
-esperar 1 "--desde-repo que no es el repo"                 bash install.sh --solo-validar --nombre ids.empresa.example --gestion 192.0.2.0/25 --proxy 203.0.113.50 --desde-repo "$T" --imagenes vpn=a,suricata=b
-esperar 1 "--imagenes con referencia peligrosa"            bash install.sh --solo-validar --nombre ids.empresa.example --gestion 192.0.2.0/25 --proxy 203.0.113.50 --desde-repo "$CHECKOUT" --imagenes 'vpn=-v /:/x,suricata=b'
+LAB=(--nombre ids.empresa.example --gestion 192.0.2.0/25 --proxy 203.0.113.50 --desde-repo "$CHECKOUT")
+IMGS_CI="vpn=ids-maat-vpn:ci,suricata=ids-maat-suricata:ci,panel=ids-maat-panel:ci"
+esperar 0 "laboratorio --desde-repo (versión del repo)"    bash install.sh --solo-validar "${LAB[@]}" --imagenes "$IMGS_CI"
+esperar 0 "laboratorio: panel= en cualquier orden"         bash install.sh --solo-validar "${LAB[@]}" --imagenes panel=ids-maat-panel:ci,vpn=ids-maat-vpn:ci,suricata=ids-maat-suricata:ci
+esperar 1 "laboratorio sin panel=: no sigue"               bash install.sh --solo-validar "${LAB[@]}" --imagenes vpn=ids-maat-vpn:ci,suricata=ids-maat-suricata:ci
+esperar 1 "--imagenes con una parte desconocida"           bash install.sh --solo-validar "${LAB[@]}" --imagenes "$IMGS_CI,web=x"
+esperar 1 "--desde-repo sin --imagenes"                    bash install.sh --solo-validar "${LAB[@]}"
+esperar 1 "--desde-repo que no es el repo"                 bash install.sh --solo-validar --nombre ids.empresa.example --gestion 192.0.2.0/25 --proxy 203.0.113.50 --desde-repo "$T" --imagenes vpn=a,suricata=b,panel=c
+esperar 1 "--imagenes con referencia peligrosa"            bash install.sh --solo-validar "${LAB[@]}" --imagenes 'vpn=-v /:/x,suricata=b,panel=c'
+esperar 1 "--imagenes con panel peligroso"                 bash install.sh --solo-validar "${LAB[@]}" --imagenes 'vpn=a,suricata=b,panel=--privileged'
+esperar 0 "--zona Región/Ciudad"                           bash install.sh --solo-validar "${V[@]}" --zona America/Guayaquil
+esperar 1 "--zona inválida"                                bash install.sh --solo-validar "${V[@]}" --zona 'America/Guayaquil;x'
 
 # ---------------------------------------------------------------------------------------------
 # Trozos del instalador con órdenes simuladas. Cada prueba corre en un subshell que carga las
@@ -140,6 +148,19 @@ EOF
   [ "$(cat "$IDS_RAIZ/etc/ids-maat/orq_token")" = "$antes" ] || { echo "el token cambió al repetir"; return 13; }
   grep -q "chown root:10500 $IDS_RAIZ/etc/ids-maat/orq_token" "$LLAMADAS" || return 14
   [ -f "$IDS_RAIZ/etc/ids-maat/avisos.conf" ] || return 15
+  return 0
+}
+
+p_zona_en_ids_conf() {   # --zona va a ZONA_HORARIA; sin --zona se conserva la que hubiera
+  local conf="$IDS_RAIZ/etc/ids-maat/ids.conf"
+  mkdir -p "$IDS_RAIZ/etc/ids-maat"
+  parsear_args "${V[@]}" --zona America/Guayaquil && validar_args || return 1
+  escribir_ids_conf || return 2
+  grep -qx "ZONA_HORARIA=America/Guayaquil" "$conf" || return 3
+  ZONA=""
+  parsear_args "${V[@]}" && validar_args && escribir_ids_conf || return 4
+  grep -qx "ZONA_HORARIA=America/Guayaquil" "$conf" || { cat "$conf"; return 5; }
+  [ "$(grep -c '^ZONA_HORARIA=' "$conf")" = 1 ] || return 6
   return 0
 }
 
@@ -312,7 +333,7 @@ p_principal_revertido_no_dice_instalado() {
   local paso
   for paso in comprobar_sistema comprobar_tun_base comprobar_acceso_ssh respaldo paquetes obtener_release \
               docker_ce docker_daemon modulos_sysctl_hora usuario_y_arbol escribir_ids_conf secretos pki \
-              instalar_orquestador firewall ssh_endurecer imagenes arrancar; do
+              instalar_orquestador firewall ssh_endurecer imagenes arrancar panel; do
     eval "$paso() { :; }"
   done
   readlink() { echo /root/ids-maat-install.sh; }
@@ -474,7 +495,8 @@ p_instalar_orquestador() {
   mkdir -p "$IDS_RAIZ/etc/ids-maat"
   instalar_orquestador >/dev/null || return 1
   cmp -s "$CHECKOUT/orquestador/ids_orq.py" "$IDS_RAIZ/usr/local/lib/ids-orq/ids_orq.py" || return 2
-  [ "$(ls "$IDS_RAIZ/usr/local/lib/ids-orq/plantillas" | wc -l)" -eq 3 ] || return 3
+  [ "$(ls "$IDS_RAIZ/usr/local/lib/ids-orq/plantillas" | wc -l)" -eq 4 ] || return 3
+  cmp -s "$CHECKOUT/orquestador/plantillas/core.yml.tmpl" "$IDS_RAIZ/usr/local/lib/ids-orq/plantillas/core.yml.tmpl" || return 3
   grep -qx 'exec python3 /usr/local/lib/ids-orq/ids_orq.py "$@"' "$IDS_RAIZ/usr/local/bin/ids-orq" || return 4
   for u in ids-host-fw.service ids-orq.service ids-reglas.service ids-reglas.timer ids-logrotate.service ids-logrotate.timer; do
     [ -f "$IDS_RAIZ/etc/systemd/system/$u" ] || { echo "falta $u"; return 5; }
@@ -485,17 +507,57 @@ p_instalar_orquestador() {
 }
 
 p_imagenes_lab() {
-  DEV=true VERSION=v0.1.0 IMG_VPN=ids-maat-vpn:ci IMG_SUR=ids-maat-suricata:ci
+  DEV=true VERSION=v0.1.0
+  parsear_args "${LAB[@]}" --imagenes "$IMGS_CI" && validar_args || return 4
   mkdir -p "$IDS_RAIZ/etc/ids-maat"
   docker() { echo "docker $*" >> "$LLAMADAS"; [ "$1" = image ] && return 0; return 1; }
   imagenes >/dev/null || return 1
   grep -q "docker pull" "$LLAMADAS" && return 2               # ya están en local: no se descargan
+  grep -q "docker image inspect ids-maat-panel:ci" "$LLAMADAS" || return 5
   $PY - "$IDS_RAIZ/etc/ids-maat/imagenes.json" <<'PY' || return 3
 import json, sys
 d = json.load(open(sys.argv[1]))
 assert d == {"v": 1, "version": "0.1.0", "dev": True,
-             "imagenes": {"vpn": "ids-maat-vpn:ci", "suricata": "ids-maat-suricata:ci"}}, d
+             "imagenes": {"vpn": "ids-maat-vpn:ci", "suricata": "ids-maat-suricata:ci",
+                          "panel": "ids-maat-panel:ci"}}, d
 PY
+}
+
+p_imagenes_produccion_descarga_las_tres() {
+  DEV=false VERSION=v0.2.0
+  IMG_VPN="ghcr.io/mtandazo35/ids-maat-vpn@sha256:$(printf '1%.0s' {1..64})"
+  IMG_SUR="ghcr.io/mtandazo35/ids-maat-suricata@sha256:$(printf '2%.0s' {1..64})"
+  IMG_PANEL="ghcr.io/mtandazo35/ids-maat-panel@sha256:$(printf '3%.0s' {1..64})"
+  mkdir -p "$IDS_RAIZ/etc/ids-maat"
+  docker() { echo "docker $*" >> "$LLAMADAS"; return 0; }
+  imagenes >/dev/null || return 1
+  for i in "$IMG_VPN" "$IMG_SUR" "$IMG_PANEL"; do
+    grep -qx "docker pull -q $i" "$LLAMADAS" || { echo "no se descargó $i"; return 2; }
+  done
+  grep -q "\"panel\": \"$IMG_PANEL\"" "$IDS_RAIZ/etc/ids-maat/imagenes.json" || return 3
+}
+
+p_imagen_privada_error_claro() {   # paquete de GHCR privado: el error dice qué hacer y dónde
+  DEV=false VERSION=v0.2.0
+  IMG_VPN="ghcr.io/mtandazo35/ids-maat-vpn@sha256:$(printf '1%.0s' {1..64})"
+  IMG_SUR="ghcr.io/mtandazo35/ids-maat-suricata@sha256:$(printf '2%.0s' {1..64})"
+  IMG_PANEL="ghcr.io/mtandazo35/ids-maat-panel@sha256:$(printf '3%.0s' {1..64})"
+  mkdir -p "$IDS_RAIZ/etc/ids-maat"
+  docker() {
+    case "$*" in
+      *ids-maat-panel*) echo "Error response from daemon: Head \"https://ghcr.io/v2/mtandazo35/ids-maat-panel/manifests/sha256:333\": denied" >&2; return 1 ;;
+    esac
+    return 0
+  }
+  ( imagenes ) >"$T/priv" 2>&1 && return 1
+  grep -q "ghcr.io/mtandazo35/ids-maat-panel es privado" "$T/priv" || { cat "$T/priv"; return 2; }
+  grep -q "https://github.com/users/mtandazo35/packages/container/ids-maat-panel/settings" "$T/priv" || return 3
+  # otro fallo (sin red): se dice el motivo real, no «privado»
+  docker() { echo "Error response from daemon: Get \"https://ghcr.io/v2/\": dial tcp: lookup ghcr.io: no such host" >&2; return 1; }
+  ( imagenes ) >"$T/priv" 2>&1 && return 4
+  grep -q "privado" "$T/priv" && return 5
+  grep -q "no such host" "$T/priv" || return 6
+  return 0
 }
 
 p_obtener_release_lab() {
@@ -507,13 +569,148 @@ p_obtener_release_lab() {
 p_puertos_ajenos() {
   ss() { printf '%s\n' "LISTEN 0 4096 0.0.0.0:22 0.0.0.0:*" "LISTEN 0 511 0.0.0.0:80 0.0.0.0:*" \
                        "LISTEN 0 4096 127.0.0.1:631 0.0.0.0:*"; }
-  docker() { printf '%s\n' "ids-p001-vpn|p001|0.0.0.0:1194->1194/tcp" "nginx-viejo||0.0.0.0:8080->80/tcp" "sin-puertos||"; }
+  docker() { printf '%s\n' "ids-p001-vpn|vpn|0.0.0.0:1194->1194/tcp" "nginx-viejo||0.0.0.0:8080->80/tcp" "sin-puertos||"; }
   ( comprobar_puertos_ajenos ) >/dev/null 2>&1 && return 1                  # nginx-viejo publica: no sigue
-  docker() { printf '%s\n' "ids-p001-vpn|p001|0.0.0.0:1194->1194/tcp" "sin-puertos||"; }
+  # reinstalación: el panel del IDS publica el 5637 y no es ajeno (no lleva ids-maat.punto, sí
+  # ids-maat.parte). El docker simulado contesta según la etiqueta que se le pida.
+  docker() {
+    case "$*" in
+      *ids-maat.parte*) printf '%s\n' "ids-p001-vpn|vpn|0.0.0.0:1194->1194/tcp" \
+                                      "ids-core-panel|panel|0.0.0.0:5637->5637/tcp" "sin-puertos||" ;;
+      *) printf '%s\n' "ids-p001-vpn|p001|0.0.0.0:1194->1194/tcp" \
+                       "ids-core-panel||0.0.0.0:5637->5637/tcp" "sin-puertos||" ;;
+    esac
+  }
   local avisos
   avisos=$(comprobar_puertos_ajenos 2>&1) || return 2
   grep -q "TCP 80 " <<<"$avisos" || return 3                                # 80 avisado; 22 y 631 (local) no
   grep -q "631" <<<"$avisos" && return 4
+  return 0
+}
+
+# ids-orq simulado en ${IDS_RAIZ}/usr/local/bin: registra las llamadas; «panel crear-admin» imprime
+# CLAVE= y crea usuarios.json (como el contenedor de un solo uso), o sale con ORQ_CREAR_RC.
+CLAVE_PRUEBA="Kq7-ZpD2_wX9mR4tLs8V"
+orq_falso() {
+  mkdir -p "$IDS_RAIZ/usr/local/bin" "$IDS_RAIZ/srv/ids/panel"
+  cat > "$IDS_RAIZ/usr/local/bin/ids-orq" <<EOF
+#!/bin/bash
+echo "\$*" >> "$T/orq"
+case "\$*" in
+  "panel aplicar") exit \${ORQ_APLICAR_RC:-0} ;;
+  "panel crear-admin --usuario admin")
+    rc=\${ORQ_CREAR_RC:-0}
+    [ "\$rc" = 0 ] || exit "\$rc"
+    echo '{"admin": "pbkdf2_sha256\$600000\$x\$y"}' > "$IDS_RAIZ/srv/ids/panel/usuarios.json"
+    echo "CLAVE=$CLAVE_PRUEBA"
+    echo "clave del usuario admin del panel: se muestra UNA sola vez" >&2
+    exit 0 ;;
+esac
+exit 0
+EOF
+  chmod 0755 "$IDS_RAIZ/usr/local/bin/ids-orq"
+  : > "$T/orq"
+  ip() { echo "192.0.2.1 via 203.0.113.1 dev eth0 src 203.0.113.10 uid 0"; }
+}
+
+preparar_resumen() {
+  parsear_args "${V[@]}" "$@" && validar_args || return 1
+  orq_falso
+  TS=20261011T120000Z
+  mkdir -p "$IDS_RAIZ/root/ids-maat"
+  LOG_INSTALL="$IDS_RAIZ/root/ids-maat/install-$TS.log"
+  : > "$LOG_INSTALL"
+}
+
+p_panel_nuevo_resumen_y_log_enmascarado() {
+  preparar_resumen || return 1
+  panel > "$T/panel" 2>&1 || { cat "$T/panel"; return 2; }
+  [ "$(cat "$T/orq")" = "$(printf 'panel aplicar\npanel crear-admin --usuario admin')" ] || { cat "$T/orq"; return 3; }
+  grep -qF "$CLAVE_PRUEBA" "$T/panel" && return 4                       # no antes del resumen
+  resumen > "$T/resumen" 2>&1 || return 5
+  local r="$T/resumen"
+  grep -qF "URL               http://ids.empresa.example:5637   (o http://203.0.113.10:5637)" "$r" || { cat "$r"; return 6; }
+  grep -qF "solo se abre desde las IP de --proxy: 203.0.113.50" "$r" || return 7
+  grep -qF "ssh -L 5637:10.210.255.2:5637 root@ids.empresa.example" "$r" || return 8
+  grep -qx "  usuario           admin" "$r" || return 9
+  grep -qx "  clave             $CLAVE_PRUEBA" "$r" || return 10
+  grep -qF "ids-orq panel restablecer admin" "$r" || return 11
+  grep -qF "modo seguro       acceso confirmado" "$r" || return 12
+  # el log: el resumen está, la clave no (enmascarada)
+  grep -qF "$CLAVE_PRUEBA" "$LOG_INSTALL" && { echo "la clave quedó en el log"; return 13; }
+  grep -qF "clave             ********" "$LOG_INSTALL" || { cat "$LOG_INSTALL"; return 14; }
+  grep -qF "http://ids.empresa.example:5637" "$LOG_INSTALL" || return 15
+  grep -qF "panel: usuario admin creado" "$LOG_INSTALL" || return 16
+  [ -z "$CLAVE_PANEL" ] || return 17                                    # no queda en el entorno
+  # en ningún fichero del árbol simulado (salvo el usuarios.json del panel, que guarda el hash)
+  grep -rlF "$CLAVE_PRUEBA" "$IDS_RAIZ" 2>/dev/null | grep -v "/usr/local/bin/ids-orq$" && return 18
+  return 0
+}
+
+p_panel_reinstalacion_conserva_la_clave() {
+  preparar_resumen || return 1
+  echo '{"admin": "hash"}' > "$IDS_RAIZ/srv/ids/panel/usuarios.json"
+  panel > "$T/panel" 2>&1 || { cat "$T/panel"; return 2; }
+  [ "$(cat "$T/orq")" = "panel aplicar" ] || { cat "$T/orq"; return 3; }   # sin crear-admin
+  [ "$(cat "$IDS_RAIZ/srv/ids/panel/usuarios.json")" = '{"admin": "hash"}' ] || return 4
+  resumen > "$T/resumen" 2>&1 || return 5
+  grep -qF "clave             se conserva la existente" "$T/resumen" || { cat "$T/resumen"; return 6; }
+  grep -qF "ids-orq panel restablecer admin" "$T/resumen" || return 7
+  grep -qF "$CLAVE_PRUEBA" "$T/resumen" && return 8
+  return 0
+}
+
+p_panel_admin_ya_existia() {   # crear-admin sale con 3 (carrera o usuarios.json en otro sitio)
+  preparar_resumen || return 1
+  export ORQ_CREAR_RC=3
+  panel > "$T/panel" 2>&1 || { cat "$T/panel"; return 2; }
+  [ "$PANEL_ESTADO" = existente ] || return 3
+  resumen > "$T/resumen" 2>&1
+  grep -qF "se conserva la existente" "$T/resumen" || return 4
+  return 0
+}
+
+p_panel_falla_no_dice_instalado() {
+  preparar_resumen || return 1
+  export ORQ_APLICAR_RC=1
+  ( panel ) > "$T/panel" 2>&1 && return 2
+  grep -qF "el panel no quedó sano" "$T/panel" || { cat "$T/panel"; return 3; }
+  grep -q "crear-admin" "$T/orq" && return 4
+  export ORQ_APLICAR_RC=0 ORQ_CREAR_RC=1
+  ( panel ) > "$T/panel" 2>&1 && return 5
+  grep -qF "crear-admin falló" "$T/panel" || return 6
+  return 0
+}
+
+p_sin_reversion_en_el_resumen() {
+  preparar_resumen --sin-reversion || return 1
+  ip() { return 1; }                                                    # sin ruta: solo el nombre
+  PANEL_ESTADO=existente
+  resumen > "$T/resumen" 2>&1
+  grep -qF "modo seguro       no (--sin-reversion)" "$T/resumen" || return 2
+  grep -qx "  URL               http://ids.empresa.example:5637" "$T/resumen" || { cat "$T/resumen"; return 3; }
+  return 0
+}
+
+p_principal_completo_log_sin_clave() {
+  # principal entero con los pasos del sistema simulados: crea el log del instalador, levanta el
+  # panel, imprime la clave en la terminal y la deja enmascarada en el log.
+  local paso log
+  for paso in comprobar_sistema comprobar_tun_base comprobar_acceso_ssh respaldo paquetes obtener_release \
+              docker_ce docker_daemon modulos_sysctl_hora usuario_y_arbol escribir_ids_conf secretos pki \
+              instalar_orquestador armar_reversion firewall ssh_endurecer fail2ban_jaulas esperar_confirmacion \
+              imagenes arrancar; do
+    eval "$paso() { :; }"
+  done
+  orq_falso
+  ( principal "${V[@]}" ) > "$T/principal" 2>&1 || { cat "$T/principal"; return 1; }
+  grep -qx "  clave             $CLAVE_PRUEBA" "$T/principal" || { cat "$T/principal"; return 2; }
+  log=$(ls "$IDS_RAIZ"/root/ids-maat/install-*.log) || return 3
+  grep -qF "$CLAVE_PRUEBA" "$log" && return 4
+  grep -qF "ids-maat v0.1.0 instalado" "$log" || { cat "$log"; return 5; }
+  grep -qF "clave             ********" "$log" || return 6
+  grep -qF "log del instalador: $log" "$T/principal" || return 7
+  if [ "$WINDOWS" = 0 ]; then [ "$(stat -c %a "$log")" = 600 ] || return 8; fi
   return 0
 }
 
@@ -542,10 +739,19 @@ esperar 0 "fail2ban: jaulas y 2 coincidencias"            en_instalador p_fail2b
 esperar 0 "líneas de §5.13 = fixture de C"                en_instalador p_lineas_contrato
 if [ -n "$PY" ]; then
   esperar 0 "daemon.json: fusión y comprobaciones"        en_instalador p_daemon_json
-  esperar 0 "imagenes.json de laboratorio"                en_instalador p_imagenes_lab
+  esperar 0 "imagenes.json de laboratorio (con panel)"    en_instalador p_imagenes_lab
 else
   echo "  (sin Python: se omiten daemon.json e imagenes.json)"
 fi
+esperar 0 "imagenes.json de producción: las tres por digest" en_instalador p_imagenes_produccion_descarga_las_tres
+esperar 0 "imagen privada en GHCR: error claro con enlace" en_instalador p_imagen_privada_error_claro
+esperar 0 "--zona en ids.conf y se conserva"              en_instalador p_zona_en_ids_conf
+esperar 0 "panel nuevo: URL, admin y clave; log sin clave" en_instalador p_panel_nuevo_resumen_y_log_enmascarado
+esperar 0 "panel: reinstalación conserva la clave"        en_instalador p_panel_reinstalacion_conserva_la_clave
+esperar 0 "panel: crear-admin dice que ya existía"        en_instalador p_panel_admin_ya_existia
+esperar 0 "panel: si falla, no sigue"                     en_instalador p_panel_falla_no_dice_instalado
+esperar 0 "resumen sin modo seguro y sin IP de ruta"      en_instalador p_sin_reversion_en_el_resumen
+esperar 0 "principal completo: clave en pantalla, no en el log" en_instalador p_principal_completo_log_sin_clave
 esperar 0 "orquestador y unidades instalados"             en_instalador p_instalar_orquestador
 esperar 0 "release de laboratorio = checkout"             en_instalador p_obtener_release_lab
 esperar 0 "contenedores ajenos con puertos: no sigue"      en_instalador p_puertos_ajenos

@@ -5,13 +5,17 @@
 #        -o /root/ids-maat-install.sh \
 #     && bash /root/ids-maat-install.sh --version v0.1.0 --nombre ids.empresa.example \
 #          --gestion 192.0.2.0/25,198.51.100.0/26 --proxy 203.0.113.50 \
-#          [--tun-base 100.64|198.18] [--dueno-ip 203.0.113.20]
+#          [--tun-base 100.64|198.18] [--dueno-ip 203.0.113.20] [--zona America/Guayaquil]
+#
+# Al terminar imprime la URL del panel, el usuario «admin» y su clave (UNA sola vez; en el log
+# /root/ids-maat/install-<ts>.log sale enmascarada). El panel solo se abre desde --proxy.
 #
 # Laboratorio (canario antes de la primera release; NO verifica firmas):
-#   bash install.sh --desde-repo /root/IDS_MAAT-Docker --imagenes vpn=<ref>,suricata=<ref> \
-#        --nombre … --gestion … --proxy …
+#   bash install.sh --desde-repo /root/IDS_MAAT-Docker \
+#        --imagenes vpn=<ref>,suricata=<ref>,panel=<ref> --nombre … --gestion … --proxy …
 #
 # Otras opciones:
+#   --zona             zona horaria con la que el panel muestra las fechas (por defecto UTC)
 #   --solo-validar     valida los argumentos y sale sin tocar nada
 #   --confirmar        desde una sesión SSH NUEVA: confirma el acceso y anula la reversión
 #   --sin-reversion    sin modo seguro (instalación desde la consola del proveedor)
@@ -39,14 +43,22 @@ R="${R%/}"
 
 VERSION="" NOMBRE="" GESTION="" PROXY="" TUN_BASE="100.64" TUN_BASE_DADO=0 DUENO=""
 DESDE_REPO="" IMAGENES="" SOLO_VALIDAR=0 CONFIRMAR=0 SIN_REVERSION=0 FORZAR_ACCESO=0
-HOST_DIR="" IMG_VPN="" IMG_SUR="" DEV=false TS="" T0_REVERSION=""
+HOST_DIR="" IMG_VPN="" IMG_SUR="" IMG_PANEL="" DEV=false TS="" T0_REVERSION="" ZONA=""
+USUARIO_PANEL=admin PANEL_ESTADO="" CLAVE_PANEL="" LOG_INSTALL=""
+PANEL_IP=10.210.255.2      # IP fija del panel en la red ids-core (túnel SSH de emergencia)
 
-log()    { printf '\033[1;32m==>\033[0m %s\n' "$*"; }
-aviso()  { printf '\033[1;33m!!\033[0m  %s\n' "$*" >&2; }
-fallar() { printf '\033[1;31mERROR:\033[0m %s\n' "$*" >&2; exit 1; }
+# El log del instalador (/root/ids-maat/install-<ts>.log, 0600) recibe lo mismo que log/aviso/
+# fallar y el resumen con la clave del panel ENMASCARADA. La clave solo va a la terminal.
+registrar() {
+  [ -n "$LOG_INSTALL" ] || return 0
+  printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >> "$LOG_INSTALL" 2>/dev/null || true
+}
+log()    { printf '\033[1;32m==>\033[0m %s\n' "$*"; registrar "==> $*"; }
+aviso()  { printf '\033[1;33m!!\033[0m  %s\n' "$*" >&2; registrar "!!  $*"; }
+fallar() { printf '\033[1;31mERROR:\033[0m %s\n' "$*" >&2; registrar "ERROR: $*"; exit 1; }
 
 uso() {
-  sed -n '2,22p' "$0" | sed 's/^# \{0,1\}//'
+  sed -n '2,26p' "$0" | sed 's/^# \{0,1\}//'
 }
 
 # ---------------------------------------------------------------------------------------------
@@ -119,7 +131,7 @@ parsear_args() {
       --sin-reversion) SIN_REVERSION=1; shift; continue ;;
       --forzar-acceso) FORZAR_ACCESO=1; shift; continue ;;
       -h|--help) uso; exit 0 ;;
-      --version|--nombre|--gestion|--proxy|--tun-base|--dueno-ip|--desde-repo|--imagenes)
+      --version|--nombre|--gestion|--proxy|--tun-base|--dueno-ip|--desde-repo|--imagenes|--zona)
         if [ -z "$val" ]; then
           [ $# -ge 2 ] || fallar "falta el valor de $op"
           val="$2"; shift
@@ -136,6 +148,7 @@ parsear_args() {
       --dueno-ip) DUENO="$val" ;;
       --desde-repo) DESDE_REPO="$val" ;;
       --imagenes) IMAGENES="$val" ;;
+      --zona) ZONA="$val" ;;
     esac
   done
 }
@@ -171,17 +184,22 @@ validar_args() {
   if [ -n "$DUENO" ]; then
     ip_a_int "$DUENO" >/dev/null || fallar "--dueno-ip debe ser una IPv4"
   fi
+  if [ -n "$ZONA" ] && ! [[ "$ZONA" =~ ^(UTC|[A-Za-z]+(/[A-Za-z0-9_+-]+){1,2})$ ]]; then
+    fallar "--zona debe ser UTC o Región/Ciudad (p. ej. America/Guayaquil)"
+  fi
   if [ -n "$DESDE_REPO" ]; then
     [ -f "$DESDE_REPO/orquestador/ids_orq.py" ] || fallar "--desde-repo: $DESDE_REPO no es un checkout de $REPO"
-    [ -n "$IMAGENES" ] || fallar "--desde-repo exige --imagenes vpn=<ref>,suricata=<ref>"
+    [ -n "$IMAGENES" ] || fallar "--desde-repo exige --imagenes vpn=<ref>,suricata=<ref>,panel=<ref>"
     for c in ${IMAGENES//,/ }; do
       case "$c" in
         vpn=*) IMG_VPN="${c#vpn=}" ;;
         suricata=*) IMG_SUR="${c#suricata=}" ;;
-        *) fallar "--imagenes: '$c' no es vpn=<ref> ni suricata=<ref>" ;;
+        panel=*) IMG_PANEL="${c#panel=}" ;;
+        *) fallar "--imagenes: '$c' no es vpn=<ref>, suricata=<ref> ni panel=<ref>" ;;
       esac
     done
-    for c in "$IMG_VPN" "$IMG_SUR"; do
+    [ -n "$IMG_PANEL" ] || fallar "--imagenes: falta panel=<ref> (el instalador levanta el panel y crea su admin)"
+    for c in "$IMG_VPN" "$IMG_SUR" "$IMG_PANEL"; do
       [[ "$c" =~ ^[A-Za-z0-9][A-Za-z0-9._/:@-]{0,254}$ ]] || fallar "--imagenes: referencia inválida '$c'"
     done
     if [ -z "$VERSION" ]; then
@@ -441,7 +459,11 @@ usuario_y_arbol() {
 }
 
 escribir_ids_conf() {
-  local tmp="${R}/etc/ids-maat/.ids.conf.nuevo"
+  local tmp="${R}/etc/ids-maat/.ids.conf.nuevo" conf="${R}/etc/ids-maat/ids.conf"
+  # sin --zona se conserva la que hubiera (como con --tun-base)
+  if [ -z "$ZONA" ] && [ -f "$conf" ]; then
+    ZONA=$(sed -n 's/^ZONA_HORARIA=//p' "$conf")
+  fi
   cat > "$tmp" <<EOF
 VERSION=${VERSION#v}
 NOMBRE_DNS=$NOMBRE
@@ -452,6 +474,7 @@ IGNOREIP_DUENO=$DUENO
 PUERTO_PANEL=$PUERTO_PANEL
 POOL_DOCKER=$POOL_DOCKER
 EOF
+  if [ -n "$ZONA" ]; then echo "ZONA_HORARIA=$ZONA" >> "$tmp"; fi
   chmod 0644 "$tmp"
   mv "$tmp" "${R}/etc/ids-maat/ids.conf"
 }
@@ -502,8 +525,24 @@ asegurar_cosign() {
   echo "$bin"
 }
 
+# Por qué falló una descarga o una verificación de imagen. Los paquetes de GHCR nacen privados
+# aunque el repo sea público: sin credenciales, el registro contesta «denied»/«unauthorized».
+motivo_registro() {   # motivo_registro <ref> <salida de docker pull o de cosign>
+  local nombre="${1%%@*}" ultima="" linea
+  nombre="${nombre##*/}"
+  nombre="${nombre%%:*}"
+  if [[ "$1" == ghcr.io/* ]] && [[ "${2,,}" =~ (denied|unauthorized|authentication\ required|forbidden) ]]; then
+    echo "el paquete ghcr.io/$OWNER/$nombre es privado (o no existe). Los paquetes de GHCR nacen privados: hazlo público en https://github.com/users/$OWNER/packages/container/$nombre/settings (Danger Zone > Change visibility > Public) y vuelve a ejecutar (docs/ACTUALIZACIONES.md §1)"
+    return 0
+  fi
+  while IFS= read -r linea; do
+    [ -n "$linea" ] && ultima="$linea"
+  done <<<"$2"
+  echo "${ultima:-sin detalle}"
+}
+
 obtener_release() {
-  local cosign rel base id iss datos v tar_nombre tar_sha destino tmp
+  local cosign rel base id iss datos v tar_nombre tar_sha destino tmp salida
   if [ -n "$DESDE_REPO" ]; then
     HOST_DIR="$DESDE_REPO"
     aviso "################################################################"
@@ -528,21 +567,22 @@ obtener_release() {
 import json, re, sys
 d = json.load(open(sys.argv[1], encoding="utf-8"))
 assert d.get("v") == 1
-for parte in ("vpn", "suricata"):
+for parte in ("vpn", "suricata", "panel"):
     ref = d["imagenes"][parte]
     assert re.fullmatch(r"ghcr\.io/mtandazo35/ids-maat-%s@sha256:[0-9a-f]{64}" % parte, ref), ref
 t = d["host_tar"]
 assert re.fullmatch(r"ids-maat-host-[0-9.]+\.tar\.gz", t["nombre"]) and re.fullmatch(r"[0-9a-f]{64}", t["sha256"])
-print(d["version"], d["imagenes"]["vpn"], d["imagenes"]["suricata"], t["nombre"], t["sha256"])
+print(d["version"], d["imagenes"]["vpn"], d["imagenes"]["suricata"], d["imagenes"]["panel"], t["nombre"],
+      t["sha256"])
 PY
-) || fallar "release.json no tiene el formato esperado"
-  read -r v IMG_VPN IMG_SUR tar_nombre tar_sha <<<"$datos"
+) || fallar "release.json no tiene el formato esperado (¿release anterior a F1b, sin la imagen del panel?)"
+  read -r v IMG_VPN IMG_SUR IMG_PANEL tar_nombre tar_sha <<<"$datos"
   [ "v$v" = "$VERSION" ] || fallar "release.json es de la versión $v, no de $VERSION"
   curl -fsSL -o "$rel/$tar_nombre" "$base/$tar_nombre"
   echo "$tar_sha  $rel/$tar_nombre" | sha256sum -c --status || fallar "sha256 de $tar_nombre incorrecto"
-  for v in "$IMG_VPN" "$IMG_SUR"; do
-    "$cosign" verify --certificate-identity-regexp "$id" --certificate-oidc-issuer "$iss" "$v" >/dev/null 2>&1 \
-      || fallar "la firma de la imagen $v no es válida"
+  for v in "$IMG_VPN" "$IMG_SUR" "$IMG_PANEL"; do
+    salida=$("$cosign" verify --certificate-identity-regexp "$id" --certificate-oidc-issuer "$iss" "$v" 2>&1) \
+      || fallar "la firma de la imagen $v no se pudo verificar: $(motivo_registro "$v" "$salida")"
   done
   destino="${R}/root/ids-maat/host-${VERSION#v}"
   tmp="${destino}.tmp"
@@ -614,8 +654,9 @@ EOF
 comprobar_puertos_ajenos() {
   # El firewall del IDS descarta todo lo publicado por Docker fuera de @puertos_vpn y del panel, y
   # deja el host con política drop salvo SSH: en un VPS con otros servicios los cortaría.
+  # Los del IDS llevan la etiqueta ids-maat.parte (vpn, suricata o panel).
   local ajenos escuchan
-  ajenos=$(docker ps --format '{{.Names}}|{{.Label "ids-maat.punto"}}|{{.Ports}}' 2>/dev/null \
+  ajenos=$(docker ps --format '{{.Names}}|{{.Label "ids-maat.parte"}}|{{.Ports}}' 2>/dev/null \
            | awk -F'|' '$2 == "" && $3 ~ /->/ {print $1 " (" $3 ")"}')
   if [ -n "$ajenos" ]; then
     fallar "hay contenedores ajenos al IDS con puertos publicados; el firewall del IDS los cortaría (el VPS debe ser dedicado): $ajenos"
@@ -754,17 +795,17 @@ confirmar_acceso() {
 }
 
 imagenes() {
-  local f="${R}/etc/ids-maat/imagenes.json" img
-  printf '{"v": 1, "version": "%s", "dev": %s,\n "imagenes": {"vpn": "%s",\n              "suricata": "%s"}}\n' \
-    "${VERSION#v}" "$DEV" "$IMG_VPN" "$IMG_SUR" > "$f.nuevo"
+  local f="${R}/etc/ids-maat/imagenes.json" img salida
+  printf '{"v": 1, "version": "%s", "dev": %s,\n "imagenes": {"vpn": "%s",\n              "suricata": "%s",\n              "panel": "%s"}}\n' \
+    "${VERSION#v}" "$DEV" "$IMG_VPN" "$IMG_SUR" "$IMG_PANEL" > "$f.nuevo"
   chmod 0644 "$f.nuevo"
   mv "$f.nuevo" "$f"
-  for img in "$IMG_VPN" "$IMG_SUR"; do
+  for img in "$IMG_VPN" "$IMG_SUR" "$IMG_PANEL"; do
     if [ "$DEV" = true ] && docker image inspect "$img" >/dev/null 2>&1; then
       continue
     fi
     log "docker pull $img"
-    docker pull -q "$img" >/dev/null || fallar "no se pudo descargar $img"
+    salida=$(docker pull -q "$img" 2>&1) || fallar "no se pudo descargar $img: $(motivo_registro "$img" "$salida")"
   done
 }
 
@@ -781,17 +822,84 @@ arrancar() {
   systemctl enable --now ids-reglas.timer ids-logrotate.timer >/dev/null
 }
 
-resumen() {
+# Núcleo: ids-orq renderiza /srv/ids/core/compose.yml (proyecto ids-core, panel en 10.210.255.2),
+# lo levanta y espera a sano. Si no hay usuarios, crea «admin» con un contenedor de un solo uso
+# y guarda la clave SOLO en una variable para el resumen. En una reinstalación no la toca.
+panel() {
+  local salida="" rc=0 linea
+  log "panel: núcleo ids-core ($PANEL_IP, $PUERTO_PANEL/tcp publicado solo para --proxy)"
+  "${R}/usr/local/bin/ids-orq" panel aplicar >/dev/null \
+    || fallar "el panel no quedó sano (docker logs ids-core-panel; ids-orq panel aplicar)"
+  if [ -e "${R}/srv/ids/panel/usuarios.json" ]; then
+    PANEL_ESTADO=existente
+    log "panel: ya hay usuarios (/srv/ids/panel/usuarios.json): se conserva la clave existente"
+    return 0
+  fi
+  salida=$("${R}/usr/local/bin/ids-orq" panel crear-admin --usuario "$USUARIO_PANEL") || rc=$?
+  case "$rc" in
+    0)
+      while IFS= read -r linea; do
+        if [[ "$linea" =~ ^CLAVE=([^[:space:]]+)$ ]]; then CLAVE_PANEL="${BASH_REMATCH[1]}"; break; fi
+      done <<<"$salida"
+      salida=""
+      [ -n "$CLAVE_PANEL" ] || fallar "ids-orq panel crear-admin no devolvió la línea CLAVE=…"
+      PANEL_ESTADO=nuevo
+      log "panel: usuario $USUARIO_PANEL creado (la clave sale en el resumen, una sola vez)" ;;
+    3)
+      PANEL_ESTADO=existente
+      log "panel: el usuario $USUARIO_PANEL ya existía: se conserva su clave" ;;
+    *)
+      fallar "ids-orq panel crear-admin falló (código $rc)" ;;
+  esac
+}
+
+ip_publica() {   # IP de origen de la ruta por defecto (sin enviar nada); vacío si no hay
+  ip -4 route get 192.0.2.1 2>/dev/null | sed -n 's/.* src \([0-9.]*\).*/\1/p' || true
+}
+
+resumen_texto() {   # resumen_texto <clave tal como se muestra>
+  local ip
+  ip=$(ip_publica)
+  ip="${ip%%$'\n'*}"
   echo
-  log "ids-maat $VERSION instalado$([ "$DEV" = true ] && echo ' (LABORATORIO, sin firmas)')"
+  echo "==> ids-maat $VERSION instalado$([ "$DEV" = true ] && echo ' (LABORATORIO, sin firmas)')"
   echo "  nombre DNS        $NOMBRE"
   echo "  base de túneles   $TUN_BASE.N.0/24"
   echo "  SSH (22/tcp)      solo desde $GESTION"
-  echo "  panel ($PUERTO_PANEL/tcp)  solo desde $PROXY (F1b)"
   echo "  OpenVPN           1194+N-1/tcp, uno por punto, con freno de conexiones nuevas"
+  if [ "$SIN_REVERSION" = 1 ]; then
+    echo "  modo seguro       no (--sin-reversion)"
+  else
+    echo "  modo seguro       acceso confirmado; al cambiar --gestion o --proxy se vuelve a pedir"
+    echo "                    (bash /root/ids-maat-install.sh --confirmar desde una sesión SSH NUEVA)"
+  fi
   echo "  respaldo          /root/backups/ids-maat-install-${TS}.tar.gz"
   echo
-  echo "Siguiente paso:  ids-orq punto crear --nombre norte --redes 10.0.0.0/24"
+  echo "PANEL"
+  echo "  URL               http://$NOMBRE:$PUERTO_PANEL${ip:+   (o http://$ip:$PUERTO_PANEL)}"
+  echo "                    solo se abre desde las IP de --proxy: $PROXY"
+  echo "                    sin proxy, desde gestión: ssh -L $PUERTO_PANEL:$PANEL_IP:5637 root@$NOMBRE"
+  echo "                    y en el navegador http://localhost:$PUERTO_PANEL"
+  echo "  usuario           $USUARIO_PANEL"
+  if [ "$PANEL_ESTADO" = nuevo ]; then
+    echo "  clave             $1"
+    echo "                    se muestra UNA sola vez: no se guarda en claro en ningún fichero ni log"
+  else
+    echo "  clave             se conserva la existente (reinstalación)"
+  fi
+  echo "  restablecer       ids-orq panel restablecer $USUARIO_PANEL   (imprime CLAVE=<nueva>)"
+  echo
+  echo "Siguiente paso:  entra al panel, o desde SSH: ids-orq punto crear --nombre norte --redes 10.0.0.0/24"
+}
+
+resumen() {
+  resumen_texto "$CLAVE_PANEL"
+  if [ -n "$LOG_INSTALL" ]; then
+    resumen_texto "$([ -n "$CLAVE_PANEL" ] && echo '******** (enmascarada; solo se mostró en pantalla)')" \
+      >> "$LOG_INSTALL" 2>/dev/null || true
+    echo "log del instalador: $LOG_INSTALL (sin la clave)"
+  fi
+  CLAVE_PANEL=""
 }
 
 principal() {
@@ -810,6 +918,10 @@ principal() {
   comprobar_tun_base
   comprobar_acceso_ssh
   TS=$(date -u +%Y%m%dT%H%M%SZ)
+  install -d -m 0700 "${R}/root/ids-maat"
+  LOG_INSTALL="${R}/root/ids-maat/install-${TS}.log"
+  (umask 077; : > "$LOG_INSTALL")
+  registrar "install.sh $VERSION: nombre=$NOMBRE gestion=$GESTION proxy=$PROXY tun-base=$TUN_BASE"
   respaldo                   # 2
   paquetes                   # 3
   obtener_release            # 11 (adelantado: host/ y el orquestador salen de la release verificada)
@@ -828,7 +940,8 @@ principal() {
   esperar_confirmacion       # modo seguro
   imagenes                   # 11
   arrancar                   # 12
-  resumen                    # 13
+  panel                      # F1b: núcleo ids-core y primer admin
+  resumen                    # 13 (URL, usuario y clave del panel)
 }
 
 if [ "${IDS_INSTALL_SOLO_FUNCIONES:-0}" != 1 ]; then

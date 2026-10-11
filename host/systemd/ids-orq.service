@@ -13,6 +13,9 @@ Restart=always
 RestartSec=5
 RuntimeDirectory=ids-orq
 RuntimeDirectoryMode=0750
+# el panel monta /run/ids-orq: el directorio no se borra al reiniciar el servicio (si no, el
+# montaje del contenedor se quedaría con el inodo viejo y sin socket)
+RuntimeDirectoryPreserve=yes
 UMask=0027
 TimeoutStopSec=30
 # el CLI de docker escribe su configuración aquí, no en /root (ProtectHome=read-only)

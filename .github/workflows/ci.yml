@@ -78,8 +78,10 @@ jobs:
         run: |
           bash images/build.sh vpn ci
           bash images/build.sh suricata ci
+          bash images/build.sh panel ci
       - name: pruebas de imagen e integración (root + Docker)
         env:
           IDS_IMG_VPN: ids-maat-vpn:ci
           IDS_IMG_SURICATA: ids-maat-suricata:ci
+          IDS_IMG_PANEL: ids-maat-panel:ci
         run: sudo -E env "PATH=$PATH" bash tests/run.sh --imagenes --integracion

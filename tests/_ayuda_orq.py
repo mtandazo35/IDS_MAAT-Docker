@@ -23,6 +23,7 @@ DIGEST_VPN = "a" * 64
 DIGEST_SUR = "b" * 64
 IMG_VPN = "ghcr.io/mtandazo35/ids-maat-vpn@sha256:" + DIGEST_VPN
 IMG_SUR = "ghcr.io/mtandazo35/ids-maat-suricata@sha256:" + DIGEST_SUR
+IMG_PANEL = "ghcr.io/mtandazo35/ids-maat-panel@sha256:" + "e" * 64
 TOKEN = "f" * 64
 
 IDS_CONF = """VERSION=0.1.0
@@ -81,7 +82,7 @@ def enlazar_current(reglas, ts):
 
 
 class Entorno:
-    def __init__(self, tun_base="100.64", ncpu=4, meminfo=None, dev=False):
+    def __init__(self, tun_base="100.64", ncpu=4, meminfo=None, dev=False, panel=True):
         self.dir = Path(tempfile.mkdtemp(prefix="ids-orq-"))
         self.kdir = self.dir / "_kernel"
         self._env = {k: os.environ.get(k) for k in ("IDS_RAIZ", "IDS_KERNEL_RAIZ")}
@@ -92,6 +93,8 @@ class Entorno:
         (etc / "ids.conf").write_text(IDS_CONF.replace("@@BASE@@", tun_base), encoding="utf-8")
         img = {"v": 1, "version": "0.1.0", "dev": dev,
                "imagenes": {"vpn": IMG_VPN, "suricata": IMG_SUR}}
+        if panel:
+            img["imagenes"]["panel"] = IMG_PANEL
         (etc / "imagenes.json").write_text(json.dumps(img), encoding="utf-8")
         (etc / "orq_token").write_text(TOKEN + "\n", encoding="utf-8")
         (self.kdir / "proc").mkdir(parents=True)
@@ -135,6 +138,7 @@ class SistemaFalso:
         self.openssl_real = openssl_real and shutil.which("openssl") is not None
         self.nft_aplicado = []
         self.release_ts = None
+        self.claves_panel = []    # claves que «imprimió» el ids-panel simulado
 
     def __call__(self, args, entrada=None, timeout=600):
         mod = sys.modules[self.mod_name]
@@ -176,9 +180,13 @@ class SistemaFalso:
             resto = a[a.index("-f") + 2:]
             accion = resto[0]
             servicios = [x for x in resto[1:] if not x.startswith("-") and x not in ("never",)]
-            nombres = {"vpn": "ids-%s-vpn" % pid, "suricata": "ids-%s-suricata" % pid}
+            if proyecto == "ids-core":
+                nombres = {"panel": "ids-core-panel"}
+                pid = None
+            else:
+                nombres = {"vpn": "ids-%s-vpn" % pid, "suricata": "ids-%s-suricata" % pid}
             if accion == "up":
-                for parte in (servicios or ["vpn", "suricata"]):
+                for parte in (servicios or list(nombres)):
                     if nombres[parte] not in self.contenedores or "--force-recreate" in resto:
                         self._nuevo(nombres[parte], pid, parte)
                     else:
@@ -243,6 +251,8 @@ class SistemaFalso:
             shutil.copyfile(FIX / nombre, destino)
             return 0, "", ""
         if sub == "run":
+            if "crear-admin" in a or "restablecer" in a:
+                return self._panel_un_uso(a)
             if "--build-info" in a:
                 return 0, "This is Suricata version 7.0.10 RELEASE\nHyperscan support:       yes\n", ""
             if "-T" in a:
@@ -268,6 +278,23 @@ class SistemaFalso:
         if sub == "exec":
             return 0, "", ""
         return 0, "", ""
+
+    def _panel_un_uso(self, a):
+        """ids-panel crear-admin|restablecer --usuario X: usuarios.json en el /srv/ids/panel montado."""
+        montaje = a[a.index("-v") + 1]
+        origen = montaje.rsplit(":", 1)[0]
+        usuarios = Path(origen) / "usuarios.json"
+        usuario = a[a.index("--usuario") + 1]
+        datos = json.loads(usuarios.read_text(encoding="utf-8")) if usuarios.exists() else {}
+        if "crear-admin" in a and datos:
+            return 3, "", "ya existe\n"
+        if "restablecer" in a and usuario not in datos:
+            return 4, "", "no existe el usuario\n"
+        clave = uuid.uuid4().hex[:20]
+        datos[usuario] = "pbkdf2$falso$" + uuid.uuid4().hex
+        usuarios.write_text(json.dumps(datos), encoding="utf-8")
+        self.claves_panel.append(clave)
+        return 0, "CLAVE=%s\n" % clave, ""
 
     def _nft(self, a):
         fichero = a[-1]

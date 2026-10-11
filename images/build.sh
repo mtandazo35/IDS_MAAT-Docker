@@ -1,6 +1,6 @@
 #!/bin/bash
 # ids-maat — build local de una imagen con la base fijada en images/base.env (CONTRATO-F1a §6.3).
-#   images/build.sh <vpn|suricata> [etiqueta]   ->   ids-maat-<img>:<etiqueta|dev>
+#   images/build.sh <vpn|suricata|panel> [etiqueta]   ->   ids-maat-<img>:<etiqueta|dev>
 # Variables opcionales: VERSION (por defecto dev), DOCKER (por defecto docker).
 # suricata: pasa --build-arg SURICATA_VERSION=<serie> (la del ARG del Dockerfile, p. ej. 7.0). La
 # etiqueta ids-maat.suricata-version lleva esa serie; la versión exacta instalada solo se conoce
@@ -10,8 +10,8 @@ cd "$(dirname "$0")"
 img="${1:-}"
 etiqueta="${2:-dev}"
 case "$img" in
-  vpn|suricata) ;;
-  *) echo "uso: images/build.sh <vpn|suricata> [etiqueta]" >&2; exit 2 ;;
+  vpn|suricata|panel) ;;
+  *) echo "uso: images/build.sh <vpn|suricata|panel> [etiqueta]" >&2; exit 2 ;;
 esac
 [[ "$etiqueta" =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$ ]] || { echo "etiqueta inválida: $etiqueta" >&2; exit 2; }
 base=$(sed -n 's/^BASE_IMAGE=//p' base.env)

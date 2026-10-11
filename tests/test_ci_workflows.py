@@ -42,41 +42,123 @@ class ReleaseJson(unittest.TestCase):
     def tearDown(self):
         shutil.rmtree(self.d, ignore_errors=True)
 
-    def test_formato_del_contrato(self):
-        vpn = "ghcr.io/mtandazo35/ids-maat-vpn@sha256:" + "1" * 64
-        sur = "ghcr.io/mtandazo35/ids-maat-suricata@sha256:" + "2" * 64
-        d = self.mod.construir("0.1.0", vpn, sur, self.tar)
-        self.assertEqual(d, {"v": 1, "version": "0.1.0", "imagenes": {"vpn": vpn, "suricata": sur},
+    VPN = "ghcr.io/mtandazo35/ids-maat-vpn@sha256:" + "1" * 64
+    SUR = "ghcr.io/mtandazo35/ids-maat-suricata@sha256:" + "2" * 64
+    PANEL = "ghcr.io/mtandazo35/ids-maat-panel@sha256:" + "3" * 64
+
+    def test_formato_del_contrato_con_panel(self):
+        d = self.mod.construir("0.1.0", self.VPN, self.SUR, self.PANEL, self.tar)
+        self.assertEqual(d, {"v": 1, "version": "0.1.0",
+                             "imagenes": {"vpn": self.VPN, "suricata": self.SUR, "panel": self.PANEL},
                              "host_tar": {"nombre": "ids-maat-host-0.1.0.tar.gz",
                                           "sha256": hashlib.sha256(b"contenido del tar").hexdigest()},
                              "min_orq": "0.1.0", "migraciones": []})
 
     def test_version_exacta_de_suricata(self):
-        vpn = "ghcr.io/mtandazo35/ids-maat-vpn@sha256:" + "1" * 64
-        sur = "ghcr.io/mtandazo35/ids-maat-suricata@sha256:" + "2" * 64
-        d = self.mod.construir("0.1.0", vpn, sur, self.tar, suricata_version="7.0.10")
+        d = self.mod.construir("0.1.0", self.VPN, self.SUR, self.PANEL, self.tar, suricata_version="7.0.10")
         self.assertEqual(d["suricata_version"], "7.0.10")
         import io
         import contextlib
         import json
         out = io.StringIO()
         with contextlib.redirect_stdout(out):
-            rc = self.mod.main(["--version", "0.1.0", "--vpn", vpn, "--suricata", sur, "--tar", str(self.tar),
-                                "--suricata-version", "7.0.10"])
+            rc = self.mod.main(["--version", "0.1.0", "--vpn", self.VPN, "--suricata", self.SUR, "--panel", self.PANEL,
+                                "--tar", str(self.tar), "--suricata-version", "7.0.10"])
         self.assertEqual(rc, 0)
-        self.assertEqual(json.loads(out.getvalue())["suricata_version"], "7.0.10")
+        d = json.loads(out.getvalue())
+        self.assertEqual(d["suricata_version"], "7.0.10")
+        self.assertEqual(d["imagenes"]["panel"], self.PANEL)
         for mala in ("7.0", "", "7.0.10\n", "7.0.x"):
             with self.assertRaises(ValueError, msg=repr(mala)):
-                self.mod.construir("0.1.0", vpn, sur, self.tar, suricata_version=mala)
+                self.mod.construir("0.1.0", self.VPN, self.SUR, self.PANEL, self.tar, suricata_version=mala)
+
+    def test_sin_panel_no_hay_release(self):
+        import io
+        import contextlib
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            self.mod.main(["--version", "0.1.0", "--vpn", self.VPN, "--suricata", self.SUR, "--tar", str(self.tar)])
 
     def test_rechaza_referencias_malas(self):
-        buena = "ghcr.io/mtandazo35/ids-maat-vpn@sha256:" + "1" * 64
-        for vpn, sur, ver in ((buena.replace("vpn@", "suricata@"), buena, "0.1.0"),
-                              ("ghcr.io/otro/ids-maat-vpn@sha256:" + "1" * 64, buena, "0.1.0"),
-                              ("ghcr.io/mtandazo35/ids-maat-vpn:latest", buena, "0.1.0"),
-                              (buena, "ghcr.io/mtandazo35/ids-maat-suricata@sha256:" + "2" * 64, "v0.1.0")):
-            with self.assertRaises(ValueError):
-                self.mod.construir(ver, vpn, sur, self.tar)
+        buena, sur, panel = self.VPN, self.SUR, self.PANEL
+        for vpn, s, pn, ver in ((buena.replace("vpn@", "suricata@"), sur, panel, "0.1.0"),
+                                ("ghcr.io/otro/ids-maat-vpn@sha256:" + "1" * 64, sur, panel, "0.1.0"),
+                                ("ghcr.io/mtandazo35/ids-maat-vpn:latest", sur, panel, "0.1.0"),
+                                (buena, sur, panel, "v0.1.0"),
+                                (buena, sur, "ghcr.io/mtandazo35/ids-maat-panel:0.1.0", "0.1.0"),
+                                (buena, sur, panel.replace("panel@", "vpn@"), "0.1.0"),
+                                (buena, sur, "", "0.1.0")):
+            with self.assertRaises(ValueError, msg=(vpn, s, pn, ver)):
+                self.mod.construir(ver, vpn, s, pn, self.tar)
+
+
+class GhcrPublico(unittest.TestCase):
+    """ghcr_publico.py con un registro falso: anónimo obtiene token; el manifiesto da 200 si el
+    paquete es público y 401/403 si es privado."""
+
+    def setUp(self):
+        self.mod = cargar("ghcr_publico")
+        self.publicos = {"vpn", "suricata"}
+        self.pedidas = []
+
+    def abrir(self, req, timeout=None):
+        import io
+        import json
+        import urllib.error
+        url = req.full_url
+        self.pedidas.append((req.get_method(), url, dict(req.header_items())))
+        if "/token?" in url:
+            cuerpo = io.BytesIO(json.dumps({"token": "anonimo"}).encode())
+            cuerpo.status = 200
+            return cuerpo
+        nombre = re.search(r"/ids-maat-([a-z]+)/manifests/", url).group(1)
+        if nombre in self.publicos:
+            r = io.BytesIO(b"")
+            r.status = 200
+            return r
+        raise urllib.error.HTTPError(url, 401, "unauthorized", {}, None)
+
+    def correr(self, *args):
+        import io
+        out = io.StringIO()
+        self.resumen = Path(tempfile.mkdtemp(prefix="ghcr-")) / "resumen.md"
+        antes = os.environ.get("GITHUB_STEP_SUMMARY")
+        os.environ["GITHUB_STEP_SUMMARY"] = str(self.resumen)
+        try:
+            rc = self.mod.main(list(args), abrir=self.abrir, salida=out)
+        finally:
+            if antes is None:
+                os.environ.pop("GITHUB_STEP_SUMMARY", None)
+            else:
+                os.environ["GITHUB_STEP_SUMMARY"] = antes
+        return rc, out.getvalue()
+
+    def test_privado_avisa_con_el_enlace_y_falla_en_estricto(self):
+        rc, out = self.correr("--estricto", "0.2.0", "panel", "vpn", "suricata")
+        self.assertEqual(rc, 1)
+        self.assertIn("::warning title=GHCR privado::ids-maat-panel es privado", out)
+        self.assertIn("https://github.com/users/mtandazo35/packages/container/ids-maat-panel/settings", out)
+        self.assertIn("ids-maat-vpn:0.2.0 es público", out)
+        self.assertNotIn("ids-maat-vpn es privado", out)
+        self.assertIn("ids-maat-panel", self.resumen.read_text(encoding="utf-8"))
+        # sin credenciales: solo el token anónimo y el manifiesto por etiqueta
+        for metodo, url, cab in self.pedidas:
+            self.assertTrue(url.startswith("https://ghcr.io/"), url)
+            if "/manifests/" in url:
+                self.assertEqual(metodo, "HEAD")
+                self.assertEqual(cab.get("Authorization"), "Bearer anonimo")
+                self.assertTrue(url.endswith("/manifests/0.2.0"), url)
+
+    def test_todo_publico(self):
+        self.publicos = {"panel", "vpn", "suricata"}
+        rc, out = self.correr("--estricto", "0.2.0", "panel", "vpn", "suricata")
+        self.assertEqual(rc, 0)
+        self.assertNotIn("::warning", out)
+        self.assertFalse(self.resumen.exists())
+
+    def test_sin_estricto_solo_avisa(self):
+        rc, out = self.correr("0.2.0", "panel")
+        self.assertEqual(rc, 0)
+        self.assertIn("::warning", out)
 
 
 class RenderNft(unittest.TestCase):
@@ -164,8 +246,19 @@ class BuildSh(unittest.TestCase):
         self.correr("vpn", "ci")
         self.assertNotIn("SURICATA_VERSION", self.reg.read_text(encoding="utf-8"))
 
+    @unittest.skipUnless((REPO / "images" / "panel" / "Dockerfile").exists(), "falta images/panel/Dockerfile (P)")
+    def test_panel_con_base_fijada(self):
+        r = self.correr("panel", "ci")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        args = self.reg.read_text(encoding="utf-8").split("\n")
+        base = (REPO / "images" / "base.env").read_text(encoding="utf-8").strip()
+        self.assertEqual(args[:8], ["build", "--build-arg", base, "--build-arg", "VERSION=dev", "-t",
+                                    "ids-maat-panel:ci", "panel"])
+        self.assertNotIn("SURICATA_VERSION", "\n".join(args))
+
     def test_argumentos_malos(self):
-        self.assertEqual(self.correr("panel").returncode, 2)
+        self.assertEqual(self.correr("otro").returncode, 2)
+        self.assertEqual(self.correr("panel;x").returncode, 2)
         self.assertEqual(self.correr().returncode, 2)
         self.assertEqual(self.correr("vpn", "x;rm").returncode, 2)
 
@@ -189,11 +282,17 @@ class Workflows(unittest.TestCase):
         self.assertIn("runs-on: windows-latest", ci)
         self.assertIn("bash tests/run.sh --imagenes --integracion", ci)
 
+    def test_ci_construye_y_prueba_las_tres_imagenes(self):
+        ci = self.leer("ci.yml")
+        for img in ("vpn", "suricata", "panel"):
+            self.assertIn("bash images/build.sh %s ci" % img, ci)
+            self.assertIn("IDS_IMG_%s: ids-maat-%s:ci" % ("SURICATA" if img == "suricata" else img.upper(), img), ci)
+
     def test_release(self):
         rel = self.leer("release.yml")
         self.assertRegex(rel, r'tags: \["v\*"\]')
-        self.assertIn("img: [vpn, suricata]", rel)
-        self.assertNotIn("panel", rel.split("img:")[1].split("\n")[0])
+        matriz = re.search(r"(?m)^\s+img: \[([^\]]*)\]$", rel).group(1)
+        self.assertEqual([x.strip() for x in matriz.split(",")], ["panel", "vpn", "suricata"])
         self.assertIn("uses: ./.github/workflows/ci.yml", rel)
         self.assertIn("id-token: write", rel)
         self.assertIn("sign-blob --yes --bundle release.json.bundle release.json", rel)
@@ -208,6 +307,23 @@ class Workflows(unittest.TestCase):
         # release: la versión exacta sale de la imagen publicada y va a release.json
         self.assertRegex(rel, r'--entrypoint cat "\$ref_suricata" \\\n\s+/usr/share/ids-maat/suricata-version')
         self.assertIn('--suricata-version "$suricata_version"', rel)
+
+    def test_cada_imagen_de_la_matriz_llega_a_release_json_e_install(self):
+        """Lo que publica la matriz es lo que release.json lleva por digest, lo que verifica la
+        visibilidad, lo que install.sh exige en release.json y lo que build.sh acepta."""
+        rel = self.leer("release.yml")
+        inst = (REPO / "install.sh").read_text(encoding="utf-8")
+        build = (REPO / "images" / "build.sh").read_text(encoding="utf-8")
+        matriz = [x.strip() for x in re.search(r"(?m)^\s+img: \[([^\]]*)\]$", rel).group(1).split(",")]
+        visib = re.search(r"ghcr_publico\.py --estricto \S+ (.+)$", rel, re.M).group(1).split()
+        self.assertEqual(sorted(visib), sorted(matriz))
+        self.assertIn("needs: release", rel.split("visibilidad:")[1])
+        exigidas = re.search(r'for parte in \(([^)]*)\):\n\s+ref = d\["imagenes"\]\[parte\]', inst).group(1)
+        for img in matriz:
+            self.assertIn('ref_%s="ghcr.io/mtandazo35/ids-maat-%s@$(digest %s)"' % (img, img, img), rel)
+            self.assertIn('--%s "$ref_%s"' % (img, img), rel)
+            self.assertIn('"%s"' % img, exigidas)
+            self.assertIn(img, re.search(r"^  ([a-z|]+)\) ;;$", build, re.M).group(1).split("|"))
 
     def test_cosign_igual_que_install(self):
         rel = self.leer("release.yml")

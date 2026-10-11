@@ -30,7 +30,7 @@ jobs:
     strategy:
       fail-fast: true
       matrix:
-        img: [vpn, suricata]
+        img: [panel, vpn, suricata]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: base fijada y serie de Suricata
@@ -108,6 +108,7 @@ jobs:
           }
           ref_vpn="ghcr.io/mtandazo35/ids-maat-vpn@$(digest vpn)"
           ref_suricata="ghcr.io/mtandazo35/ids-maat-suricata@$(digest suricata)"
+          ref_panel="ghcr.io/mtandazo35/ids-maat-panel@$(digest panel)"
           # versión exacta de Suricata: solo se conoce dentro de la imagen (la etiqueta lleva la serie)
           docker pull -q "$ref_suricata" >/dev/null
           suricata_version=$(docker run --rm --network none --entrypoint cat "$ref_suricata" \
@@ -115,9 +116,25 @@ jobs:
           tar_nombre="ids-maat-host-$v.tar.gz"
           git archive --format=tar.gz -o "$tar_nombre" HEAD orquestador host install.sh
           python3 .github/scripts/release_json.py --version "$v" --vpn "$ref_vpn" \
-            --suricata "$ref_suricata" --suricata-version "$suricata_version" --tar "$tar_nombre" > release.json
+            --suricata "$ref_suricata" --panel "$ref_panel" --suricata-version "$suricata_version" \
+            --tar "$tar_nombre" > release.json
           cat release.json
           "$RUNNER_TEMP/cosign" sign-blob --yes --bundle release.json.bundle release.json
           gh release create "$ETIQUETA" --title "ids-maat $ETIQUETA" --verify-tag \
             --notes "Imágenes por digest y tar del host en release.json (firma: release.json.bundle)." \
             release.json release.json.bundle "$tar_nombre"
+
+  # Los paquetes de GHCR nacen privados aunque el repo sea público y la API no deja cambiarlo en
+  # paquetes de usuario: este job falla (en rojo, con el enlace) hasta que se hagan públicos una vez
+  # en la web. La release ya está publicada; basta con cambiar la visibilidad y relanzar el job.
+  visibilidad:
+    needs: release
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: imágenes descargables sin credenciales
+        env:
+          ETIQUETA: ${{ github.ref_name }}
+        run: python3 .github/scripts/ghcr_publico.py --estricto "${ETIQUETA#v}" panel vpn suricata

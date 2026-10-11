@@ -23,6 +23,16 @@ Las reglas ET y los feeds se actualizan aparte ([INSTANCIA.md](INSTANCIA.md) §1
 - **Paquetes públicos.** Los paquetes de GHCR nacen privados aunque el repositorio sea público.
   Hay que hacerlos públicos **una vez**, en los ajustes de cada paquete. Así el VPS descarga sin
   credenciales y no se guarda ningún PAT en los servidores.
+  - La API REST de GitHub no permite cambiar la visibilidad de un paquete de una cuenta de
+    usuario: es un paso manual en la web, tras la primera release que publica cada imagen.
+    Para `ids-maat-panel`, `ids-maat-vpn` e `ids-maat-suricata`:
+    `https://github.com/users/<owner>/packages/container/ids-maat-<img>/settings` →
+    *Danger Zone* → *Change visibility* → *Public*.
+  - El job `visibilidad` de `release.yml` pide cada manifiesto **sin credenciales** y falla (con
+    el enlace en el aviso) mientras alguno siga privado. La release ya está publicada: basta con
+    cambiar la visibilidad y relanzar el job.
+  - Si se instala con un paquete todavía privado, `install.sh` se para con «el paquete … es
+    privado» y el mismo enlace.
 
 ## 2. GitHub Actions
 

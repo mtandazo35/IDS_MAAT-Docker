@@ -1,0 +1,25 @@
+#!/usr/bin/python3
+"""ids-panel: panel web de IDS_MAAT-Docker.
+
+  ids-panel [servir]                     HTTP en 0.0.0.0:${IDS_PUERTO:-5637}
+  ids-panel crear-admin --usuario admin  imprime CLAVE=<clave> (exit 3 si ya existe)
+  ids-panel restablecer --usuario X      imprime CLAVE=<clave> (exit 4 si no existe)
+  ids-panel salud                        exit 0 si /salud responde 200
+
+El código vive en /usr/local/lib/ids-panel/idspanel (solo stdlib).
+"""
+
+import os
+import sys
+
+
+def main(argv=None):
+    lib = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "lib", "ids-panel")
+    if lib not in sys.path:
+        sys.path.insert(0, lib)
+    from idspanel.cli import main as principal
+    return principal(argv)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

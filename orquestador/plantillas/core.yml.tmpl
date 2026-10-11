@@ -1,0 +1,43 @@
+# ids-maat — núcleo (panel); generado por ids-orq panel aplicar; no editar
+name: @@PROYECTO@@
+services:
+  panel:
+    image: @@IMAGEN_PANEL@@
+    container_name: @@CONTENEDOR@@
+    hostname: @@CONTENEDOR@@
+    restart: unless-stopped
+    user: "@@UID@@:@@GID@@"
+    labels: { ids-maat.parte: "panel", ids-maat.version: "@@VERSION@@" }
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    read_only: true
+    tmpfs: ["/tmp:size=64m"]
+    ports: ["@@PUERTO_PANEL@@:@@PUERTO_CONTENEDOR@@/tcp"]
+    networks:
+      core: { ipv4_address: @@PANEL_IP@@ }
+    environment:
+      @@LINEAS_ENTORNO@@
+    volumes:
+      - @@RAIZ@@/srv/ids/panel:/srv/ids/panel
+      - @@RAIZ@@/srv/ids/datos:/srv/ids/datos:ro
+      - @@RAIZ@@/srv/ids/run:/srv/ids/run:ro
+      - @@RAIZ@@/run/ids-orq:/run/ids-orq:ro
+      - @@RAIZ@@/etc/ids-maat/orq_token:/run/secrets/orq_token:ro
+    logging: { driver: journald, options: { tag: ids-panel } }
+    mem_limit: @@MEM_PANEL@@
+    memswap_limit: @@MEM_PANEL@@
+    pids_limit: 128
+    stop_grace_period: 15s
+    healthcheck:
+      test: ["CMD", "ids-panel", "salud"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+      start_interval: 5s
+networks:
+  core:
+    name: @@PROYECTO@@
+    driver: bridge
+    driver_opts: { com.docker.network.bridge.name: @@PROYECTO@@ }
+    ipam: { config: [ { subnet: @@PANEL_RED@@, gateway: @@PANEL_PUERTA@@ } ] }

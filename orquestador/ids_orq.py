@@ -7,6 +7,9 @@ F1a, según docs/CONTRATO-F1a.md (§3, §4, §5.9-§5.12). Un solo módulo:
   la cola global en serie (persistida en orq.db), supervisa (docker events, netns por inodo,
   reinicios con espera creciente) y escribe /srv/ids/run/estado.json cada 15 s.
 - El resto de subórdenes son la CLI, que habla con el servicio por el socket.
+- F1b: `ids-orq panel aplicar|crear-admin|restablecer` (locales, de root, como `fw-render`)
+  renderizan y levantan el núcleo `ids-core` (el panel) y crean o restablecen sus usuarios
+  (docs/CONTRATO-F1b.md «Integración»).
 
 Importable en Windows (pruebas): nada de fcntl/pwd/grp/AF_UNIX a nivel de módulo.
 `IDS_RAIZ` antepone un prefijo a las rutas del host; `IDS_KERNEL_RAIZ` (interno de C, pruebas)
@@ -37,7 +40,7 @@ ORQ_VERSION = "0.1.0"
 UID_PANEL = 10500
 GID_PANEL = 10500
 REGISTRO = "ghcr.io/mtandazo35"
-RE_IMAGEN_PROD = re.compile(r"^ghcr\.io/mtandazo35/ids-maat-(vpn|suricata)@sha256:[0-9a-f]{64}$")
+RE_IMAGEN_PROD = re.compile(r"^ghcr\.io/mtandazo35/ids-maat-(vpn|suricata|panel)@sha256:[0-9a-f]{64}$")
 RE_IMAGEN_DEV = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/:@-]{0,254}$")
 RE_PID = re.compile(r"^p\d{3}$")
 RE_NOMBRE = re.compile(r"^[a-z0-9][a-z0-9-]{1,30}$")
@@ -80,6 +83,21 @@ MAX_MENSAJE = 64 * 1024
 MAX_PETICIONES_MIN = 240
 RELEASES_A_CONSERVAR = 3
 MAX_RESPALDOS_FW = 20
+
+# Núcleo (F1b, CONTRATO-F1b «Integración»): el panel en la red ids-core reservada en F1a
+CORE_PROYECTO = "ids-core"
+CORE_COMPOSE = "/srv/ids/core/compose.yml"
+PANEL_CONTENEDOR = "ids-core-panel"
+PANEL_RED = "10.210.255.0/24"
+PANEL_PUERTA = "10.210.255.1"
+PANEL_IP = "10.210.255.2"
+PANEL_PUERTO = 5637                  # el del contenedor; el publicado es PUERTO_PANEL de ids.conf
+PANEL_DIR = "/srv/ids/panel"
+PANEL_USUARIOS = PANEL_DIR + "/usuarios.json"
+ESPERA_PANEL_S = 120
+RE_USUARIO_PANEL = re.compile(r"^[a-z0-9][a-z0-9._-]{0,31}$")     # el mismo que ids-panel
+RE_ZONA = re.compile(r"^(UTC|[A-Za-z]+(/[A-Za-z0-9_+-]+){1,2})$")
+SALIDA_PANEL_YA_EXISTE = 3
 
 PASOS_CREAR = ["validar", "asignar", "admisión de RAM", "directorios", "certificado",
                "usuario VPN", "server.conf", "suricata.yaml", "suricata -T", "threshold.config",
@@ -315,6 +333,10 @@ class Config:
         self.pool = ipaddress.IPv4Network(kv["POOL_DOCKER"], strict=False)
         if not self.redes_gestion or not self.ips_proxy:
             raise ErrorOrden("FALLO", "ids.conf: REDES_GESTION e IPS_PROXY no pueden estar vacías")
+        # F1b: zona horaria con la que el panel muestra las fechas (opcional; por defecto UTC)
+        self.zona = kv.get("ZONA_HORARIA") or "UTC"
+        if not RE_ZONA.match(self.zona):
+            raise ErrorOrden("FALLO", "ids.conf: ZONA_HORARIA inválida")
 
     @property
     def red_tuneles(self):
@@ -335,7 +357,8 @@ def imagenes():
     d = json.loads(p.read_text(encoding="utf-8"))
     dev = bool(d.get("dev", False))
     imgs = d.get("imagenes") or {}
-    for parte in ("vpn", "suricata"):
+    # el panel es opcional aquí (un imagenes.json de F1a no lo trae); `panel aplicar` lo exige
+    for parte in ("vpn", "suricata") + (("panel",) if "panel" in imgs else ()):
         ref = imgs.get(parte, "")
         if dev:
             if not RE_IMAGEN_DEV.match(ref or ""):
@@ -346,7 +369,7 @@ def imagenes():
                 raise ErrorOrden("FALLO", "imagenes.json: %s no es ghcr.io/mtandazo35/ids-maat-%s@sha256:…"
                                  % (parte, parte))
     return {"dev": dev, "version": d.get("version", ""), "vpn": imgs["vpn"],
-            "suricata": imgs["suricata"]}
+            "suricata": imgs["suricata"], "panel": imgs.get("panel")}
 
 
 def leer_token():
@@ -558,6 +581,35 @@ def render_nft(cfg, puertos, origenes):
                       {"LINEAS_ORIGEN_FIJO": lineas_origen or None})
 
 
+def entorno_panel(cfg):
+    """Entorno del panel (CONTRATO-F1b, interfaz fija). El mismo para el servicio y para las
+    órdenes de un solo uso (crear-admin, restablecer). El token va por fichero, nunca en claro."""
+    return {
+        "IDS_PROXY": ",".join(str(r.network_address) if r.prefixlen == 32 else str(r) for r in cfg.ips_proxy),
+        "IDS_EMPRESA": cfg.nombre_dns,
+        "IDS_PUERTO": str(PANEL_PUERTO),
+        "IDS_TZ": cfg.zona,
+        "TZ": "UTC",
+        "IDS_ORQ_SOCK": "/run/ids-orq/orq.sock",
+        "IDS_ORQ_TOKEN": "/run/secrets/orq_token",
+        "IDS_PANEL_DIR": PANEL_DIR,
+        "IDS_DATOS": "/srv/ids/datos",
+        "IDS_RUN": "/srv/ids/run",
+    }
+
+
+def render_core(cfg, imagen_panel, version, raiz_host="/"):
+    """compose.yml del núcleo (proyecto ids-core): el panel en 10.210.255.2."""
+    prefijo = "" if raiz_host in ("/", "") else raiz_host.replace("\\", "/").rstrip("/")
+    entorno = "\n".join('      %s: "%s"' % kv for kv in entorno_panel(cfg).items())
+    valores = {"IMAGEN_PANEL": imagen_panel, "VERSION": version, "RAIZ": prefijo,
+               "PUERTO_PANEL": cfg.puerto_panel, "PUERTO_CONTENEDOR": PANEL_PUERTO,
+               "UID": UID_PANEL, "GID": GID_PANEL, "MEM_PANEL": "%dm" % RESERVA_PANEL_MB,
+               "PANEL_IP": PANEL_IP, "PANEL_RED": PANEL_RED, "PANEL_PUERTA": PANEL_PUERTA,
+               "CONTENEDOR": PANEL_CONTENEDOR, "PROYECTO": CORE_PROYECTO}
+    return renderizar(leer_plantilla("core.yml.tmpl"), valores, {"LINEAS_ENTORNO": entorno})
+
+
 def valores_suricata(sensor, home_net, rule_path, n, hilos, perfil, hs):
     pf = PERFILES[perfil]
     return {
@@ -696,6 +748,26 @@ def docker_inspect(nombres):
 def compose_args(pid, *resto):
     return ["docker", "compose", "-p", "ids-%s" % pid, "-f",
             str(ruta("/srv/ids/puntos/%s/compose.yml" % pid))] + list(resto)
+
+
+def core_compose_args(*resto):
+    return ["docker", "compose", "-p", CORE_PROYECTO, "-f", str(ruta(CORE_COMPOSE))] + list(resto)
+
+
+def esperar_salud(nombres, limite=None):
+    """Espera a que todos estén `healthy`; falla enseguida si alguno sale (exited/dead)."""
+    limite = ESPERA_SALUD_S if limite is None else limite
+    fin = time.monotonic() + limite
+    while True:
+        info = docker_inspect(nombres)
+        if all(info.get(n, {}).get("salud") == "healthy" for n in nombres):
+            return info
+        muertos = [n for n in nombres if info.get(n, {}).get("estado") in ("exited", "dead")]
+        if muertos or time.monotonic() >= fin:
+            malos = ", ".join("%s=%s/%s" % (n, info.get(n, {}).get("estado", "ausente"),
+                                            info.get(n, {}).get("salud", "-")) for n in nombres)
+            raise ErrorOrden("FALLO", "no sanos en %d s: %s" % (limite, malos))
+        time.sleep(INTERVALO_SONDEO_S)
 
 
 def digest12(imagen):
@@ -1831,18 +1903,7 @@ class Orquestador:
         return False
 
     def esperar_salud(self, nombres, limite=None):
-        limite = ESPERA_SALUD_S if limite is None else limite
-        fin = time.monotonic() + limite
-        while True:
-            info = docker_inspect(nombres)
-            if all(info.get(n, {}).get("salud") == "healthy" for n in nombres):
-                return info
-            muertos = [n for n in nombres if info.get(n, {}).get("estado") in ("exited", "dead")]
-            if muertos or time.monotonic() >= fin:
-                malos = ", ".join("%s=%s/%s" % (n, info.get(n, {}).get("estado", "ausente"),
-                                                info.get(n, {}).get("salud", "-")) for n in nombres)
-                raise ErrorOrden("FALLO", "no sanos en %d s: %s" % (limite, malos))
-            time.sleep(INTERVALO_SONDEO_S)
+        return esperar_salud(nombres, limite)
 
     def validar_T(self, imagen, rule_path, perfil, hs_tmpl, reserva, etiqueta):
         """`suricata -T` efímero (§5.9) con un yaml de validación."""
@@ -2372,6 +2433,16 @@ class Orquestador:
                 levantados.append(p["pid"])
             except ErrorOrden as e:
                 ctx.registrar("%s: %s" % (p["pid"], e.mensaje))
+        # el panel: Docker ya lo relanza al arrancar (unless-stopped); esto cubre un `docker stop`
+        # o `docker rm` y un dockerd que no lo levantó. No se re-renderiza: eso es `panel aplicar`.
+        if ruta(CORE_COMPOSE).exists():
+            if (docker_inspect([PANEL_CONTENEDOR]).get(PANEL_CONTENEDOR) or {}).get("estado") != "running":
+                try:
+                    with ctx.paso("levantar panel"):
+                        ejecutar_ok(core_compose_args("up", "-d", "--pull", "never"), timeout=300)
+                    levantados.append("panel")
+                except ErrorOrden as e:
+                    ctx.registrar("panel: %s" % e.mensaje)
         conocidos = {p["pid"] for p in self.puntos()}
         r = ejecutar(["docker", "ps", "-a", "--filter", "label=ids-maat.punto", "--format",
                       '{{.Names}}\t{{.Label "ids-maat.punto"}}'], timeout=60)
@@ -2674,6 +2745,14 @@ def construir_parser():
     op.add_argument("op_id")
     fw = sub.add_parser("fw-render", help="(instalador) genera /srv/ids/fw/ids_host.nft desde ids.conf")
     fw.add_argument("--aplicar", action="store_true", help="nft -c y nft -f del resultado")
+    pn = sub.add_parser("panel", help="núcleo: el panel (local, como root)")
+    pns = pn.add_subparsers(dest="sub", required=True)
+    pa = pns.add_parser("aplicar", help="renderiza /srv/ids/core/compose.yml, lo levanta y espera a sano")
+    pa.add_argument("--sin-esperar", action="store_true")
+    pc = pns.add_parser("crear-admin", help="crea el primer usuario e imprime CLAVE=<clave> (3 si ya existe)")
+    pc.add_argument("--usuario", default="admin")
+    pr = pns.add_parser("restablecer", help="clave nueva para un usuario; imprime CLAVE=<clave>")
+    pr.add_argument("usuario")
     return ap
 
 
@@ -2865,6 +2944,99 @@ def fw_render(aplicar=False):
     return 0
 
 
+# --------------------------------------------------------------------------------------------
+# Núcleo: el panel (F1b). Órdenes locales de root, como fw-render: no pasan por la cola (el panel
+# no comparte nada con los puntos) y las usa install.sh antes de dar la URL y la clave.
+# --------------------------------------------------------------------------------------------
+
+def imagenes_con_panel():
+    imgs = imagenes()
+    if not imgs.get("panel"):
+        raise ErrorOrden("FALLO", "imagenes.json no trae la imagen del panel (vuelve a ejecutar install.sh)")
+    return imgs
+
+
+def dirs_panel():
+    asegurar_dir(ruta("/srv/ids/core"), 0o700)
+    asegurar_dir(ruta(PANEL_DIR), 0o2770, 0, GID_PANEL)
+
+
+def panel_aplicar(esperar=True):
+    """Renderiza /srv/ids/core/compose.yml, `compose up -d` y espera a `healthy`. Idempotente:
+    con la misma imagen y el mismo ids.conf, compose no recrea el contenedor."""
+    cfg = config()
+    imgs = imagenes_con_panel()
+    dirs_panel()
+    for d in ("/srv/ids/datos", "/srv/ids/run", "/run/ids-orq"):
+        asegurar_dir(ruta(d), 0o750, 0, GID_PANEL)
+    texto = render_core(cfg, imgs["panel"], cfg.version, raiz_host=raiz())
+    escribir_atomico(ruta(CORE_COMPOSE), texto, modo=0o600)
+    ejecutar_ok(core_compose_args("up", "-d", "--pull", "never", "--remove-orphans"), timeout=300)
+    if esperar:
+        esperar_salud([PANEL_CONTENEDOR], ESPERA_PANEL_S)
+    return texto
+
+
+def panel_un_uso(orden, usuario):
+    """`ids-panel crear-admin|restablecer --usuario X` en un contenedor de un solo uso con la
+    imagen del panel: uid 10500, solo /srv/ids/panel montado, sin red y sin driver de logs (la
+    clave sale una vez por stdout y no queda en ningún log). Devuelve el Resultado tal cual."""
+    if orden not in ("crear-admin", "restablecer"):
+        raise ErrorOrden("INVALIDO", "orden del panel desconocida")
+    if not RE_USUARIO_PANEL.match(usuario or ""):
+        raise ErrorOrden("INVALIDO", "usuario inválido: minúsculas, números, . _ - (máx. 32)")
+    cfg = config()
+    imgs = imagenes_con_panel()
+    dirs_panel()
+    args = ["docker", "run", "--rm", "--network", "none", "--log-driver", "none", "--read-only",
+            "--tmpfs", "/tmp:size=16m", "--cap-drop", "ALL", "--security-opt", "no-new-privileges:true",
+            "--user", "%d:%d" % (UID_PANEL, GID_PANEL), "--memory", "256m", "--memory-swap", "256m",
+            "--pids-limit", "64"]
+    for k, v in entorno_panel(cfg).items():
+        args += ["-e", "%s=%s" % (k, v)]
+    args += ["-v", "%s:%s" % (host_str(PANEL_DIR), PANEL_DIR), "--entrypoint", "ids-panel", imgs["panel"],
+             orden, "--usuario", usuario]
+    return ejecutar(args, timeout=180)
+
+
+def linea_clave(salida):
+    """La única línea `CLAVE=<clave>` de la salida del panel, o None."""
+    lineas = [x.strip() for x in (salida or "").splitlines() if re.fullmatch(r"\s*CLAVE=\S+\s*", x)]
+    return lineas[0] if len(lineas) == 1 else None
+
+
+def cli_panel(a, salida=None, error=None):
+    salida = salida or sys.stdout
+    error = error or sys.stderr
+    try:
+        if a.sub == "aplicar":
+            panel_aplicar(esperar=not a.sin_esperar)
+            cfg = config()
+            print("OK panel %s en %s (http://%s:%d, solo desde %s)" % (
+                PANEL_CONTENEDOR, PANEL_IP, cfg.nombre_dns, cfg.puerto_panel,
+                ",".join(str(r) for r in cfg.ips_proxy)), file=salida)
+            return 0
+        usuario = a.usuario
+        r = panel_un_uso("crear-admin" if a.sub == "crear-admin" else "restablecer", usuario)
+    except ErrorOrden as e:
+        print("%s %s" % (e.codigo, e.mensaje), file=error)
+        return CODIGOS_SALIDA.get(e.codigo, 1)
+    if a.sub == "crear-admin" and r.rc == SALIDA_PANEL_YA_EXISTE:
+        print("CONFLICTO ya existe el usuario %s: se conserva su clave (ids-orq panel restablecer %s)"
+              % (usuario, usuario), file=error)
+        return SALIDA_PANEL_YA_EXISTE
+    clave = linea_clave(r.out) if r.rc == 0 else None
+    if clave is None:
+        detalle = (r.err or "").strip().splitlines()
+        print("FALLO ids-panel %s salió con %s%s" % (a.sub, r.rc, (": " + detalle[-1]) if detalle else ""),
+              file=error)
+        return 1
+    print(clave, file=salida)
+    print("clave del usuario %s del panel: se muestra UNA sola vez y no se guarda en claro" % usuario,
+          file=error)
+    return 0
+
+
 def main(argv=None, cliente=None):
     try:
         sys.stdout.reconfigure(encoding="utf-8")
@@ -2879,6 +3051,8 @@ def main(argv=None, cliente=None):
         except ErrorOrden as e:
             print("FALLO %s" % e.mensaje, file=sys.stderr)
             return 1
+    if a.cmd == "panel":
+        return cli_panel(a)
     cli = cliente or Cliente()
     try:
         return cli.ejecutar(a)

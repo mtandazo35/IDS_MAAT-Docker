@@ -191,6 +191,26 @@ rsync -a --chmod=F600 root@ids.empresa.example:/root/backups/ids-maat-diario-*.t
   3. Revisar `/root/backups/` y la bitácora.
 - **Una red más ancha que /16 solo se puede abrir así**, desde la consola.
 
+### 4.1 Primer acceso al panel y clave olvidada
+
+- Al terminar, `install.sh` imprime la URL (`http://<nombre>:5637`), el usuario `admin` y su clave
+  **una sola vez**. La clave no se guarda en claro: en `/root/ids-maat/install-<ts>.log` sale como
+  `********`. Una reinstalación no la cambia.
+- El 5637 solo se abre desde las IP de `--proxy`. Para entrar directo durante las pruebas, se
+  ponen en `--proxy` las redes de gestión (≤ /28 cada una); si no, el túnel SSH de arriba.
+- Clave olvidada o perdida, desde SSH como root:
+
+  ```sh
+  ids-orq panel restablecer admin      # imprime CLAVE=<nueva>; la anterior deja de valer
+  ```
+
+  Ejecuta `ids-panel restablecer --usuario admin` en un contenedor de un solo uso con la imagen
+  del panel (sin red, sin logs, solo `/srv/ids/panel` montado). Si todavía no hay ningún usuario:
+  `ids-orq panel crear-admin --usuario admin`.
+- El panel es el contenedor `ids-core-panel` del proyecto `ids-core`
+  (`/srv/ids/core/compose.yml`). `ids-orq panel aplicar` lo vuelve a generar y levantar;
+  `docker logs ids-core-panel` (o `journalctl CONTAINER_TAG=ids-panel`) muestra su registro.
+
 ## 5. Mantenimiento
 
 | Tarea | Cómo |

@@ -57,6 +57,9 @@ class Unidades(unittest.TestCase):
         s = unidad("ids-orq.service")["Service"]
         self.assertEqual(s["ExecStart"], "/usr/local/bin/ids-orq servicio")
         self.assertEqual((s["Restart"], s["RuntimeDirectory"]), ("always", "ids-orq"))
+        # el panel monta /run/ids-orq: si systemd lo borrara al reiniciar el servicio, el montaje
+        # del contenedor se quedaría con el directorio viejo y sin socket
+        self.assertEqual(s["RuntimeDirectoryPreserve"], "yes")
         self.assertEqual(s["ProtectSystem"], "strict")
         self.assertEqual(s["ReadWritePaths"].split(), ["/srv/ids", "/root/backups", "/run/ids-orq"])
         self.assertEqual((s["PrivateTmp"], s["ProtectHome"], s["NoNewPrivileges"]), ("yes", "read-only", "yes"))
