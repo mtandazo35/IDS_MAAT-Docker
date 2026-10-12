@@ -10992,7 +10992,7 @@ def documentacion_page(embed=False, pagina=""):
     art = f"""<!--CAT:Primeros pasos--><h2>Las pestañas del menu</h2>
 <table><tr><th>Pestaña</th><th>Que hace</th></tr>
 <tr><td><b>En vivo</b></td><td>Vista principal. Arriba, el <b>resumen de las ultimas 24h</b>:
-puertos de destino mas atacados, IPs origen (atacantes), IPs destino (objetivos) y la
+atacantes por puerto (que IP golpea que puerto), IPs origen (atacantes), IPs destino (objetivos) y la
 linea de tiempo por intervalos de 30 minutos. Abajo, el <b>feed de los ultimos ataques</b>,
 que se actualiza solo cada 20 segundos.</td></tr>
 <tr><td><b>Top origenes</b></td><td>Ranking del <b>Top 5 de CPEs que mas alertan</b> (quien ataca mas),
@@ -16584,7 +16584,10 @@ class H(BaseHTTPRequestHandler):
                     # se recarga solo cada 2 min para tomar el reporte nuevo (cada 5 min);
                     # el filtro de busqueda persiste en sessionStorage, no se pierde al recargar
                     f"<meta http-equiv=refresh content=120>"
-                    f"<title>Suricata</title>{head_css}</head><body>{nav('/detalle')}"
+                    # el CSS del reporte trae main a 1200px; el panel usa 1360 (como "/" y el menu)
+                    f"<title>Suricata</title>{head_css}"
+                    "<style>main{max-width:1360px;margin:0 auto}</style>"
+                    f"</head><body>{nav('/detalle')}"
                     f"<main>{detalle}</main></body></html>")
             return self._html(page)
         if path == "/conducta.csv":

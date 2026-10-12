@@ -299,6 +299,14 @@ def rid_de(clave):
     """El router (pid) de una identidad de CPE ("" si no lo trae)."""
     return clave.split("|", 1)[0] if "|" in clave else ""
 
+def etiqueta_cpe(clave):
+    """Texto plano de un CPE para las graficas (SVG, sin HTML): «10.0.0.5 · Nodo A» en «Todos»,
+    la IP sola con un solo nodo. Nunca la clave interna pid|ip."""
+    r = rid_de(clave)
+    if r and MULTI_ROUTER:
+        return f"{ip_de(clave)} · {nombre_router(r)}"
+    return ip_de(clave)
+
 def _etq_cpe(clave):
     """Texto de un CPE para el mapa: la IP, y en --todos tambien el nombre de su nodo."""
     r = rid_de(clave)
@@ -1034,7 +1042,7 @@ def hbar(titulo, pares, unidad="alertas", fmt=str, lblw=125, barw=470, card_clas
         return f'<section class="{card_class}"><h2>{esc(titulo)}{q}</h2><p class="muted">Sin datos.</p></section>'
     mx = max(v for _, v in pares) or 1
     ref = max(mx, piso)                       # escala minima: hace falta ~`piso` para llenar/enrojecer
-    plano = len({v for _, v in pares}) <= 1   # todos iguales -> no hay un claro dominante
+    plano = len(pares) > 1 and len({v for _, v in pares}) <= 1   # todos iguales -> no hay un claro dominante
     rows = []
     if label_above:
         W = 900
@@ -1065,7 +1073,11 @@ def hbar(titulo, pares, unidad="alertas", fmt=str, lblw=125, barw=470, card_clas
                 f'<rect x="{lblw}" y="{y}" width="{w}" height="{rowh}" rx="4" fill="{heat(v/ref)}"/>'
                 f'<text x="{lblw+w+6}" y="{y+rowh*0.68:.0f}" class="val">{esc(fmt(v))}</text>')
     # aviso honesto cuando la muestra es plana/pequeña (no hay un dominante real)
-    if plano:
+    if len(pares) == 1:
+        # una sola fila no "empata" con nadie: se dice que es la unica
+        aviso = (f' &middot; <b>solo 1 {esc(que)}</b> en {esc(fmt(mx))} {esc(unidad)}'
+                 + (' (muestra pequeña)' if mx < piso else ''))
+    elif plano:
         aviso = (f' &middot; <b>sin {esc(que)} dominante</b>: los {len(pares)} van empatados '
                  f'en {esc(fmt(mx))} {esc(unidad)} (muestra pequeña)')
     elif mx < piso:
@@ -1183,6 +1195,14 @@ by_sig = Counter()
 for _k, _v in flujos.items():
     by_sig[traducir(_k[5])] += _v[0]   # agrupar por descripcion en espanol (sin duplicados)
 firmas_top = [(s[:60], n) for s, n in by_sig.most_common(10)]
+
+# Atacantes por puerto: el par (CPE, puerto destino) con mas alertas. El puerto solo (443: 6)
+# no dice a quien cortar; el par si (10.0.0.5 -> 23/TCP: 312 es un bot, no un cliente normal).
+by_src_dport = Counter()
+for _s, _c in dport_cnt_by_src.items():
+    for _p, _n in _c.items():
+        by_src_dport[(_s, _p)] = _n
+src_dport_top = [(f"{etiqueta_cpe(_s)} → {_p}", n) for (_s, _p), n in by_src_dport.most_common(12)]
 
 # ---- Dueno de cada IP destino (DNS inverso PTR -> marca conocida), cacheado ----
 _IPINFO_CACHE = os.path.join(nodos.CACHE, "ipinfo-cache.json")
@@ -2436,13 +2456,13 @@ td.num{{text-align:right;font-variant-numeric:tabular-nums}}
     <div class="tile"><span class="q">?</span><div class="big">{len(ips_vistas):,}{'+' if len(ips_vistas) >= MAX_IPS else ''}</div><div class="lab"><span class="dot" style="background:#2a78d6"></span>IPs unicas vistas (todo el trafico)</div>
       <span class="tip"><b>Todas las IPs distintas</b> que el MikroTik le envio al sensor en {COB}, no solo las que atacan: cuenta cualquier evento (TLS, HTTP, DNS, SNMP, alertas...), origen y destino, sin duplicar. Es el alcance real de lo que esta sensando.</span></div>
     <div class="tile"><span class="q">?</span><div class="big">{len(by_dport):,}</div><div class="lab"><span class="dot" style="background:#eda100"></span>puertos destino distintos</div>
-      <span class="tip"><b>Puertos de destino distintos</b> que aparecieron en las alertas de {COB} (443, 80, 53, 22...). El top esta en la grafica "Puertos de destino mas atacados".</span></div>
+      <span class="tip"><b>Puertos de destino distintos</b> que aparecieron en las alertas de {COB} (443, 80, 53, 22...). Quien ataca cada puerto esta en la grafica "Atacantes por puerto".</span></div>
   </div>
   {timeline(by_hour)}
   {mapa_ataques_section()}
   <div class="grid">
-    {hbar("Puertos de destino mas atacados", top(by_dport), "alertas", que="puerto", tip="Puertos de destino con mas alertas (443 HTTPS, 80 HTTP, 53 DNS, 22 SSH...). Muestra a que servicios apunta el trafico sospechoso. Solo el top; el total de puertos distintos esta en el recuadro de arriba.")}
-    {hbar("IPs origen (atacantes)", top(by_src), "alertas", que="IP", tip="IPs de ORIGEN que mas alertas dispararon (los equipos/CPE que generan el trafico). Ojo: muchas pueden ser solo consultas DNS sospechosas, no ataque real. Solo el top; el total esta arriba.")}
+    {hbar("Atacantes por puerto", src_dport_top, "alertas", que="atacante", lblw=215, barw=380, tip="Pares IP origen -> puerto destino con mas alertas: QUIEN golpea QUE servicio (23 Telnet, 445 SMB, 22 SSH, 443 HTTPS...). Una misma IP sale en varias filas si ataca varios puertos. Solo el top; el total de puertos distintos esta en el recuadro de arriba.")}
+    {hbar("IPs origen (atacantes)", top(by_src, fmt=etiqueta_cpe), "alertas", que="IP", lblw=165, barw=430, tip="IPs de ORIGEN que mas alertas dispararon (los equipos/CPE que generan el trafico). Ojo: muchas pueden ser solo consultas DNS sospechosas, no ataque real. Solo el top; el total esta arriba.")}
     {hbar("IPs destino (objetivos)", top(by_dst), "alertas", que="IP", tip="IPs de DESTINO mas frecuentes: hacia donde va el trafico alertado (el objetivo). Los resolutores DNS conocidos NO cuentan aqui: una consulta maliciosa es culpa del CPE, no un ataque al DNS; van aparte, mas abajo, como resolutores usados (Ajustes -> DNS).")}
     {hbar("Firmas mas frecuentes (tipo de ataque)", firmas_top, "alertas", que="firma", tip="Tipos de ataque (firmas de Suricata) mas frecuentes, agrupados y traducidos al espanol. Indica que clase de amenaza predomina.")}
   </div>

@@ -63,6 +63,15 @@ class CSS(unittest.TestCase):
         self.assertRegex(css, r"(^|\})\s*\.askov\{display:none")
         self.assertEqual(selectores_rotos(css), [])
 
+    def test_detalle_con_el_ancho_del_panel(self):
+        """Correccion de defecto: /detalle trae el CSS del reporte (main a 1200px) y salia mas
+        estrecha que el menu y que las demas tablas (1360px); la ultima regla de main manda."""
+        r = self.p.pedir("GET", "/detalle?nodo=_todos", cookie=self.ana)
+        css = "\n".join(re.findall(r"<style[^>]*>(.*?)</style>", r.texto, flags=re.S))
+        anchos = re.findall(r"(?:^|\})\s*main\{[^}]*max-width:(\d+)px", css)
+        self.assertTrue(anchos, "sin regla main con max-width")
+        self.assertEqual(anchos[-1], "1360")
+
 
 if __name__ == "__main__":
     unittest.main()
