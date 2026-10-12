@@ -29,10 +29,11 @@ RAIZ = extraer.RAIZ
 DASH = extraer.fuente("DASH")
 ARBOL = ast.parse(DASH)
 
-PIEZAS = ("GROQ_URL", "_feeds_conf_get", "_feeds_conf_set", "groq_key", "groq_configurada",
+PIEZAS = ("GROQ_URL", "FEEDS_SECRETOS", "SECRETOS_AVISO", "_feeds_conf_crudo", "_feeds_conf_get", "_feeds_conf_set", "groq_key", "groq_configurada",
           "groq_set", "groq_modelo", "groq_set_modelo", "groq_modelos", "groq_probar")
 
 fallos = 0
+_PAN = []      # (nodos, secretos) del panel portado, uno para toda la prueba (lo pone main)
 
 
 def check(d, c, e=""):
@@ -89,7 +90,10 @@ def entorno(respuesta=None, conf=None):
         "request": req_mod,
         "error": type("E", (), {"HTTPError": HTTPError, "URLError": URLError}),
     })
-    ns = {"json": json, "os": os, "urllib": urllib_falso,
+    # panel portado (CONTRATO-F2 §2, §10.3): `secretos` REAL; la clave de Groq se guarda
+    # cifrada en feeds.conf con la clave maestra de prueba y se descifra al leerla
+    ns = {"nodos": _PAN[0][0], "secretos": _PAN[0][1], "threading": __import__("threading"),
+          "json": json, "os": os, "urllib": urllib_falso,
           "TimeoutError": TimeoutError,
           "FEEDS_CONF": conf or os.path.join(tempfile.mkdtemp(), "feeds.conf")}
     for n in ARBOL.body:
@@ -102,6 +106,7 @@ def entorno(respuesta=None, conf=None):
 
 
 def main():
+    _PAN[:] = [_comun.panel(tempfile.mkdtemp())]
     MS = {"data": [{"id": "modelo-grande"}, {"id": "modelo-chico"}]}
 
     # --- una clave que Groq rechaza no se guarda ---------------------------------------
@@ -159,9 +164,13 @@ def main():
     check("y ya consta como configurada", ns2["groq_configurada"]() is True, "")
 
     # el archivo es el de los demas secretos, no uno nuevo suelto por ahi
-    txt = open(cf, encoding="utf-8").read()
+    # (adaptada, CONTRATO-F2 §10.3: la clave de Groq es un secreto y va CIFRADA con la
+    # clave maestra; el original la dejaba en claro. Sigue en feeds.conf, con su nombre)
+    with open(cf, encoding="utf-8") as f:
+        txt = f.read()
     check("se guarda en el archivo de claves de siempre",
-          "GROQ_API_KEY=clave-secreta" in txt, txt)
+          "GROQ_API_KEY=" in txt, txt)
+    check("  y cifrada, nunca en claro (§10.3)", "clave-secreta" not in txt, txt)
 
     ns2["groq_set"]("")
     ns2["groq_set_modelo"]("")
@@ -180,8 +189,14 @@ def main():
     # Guardar la clave es de administrador: con operador o lectura, no.
     _rt = DASH[DASH.index('if ruta == "/feeds/groq":'):]
     _rt = _rt[:_rt.index('if ruta == "/feeds/actualizar":')]
+    # (adaptada, CONTRATO-F2 §10.2: el rol se comprueba en el servidor y el que no lo tiene
+    # recibe un 403 que queda en la bitacora, `_prohibido()`; el `_deny()` viejo solo
+    # mandaba al login. La barrera de administrador es la misma.)
+    _proh = DASH[DASH.index("    def _prohibido(self):"):]
+    _proh = _proh[:_proh.index("\n    def ", 10)]
     check("guardar la clave es solo de administrador",
-          "self._admin()" in _rt and "self._deny()" in _rt, "")
+          "if not self._admin():\n                return self._prohibido()" in _rt
+          and "403" in _proh and "SIN-PERMISO" in _proh, _rt[:120])
     check("BORRAR se lleva tambien el modelo, no deja uno huerfano",
           'groq_set(""); groq_set_modelo("")' in _rt, "")
     # Un modelo que la cuenta ya no tiene no se guarda: fallaria en la primera consulta,
@@ -203,7 +218,7 @@ def main():
 
 class Legado(unittest.TestCase):
     def test_legado(self):
-        """Tipo: conservacion (prueba heredada de suricata-ids-lab). La clave de Groq: se valida antes de guardarla y no vuelve a salir de aqui."""
+        """Tipo: conservacion, adaptada (CONTRATO-F2 §2, §10.2, §10.3): secretos real; la clave de Groq se guarda CIFRADA en feeds.conf (antes en claro); sin rol de admin, 403 con `_prohibido()` (antes `_deny()`). La clave de Groq: se valida antes de guardarla y no vuelve a salir de aqui."""
         _comun.correr_main(self, main)
 
 

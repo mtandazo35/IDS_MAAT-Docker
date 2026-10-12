@@ -30,7 +30,7 @@ RAIZ = extraer.RAIZ
 DASH = extraer.fuente("DASH")
 ARBOL = ast.parse(DASH)
 
-PIEZAS = ("FEEDS_CONF", "AIDB_CACHE", "AIDB_ESTADO", "AIDB_CUOTA", "AIDB_RESERVA_MANUAL",
+PIEZAS = ("FEEDS_CONF", "FEEDS_SECRETOS", "SECRETOS_AVISO", "_feeds_conf_crudo", "AIDB_CACHE", "AIDB_ESTADO", "AIDB_CUOTA", "AIDB_RESERVA_MANUAL",
           "AIDB_MAX_CACHE", "AIDB_TTL_LIMPIA", "AIDB_TTL_SUCIA", "_AIDB_LOCK", "AIDB_CATS",
           "AIDB_DENUNCIAS", "AIDB_REDENUNCIA", "PANEL_FLAGS", "AIDB_FIRMA_CAT",
           "_feeds_conf_get", "_feeds_conf_set", "aidb_key", "aidb_configurada", "aidb_set",
@@ -72,7 +72,10 @@ class Red:
 
 
 def entorno(tmp, red, mias=("10.", "1.1.1."), nunca=()):
-    ns = {"json": json, "os": os, "re": re, "time": __import__("time"),
+    # panel portado (CONTRATO-F2 §2, §10.3): `nodos` y `secretos` REALES; la clave de
+    # AbuseIPDB se guarda cifrada en feeds.conf y solo se descifra para hacer la peticion
+    nod, sec = _comun.panel(os.path.join(tmp, "_panel"))
+    ns = {"nodos": nod, "secretos": sec, "json": json, "os": os, "re": re, "time": __import__("time"),
           "threading": __import__("threading"), "ipaddress": __import__("ipaddress"),
           "urllib": types.SimpleNamespace(request=red, error=urllib.error, parse=urllib.parse),
           "es_mi_cpe": lambda ip: any(ip.startswith(m) for m in mias),
@@ -177,7 +180,7 @@ def main():
 
 class Legado(unittest.TestCase):
     def test_legado(self):
-        """Tipo: conservacion (prueba heredada de suricata-ids-lab). Denunciar atacantes a AbuseIPDB: las barreras antes de publicar nada."""
+        """Tipo: conservacion; solo cambia la carga (nodos/secretos reales, clave de AbuseIPDB cifrada: CONTRATO-F2 §2, §10.3). Denunciar atacantes a AbuseIPDB: las barreras antes de publicar nada."""
         _comun.correr_main(self, main)
 
 

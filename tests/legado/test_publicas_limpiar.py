@@ -40,7 +40,10 @@ def check(d, c, e=""):
 
 
 def entorno(tmp):
-    ns = {"os": os, "json": json, "re": __import__("re"),
+    # panel portado (CONTRATO-F2 §1, §2): `nodos` REAL (PUBLICAS_CONF sale de nodos.ruta) y
+    # los nodos son puntos pNNN: r1/r2/r3/r8/r9 del multi-nodo viejo -> p001/p002/p003/p008/p009
+    nod, sec = _comun.panel(os.path.join(tmp, "_panel"))
+    ns = {"nodos": nod, "secretos": sec, "os": os, "json": json, "re": __import__("re"),
           "ipaddress": __import__("ipaddress"),
           # la validacion de IP/red tiene su propia prueba; aqui solo estorba
           "aidb_ip_valida": lambda x: (True, ""),
@@ -51,8 +54,8 @@ def entorno(tmp):
         if nom in PIEZAS:
             exec(ast.get_source_segment(DASH, n) or "", ns)
     ns["PUBLICAS_CONF"] = os.path.join(tmp, "publicas.json")
-    json.dump({"nodos": {"r1": ["203.0.113.0/28", "203.0.113.5", "203.0.113.6"],
-                         "r2": ["198.51.100.0/24"]}},
+    json.dump({"nodos": {"p001": ["203.0.113.0/28", "203.0.113.5", "203.0.113.6"],
+                         "p002": ["198.51.100.0/24"]}},
               open(ns["PUBLICAS_CONF"], "w", encoding="utf-8"))
     return ns
 
@@ -73,15 +76,15 @@ def main():
     ns = entorno(tmp)
 
     # --- vaciar uno no toca el otro ------------------------------------------------------
-    ns["guardar_publicas_de"]("r1", "")
+    ns["guardar_publicas_de"]("p001", "")
     d = ns["cargar_publicas"]()
-    check("el nodo pedido queda vacio", d.get("r1", []) == [], d.get("r1"))
-    check("y el otro nodo no se toca", d.get("r2") == ["198.51.100.0/24"], d.get("r2"))
+    check("el nodo pedido queda vacio", d.get("p001", []) == [], d.get("p001"))
+    check("y el otro nodo no se toca", d.get("p002") == ["198.51.100.0/24"], d.get("p002"))
 
     # --- se puede volver a declarar --------------------------------------------------------
-    ns["guardar_publicas_de"]("r1", "203.0.113.0/28")
+    ns["guardar_publicas_de"]("p001", "203.0.113.0/28")
     check("y se puede volver a declarar despues",
-          ns["cargar_publicas"]().get("r1") == ["203.0.113.0/28"], "")
+          ns["cargar_publicas"]().get("p001") == ["203.0.113.0/28"], "")
 
     # --- "Limpiar todas" se quito ------------------------------------------------------
     # Lo puse como atajo para quitar entradas redundantes y resulto una trampa: borraba
@@ -125,7 +128,7 @@ def main():
           "esto-no-es-una-ip" in quedan, quedan)
 
     # --- y al guardar, lo mismo -----------------------------------------------------------
-    ok, mal, tap = ns["guardar_publicas_de"]("r3", "203.0.113.0/28 203.0.113.5")
+    ok, mal, tap = ns["guardar_publicas_de"]("p003", "203.0.113.0/28 203.0.113.5")
     check("guardar tambien descarta lo cubierto", ok == ["203.0.113.0/28"], ok)
     check("y lo devuelve aparte de lo rechazado, que es otra cosa",
           tap == ["203.0.113.5"] and mal == [], (tap, mal))
@@ -197,10 +200,10 @@ def main():
     # las que tienen historial detras. Para poder deshacer SOLO la deteccion hay que saber
     # de donde vino cada una.
     ns2 = entorno(tmp)
-    ns2["guardar_publicas_de"]("r9", "203.0.113.0/24", origen_nuevas="manual")
-    ns2["guardar_publicas_de"]("r9", "203.0.113.0/24 198.51.100.7",
+    ns2["guardar_publicas_de"]("p009", "203.0.113.0/24", origen_nuevas="manual")
+    ns2["guardar_publicas_de"]("p009", "203.0.113.0/24 198.51.100.7",
                                origen_nuevas="mikrotik")
-    org = ns2["origen_publicas"]().get("r9", {})
+    org = ns2["origen_publicas"]().get("p009", {})
     check("lo declarado a mano queda marcado como manual",
           org.get("203.0.113.0/24") == "manual", org)
     check("y lo que trajo el router, como detectado",
@@ -208,26 +211,26 @@ def main():
 
     # Una entrada que ya estaba NO cambia de origen porque una deteccion la vuelva a
     # nombrar: si no, detectar dos veces convertiria en "detectadas" las que pusiste tu.
-    ns2["guardar_publicas_de"]("r9", "203.0.113.0/24 198.51.100.7 198.51.100.8",
+    ns2["guardar_publicas_de"]("p009", "203.0.113.0/24 198.51.100.7 198.51.100.8",
                                origen_nuevas="mikrotik")
-    org = ns2["origen_publicas"]().get("r9", {})
+    org = ns2["origen_publicas"]().get("p009", {})
     check("volver a detectar no reetiqueta lo que ya estaba",
           org.get("203.0.113.0/24") == "manual", org)
 
     # Lo declarado antes de que esto existiera no se sabe de donde vino. Adivinarlo seria
     # la forma de borrar algo bueno, asi que se queda sin etiqueta y nunca entra en un
     # borrado en bloque.
-    ns2["guardar_publicas_de"]("r8", "192.0.2.0/24")
+    ns2["guardar_publicas_de"]("p008", "192.0.2.0/24")
     check("sin saber el origen, no se inventa una etiqueta",
-          ns2["origen_publicas"]().get("r8", {}) == {},
-          ns2["origen_publicas"]().get("r8"))
+          ns2["origen_publicas"]().get("p008", {}) == {},
+          ns2["origen_publicas"]().get("p008"))
 
     # Y al quitar una entrada, su etiqueta se va con ella: si no, el archivo acumularia
     # origenes de cosas que ya no existen.
-    ns2["guardar_publicas_de"]("r9", "203.0.113.0/24")
+    ns2["guardar_publicas_de"]("p009", "203.0.113.0/24")
     check("la etiqueta se poda con la entrada",
-          "198.51.100.7" not in ns2["origen_publicas"]().get("r9", {}),
-          ns2["origen_publicas"]().get("r9"))
+          "198.51.100.7" not in ns2["origen_publicas"]().get("p009", {}),
+          ns2["origen_publicas"]().get("p009"))
 
     # --- y en pantalla ----------------------------------------------------------------------
     check("el chip dice de donde vino", "detectada del MikroTik" in DASH
@@ -244,7 +247,7 @@ def main():
 
 class Legado(unittest.TestCase):
     def test_legado(self):
-        """Tipo: conservacion (prueba heredada de suricata-ids-lab). Vaciar de una vez las publicas declaradas de un nodo."""
+        """Tipo: conservacion; solo cambia la carga (nodos real, PUBLICAS_CONF por nodos.ruta) y los ids de nodo r1..r9 -> p001..p009 (CONTRATO-F2 §1, §2). Vaciar de una vez las publicas declaradas de un nodo."""
         _comun.correr_main(self, main)
 
 

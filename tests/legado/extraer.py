@@ -74,6 +74,11 @@ def literal(nodo, sustituciones=None):
         return sustituciones.get(nodo.id, "")
     if isinstance(nodo, ast.Call) and getattr(nodo.func, "id", "") == "str":
         return "0"
+    if isinstance(nodo, ast.IfExp):
+        # trozo opcional (p. ej. el `&nodo=` del selector, que solo se pone con un nodo
+        # elegido): se toma la rama del `else`, la de la pagina sin ese anadido. Un marcador
+        # "{}" en medio de una expresion JS la rompia (SyntaxError en node).
+        return literal(nodo.orelse, sustituciones)
     return "{}"
 
 

@@ -12,6 +12,13 @@ Se ejecutan los manejadores REALES (H._post y H._get) con dobles para lo de fuer
   - el mensaje de una accion real (quitar varios, sin seleccion, refrescar Conducta) si;
   - el codigo es de un solo uso;
   - ?quitadas=N&errores=M pinta el resumen; con texto en vez de numeros, nada.
+
+Adaptada al panel portado (CONTRATO-F2 §1, §10.1, §10.2): `_get`/`_post` ponen el nodo del
+hilo con `self._ctx_nodo()` antes de cualquier ruta (el `_ctx_nodo` REAL, con un `_set_ctx`
+de prueba que toma `?nodo=` o, sin el, la vista consolidada); por eso la redireccion lleva
+ademas `&nodo=` (rep_aviso_url conserva el nodo que se miraba). /cuarentena/quitar-varios usa
+claves `pid|ip` y `_destino_ok`/`_router_de_pid` REALES con `nodos.py` real; sin permiso
+responde `_prohibido()` (403 por rol). Las comprobaciones son las mismas.
 """
 import ast
 import ipaddress
@@ -20,6 +27,7 @@ import os
 import re
 import secrets
 import sys
+import tempfile
 import unittest
 import time
 import types
@@ -91,8 +99,25 @@ class _Peticion:
     def _deny(self):
         self.salida.append(("deny", 403))
 
+    def _prohibido(self):                       # CONTRATO-F2 §10.2: 403 por rol
+        self.salida.append(("deny", 403))
+
+    def _set_ctx(self):
+        """Doble del _set_ctx del nucleo: el nodo de ?nodo= y, sin el, la vista consolidada
+        (CONTRATO-F2 §10.1). Lo llama el _ctx_nodo REAL."""
+        qs = urllib.parse.parse_qs(self.path.split("?", 1)[1]) if "?" in self.path else {}
+        _NODOS[0].poner_nodo(qs.get("nodo", [_NODOS[0].TODOS])[0])
+        return True
+
+    def _ctx_nodo(self):
+        return _G[0]["_ctx_nodo"](self)
+
     def __getattr__(self, _n):
         return _Doble()
+
+
+_NODOS = []      # el nodos.py real del arbol de prueba
+_G = []          # el espacio de nombres donde estan los manejadores reales
 
 
 def _metodo(nombre):
@@ -105,7 +130,10 @@ def _metodo(nombre):
 
 def main():
     vio = {}
-    estado = {"cuar": {"10.6.1.89": {}, "10.6.2.82": {}}, "dns": {}}
+    estado = {"cuar": {"p001|10.6.1.89": {}, "p001|10.6.2.82": {}}, "dns": {}}
+    tmp = tempfile.mkdtemp()
+    nod, sec = _comun.panel(tmp)
+    _NODOS[:] = [nod]
 
     def pagina(nombre):
         def _p(*a, **k):
@@ -132,14 +160,17 @@ def main():
                                                          if ip == "10.6.2.82" else (True, "")),
         "mk_log": lambda *a, **k: None,
         "ip_de": lambda k: k.split("|", 1)[1] if "|" in k else k,
-        "router_de_clave": lambda k: {"id": "r1"},
+        "rid_de": lambda k: k.split("|", 1)[0] if "|" in k else "",
+        "nodos": nod, "secretos": sec,
+        "cargar_routers": lambda: [{"id": p} for p in nod.pids()],
     })
+    _G[:] = [g]
     for n in ARBOL.body:
         nom = getattr(n, "name", None) or (
             getattr(n.targets[0], "id", "") if isinstance(n, ast.Assign) and n.targets else "")
-        if nom in AVISOS:
+        if nom in AVISOS + ("_router_de_pid", "_destino_ok", "_pagina_error"):
             exec(ast.get_source_segment(DASH, n) or "", g)
-    for nombre in ("_post", "_get"):
+    for nombre in ("_post", "_get", "_ctx_nodo"):
         exec(compile(ast.Module(body=[_metodo(nombre)], type_ignores=[]), "<h>", "exec"), g)
     post, get = g["_post"], g["_get"]
 
@@ -165,7 +196,7 @@ def main():
           (pag, msg))
 
     # --- 2. el mensaje de una accion real si se ve ----------------------------------------
-    url = pulsar("/cuarentena/quitar-varios", "sel=cuar%7C10.6.1.89&sel=cuar%7C10.6.2.82")
+    url = pulsar("/cuarentena/quitar-varios", "sel=cuar%7Cp001%7C10.6.1.89&sel=cuar%7Cp001%7C10.6.2.82")
     check("quitar varios redirige a /cuarentena con un CODIGO, no con el texto",
           url.startswith("/cuarentena?msg=") and "entrada" not in urllib.parse.unquote(url)
           and " " not in urllib.parse.unquote(url), url)
@@ -181,6 +212,13 @@ def main():
     msg, pag = abrir(url)
     check("Conducta -> Refrescar: codigo en la URL y su mensaje en la pagina",
           url.startswith("/conducta?msg=") and "segundo" not in url
+          and pag == "conducta" and "segundo plano" in msg, (url, msg))
+    # CONTRATO-F2 §10.1: la redireccion conserva el nodo que se miraba (el aviso sigue siendo
+    # un codigo, y el nodo, un pid validado: no es texto libre)
+    url = pulsar("/conducta/refrescar?nodo=p002")
+    msg, pag = abrir(url)
+    check("  y vuelve al MISMO nodo que se miraba (&nodo=p002)",
+          url.startswith("/conducta?msg=") and url.endswith("&nodo=p002")
           and pag == "conducta" and "segundo plano" in msg, (url, msg))
 
     # --- 3. el quitado masivo (JS) vuelve con dos numeros -----------------------------------
@@ -199,7 +237,7 @@ def main():
 
 class Legado(unittest.TestCase):
     def test_legado(self):
-        """Tipo: conservacion (prueba heredada de suricata-ids-lab). El aviso de Cuarentena (y de Conducta) no pinta texto libre de la URL."""
+        """Tipo: conservacion, adaptada al nodo del hilo y a claves pid|ip (CONTRATO-F2 §1, §10.1). El aviso de Cuarentena (y de Conducta) no pinta texto libre de la URL."""
         _comun.correr_main(self, main)
 
 

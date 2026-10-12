@@ -8,6 +8,15 @@ total del dia en cuanto alguien la baje de 24 h, y lo haria sin avisar.
 Lo que se protege aqui es que los contadores sumen bien entre corridas, que un dia sin
 datos se vea como hueco y no como un dia tranquilo, y que la pagina calcule la tendencia
 como toca.
+
+Adaptada al panel portado (CONTRATO-F2 §1, §3, §4). El generador (fusionar_metricas,
+traducir) no cambia. En el panel, las salidas del generador son POR PUNTO: metricas.json,
+cuarentena.json y entrantes.json viven en `nodos.salida(nombre, pid)` (PANEL/nodos/<pid>/),
+no en LOGDIR ni en /var/log; acciones.json es global (`nodos.ruta("estado", ...)`). Se usa
+el `nodos.py` real sobre un arbol temporal con el nodo p001 puesto, un router por punto
+(§1: id = pid) y la clave de CPE real (`clave_cpe`: siempre `pid|ip`). §4 quita el
+`/tool fetch` de `/blocklist.rsc`: esa comprobacion pasa a la del comportamiento nuevo
+(la lista se pega como script; el router no descarga nada del panel).
 """
 import ast
 import json
@@ -101,6 +110,8 @@ def main():
 
     # ---------- panel: contadores de accion y pagina ----------
     tmp = tempfile.mkdtemp()
+    nod, sec = _comun.panel(tmp, nodo="p001")      # CONTRATO-F2 §3: se mira el punto p001
+    nod.asegurar_dirs()                            # lo que hace el panel al arrancar
     d = piezas(DASH, ("ACCIONES_FILE", "ACCIONES_DIAS", "_ACC_LOCK", "cargar_acciones",
                       "contar_accion", "METRICAS_FILE", "cargar_metricas", "_serie",
                       "_media", "tendencia_txt", "_DIAS_SEM", "_grafico", "historico_page",
@@ -112,22 +123,30 @@ def main():
                       "ENTRANTES_FILE", "BL_LISTA", "BL_MIN_ALERTAS", "BL_MIN_DESTINOS",
                       "BL_TOPE", "_REP_CACHE", "_REP_MAX", "rep_fuente", "cargar_entrantes",
                       "blocklist_borde", "blocklist_rsc", "blocklist_reglas",
-                      "ros_lista", "_RE_ROS_RARO"),
+                      "ros_lista", "_RE_ROS_RARO",
+                      # CONTRATO-F2 §1/§3: rutas por nodo, nodo en los enlaces, clave pid|ip
+                      "cuarentena_json", "_salida_ctx", "_CPES_LOCK", "qs_nodo",
+                      "clave_cpe", "ip_de"),
                extra={"BASE_CSS": "", "nav": lambda a="": "<!--nav-->",
-                      "wrap": lambda b, refresh=True, active="": b, "LOGDIR": tmp,
-                      "cargar_routers": lambda: [{"id": "", "nombre": "MikroTik"}],
+                      "wrap": lambda b, refresh=True, active="": b,
+                      "nodos": nod, "secretos": sec, "_up": __import__("urllib.parse").parse,
+                      # CONTRATO-F2 §1: un router por punto, id = pid
+                      "cargar_routers": lambda: [{"id": p_, "nombre": nod.nombre(p_)}
+                                                 for p_ in nod.pids()],
                       "ipaddress": __import__("ipaddress"), "re": __import__("re"),
                       "es_mi_cpe": lambda ip: ip.startswith("10."),
                       "nunca_bloquear": lambda ip: False,
                       "CFG": {"PORT": "5637"},
                       "ip_del_sensor": lambda hacia="": "10.0.0.9",
                       "FEEDS_META": os.path.join(tmp, "reputation.meta"),
-                      "mis_redes": lambda: ["10.0.0.0/8"],
-                      "clave_cpe": lambda ip, rid: (rid + "|" + ip) if rid else ip,
-                      "ip_de": lambda k: k.split("|", 1)[1] if "|" in k else k})
-    d["ACCIONES_FILE"] = os.path.join(tmp, "acciones.json")
-    d["METRICAS_FILE"] = os.path.join(tmp, "metricas.json")
-    d["ENTRANTES_FILE"] = os.path.join(tmp, "entrantes.json")
+                      "mis_redes": lambda: ["10.0.0.0/8"]})
+    # CONTRATO-F2 §3: acciones.json es global (PANEL/estado); metricas.json, cuarentena.json
+    # y entrantes.json son salidas del generador DEL PUNTO (PANEL/nodos/<pid>/)
+    check("las acciones van al estado global del panel",
+          d["ACCIONES_FILE"] == nod.ruta("estado", "acciones.json"), d["ACCIONES_FILE"])
+    MET = nod.salida(d["METRICAS_FILE"], "p001")
+    ENT = nod.salida(d["ENTRANTES_FILE"], "p001")
+    CUAR = d["cuarentena_json"]("p001")
 
     d["contar_accion"]("ENVIADO"); d["contar_accion"]("ENVIADO"); d["contar_accion"]("QUITADO")
     acc = d["cargar_acciones"]()
@@ -142,7 +161,7 @@ def main():
                          "puertos": {"25/tcp": 400}, "cats": {"Spam": 400}}
     dias[hoy] = {"sal": 123, "ent": 4, "cpes_n": 7, "puertos": {"22/tcp": 100},
                  "cats": {"Escaneo SSH": 100}}
-    json.dump({"dias": dias}, open(d["METRICAS_FILE"], "w", encoding="utf-8"))
+    json.dump({"dias": dias}, open(MET, "w", encoding="utf-8"))
 
     check("por defecto, la ultima semana (7 dias)", "ataques salientes en 7 dias" in d["historico_page"](), "")
     pag = d["historico_page"](30)
@@ -163,21 +182,21 @@ def main():
     # hoy va a medias: si contara, 7 dias de 500 + hoy 123 parecerian una bajada que no es
     dias_planos = {dia(-i): {"sal": 500, "cpes_n": 1} for i in range(14, 0, -1)}
     dias_planos[hoy] = {"sal": 10, "cpes_n": 1}
-    json.dump({"dias": dias_planos}, open(d["METRICAS_FILE"], "w", encoding="utf-8"))
+    json.dump({"dias": dias_planos}, open(MET, "w", encoding="utf-8"))
     pp = d["historico_page"](7)
     check("hoy (parcial) no cuenta para la tendencia: plano es plano", "&rarr;" in pp and "&darr;" not in pp, "")
     dias_planos[dia(-1)] = {"sal": 20, "cpes_n": 1, "hueco": True}
-    json.dump({"dias": dias_planos}, open(d["METRICAS_FILE"], "w", encoding="utf-8"))
+    json.dump({"dias": dias_planos}, open(MET, "w", encoding="utf-8"))
     pg = d["historico_page"](7)
     check("un dia gris (faltan datos) tampoco: no es una mejora", "&rarr;" in pg and "&darr;" not in pg, "")
     check("  y el cuadro dice cuantos dias incompletos hay", "1 dia(s) incompleto(s)" in pg, "")
     for i in range(6, 1, -1):
         dias_planos[dia(-i)] = {"sal": 900, "cpes_n": 1, "hueco": True}
-    json.dump({"dias": dias_planos}, open(d["METRICAS_FILE"], "w", encoding="utf-8"))
+    json.dump({"dias": dias_planos}, open(MET, "w", encoding="utf-8"))
     pg2 = d["historico_page"](7)
     check("con casi todo el periodo en gris NO se calcula tendencia (1 dia completo no es una semana)",
           "pocos dias completos (0 de 7)" in pg2 and "&uarr;" not in pg2 and "&darr;" not in pg2, "")
-    json.dump({"dias": dias}, open(d["METRICAS_FILE"], "w", encoding="utf-8"))
+    json.dump({"dias": dias}, open(MET, "w", encoding="utf-8"))
     check("se cuentan las cuarentenas del periodo", "puestos en cuarentena" in pag)
     check("se dice por que atacan", "Spam" in pag and "Escaneo SSH" in pag)
     check("y por que puerto salen", "25/tcp" in pag and "22/tcp" in pag)
@@ -193,16 +212,21 @@ def main():
     check("eje de 30 dias: fechas dd/mm repartidas (ni 3 ni 30), y la de hoy al final",
           8 <= len(rot30) <= 12 and rot30[-1] == f7[-1], rot30)
     check("los reportes guardados siguen listandose", "Reportes guardados" in pag)
+    # CONTRATO-F2 §3: las metricas son del punto que se mira; p002 no hereda las de p001
+    with nod.contexto("p002"):
+        _otro = d["historico_page"](30)
+    check("otro punto sin metricas propias no ensena las de p001",
+          "Todavia no hay historico" in _otro, "")
 
     vacia = d["historico_page"](30)
-    json.dump({"dias": {}}, open(d["METRICAS_FILE"], "w", encoding="utf-8"))
+    json.dump({"dias": {}}, open(MET, "w", encoding="utf-8"))
     vacia = d["historico_page"](30)
     check("sin historico se explica, no se muestra un cero enganoso",
           "Todavia no hay historico" in vacia)
 
     # un dia con hueco se pinta distinto
     json.dump({"dias": {hoy: {"sal": 10, "hueco": True, "cpes_n": 1}}},
-              open(d["METRICAS_FILE"], "w", encoding="utf-8"))
+              open(MET, "w", encoding="utf-8"))
     ph = d["historico_page"](7)
     check("un dia con datos incompletos no se pinta como bueno",
           "#c8ccd1" in ph and "el panel estuvo parado" in ph and "sensor estuvo parado" not in ph)
@@ -248,7 +272,7 @@ def main():
         {"ip": "10.0.0.4", "router": "", "puertos_top": {"22/tcp": 1500, "23/tcp": 500}},
         {"ip": "10.0.0.5", "router": "", "puertos_top": {"443/tcp": 9000}},
     ], "candidatos": [], "dns_candidatos": []},
-        open(os.path.join(tmp, "cuarentena.json"), "w", encoding="utf-8"))
+        open(CUAR, "w", encoding="utf-8"))
 
     tot, n_cpes, grupos = d["analisis_salida"](None)
     check("se miran todos los CPEs con actividad", n_cpes == 5, n_cpes)
@@ -289,7 +313,7 @@ def main():
         {"ip": "10.0.0.5", "router": "", "puertos_top": {"443/tcp": 9000},
          "cats_top": {"Anomalia TLS/SSL": 9000}},
     ], "candidatos": [], "dns_candidatos": []},
-        open(os.path.join(tmp, "cuarentena.json"), "w", encoding="utf-8"))
+        open(CUAR, "w", encoding="utf-8"))
     check("el cache nota que el reporte cambio, aunque sea al instante",
           len(d["_cpes_de_reporte"](None)) != _antes or _antes == 3,
           (_antes, len(d["_cpes_de_reporte"](None))))
@@ -324,15 +348,17 @@ def main():
         {"ip": "10.0.0.9", "router": "", "riesgo": 70,
          "puertos_top": {"22/tcp": 500}, "cats_top": {"Escaneo SSH": 500}},
     ], "candidatos": [], "dns_candidatos": []},
-        open(os.path.join(tmp, "cuarentena.json"), "w", encoding="utf-8"))
+        open(CUAR, "w", encoding="utf-8"))
 
     ctl = d["analisis_control"](None)
     check("el P2P se detecta y se lista aparte", len(ctl) == 1 and ctl[0]["clave"] == "p2p", ctl)
     check("con el total de alertas", ctl[0]["alertas"] == 1200, ctl[0]["alertas"])
+    # CONTRATO-F2 §1: la identidad del CPE es SIEMPRE pid|ip (clave_cpe real); el reporte
+    # de un punto sin `router` es de ese punto. La pagina pinta ip_de(clave).
     check("y QUIEN lo hace, que es lo que se pidio",
-          [ip for ip, _n, _r in ctl[0]["top"]] == ["10.0.0.7", "10.0.0.8"], ctl[0]["top"])
+          [k for k, _n, _r in ctl[0]["top"]] == ["p001|10.0.0.7", "p001|10.0.0.8"], ctl[0]["top"])
     check("el que escanea NO aparece como P2P",
-          all(ip != "10.0.0.9" for ip, _n, _r in ctl[0]["top"]), ctl[0]["top"])
+          all(d["ip_de"](k) != "10.0.0.9" for k, _n, _r in ctl[0]["top"]), ctl[0]["top"])
 
     # y sigue sin contar como abuso: el escaneo si, el P2P no
     cond = {g["clave"]: g for g in d["analisis_conducta"](None)}
@@ -373,7 +399,7 @@ def main():
         "10.6.1.10": {"alertas": 5000, "destinos": 80, "pais": "EC", "firma": "z"},
         # un rango de documentacion no es publico: no se bloquea aunque golpee
         "203.0.113.50": {"alertas": 900, "destinos": 40, "pais": "XX", "firma": "w"},
-    }}, open(d["ENTRANTES_FILE"], "w", encoding="utf-8"))
+    }}, open(ENT, "w", encoding="utf-8"))
     io = __import__("io")
     with io.open(os.path.join(tmp, "reputation.lst"), "w", encoding="utf-8") as fh:
         fh.write("9.9.9.9\tfeodo\n")
@@ -404,8 +430,11 @@ def main():
           reg.count("connection-state=new") >= 2, reg)
     check("no se corta en raw, que tiraria tambien las respuestas",
           "/ip firewall raw" not in reg, reg)
-    check("el router se baja la lista solo, no se le meten miles por la API",
-          "/tool fetch" in reg and "scheduler" in reg)
+    # CONTRATO-F2 §4: el MikroTik no llega al panel por el tunel; se quita el /tool fetch
+    # (y su scheduler). Sigue sin meterse miles de entradas por la API: la lista va como
+    # script que se pega en el router (blocklist_rsc, comprobado arriba).
+    check("la lista no se mete por la API ni se descarga del panel: se pega como script",
+          "/tool fetch" not in reg and "scheduler" not in reg and "script" in reg, reg)
     check("se cubre lo que entra a la red y lo que entra al router",
           "chain=forward" in reg and "chain=input" in reg)
 
@@ -416,7 +445,7 @@ def main():
 
 class Legado(unittest.TestCase):
     def test_legado(self):
-        """Tipo: conservacion (prueba heredada de suricata-ids-lab). La tendencia del abuso saliente: el numero que hay que poder enseñar."""
+        """Tipo: conservacion, adaptada a salidas por punto y router por punto (CONTRATO-F2 §1, §3: nodos/<pid>/metricas.json, cuarentena.json, entrantes.json; clave pid|ip) y sin /tool fetch (§4). La tendencia del abuso saliente: el numero que hay que poder enseñar."""
         _comun.correr_main(self, main)
 
 

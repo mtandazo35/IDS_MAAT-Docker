@@ -10,6 +10,13 @@ Lo que protege:
     servidores ajenos que de clientes y no serviria para decidir a quien cortar.
   - que el CSV escape los separadores: una firma trae ';' y comillas a menudo, y sin
     escapar corre las columnas y el cliente lee el dato de otro CPE.
+
+Adaptada al panel portado (CONTRATO-F2 §3): los eventos son los del punto
+(`nodos.ficheros_eventos(pid)` = DATOS/<pid>/eve.json*, no un LOGDIR unico) y el reporte se
+guarda por punto (`nodos.salida("conducta.json", pid)` = PANEL/nodos/<pid>/conducta.json).
+Se usa el `nodos.py` real sobre un arbol temporal con el nodo p001 puesto. Las comprobaciones
+son las mismas; se anaden las de «Todos» (§3: filas de cada punto unidas con su nodo, la
+misma IP en dos puntos son dos filas, y el CSV lleva la columna Nodo).
 """
 import ast
 import gzip
@@ -40,7 +47,9 @@ PIEZAS = ("CONDUCTA_FILE", "CONDUCTA_DIAS", "CONDUCTA_TOPE", "CONDUCTA_MAX",
           "RUIDO_ALTO", "RUIDO_MEDIO", "RUIDO_MIN_CPES",
           "firmas_ruidosas", "ruidosas_html",
           "GLOSARIO", "glosario_html", "CPE_INDICIOS", "CONFIANZA",
-          "indicios_cpe", "confianza_cpe", "indicios_html")
+          "indicios_cpe", "confianza_cpe", "indicios_html",
+          # CONTRATO-F2 §3: el nodo que se mira viaja en enlaces y formularios GET
+          "qs_nodo", "_nodo_oculto")
 
 fallos = 0
 
@@ -56,16 +65,24 @@ def entorno(tmp):
     import glob as _glob
     mias = ("192.168.", "172.17.")
     ns = {"json": json, "os": os, "time": time, "glob": _glob, "io": io, "gzip": gzip,
-          "sys": sys, "html": __import__("html"), "LOGDIR": tmp,
+          "sys": sys, "html": __import__("html"), "threading": __import__("threading"),
           "re": __import__("re"),
           "es_mi_cpe": lambda ip: any(ip.startswith(m) for m in mias)}
+    ns["nodos"], ns["secretos"] = _comun.panel(tmp, nodo="p001")
     for n in ARBOL.body:
         nom = getattr(n, "name", None) or (
             getattr(n.targets[0], "id", "") if isinstance(n, ast.Assign) and n.targets else "")
         if nom in PIEZAS:
             exec(ast.get_source_segment(DASH, n) or "", ns)
-    ns["CONDUCTA_FILE"] = os.path.join(tmp, "conducta.json")
+    # CONTRATO-F2 §3: CONDUCTA_FILE es el NOMBRE; la ruta es nodos.salida(CONDUCTA_FILE, pid)
     return ns
+
+
+def dir_eventos(ns, pid="p001"):
+    """Eventos del punto (CONTRATO-F2 §3: DATOS/<pid>/), donde los deja su Suricata."""
+    d = ns["nodos"].dir_eventos(pid)
+    os.makedirs(d, exist_ok=True)
+    return d
 
 
 def ev(ip, dias_atras, tipo="alert", **kw):
@@ -85,6 +102,7 @@ def ev(ip, dias_atras, tipo="alert", **kw):
 
 def main():
     tmp = tempfile.mkdtemp()
+    ns = entorno(tmp)
 
     # eve.json de hoy
     hoy = [
@@ -102,7 +120,7 @@ def main():
         # mas viejo que la ventana: fuera
         ev("192.168.1.99", 9, dest_ip="8.8.4.4", alert={"signature": "ET VIEJO"}),
     ]
-    with open(os.path.join(tmp, "eve.json"), "w", encoding="utf-8") as f:
+    with open(os.path.join(dir_eventos(ns), "eve.json"), "w", encoding="utf-8") as f:
         f.writelines(hoy)
 
     # rotado de AYER, comprimido: la parte que se olvida siempre
@@ -117,10 +135,9 @@ def main():
             ev("192.168.2.20", 1, dest_ip="8.8.8.8", dest_port=53,
                alert={"signature": "ET MALWARE Known Malicious Domain"},
                dns={"rrname": "malo.example.com"})]
-    with gzip.open(os.path.join(tmp, "eve.json.1.gz"), "wt", encoding="utf-8") as f:
+    with gzip.open(os.path.join(dir_eventos(ns), "eve.json.1.gz"), "wt", encoding="utf-8") as f:
         f.writelines(ayer)
 
-    ns = entorno(tmp)
     r = ns["conducta_recolectar"](3)
     por_ip = {f["ip"]: f for f in r["filas"]}
 
@@ -271,8 +288,7 @@ def main():
     ns["BASE_CSS"] = "/*base*/"
     ns["nav"] = lambda activo="": "<div class=nav><a href=/conducta>Reporte</a></div>"
     ns["_up"] = __import__("urllib.parse", fromlist=["parse"])
-    ns["CONDUCTA_FILE"] = os.path.join(tmp, "conducta.json")
-    ns["guardar_conducta"](r)
+    ns["guardar_conducta"](r)          # nodos/p001/conducta.json (CONTRATO-F2 §3)
     pag = ns["conducta_page"]()
 
     # wrap() no construye la pagina: solo INSERTA la barra despues de <body>. Pasarle
@@ -570,6 +586,33 @@ def main():
     check("no quedan botones de voto en la ficha",
           "Falso positivo" not in pag and "Amenaza real" not in pag, "")
 
+    # --- CONTRATO-F2 §3: un reporte por punto; «Todos» une filas con su nodo ----------
+    nod = ns["nodos"]
+    check("el reporte de un punto lee SOLO sus eventos: p002 no ve los de p001",
+          ns["conducta_recolectar"](3, "p002")["filas"] == [],
+          ns["conducta_recolectar"](3, "p002")["filas"])
+    ns["guardar_conducta"](r, "p001")
+    otro = {"generado": int(time.time()), "dias": 3, "lineas": 1, "cpes": 1,
+            "filas": [dict(por_ip["192.168.1.10"], alertas=1, eventos=1)]}
+    otro["filas"][0].pop("nodo", None)
+    ns["guardar_conducta"](otro, "p002")
+    check("cada punto guarda su reporte en su directorio",
+          os.path.isfile(nod.salida("conducta.json", "p001"))
+          and os.path.isfile(nod.salida("conducta.json", "p002")))
+    check("el reporte del punto mirado no mezcla el del otro",
+          [f["alertas"] for f in ns["cargar_conducta"]()["filas"]
+           if f["ip"] == "192.168.1.10"] == [3])
+    tod = ns["cargar_conducta"](nod.TODOS)
+    rep10 = sorted((f["nodo"], f["alertas"]) for f in tod["filas"] if f["ip"] == "192.168.1.10")
+    check("en «Todos» la misma IP de dos puntos son dos filas con su nodo, sin sumar",
+          rep10 == [("p001", 3), ("p002", 1)], rep10)
+    csvt = ns["conducta_csv"](tod).decode("utf-8").lstrip("\ufeff").split("\n")
+    check("y el CSV de «Todos» lleva la columna Nodo delante de la IP",
+          csvt[0].split(";")[:3] == ["Nodo", "IP", "Categoria"], csvt[0])
+    check("con el nombre del punto en cada fila",
+          sorted(l.split(";")[0] for l in csvt[1:] if ";192.168.1.10;" in l)
+          == ["MikroTik", "Sucursal"], csvt[1:])
+
     print("\n" + ("TODO OK" if not fallos else "%d fallo(s)" % fallos))
     return 1 if fallos else 0
 
@@ -577,7 +620,7 @@ def main():
 
 class Legado(unittest.TestCase):
     def test_legado(self):
-        """Tipo: conservacion (prueba heredada de suricata-ids-lab). Reporte de varios dias: que hizo cada CPE."""
+        """Tipo: conservacion, adaptada a eventos y reporte por punto (CONTRATO-F2 §3: DATOS/<pid>/eve.json*, nodos/<pid>/conducta.json; «Todos» une filas con columna Nodo). Reporte de varios dias: que hizo cada CPE."""
         _comun.correr_main(self, main)
 
 

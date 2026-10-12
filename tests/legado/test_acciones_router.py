@@ -22,6 +22,7 @@ import stat
 import sys
 import unittest
 import tempfile
+import threading
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -44,7 +45,7 @@ def check(d, c, e=""):
 PIEZAS = ("ACCIONES", "ACCIONES_POR_CAT", "ACCION_DEFECTO", "T_RAW", "T_NAT", "T_MANGLE", "T_QUEUE", "T_FILTER",
           "_RSC_TABLA", "REGLAS_DIR", "_RE_KV", "_CADENAS_BASE", "_ACCIONES_TABLA", "_TERMINALES", "_NO_CRITERIO",
           "_PROTO_CON_PUERTO", "_LISTAS_IF_SISTEMA", "verificar_reglas", "_mk_contar", "verificar_en_router", "lineas_verificacion", "_RE_FIND_COMMENT", "_RE_FIND_CHAIN", "DNS_PROTEGIDO_DEFECTO", "reglas_desde_rsc", "cargar_reglas_propias", "guardar_reglas_propias",
-          "_TABLA_RSC", "_PROPS_TABLA", "RESPALDOS_MK", "accion_de_clase", "reglas_de_accion",
+          "_TABLA_RSC", "_PROPS_TABLA", "RESPALDOS_MK", "_MK_CONEXION", "accion_de_clase", "reglas_de_accion",
           "_com_regla", "_prefijo_regla", "_rsc_val", "rsc_de", "_reglas_nuestras", "_params_accion",
           "_plan", "_plan_en", "plan_reglas", "_mk_print_todo", "_mk_print", "respaldar_firewall", "aplicar_reglas",
           "quitar_reglas", "_aplicar_en", "guardar_mk", "_mk_globales", "estado_reglas")
@@ -113,7 +114,12 @@ def entorno():
     rt = RouterFalso()
     logs = []
     m = {"HOST": "192.0.2.1", "USER": "u", "PASS": "p", "ENABLED": "1"}
-    ns = {"re": re, "os": os, "json": json, "time": time,
+    # panel portado: nodos.py real sobre un arbol temporal (RESPALDOS_MK sale de
+    # nodos.RESPALDOS y REGLAS_DIR de nodos.ruta; CONTRATO-F2 §2); el router de la accion
+    # es un punto (id = pid, §1/§4)
+    td = tempfile.mkdtemp()
+    nod, _sec = _comun.panel(td)
+    ns = {"re": re, "os": os, "json": json, "time": time, "threading": threading, "nodos": nod,
           "mk_conectar": lambda d, timeout=6: rt,
           "_mk_send": lambda s_, words: s_.enviar(),
           "_mk_reply": lambda s_: s_.responder(),
@@ -133,7 +139,7 @@ def entorno():
         if noms & set(PIEZAS):
             exec(ast.get_source_segment(DASH, n) or "", ns)
     ns["_mk_globales"] = lambda: m
-    td = tempfile.mkdtemp(); ns["RESPALDOS_MK"] = os.path.join(td, "backups")
+    # RESPALDOS_MK es el REAL del panel portado (bajo nodos.RESPALDOS del arbol temporal)
     return ns, rt, m, logs, td
 
 
@@ -144,22 +150,22 @@ def estado_por_clase():
     rt.t["/interface/list"] = [{".id": "*1", "name": "WAN"}]
     conexiones = []
     ns["mk_conectar"] = lambda d, timeout=6: (conexiones.append(1), rt)[1]
-    e = ns["estado_reglas"]({"id": "r1"})
+    e = ns["estado_reglas"]({"id": "p001"})
     check("estado: una sola conexion para todas las clases", len(conexiones) == 1, len(conexiones))
     check("  router vacio: las clases con accion salen pendientes, con cuantos cambios",
           e["botnet"]["estado"] == "pendientes" and e["botnet"]["cambios"] == 5, e["botnet"])
     check("  las que no tienen accion (p2p/minado/otros) no dicen nada",
           all(e[c]["estado"] == "ninguna" for c in ("p2p", "minado", "otros")), e)
-    ok, msg, _p = ns["aplicar_reglas"]({"id": "r1"}, "botnet", quien="admin")
-    e2 = ns["estado_reglas"]({"id": "r1"})
+    ok, msg, _p = ns["aplicar_reglas"]({"id": "p001"}, "botnet", quien="admin")
+    e2 = ns["estado_reglas"]({"id": "p001"})
     check("  tras aplicar botnet: 'aplicadas' (0 cambios)", ok and e2["botnet"] == {"estado": "aplicadas", "cambios": 0}, (msg, e2["botnet"]))
     check("  y las demas siguen pendientes", e2["fuerza"]["estado"] == "pendientes", e2["fuerza"])
     m["ACCION_BOTNET"] = "nada"
-    e3 = ns["estado_reglas"]({"id": "r1"})
+    e3 = ns["estado_reglas"]({"id": "p001"})
     check("  si la clase pasa a 'nada' y quedan reglas en el router: pendientes (hay que quitarlas)",
           e3["botnet"]["estado"] == "pendientes" and e3["botnet"]["cambios"] == 5, e3["botnet"])
-    ns["quitar_reglas"]({"id": "r1"}, "botnet", quien="admin")
-    check("  y quitadas: ninguna", ns["estado_reglas"]({"id": "r1"})["botnet"]["estado"] == "ninguna", "")
+    ns["quitar_reglas"]({"id": "p001"}, "botnet", quien="admin")
+    check("  y quitadas: ninguna", ns["estado_reglas"]({"id": "p001"})["botnet"]["estado"] == "ninguna", "")
 
 
 def main():
@@ -217,7 +223,7 @@ def main():
 
     # ---------- aplicar: respaldo antes, idempotente, lo ajeno intacto ----------
     rt.t[T_RAW].append({".id": rt._id(), "chain": "prerouting", "action": "accept", "comment": "mio: gestion"})
-    router = {"id": "r1"}
+    router = {"id": "p001"}
     m["ACCION_BOTNET"] = "cortar"          # el defecto ya es solo-web: aqui se prueba cortar
     ok, msg, plan = ns["aplicar_reglas"](router, "botnet", quien="admin")
     check("aplicar 'cortar' en botnet: ok", ok is True, msg)
@@ -225,7 +231,10 @@ def main():
     check("queda UNA regla nuestra con su comentario numerado", len(nuestras) == 1 and nuestras[0]["comment"] == "Suricata:botnet:01", nuestras)
     check("y se puso DELANTE de la regla ajena (place-before)", rt.t[T_RAW][0]["comment"] == "Suricata:botnet:01", [f.get("comment") for f in rt.t[T_RAW]])
     resp = os.listdir(ns["RESPALDOS_MK"])
-    check("hay respaldo del firewall", len(resp) == 1 and resp[0].startswith("mikrotik-r1-"), resp)
+    check("hay respaldo del firewall", len(resp) == 1 and resp[0].startswith("mikrotik-p001-"), resp)
+    # CONTRATO-F2 §2/§4: los respaldos del firewall van al RESPALDOS del panel (antes /root/backups/panel)
+    check("  y queda bajo nodos.RESPALDOS del panel",
+          os.path.dirname(ns["RESPALDOS_MK"]) == ns["nodos"].RESPALDOS, ns["RESPALDOS_MK"])
     j = json.load(open(os.path.join(ns["RESPALDOS_MK"], resp[0]), encoding="utf-8"))
     check("el respaldo trae las tablas de ANTES (solo la regla ajena)", [f.get("comment") for f in j["tablas"][T_RAW]] == ["mio: gestion"], j["tablas"][T_RAW])
     if os.name != "nt":
@@ -432,7 +441,7 @@ add chain=prerouting action=drop protocol=tcp dst-port=25
 
 class Legado(unittest.TestCase):
     def test_legado(self):
-        """Tipo: conservacion (prueba heredada de suricata-ids-lab). Politicas de accion por categoria: las reglas se ponen en el router por la API."""
+        """Tipo: conservacion (prueba heredada de suricata-ids-lab), solo cambia la carga: nodos.py real (RESPALDOS_MK = nodos.RESPALDOS/mikrotik, REGLAS_DIR = nodos.ruta, CONTRATO-F2 §2) y router = punto p001 (§1, §4). Politicas de accion por categoria: las reglas se ponen en el router por la API."""
         _comun.correr_main(self, main)
 
 

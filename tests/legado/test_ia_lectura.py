@@ -87,8 +87,10 @@ def entorno(tmp, contenido=None, clave="k", modelo="m-1", fallo=None):
         "request": type("R", (), {"Request": _Req, "urlopen": staticmethod(_urlopen)}),
         "error": type("E", (), {"HTTPError": HTTPError, "URLError": URLError}),
     })
+    # panel portado: IA_CACHE/IA_ESTADO salen de nodos.ruta("estado", ...) (CONTRATO-F2 §2);
+    # nodos real sobre el arbol temporal de main() (y abajo se apuntan a `tmp`, como antes)
     ns = {"json": json, "os": os, "re": re, "time": time, "sys": sys,
-          "threading": threading, "urllib": urllib_falso,
+          "threading": threading, "urllib": urllib_falso, "nodos": NODOS[0],
           "_hashlib": __import__("hashlib"), "TimeoutError": TimeoutError,
           "groq_key": lambda: clave, "groq_modelo": lambda: modelo,
           "groq_configurada": lambda: bool(clave)}
@@ -124,8 +126,12 @@ BUENA = json.dumps({"veredicto": "infectado",
                     "motivo_falso_positivo": ""})
 
 
+NODOS = []
+
+
 def main():
     tmp = tempfile.mkdtemp()
+    NODOS[:] = [_comun.panel(tempfile.mkdtemp())[0]]
 
     # =====================================================================================
     # Lo que viaja
@@ -310,7 +316,7 @@ def main():
 
 class Legado(unittest.TestCase):
     def test_legado(self):
-        """Tipo: conservacion (prueba heredada de suricata-ids-lab). La lectura con IA: que no se lleve datos del abonado y que si falla no estorbe."""
+        """Tipo: conservacion (prueba heredada de suricata-ids-lab; solo cambia la carga: `nodos` real para las rutas de IA_CACHE/IA_ESTADO, CONTRATO-F2 §2). La lectura con IA: que no se lleve datos del abonado y que si falla no estorbe."""
         _comun.correr_main(self, main)
 
 

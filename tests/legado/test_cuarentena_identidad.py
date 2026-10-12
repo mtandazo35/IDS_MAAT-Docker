@@ -11,6 +11,16 @@ IP pelada, asi que:
   - y al querer liberarlo, "router|IP" se rechazaba como "IP invalida".
 
 Este archivo ejecuta las rutas reales contra un MikroTik de mentira.
+
+Adaptada al panel portado (CONTRATO-F2 §1, §3, §4, §10.1, §10.3):
+  - los routers r1/r2 del multi-nodo viejo son los puntos p001/p002 (`cargar_routers()` sale
+    de `nodos.puntos()`, §4) y lo del usuario se guarda con `guardar_routers()` REAL, con la
+    clave cifrada (§10.3);
+  - la identidad es SIEMPRE `pid|ip`, tambien con un solo punto (§1): el subcaso «con un
+    solo nodo la clave sigue siendo la IP pelada» pasa a `p001|ip`, y se anade que la IP
+    pelada ya no tiene destino (§10.1, sin `router_defecto`, §3);
+  - `cuarentena.json` es por nodo, en `nodos.dir_salida(pid)` (§3);
+  - sin permiso la ruta responde con `self._prohibido()` (403 por rol, §10.2).
 """
 import ast
 import json
@@ -28,15 +38,26 @@ RAIZ = extraer.RAIZ
 DASH = extraer.fuente("DASH")
 ARBOL = ast.parse(DASH)
 
-PIEZAS = ("MK_SENT", "MK_SENT_DNS", "MK_LOG", "ROUTERS_CONF", "ROUTERS_MAP",
-          "CAMPOS_ROUTER", "IFACE_BASE", "_ENV_LOCK",
-          "_router_vacio", "_mk_globales", "cargar_routers", "publicar_routers_map",
-          "router_por_id", "router_defecto", "cargar_mk", "cargar_mk_de",
+# router_defecto e IFACE_BASE desaparecen en el panel portado (CONTRATO-F2 §3, §4); los
+# routers salen de los puntos y routers.json guarda lo del usuario por pid, con la clave
+# cifrada (CAMPOS_USUARIO, _routers_guardados, guardar_routers, _asoc_router...)
+PIEZAS = ("MK_CONF", "MK_SENT", "MK_SENT_DNS", "MK_LOG", "ROUTERS_CONF", "ROUTERS_MAP",
+          "CAMPOS_ROUTER", "CAMPOS_USUARIO", "SECRETOS_AVISO", "_ROUTERS_LOCK", "_MK_CONEXION",
+          "_ENV_LOCK",
+          "_router_vacio", "_mk_globales", "_routers_guardados", "_asoc_router",
+          "cargar_routers", "guardar_routers", "publicar_routers_map",
+          "router_por_id", "cargar_mk", "cargar_mk_de",
           "mk_configurado", "mk_listo", "_ttl_efectivo",
           "clave_cpe", "ip_de", "rid_de", "router_de_clave", "_suf_nodo",
+          "_router_de_pid", "_destino_ok", "cuarentena_json", "_cargar_cuarentena",
           "_motivo_bloqueo", "cargar_enviados", "guardar_enviados", "quitar_enviados",
           "_REP_AVISOS", "_REP_AVISOS_TTL", "rep_aviso_guardar", "rep_aviso_tomar",
           "rep_aviso_url", "cuar_aviso_url")
+
+# dos puntos: el «Nodo Sur» y el «Nodo Norte» del multi-nodo viejo (r1, r2)
+PUNTOS2 = {"p001": dict(_comun.PUNTOS["p001"], nombre="Nodo Sur"),
+           "p002": dict(_comun.PUNTOS["p002"], nombre="Nodo Norte")}
+PUNTOS1 = {"p001": dict(_comun.PUNTOS["p001"])}
 
 fallos = 0
 def check(d, c, e=""):
@@ -56,32 +77,37 @@ def cuerpo_ruta(ruta):
     raise SystemExit("no se encontro la ruta " + ruta)
 
 
-def entorno(tmp):
-    """Las piezas reales del panel, con los archivos apuntando a un directorio de prueba."""
+def entorno(tmp, puntos):
+    """Las piezas reales del panel, con `nodos`/`secretos` reales sobre un arbol de prueba:
+    las rutas de archivo (nodos.ruta, nodos.salida) ya caen dentro de `tmp`."""
+    nod, sec = _comun.panel(tmp, puntos)
+    for d in ("conf", "estado", "log"):
+        os.makedirs(nod.ruta(d), exist_ok=True)
     ns = {"json": json, "os": os, "html": __import__("html"), "time": __import__("time"),
           "threading": __import__("threading"), "ipaddress": __import__("ipaddress"),
-          "secrets": __import__("secrets"),
-          "_up": __import__("urllib.parse", fromlist=["parse"])}
+          "secrets": __import__("secrets"), "urllib": __import__("urllib.parse"),
+          "_up": __import__("urllib.parse", fromlist=["parse"]),
+          "nodos": nod, "secretos": sec}
     piezas = [(getattr(n, "name", None) or (getattr(n.targets[0], "id", "")
                if isinstance(n, ast.Assign) and n.targets else ""), n)
               for n in ARBOL.body]
     piezas = [(nom, n) for nom, n in piezas if nom in PIEZAS]
-    # 1) constantes, 2) se reescriben las rutas de archivo, 3) funciones: asi los
-    #    argumentos por defecto (path=MK_SENT) quedan apuntando al directorio de prueba
+    # 1) constantes, 2) funciones: asi los argumentos por defecto (path=MK_SENT) quedan
+    #    apuntando al arbol de prueba (en el original se reescribian a mano las rutas)
     for nom, n in piezas:
         if not isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)):
             exec(ast.get_source_segment(DASH, n) or "", ns)
-    ns.update({"MK_SENT": os.path.join(tmp, "enviados.json"),
-               "MK_SENT_DNS": os.path.join(tmp, "dns-enviados.json"),
-               "MK_LOG": os.path.join(tmp, "cuarentena.log"),
-               "MK_CONF": os.path.join(tmp, "mikrotik.conf"),
-               "ROUTERS_CONF": os.path.join(tmp, "routers.json"),
-               "ROUTERS_MAP": os.path.join(tmp, "map.json"),
-               "LOGDIR": tmp})
     for nom, n in piezas:
         if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)):
             exec(ast.get_source_segment(DASH, n) or "", ns)
+    ns["pedir_regen"] = lambda *a, **k: None
     return ns
+
+
+def guardar_cuar(ns, pid, datos):
+    """cuarentena.json de ESE nodo (CONTRATO-F2 §3: dir_salida(pid))."""
+    with open(ns["nodos"].salida("cuarentena.json", pid), "w", encoding="utf-8") as f:
+        json.dump(datos, f)
 
 
 class Mikrotik:
@@ -105,6 +131,7 @@ def llamar(ns, mk, ruta, campos, operador=True):
     class Self:
         def _operador(self): return operador
         def _deny(self): return visto.update({"deny": True})
+        def _prohibido(self): return visto.update({"deny": True})   # CONTRATO-F2 §10.2
         def _redirect(self, u): return visto.update({"redirect": u})
         def _json(self, d, code=200): return visto.update({"json": d})
         def send_response(self, *a): pass
@@ -136,105 +163,112 @@ def llamar(ns, mk, ruta, campos, operador=True):
 
 def main():
     tmp = tempfile.mkdtemp()
-    ns = entorno(tmp)
-    open(ns["MK_CONF"], "w", encoding="utf-8").write("ENABLED=1\nAUTO_MANTENER=0\n")
-    json.dump({"routers": [
-        {"id": "r1", "nombre": "Nodo Sur", "iface": "ids-mon", "HOST": "192.0.2.1",
-         "USER": "api", "PASS": "x", "LIST": "cuar-sur", "TTL": "1h", "ENABLED": "1"},
-        {"id": "r2", "nombre": "Nodo Norte", "iface": "ids-mon2", "HOST": "192.0.2.2",
-         "USER": "api", "PASS": "x", "LIST": "cuar-norte", "TTL": "1h", "ENABLED": "1"},
-    ]}, open(ns["ROUTERS_CONF"], "w", encoding="utf-8"))
-    # dos CPEs DISTINTOS con la misma IP, uno en cada nodo: el caso que rompia todo
-    json.dump({"candidatos": [
-        {"ip": "10.6.1.165", "router": "r1", "riesgo": 73, "banda": "ALTO",
-         "confianza": "alta", "alertas_cnc": 8, "firmas_cnc": 2, "firma": "Mirai del sur",
-         "destinos_ip": ["198.51.100.7"]},
-        {"ip": "10.6.1.165", "router": "r2", "riesgo": 91, "banda": "ALTO",
-         "confianza": "alta", "alertas_cnc": 40, "firmas_cnc": 3, "firma": "Cobalt del norte",
-         "destinos_ip": ["203.0.113.9"]},
-    ], "dns_candidatos": [], "top_riesgo": []},
-        open(os.path.join(tmp, "cuarentena.json"), "w", encoding="utf-8"))
+    ns = entorno(tmp, PUNTOS2)
+    with open(ns["MK_CONF"], "w", encoding="utf-8") as f:
+        f.write("ENABLED=1\nAUTO_MANTENER=0\n")
+    # lo del usuario por punto (la clave queda cifrada en routers.json, §10.3); HOST/PORT/TLS
+    # ya no se guardan: salen del punto (unix:<api.sock>, §4)
+    ns["guardar_routers"]([
+        {"id": "p001", "USER": "api", "PASS": "x", "LIST": "cuar-sur", "TTL": "1h", "ENABLED": "1"},
+        {"id": "p002", "USER": "api", "PASS": "x", "LIST": "cuar-norte", "TTL": "1h", "ENABLED": "1"},
+    ])
+    # dos CPEs DISTINTOS con la misma IP, uno en cada nodo: el caso que rompia todo. Cada
+    # nodo tiene SU cuarentena.json (§3) y la vista «Todos» los dos
+    sur = {"ip": "10.6.1.165", "router": "p001", "riesgo": 73, "banda": "ALTO",
+           "confianza": "alta", "alertas_cnc": 8, "firmas_cnc": 2, "firma": "Mirai del sur",
+           "destinos_ip": ["198.51.100.7"]}
+    norte = {"ip": "10.6.1.165", "router": "p002", "riesgo": 91, "banda": "ALTO",
+             "confianza": "alta", "alertas_cnc": 40, "firmas_cnc": 3, "firma": "Cobalt del norte",
+             "destinos_ip": ["203.0.113.9"]}
+    guardar_cuar(ns, "p001", {"candidatos": [sur], "dns_candidatos": [], "top_riesgo": []})
+    guardar_cuar(ns, "p002", {"candidatos": [norte], "dns_candidatos": [], "top_riesgo": []})
+    guardar_cuar(ns, ns["nodos"].TODOS, {"candidatos": [sur, norte], "dns_candidatos": [],
+                                         "top_riesgo": []})
 
     mk = Mikrotik()
 
     # --- 1) enviar el CPE del nodo Norte ---
-    v = llamar(ns, mk, "/cuarentena/enviar", {"ajax": "1", "ip": "r2|10.6.1.165", "score": "91"})
+    v = llamar(ns, mk, "/cuarentena/enviar", {"ajax": "1", "ip": "p002|10.6.1.165", "score": "91"})
     check("se acepta la identidad 'router|IP' (antes: 'IP invalida')",
           v.get("texto", "").startswith("OK"), v)
     check("el bloqueo sale hacia SU router, a la lista de su CATEGORIA",
-          mk.add[-1:] == [("10.6.1.165", "clientes-botnet", "r2")], mk.add)
+          mk.add[-1:] == [("10.6.1.165", "clientes-botnet", "p002")], mk.add)
 
     reg = ns["cargar_enviados"](ns["MK_SENT"])
     check("queda registrado por identidad, no por IP pelada",
-          list(reg.keys()) == ["r2|10.6.1.165"], list(reg.keys()))
+          list(reg.keys()) == ["p002|10.6.1.165"], list(reg.keys()))
     check("y por eso el Top lo marca 'En cuarentena'",
-          ns["clave_cpe"]("10.6.1.165", "r2") in reg, list(reg.keys()))
+          ns["clave_cpe"]("10.6.1.165", "p002") in reg, list(reg.keys()))
     check("el CPE del OTRO nodo con la misma IP sigue sin bloquear",
-          ns["clave_cpe"]("10.6.1.165", "r1") not in reg, list(reg.keys()))
-    e = reg.get("r2|10.6.1.165") or {}
+          ns["clave_cpe"]("10.6.1.165", "p001") not in reg, list(reg.keys()))
+    e = reg.get("p002|10.6.1.165") or {}
     check("se guarda el motivo del CPE correcto, no el del vecino",
           (e.get("motivo") or {}).get("firma") == "Cobalt del norte", e.get("motivo"))
     check("no se rotula como manual: era candidato del reporte",
           e.get("manual") is False, e)
 
     # --- 2) el mismo CPE del nodo Sur es otro abonado ---
-    llamar(ns, mk, "/cuarentena/enviar", {"ajax": "1", "ip": "r1|10.6.1.165", "score": "73"})
+    llamar(ns, mk, "/cuarentena/enviar", {"ajax": "1", "ip": "p001|10.6.1.165", "score": "73"})
     reg = ns["cargar_enviados"](ns["MK_SENT"])
     check("el del sur va a SU router, no al del norte",
-          mk.add[-1:] == [("10.6.1.165", "clientes-botnet", "r1")], mk.add)
+          mk.add[-1:] == [("10.6.1.165", "clientes-botnet", "p001")], mk.add)
     check("y conviven los dos en el registro", len(reg) == 2, list(reg.keys()))
 
     # --- 3) liberar uno no libera al otro ---
-    v = llamar(ns, mk, "/cuarentena/quitar", {"ip": "r2|10.6.1.165"})
+    v = llamar(ns, mk, "/cuarentena/quitar", {"ip": "p002|10.6.1.165"})
     # el aviso viaja como codigo (/cuarentena?msg=<codigo>): se lee como lo haria el GET
-    _cod = v.get("redirect", "").split("msg=", 1)[-1]
+    _cod = v.get("redirect", "").split("msg=", 1)[-1].split("&", 1)[0]
     _txt = ns["rep_aviso_tomar"](_cod)[0]
     check("quitar acepta la identidad (antes: 'IP invalida')",
           _txt.startswith("10.6.1.165") and "invalida" not in _txt, (v, _txt))
     check("se quita del router correcto y de la lista DONDE ESTA",
-          mk.rem[-1:] == [("10.6.1.165", "clientes-botnet", "r2")], mk.rem)
+          mk.rem[-1:] == [("10.6.1.165", "clientes-botnet", "p002")], mk.rem)
     # importa: la lista se guarda al enviar. Si manana cambia la categoria del CPE o se
     # renombra la lista, hay que sacarlo de donde esta, no de donde tocaria hoy
     check("la lista usada queda guardada en el registro",
-          (ns["cargar_enviados"](ns["MK_SENT"]).get("r1|10.6.1.165") or {}).get("lista")
+          (ns["cargar_enviados"](ns["MK_SENT"]).get("p001|10.6.1.165") or {}).get("lista")
           == "clientes-botnet",
-          ns["cargar_enviados"](ns["MK_SENT"]).get("r1|10.6.1.165"))
+          ns["cargar_enviados"](ns["MK_SENT"]).get("p001|10.6.1.165"))
     check("y tambien la categoria, para poder explicarlo despues",
-          (ns["cargar_enviados"](ns["MK_SENT"]).get("r1|10.6.1.165") or {}).get("categoria")
+          (ns["cargar_enviados"](ns["MK_SENT"]).get("p001|10.6.1.165") or {}).get("categoria")
           == "botnet")
     reg = ns["cargar_enviados"](ns["MK_SENT"])
-    check("sale del registro el del norte", "r2|10.6.1.165" not in reg, list(reg.keys()))
-    check("y el del sur sigue bloqueado", "r1|10.6.1.165" in reg, list(reg.keys()))
+    check("sale del registro el del norte", "p002|10.6.1.165" not in reg, list(reg.keys()))
+    check("y el del sur sigue bloqueado", "p001|10.6.1.165" in reg, list(reg.keys()))
 
-    # --- 4) una instalacion de un solo nodo no cambia en nada ---
+    # --- 4) una instalacion de un solo nodo funciona igual (con la clave pid|ip) ---
     tmp1 = tempfile.mkdtemp()
-    ns1 = entorno(tmp1)
-    open(ns1["MK_CONF"], "w", encoding="utf-8").write("ENABLED=1\nAUTO_MANTENER=0\n")
-    json.dump({"routers": [
-        {"id": "r1", "nombre": "MikroTik", "iface": "ids-mon", "HOST": "192.0.2.1",
-         "USER": "api", "PASS": "x", "LIST": "suricata-cuarentena", "TTL": "1h", "ENABLED": "1"}]},
-        open(ns1["ROUTERS_CONF"], "w", encoding="utf-8"))
-    json.dump({"candidatos": [{"ip": "10.6.4.61", "router": "", "riesgo": 73,
-                               "confianza": "alta", "firma": "unica"}],
-               "dns_candidatos": [], "top_riesgo": []},
-              open(os.path.join(tmp1, "cuarentena.json"), "w", encoding="utf-8"))
+    ns1 = entorno(tmp1, PUNTOS1)
+    with open(ns1["MK_CONF"], "w", encoding="utf-8") as f:
+        f.write("ENABLED=1\nAUTO_MANTENER=0\n")
+    ns1["guardar_routers"]([{"id": "p001", "USER": "api", "PASS": "x",
+                             "LIST": "suricata-cuarentena", "TTL": "1h", "ENABLED": "1"}])
+    guardar_cuar(ns1, "p001", {"candidatos": [{"ip": "10.6.4.61", "router": "p001", "riesgo": 73,
+                                               "confianza": "alta", "firma": "unica"}],
+                               "dns_candidatos": [], "top_riesgo": []})
     mk1 = Mikrotik()
+    # CONTRATO-F2 §1: la identidad es SIEMPRE pid|ip, tambien con un solo punto (antes: la
+    # IP pelada). §10.1/§3: la IP pelada ya no tiene destino (no hay router por defecto)
     v = llamar(ns1, mk1, "/cuarentena/enviar", {"ajax": "1", "ip": "10.6.4.61", "score": "73"})
+    check("con un solo nodo la IP pelada ya no tiene destino: no se envia (§1, §10.1)",
+          "destino no valido" in v.get("texto", "") and mk1.add == []
+          and ns1["cargar_enviados"](ns1["MK_SENT"]) == {}, (v, mk1.add))
+    v = llamar(ns1, mk1, "/cuarentena/enviar", {"ajax": "1", "ip": "p001|10.6.4.61", "score": "73"})
     reg1 = ns1["cargar_enviados"](ns1["MK_SENT"])
-    check("con un solo nodo la clave sigue siendo la IP pelada",
-          list(reg1.keys()) == ["10.6.4.61"], list(reg1.keys()))
+    check("con un solo nodo la clave es p001|IP (CONTRATO-F2 §1)",
+          list(reg1.keys()) == ["p001|10.6.4.61"], list(reg1.keys()))
     check("y se envia igual que siempre",
-          mk1.add == [("10.6.4.61", "clientes-botnet", "r1")], mk1.add)
-    llamar(ns1, mk1, "/cuarentena/quitar", {"ip": "10.6.4.61"})
+          mk1.add == [("10.6.4.61", "clientes-botnet", "p001")], mk1.add)
+    llamar(ns1, mk1, "/cuarentena/quitar", {"ip": "p001|10.6.4.61"})
     check("y se quita igual que siempre",
           ns1["cargar_enviados"](ns1["MK_SENT"]) == {}, ns1["cargar_enviados"](ns1["MK_SENT"]))
 
     # --- 5) un nodo en dry-run no recibe nada ---
-    rs = json.load(open(ns["ROUTERS_CONF"], encoding="utf-8"))
-    rs["routers"][1]["ENABLED"] = "0"
-    json.dump(rs, open(ns["ROUTERS_CONF"], "w", encoding="utf-8"))
+    # (el arbol del paso 4 recargo `nodos`; se vuelve al de dos puntos)
+    ns = entorno(tmp, PUNTOS2)
+    ns["guardar_routers"]([{"id": "p002", "ENABLED": "0"}])
     n_antes = len(mk.add)
-    v = llamar(ns, mk, "/cuarentena/enviar", {"ajax": "1", "ip": "r2|10.6.1.165", "score": "91"})
+    v = llamar(ns, mk, "/cuarentena/enviar", {"ajax": "1", "ip": "p002|10.6.1.165", "score": "91"})
     check("a un nodo deshabilitado no se le manda nada", len(mk.add) == n_antes, mk.add)
     check("y se dice por que", "HABILITA" in v.get("texto", ""), v)
 
@@ -245,7 +279,7 @@ def main():
 
 class Legado(unittest.TestCase):
     def test_legado(self):
-        """Tipo: conservacion (prueba heredada de suricata-ids-lab). Enviar y quitar de cuarentena respetando la identidad (router, IP)."""
+        """Tipo: conservacion, adaptada a pid|ip siempre (CONTRATO-F2 §1, §10.1), routers por punto con clave cifrada (§4, §10.3) y cuarentena.json por nodo (§3). Enviar y quitar de cuarentena respetando la identidad (router, IP)."""
         _comun.correr_main(self, main)
 
 

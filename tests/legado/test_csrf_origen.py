@@ -46,33 +46,42 @@ def check(d, c, e=""):
         fallos += 1
 
 
-def clase():
+def clase(nod):
     """do_POST y lo que llama, de la clase H real; _post (las acciones) es un doble que
-    apunta si llego a ejecutarse."""
+    apunta si llego a ejecutarse.
+
+    Panel portado: _seguro limpia el contexto (usuario y nodo del hilo) con el
+    _limpiar_ctx REAL antes y despues de cada peticion (CONTRATO-F2 §10.1), asi que se
+    extrae tambien, con el `nodos` real y un CTX por hilo. _post_mismo_origen quita las
+    cabeceras de proxy si el par TCP no es de confianza (_Cabeceras, _origen_con_proxy) y
+    la confianza la decide proxy_confiable() sobre PROXIES_OK, que ahora son redes (IDS_PROXY
+    admite CIDR, §7): se cargan esas piezas reales."""
     import html
+    import ipaddress
+    import threading
     ns = {"urllib": urllib, "sys": sys, "traceback": traceback, "html": html,
+          "ipaddress": ipaddress, "nodos": nod, "CTX": threading.local(),
           "bitacora": lambda *a, **k: None,
           # la configuracion del panel: PANEL_URL es la unica clave que se mira aqui
-          "conf_dash_get": lambda k, d="": CONF.get(k, d),
-          # (adaptada, CONTRATO-F2 §7) las cabeceras de un proxy solo cuentan si el par TCP es
-          # un proxy de confianza: el proxy de estas pruebas es 127.0.0.1
-          "PROXIES_OK": {"127.0.0.1"}}
-    for n in ARBOL.body:
-        if isinstance(n, ast.FunctionDef) and n.name in ("origen_ajeno", "_host_puerto",
-                                                          "_forwarded_host"):
-            exec(ast.get_source_segment(DASH, n), ns)
+          "conf_dash_get": lambda k, d="": CONF.get(k, d)}
+    _comun.piezas(ns, ("origen_ajeno", "_host_puerto", "_forwarded_host", "_redes_proxy",
+                       "proxy_confiable", "_Cabeceras", "_origen_con_proxy"))
+    # (adaptada, CONTRATO-F2 §7) las cabeceras de un proxy solo cuentan si el par TCP es
+    # un proxy de confianza: el proxy de estas pruebas es 127.0.0.1 (lo que daria IDS_PROXY)
+    ns["PROXIES_OK"] = ns["_redes_proxy"]("127.0.0.1")
     cls = next(n for n in ARBOL.body if isinstance(n, ast.ClassDef) and n.name == "H")
     metodos = {}
     for m in cls.body:
         if isinstance(m, ast.FunctionDef) and m.name in ("do_POST", "_post_mismo_origen", "_seguro",
-                                                           "_peer_ip", "_proxy_confiable"):
+                                                           "_peer_ip", "_proxy_confiable",
+                                                           "_limpiar_ctx"):
             exec(compile(ast.Module(body=[m], type_ignores=[]), "<H.%s>" % m.name, "exec"), ns)
             metodos[m.name] = ns[m.name]
     return type("HPrueba", (object,), metodos)
 
 
 CONF = {}
-H = clase()
+H = None        # la clase de prueba; la construye main() con el nodos real
 
 
 class _Err(object):
@@ -107,6 +116,10 @@ def post(cabeceras, ruta="/cuarentena/enviar"):
 
 
 def main():
+    import tempfile
+    global H
+    nod, _sec = _comun.panel(tempfile.mkdtemp(prefix="legado-csrf-"))
+    H = clase(nod)
     panel = "192.0.2.10:5637"
     casos_ok = [
         ("mismo origen (fetch del propio panel)", {"Host": panel, "Origin": "http://192.0.2.10:5637"}),
@@ -186,6 +199,15 @@ def main():
         ("Forwarded sin host= no vale como comodin",
          {"Host": upstream, "Forwarded": "for=192.0.2.60;proto=https",
           "Origin": "https://ids.example.com"}),
+        # (adaptada, CONTRATO-F2 §7) X-Forwarded-Host/Forwarded solo cuentan si el par TCP es
+        # un proxy de confianza: desde un navegador cualquiera (198.51.100.20) no blanquean
+        # un Origin ajeno
+        ("X-Forwarded-Host puesto por un cliente que no es proxy de confianza",
+         {"Host": panel, "X-Forwarded-Host": "ataque.example.net",
+          "Origin": "https://ataque.example.net"}),
+        ("Forwarded: host= puesto por un cliente que no es proxy de confianza",
+         {"Host": panel, "Forwarded": "for=192.0.2.60;host=ataque.example.net",
+          "Origin": "https://ataque.example.net"}),
     ]
     for nombre, cab in casos_mal2:
         p = post(cab)
@@ -215,7 +237,12 @@ def main():
 
 class Legado(unittest.TestCase):
     def test_legado(self):
-        """Tipo: conservacion, adaptada a proxy de confianza (prueba heredada de suricata-ids-lab). Un formulario de OTRA web no puede mandar acciones al panel (CSRF)."""
+        """Tipo: conservacion, adaptada a proxy de confianza (prueba heredada de suricata-ids-lab). Un formulario de OTRA web no puede mandar acciones al panel (CSRF).
+
+        Adaptada: accion de ejemplo /cuarentena/enviar (OpenVPN propio retirado, §1); el
+        proxy 127.0.0.1 es de confianza via PROXIES_OK = _redes_proxy() real y las
+        cabeceras de proxy de un par no confiable no cuentan (CONTRATO-F2 §7); el _seguro
+        real limpia el contexto con el _limpiar_ctx real (§10.1)."""
         _comun.correr_main(self, main)
 
 

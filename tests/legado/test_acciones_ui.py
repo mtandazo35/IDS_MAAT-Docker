@@ -11,12 +11,19 @@ Lo que se protege:
   - las rutas plan/aplicar/quitar exigen admin, rechazan una clase desconocida y un router
     sin conexion, eligen el router por id, responden "OK cabecera\\nrsc" y dejan bitacora;
   - nada en la tarjeta o el modal usa dialogos nativos.
+
+Adaptada al panel portado (CONTRATO-F2 §1, §3, §4, §10.1, §10.2): los routers son los
+puntos p001/p002 (id = pid); el destino de plan/aplicar/quitar es SIEMPRE el `rid` del
+formulario validado (`_router_de_pid` real con `nodos.py` real): `router_defecto`
+desaparece y sin rid no se toca ningun router; por eso el selector de router sale tambien
+con un solo punto. Las rutas `/routers/*` se quitaron (§4) y la denegacion es `_prohibido`.
 """
 import ast
 import os
 import re
 import sys
 import unittest
+import tempfile
 import textwrap
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -25,6 +32,7 @@ import extraer  # noqa: E402
 RAIZ = extraer.RAIZ
 DASH = extraer.fuente("DASH")
 ARBOL = ast.parse(DASH)
+TMP = tempfile.TemporaryDirectory()
 
 fallos = 0
 
@@ -65,9 +73,11 @@ def cuerpo_ruta_in(rutas):
 
 
 def main():
+    nod, _sec = _comun.panel(TMP.name)   # nodos.py real: puntos p001 y p002 (CONTRATO-F2 §1)
     # ---------- la tarjeta ----------
     ns = piezas(("CAT_CPE", "CAT_OTROS", "ACCIONES", "ACCIONES_POR_CAT", "ACCION_DEFECTO", "accion_de_clase", "_card_listas"),
-                {"cargar_routers": lambda: [{"id": "r1", "HOST": "192.0.2.1", "nombre": "Centro"}],
+                {"nodos": nod,
+                 "cargar_routers": lambda: [{"id": "p001", "HOST": "unix:/run/p001/api.sock", "nombre": "Centro"}],
                  "cargar_reglas_propias": lambda c: "/ip firewall raw\nadd chain=prerouting action=drop src-address-list={LISTA}" if c == "botnet" else "",
                  "_mk_globales": lambda: {}})
     h = ns["_card_listas"]({"ACCION_BOTNET": "propias", "ACCION_P2P": "limitar", "ACCION_LIMITE_P2P": "2M",
@@ -92,10 +102,19 @@ def main():
           and 'value="192.0.2.53"' in h, "")
     check("botones de ver/aplicar y quitar por categoria", h.count("reglasPlan('") == 8 and h.count("reglasQuitar('") == 8, "")
     check("quitar pasa por el modal propio (ask), nunca confirm()", "ask(this,'Quitar del router" in h and "confirm(" not in h, "")
-    check("con un solo router no hay selector", "id=accrid" not in h, "")
-    ns["cargar_routers"] = lambda: [{"id": "r1", "HOST": "192.0.2.1", "nombre": "Centro"}, {"id": "r2", "HOST": "192.0.2.2", "nombre": "Norte"}]
+    # CONTRATO-F2 §3/§10.1: el destino va SIEMPRE explicito (rid en cada peticion, sin
+    # router por defecto): el selector sale tambien con un solo punto, con ese punto
+    check("con un solo router el selector sale igual (destino explicito, sin router por defecto)",
+          "id=accrid" in h and "<option value='p001'" in h, "")
+    ns["cargar_routers"] = lambda: [{"id": "p001", "HOST": "unix:/run/p001/api.sock", "nombre": "Centro"},
+                                    {"id": "p002", "HOST": "unix:/run/p002/api.sock", "nombre": "Norte"}]
     h2 = ns["_card_listas"]({})
     check("con dos routers, selector de router", "id=accrid" in h2 and "Norte" in h2, "")
+    nod.poner_nodo("p002")
+    h3 = ns["_card_listas"]({})
+    nod.quitar_nodo()
+    check("  preseleccionado el nodo que se mira (solo preselecciona: el rid viaja en la peticion)",
+          "<option value='p002' selected>" in h3 and "<option value='p001' selected>" not in h3, "")
     check("boton 'Verificar mis reglas' por categoria, visible solo con 'propias'",
           h.count("reglasVerificar('") == 8 and "id=verif_botnet style='display:block" in h
           and "id=verif_escaneo style='display:none" in h, "")
@@ -104,7 +123,8 @@ def main():
 
     # ---------- la ruta de guardado ----------
     ruta = DASH[DASH.index('if ruta == "/mikrotik":'):]
-    ruta = ruta[:ruta.index('if ruta == "/routers/')]
+    # las rutas /routers/* se quitaron (CONTRATO-F2 §4): el tramo acaba en la siguiente ruta
+    ruta = ruta[:ruta.index('if ruta == "/mikrotik/reglas/verificar"')]
     check("guarda la accion solo si es de esa clase", '_a in ACCIONES_POR_CAT.get(_cat, ())' in ruta, "")
     check("valida el limite con una expresion", 'ACCION_LIMITE_' in ruta and "re.match(" in ruta, "")
     check("valida el resolutor como IP", 'ipaddress.ip_address(_dip)' in ruta, "")
@@ -122,16 +142,18 @@ def main():
         class Self:
             def _admin(self): return admin
             def _deny(self): visto["deny"] = True
+            def _prohibido(self): visto["deny"] = True     # el _deny del original (§10.2)
             def send_response(self, *a): pass
             def send_header(self, *a): pass
             def end_headers(self, *a): pass
             wfile = type("W", (), {"write": lambda self, b: visto.update({"texto": b.decode("utf-8")})})()
-        n2 = piezas(("ACCIONES", "ACCIONES_POR_CAT", "lineas_verificacion"))
+        # _router_de_pid REAL: el router es el del rid validado con nodos.exigir_pid, sin
+        # router_defecto (CONTRATO-F2 §3, §10.1)
+        n2 = piezas(("ACCIONES", "ACCIONES_POR_CAT", "lineas_verificacion", "_router_de_pid"), {"nodos": nod})
         n2.update({"self": Self(), "q": {k: [v] for k, v in campos.items()}, "ruta": ruta_,
                    "CTX": type("C", (), {"user": "admin"})(),
-                   "cargar_routers": lambda: [{"id": "r1", "HOST": "h", "USER": "u", "PASS": "p", "nombre": "Centro"},
-                                              {"id": "r2", "HOST": "h2", "USER": "", "PASS": ""}],
-                   "router_defecto": lambda: {"id": "r1", "HOST": "h", "USER": "u", "PASS": "p", "nombre": "Centro"},
+                   "cargar_routers": lambda: [{"id": "p001", "HOST": "unix:h", "USER": "u", "PASS": "p", "nombre": "Centro"},
+                                              {"id": "p002", "HOST": "unix:h2", "USER": "", "PASS": ""}],
                    "plan_reglas": lambda r, cat: {"cambios": 2, "accion": "cortar", "lista": "clientes-" + cat, "aviso": "",
                                                   "rsc": ["# ADD /ip firewall raw add chain=prerouting action=drop"], "acciones": []},
                    "aplicar_reglas": lambda r, cat, quien="?": (llamadas.append(("aplicar", r["id"], cat, quien)) or (True, "aplicado: 1 nueva(s)", {})),
@@ -144,17 +166,24 @@ def main():
     check("sin admin: denegado", v.get("deny") is True, v)
     v = ejecutar("/mikrotik/reglas/plan", {"cat": "zzz", "rid": ""})
     check("clase desconocida: ERR", v.get("texto", "").startswith("ERR: clase desconocida"), v)
-    v = ejecutar("/mikrotik/reglas/plan", {"cat": "botnet", "rid": "r2"})
+    v = ejecutar("/mikrotik/reglas/plan", {"cat": "botnet", "rid": "p002"})
     check("router sin conexion: ERR claro", "ERR:" in v.get("texto", "") and "guarda primero" in v["texto"], v)
-    v = ejecutar("/mikrotik/reglas/plan", {"cat": "botnet", "rid": ""})
+    # CONTRATO-F2 §3/§10.1: sin rid (antes: router_defecto), con un punto que no existe o con
+    # un id del multi-nodo viejo no hay destino inequivoco: ERR y no se llama al motor
+    for _rid in ("", "p009", "r1"):
+        n_ll = len(llamadas)
+        v = ejecutar("/mikrotik/reglas/aplicar", {"cat": "botnet", "rid": _rid})
+        check("sin destino inequivoco (rid=%r): ERR y no se toca ningun router" % _rid,
+              v.get("texto", "").startswith("ERR:") and len(llamadas) == n_ll, (v, llamadas[n_ll:]))
+    v = ejecutar("/mikrotik/reglas/plan", {"cat": "botnet", "rid": "p001"})
     check("plan: OK, cabecera con cambios/accion/lista y las lineas RSC debajo",
           v.get("texto", "").startswith("OK 2 cambio(s) en Centro") and "lista: clientes-botnet" in v["texto"]
           and v["texto"].split("\n")[1].startswith("# ADD /ip firewall raw"), v)
-    v = ejecutar("/mikrotik/reglas/aplicar", {"cat": "spam", "rid": "r1"})
+    v = ejecutar("/mikrotik/reglas/aplicar", {"cat": "spam", "rid": "p001"})
     check("aplicar: llama al motor con el router elegido y quien lo hizo",
-          v.get("texto", "").startswith("OK aplicado") and ("aplicar", "r1", "spam", "admin") in llamadas, (v, llamadas))
-    v = ejecutar("/mikrotik/reglas/quitar", {"cat": "spam", "rid": "r1"})
-    check("quitar: idem", ("quitar", "r1", "spam", "admin") in llamadas and "quitada" in v.get("texto", ""), v)
+          v.get("texto", "").startswith("OK aplicado") and ("aplicar", "p001", "spam", "admin") in llamadas, (v, llamadas))
+    v = ejecutar("/mikrotik/reglas/quitar", {"cat": "spam", "rid": "p001"})
+    check("quitar: idem", ("quitar", "p001", "spam", "admin") in llamadas and "quitada" in v.get("texto", ""), v)
     check("queda en la bitacora", any(a == "REGLAS-ROUTER" and "spam" in d for a, d in logs), logs)
 
     # ---------- la etiqueta "Reglas aplicadas" ----------
@@ -189,7 +218,7 @@ def main():
 
 class Legado(unittest.TestCase):
     def test_legado(self):
-        """Tipo: conservacion (prueba heredada de suricata-ids-lab). Acciones por categoria: la UI de Ajustes y las rutas que hablan con el router."""
+        """Tipo: conservacion, adaptada (CONTRATO-F2 §3, §4, §10.1, §10.2): routers = puntos p001/p002, destino = rid del formulario validado (_router_de_pid real), sin router_defecto (sin rid: ERR y nada se toca; selector siempre), sin /routers/*. Acciones por categoria: la UI de Ajustes y las rutas que hablan con el router."""
         _comun.correr_main(self, main)
 
 

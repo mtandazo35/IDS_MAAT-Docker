@@ -9,6 +9,11 @@ un sensor ciego.
 
 Lo que se comprueba aqui es que ese estado se detecta y se dice con todas las letras,
 y que un nodo que deja de mandar espejo no pasa desapercibido.
+
+Adaptada al panel portado (CONTRATO-F2 §3, §10.6): ya no hay un TZSP_ESTADO unico del host;
+el latido del receptor es uno por punto en RUN/<pid>/tzsp.json (`nodos.tzsp_json(pid)`) y
+`cobertura_tzsp()` lee el del nodo del hilo. Se usa el `nodos.py` real sobre un arbol temporal
+con el nodo puesto. Las comprobaciones son las mismas.
 """
 import ast
 import json
@@ -26,7 +31,8 @@ RAIZ = extraer.RAIZ
 DASH = extraer.fuente("DASH")
 ARBOL = ast.parse(DASH)
 
-PIEZAS = ("TZSP_ESTADO", "COBERTURA_MUDO", "COBERTURA_RECHAZO", "cobertura_tzsp",
+# TZSP_ESTADO ya no existe en el panel portado (CONTRATO-F2 §10.6: RUN/<pid>/tzsp.json)
+PIEZAS = ("COBERTURA_MUDO", "COBERTURA_RECHAZO", "cobertura_tzsp",
           "DESPERDICIO_AVISO", "desperdicio_espejo")
 
 fallos = 0
@@ -39,14 +45,23 @@ def check(d, c, e=""):
         fallos += 1
 
 
-def entorno(tmp):
+# los dos puntos de _comun y un tercero (p003) para el receptor real de la prueba nueva
+PUNTOS = dict(_comun.PUNTOS, p003={"nombre": "Tercero", "redes": ["10.0.0.0/8"],
+                                   "api_puerto": 8729, "sensor": "100.64.3.1",
+                                   "mk": "100.64.3.2", "tzsp_puerto": 37008})
+
+
+def entorno(tmp, pid="p001"):
     ns = {"json": json, "os": os, "time": time}
+    ns["nodos"], ns["secretos"] = _comun.panel(tmp, puntos=PUNTOS, nodo=pid)
     for n in ARBOL.body:
         nom = getattr(n, "name", None) or (
             getattr(n.targets[0], "id", "") if isinstance(n, ast.Assign) and n.targets else "")
         if nom in PIEZAS:
             exec(ast.get_source_segment(DASH, n) or "", ns)
-    ns["TZSP_ESTADO"] = os.path.join(tmp, "tzsp.json")
+    # el tzsp.json del punto mirado (CONTRATO-F2 §10.6), donde lo escribe su receptor
+    ns["TZSP_ESTADO"] = ns["nodos"].tzsp_json(pid)
+    os.makedirs(os.path.dirname(ns["TZSP_ESTADO"]), exist_ok=True)
     return ns
 
 
@@ -135,6 +150,12 @@ def main():
     check("el umbral del aviso es explicito y esta por encima de la mitad",
           0.4 <= ns["DESPERDICIO_AVISO"] <= 0.8, ns["DESPERDICIO_AVISO"])
 
+    # CONTRATO-F2 §10.6: el latido es por punto; p002 sin receptor no hereda el de p001
+    estado(ns, {"100.64.0.2": 5}, {}, {"100.64.0.2": int(ahora - 5)}, ["100.64.0.2/32"])
+    check("la cobertura es la del punto pedido: p002 sin tzsp.json no se inventa",
+          ns["cobertura_tzsp"](ahora, "p002") == {} and ns["cobertura_tzsp"](ahora) != {},
+          ns["cobertura_tzsp"](ahora, "p002"))
+
     print("\n" + ("TODO OK" if not fallos else "%d fallo(s)" % fallos))
     return 1 if fallos else 0
 
@@ -142,7 +163,7 @@ def main():
 
 class Legado(unittest.TestCase):
     def test_legado(self):
-        """Tipo: conservacion (prueba heredada de suricata-ids-lab). Cobertura del sensor: sin alertas no es lo mismo que sin ataques."""
+        """Tipo: conservacion, adaptada a tzsp.json por punto (CONTRATO-F2 §3, §10.6: RUN/<pid>/tzsp.json). Cobertura del sensor: sin alertas no es lo mismo que sin ataques."""
         _comun.correr_main(self, main)
 
     def test_tzsp_json_del_receptor_nuevo(self):
@@ -153,8 +174,9 @@ class Legado(unittest.TestCase):
         import _ayuda_vpn as ay
         td = ay.cargar(ay.BIN / "tzsp-decap", "legado_tzsp_decap")
         mk = "100.64.3.2"
+        self.addCleanup(_comun.restaurar_panel)                  # nodo del hilo y clave
         with tempfile.TemporaryDirectory() as tmp:
-            ns = entorno(tmp)
+            ns = entorno(tmp, "p003")      # el punto del receptor: RUN/p003/tzsp.json
             ahora = time.time()
             r = td.Receptor(td.leer_allow(mk + "/32"), 10000, ns["TZSP_ESTADO"], "p003",
                             ahora=ahora - 60)

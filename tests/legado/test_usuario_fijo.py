@@ -64,10 +64,20 @@ def main():
     def guardar(lst):
         US[:] = [dict(r) for r in lst]
     ns["guardar_usuarios"] = guardar
-    # el hash real del panel (PBKDF2 con sal) y la verificacion real del login
+    # el hash real del panel (PBKDF2 con sal) y la verificacion real del login.
+    # Panel portado: las iteraciones de PBKDF2 son la constante de modulo PBKDF2_ITER
+    # (pieza nueva; antes iban escritas dentro de _hash_pw): se carga la real.
+    _comun.piezas(ns, ("PBKDF2_ITER",))
     for f in ("_hash_pw", "buscar_usuario", "verificar_login"):
         exec(fuente(f), ns)
     ns["secrets"] = __import__("secrets")
+    # Panel portado (CONTRATO-F2 §7): la sesion guarda sha256(token) y una marca del hash de
+    # la clave; al cambiar SU propia clave, _post_perfil renueva la sesion de quien la cambia
+    # (sesion_renovar) y las demas de ese usuario dejan de valer. Se cargan las piezas reales
+    # (el guardado a disco sigue siendo el doble _guardar_sesiones de arriba).
+    ns["threading"] = __import__("threading")
+    _comun.piezas(ns, ("SESSION_TTL", "_SES_LOCK", "_hash_token", "marca_usuario",
+                       "sesion_abrir", "sesion_de", "sesion_renovar"))
     exec(fuente("_post_perfil").replace("\n    ", "\n").lstrip(), ns)
     post = ns["_post_perfil"]
 
@@ -84,8 +94,10 @@ def main():
         def _redirect(self, *a, **k):
             return {"redirect": a}
 
+        sid = ""
+
         def _sid(self):
-            return ""
+            return self.sid
 
         def _client_ip(self):
             return "192.0.2.10"
@@ -94,6 +106,11 @@ def main():
     salt, hs = ns["_hash_pw"]("clave-vieja")
     US.append({"user": "admin", "salt": salt, "hash": hs, "role": "admin", "nombre": "", "correo": ""})
     vl = ns["verificar_login"]
+    # dos sesiones del mismo admin: la de este navegador (la que cambia la clave) y otra
+    h.sid = ns["sesion_abrir"]("admin", "admin")
+    otra = ns["sesion_abrir"]("admin", "admin")
+    check("sesiones: en memoria va el sha256 del token, no el token (§7)",
+          h.sid not in ns["SESSIONS"] and ns["_hash_token"](h.sid) in ns["SESSIONS"], "")
 
     def q(**kw):
         return {k: [v] for k, v in kw.items()}
@@ -107,6 +124,10 @@ def main():
     check("  la vieja ya no", vl("admin", "clave-vieja") is None, "")
     check("  el nombre a mostrar no sirve para entrar", vl("Manuel", "clave-nueva-1") is None, "")
     check("  el aviso dice con que usuario se entra", "'admin'" in r["msg"] and "no sirve para entrar" in r["msg"], r["msg"])
+    # (capacidad nueva, CONTRATO-F2 §7) quien cambia su propia clave sigue dentro; sus otras
+    # sesiones (abiertas con la clave vieja) quedan fuera
+    check("  quien cambio su propia clave sigue dentro", ns["sesion_de"](h.sid) is not None, "")
+    check("  y su otra sesion, abierta con la clave vieja, ya no vale", ns["sesion_de"](otra) is None, "")
 
     antes = dict(US[0])
     for campo in ("nuser", "usuario", "new_user"):
@@ -156,7 +177,12 @@ def main():
 
 class Legado(unittest.TestCase):
     def test_legado(self):
-        """Tipo: conservacion (prueba heredada de suricata-ids-lab). El usuario de entrar no se cambia nunca; de una cuenta se cambia la clave (o se elimina)."""
+        """Tipo: conservacion (prueba heredada de suricata-ids-lab). El usuario de entrar no se cambia nunca; de una cuenta se cambia la clave (o se elimina).
+
+        Solo cambia como se carga: PBKDF2_ITER (constante nueva de modulo) y las piezas
+        reales de sesion (sesion_abrir/sesion_de/sesion_renovar), que _post_perfil usa al
+        cambiar la propia clave. Se anaden comprobaciones de CONTRATO-F2 §7: sha256 del
+        token en memoria y la sesion propia sigue viva mientras la otra queda fuera."""
         _comun.correr_main(self, main)
 
 

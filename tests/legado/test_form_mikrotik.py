@@ -94,8 +94,9 @@ def main():
 
     # La clave NO puede borrarse al guardar: el formulario ya no la manda, asi que la ruta
     # tiene que conservar el valor existente (es lo que libera entradas antiguas).
+    # (adaptada, CONTRATO-F2 §4) /routers/guardar desaparece: la ruta acaba en la siguiente
     ruta_mk = DASH[DASH.index('if ruta == "/mikrotik":'):]
-    ruta_mk = ruta_mk[:ruta_mk.index('if ruta == "/routers/')]
+    ruta_mk = ruta_mk[:ruta_mk.index('\n        if ruta == ', 10)]
     check("al guardar, LIST se conserva aunque el formulario ya no la traiga",
           'or m.get("LIST", "suricata-cuarentena")' in ruta_mk
           or 'or "suricata-cuarentena"' in ruta_mk, "")
@@ -103,9 +104,11 @@ def main():
     # Telegram decia que el CPE fue a LIST cuando fue a la de su categoria
     env = DASH[DASH.index("if ruta == \"/cuarentena/enviar\":"):]
     env = env[:env.index("\n        if ruta == ", 10)]
+    # (adaptada, CONTRATO-F2 §3) el aviso se deduplica por `pid|ip`: notificar_cuarentena
+    # recibe la clave del CPE, no la IP pelada; lo que se protege (la lista) es lo mismo
     check("el aviso de Telegram nombra la lista a la que FUE, no la heredada",
-          'notificar_cuarentena(ip, "Infeccion CnC", _lst' in env
-          and 'notificar_cuarentena(ip, "Infeccion CnC", m.get("LIST"' not in env, "")
+          'notificar_cuarentena(clave, "Infeccion CnC", _lst' in env
+          and '"Infeccion CnC", m.get("LIST"' not in env, "")
 
     # --- un nombre con comillas no rompe el HTML -----------------------------------------
     h4 = ns["_card_listas"]({"LISTA_BOTNET": 'mi "lista" <rara>'})
@@ -115,28 +118,32 @@ def main():
 
     # --- el guardado --------------------------------------------------------------------
     ruta = DASH[DASH.index('if ruta == "/mikrotik":'):]
-    ruta = ruta[:ruta.index('if ruta == "/routers/')]
+    ruta = ruta[:ruta.index('\n        if ruta == ', 10)]
     check("la ruta guarda las listas por categoria",
           'for _cat, _nom, _cs, _def in CAT_CPE + [CAT_OTROS]:' in ruta
           and '"LISTA_" + _cat.upper()' in ruta, "")
     # vacio o el propio defecto = borrar la clave: no se guarda el defecto como cambio
     check("un campo vacio o con el defecto borra la clave",
           "m.pop(_k, None)" in ruta and "_v != _def" in ruta, "")
+    # (adaptada, CONTRATO-F2 §4) ya no hay HOST ni puerto que guardar (el router se alcanza
+    # por el rele unix de su punto); la conexion que queda (usuario, clave, enviar si/no) es
+    # la del router del NODO del formulario y va a routers.json en el mismo envio
     check("y la conexion y las listas se guardan en el mismo envio",
-          'm["HOST"]' in ruta and "lista_" in ruta, "")
+          '_r["USER"]' in ruta and "guardar_routers(_rs)" in ruta and "lista_" in ruta
+          and 'm["HOST"]' not in ruta, "")
 
     # --- guardar de verdad: lo que la ruta mete en m tiene que llegar al archivo ----------
     # (2026-10-09: guardar_mk escribia una lista fija de claves y tiraba LISTA_* y POL_*;
     # el usuario rellenaba sus listas, guardaba, y volvian vacias)
-    import os, tempfile
-    ns_g = {"os": os}
-    for n in ARBOL.body:
-        nom = getattr(n, "name", None) or (
-            getattr(n.targets[0], "id", "") if isinstance(n, ast.Assign) and n.targets else "")
-        if nom in ("guardar_mk", "_mk_globales"):
-            exec(ast.get_source_segment(DASH, n) or "", ns_g)
-    td = tempfile.mkdtemp(); ns_g["MK_CONF"] = os.path.join(td, "mk.conf")
+    import json, tempfile, threading
+    td = tempfile.mkdtemp()
+    nod, sec = _comun.panel(td)          # nodos y secretos reales (puntos p001 y p002)
+    ns_g = _comun.piezas({"os": os, "json": json, "threading": threading,
+                          "nodos": nod, "secretos": sec},
+                         ("guardar_mk", "_mk_globales", "_MK_CONEXION"))
+    ns_g["MK_CONF"] = os.path.join(td, "mk.conf")
     ns_g["guardar_mk"]({"HOST": "192.0.2.1", "USER": "u", "PASS": "p", "ENABLED": "1",
+                        "AUTO_MANTENER": "1", "POL_AUTO": "1",
                         "LISTA_BOTNET": "abusivos-botnet", "LISTA_DNS": "clientes-malware",
                         "POL_BOTNET": "alto", "POL_P2P": "nada", "LISTA_SPAM": ""})
     g = ns_g["_mk_globales"]()
@@ -144,7 +151,34 @@ def main():
           g.get("LISTA_BOTNET") == "abusivos-botnet" and g.get("LISTA_DNS") == "clientes-malware", g)
     check("y las politicas por clase", g.get("POL_BOTNET") == "alto" and g.get("POL_P2P") == "nada", g)
     check("una lista vacia no se escribe (vuelve el defecto)", "LISTA_SPAM" not in g, g)
-    check("y lo de siempre sigue", g.get("HOST") == "192.0.2.1" and g.get("ENABLED") == "1", g)
+    # (adaptada, CONTRATO-F2 §4 y §10.3) "lo de siempre" se reparte: los ajustes globales
+    # siguen en MK_CONF; la conexion (host, usuario, clave, enviar si/no) ya no va ahi -nada
+    # de claves en claro en ese fichero- sino por punto en routers.json, con la clave cifrada.
+    txt = open(ns_g["MK_CONF"], encoding="utf-8").read()
+    check("y lo de siempre sigue: los ajustes globales en MK_CONF, la conexion fuera",
+          g.get("AUTO_MANTENER") == "1" and g.get("POL_AUTO") == "1"
+          and "HOST" not in g and "ENABLED" not in g and "PASS=" not in txt
+          and "192.0.2.1" not in txt, (g, txt))
+    ns_r = _comun.piezas({"os": os, "json": json, "threading": threading,
+                          "nodos": nod, "secretos": sec},
+                         ("ROUTERS_CONF", "CAMPOS_USUARIO", "_ROUTERS_LOCK", "SECRETOS_AVISO",
+                          "_asoc_router", "_router_vacio", "_routers_guardados", "cargar_routers",
+                          "guardar_routers", "ROUTERS_MAP", "publicar_routers_map"))
+    rs = ns_r["cargar_routers"]()
+    for r in rs:
+        if r["id"] == "p001":
+            r.update({"USER": "u", "PASS": "p", "ENABLED": "1"})
+    ns_r["guardar_routers"](rs)
+    r1 = {r["id"]: r for r in ns_r["cargar_routers"]()}
+    crudo = open(ns_r["ROUTERS_CONF"], encoding="utf-8").read()
+    check("  y la conexion se guarda en el router de SU punto (usuario, clave, enviar)",
+          r1["p001"]["USER"] == "u" and r1["p001"]["PASS"] == "p" and r1["p001"]["ENABLED"] == "1"
+          and r1["p002"]["USER"] == "" and r1["p002"]["ENABLED"] == "0", r1)
+    check("  sin HOST que teclear: el rele unix de su punto",
+          r1["p001"]["HOST"].startswith("unix:") and r1["p001"]["HOST"].endswith("api.sock"), r1["p001"])
+    check("  y la clave en disco va cifrada, no en claro",
+          '"PASS": "p"' not in crudo and json.load(open(ns_r["ROUTERS_CONF"], encoding="utf-8"))
+          ["routers"]["p001"]["PASS"] not in ("", "p"), crudo)
 
     # --- la tarjeta ya no se llama 'cuarentena' a secas ---------------------------------
     check("la tarjeta separa la conexion de lo demas",
@@ -161,7 +195,7 @@ def main():
 
 class Legado(unittest.TestCase):
     def test_legado(self):
-        """Tipo: conservacion (prueba heredada de suricata-ids-lab). El formulario del MikroTik: conexion por un lado, listas por tipo de abuso por otro."""
+        """Tipo: conservacion, adaptada (CONTRATO-F2 §4, §5, §10.3): sin HOST/puerto ni /routers/guardar; guardar_mk solo guarda lo global y la conexion del nodo del formulario va a routers.json (clave cifrada). El formulario del MikroTik: conexion por un lado, listas por tipo de abuso por otro."""
         _comun.correr_main(self, main)
 
 

@@ -91,8 +91,10 @@ def entorno(tmp, contenido=None, clave="k", modelo="m-1", fallo=None):
         "request": type("R", (), {"Request": _Req, "urlopen": staticmethod(_urlopen)}),
         "error": type("E", (), {"HTTPError": HTTPError, "URLError": URLError}),
     })
+    # panel portado: IA_CACHE/IA_ESTADO salen de nodos.ruta("estado", ...) (CONTRATO-F2 §2);
+    # nodos real sobre el arbol temporal de main() (y abajo se apuntan a `tmp`, como antes)
     ns = {"json": json, "os": os, "re": re, "time": time, "sys": sys,
-          "threading": threading, "urllib": urllib_falso,
+          "threading": threading, "urllib": urllib_falso, "nodos": NODOS[0],
           "_hashlib": __import__("hashlib"), "TimeoutError": TimeoutError,
           "groq_key": lambda: clave, "groq_modelo": lambda: modelo}
     for n in ARBOL.body:
@@ -116,8 +118,12 @@ def dias_falsos():
     return d
 
 
+NODOS = []
+
+
 def main():
     tmp = tempfile.mkdtemp()
+    NODOS[:] = [_comun.panel(tempfile.mkdtemp())[0]]
     ns = entorno(tmp)
 
     # =====================================================================================
@@ -241,7 +247,7 @@ def main():
 
 class Legado(unittest.TestCase):
     def test_legado(self):
-        """Tipo: conservacion (prueba heredada de suricata-ids-lab). Que bloquear para salir de las listas negras."""
+        """Tipo: conservacion (prueba heredada de suricata-ids-lab; solo cambia la carga: `nodos` real para las rutas de IA_CACHE/IA_ESTADO, CONTRATO-F2 §2). Que bloquear para salir de las listas negras."""
         _comun.correr_main(self, main)
 
 

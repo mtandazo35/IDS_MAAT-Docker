@@ -42,6 +42,9 @@ def check(d, c, e=""):
 def entorno(tmp):
     ns = {"os": os, "time": time, "io": io, "html": __import__("html"),
           "BASE_CSS": "/*base*/", "nav": lambda r: "<div class=nav></div>"}
+    # panel portado: LOGIN_LOG/MK_LOG/BITACORA_LOG se definen con nodos.ruta(); se carga el
+    # nodos REAL sobre el arbol temporal y luego se apuntan al tmp como antes
+    ns["nodos"], ns["secretos"] = _comun.panel(tmp)
     for n in ARBOL.body:
         nom = getattr(n, "name", None) or (
             getattr(n.targets[0], "id", "") if isinstance(n, ast.Assign) and n.targets else "")

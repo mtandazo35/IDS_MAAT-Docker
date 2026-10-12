@@ -18,6 +18,13 @@ Lo que protege, en orden de importancia:
     quedo clavado con 100 minutos de atraso, al 48% de CPU y sin que un reinicio lo
     moviera. Releer no es un problema de rendimiento: es el contador parado del todo.
   - que la poda recorte la cola larga y no lo mas consultado.
+
+Adaptada al panel portado (CONTRATO-F2 §3): la base es una POR PUNTO
+(`nodos.salida("historial.db", pid)` = PANEL/nodos/<pid>/historial.db) y la ingesta lee los
+eventos del punto (`nodos.ficheros_eventos(pid)` = DATOS/<pid>/eve.json*), no un LOGDIR unico.
+Se usa el `nodos.py` real sobre un arbol temporal con el nodo p001 puesto. Las comprobaciones
+son las mismas; se anade la de «Todos» (§3: la misma IP en dos puntos son dos filas con su
+nodo, nunca una suma).
 """
 import ast
 import json
@@ -53,14 +60,14 @@ def check(d, c, e=""):
 def entorno(tmp):
     import glob as _glob
     ns = {"json": json, "os": os, "time": time, "glob": _glob, "sys": sys,
-          "LOGDIR": tmp,
           "es_mi_cpe": lambda ip: ip.startswith("192.168.")}
+    ns["nodos"], ns["secretos"] = _comun.panel(tmp, nodo="p001")
     for n in ARBOL.body:
         nom = getattr(n, "name", None) or (
             getattr(n.targets[0], "id", "") if isinstance(n, ast.Assign) and n.targets else "")
         if nom in PIEZAS:
             exec(ast.get_source_segment(DASH, n) or "", ns)
-    ns["HIST_DB"] = os.path.join(tmp, "historial.db")
+    # CONTRATO-F2 §3: HIST_DB es el NOMBRE; la ruta es nodos.salida(HIST_DB, pid), por punto
     return ns
 
 
@@ -72,8 +79,14 @@ def ev(ip, hace_min, tipo="alert", **kw):
     return json.dumps(d) + "\n"
 
 
-def escribir(tmp, lineas, modo="w"):
-    with open(os.path.join(tmp, "eve.json"), modo, encoding="utf-8") as f:
+def ruta_eve(ns, pid="p001"):
+    """eve.json del punto (CONTRATO-F2 §3: DATOS/<pid>/eve.json)."""
+    return ns["nodos"].eve_vivo(pid)
+
+
+def escribir(ns, lineas, modo="w", pid="p001"):
+    os.makedirs(os.path.dirname(ruta_eve(ns, pid)), exist_ok=True)
+    with open(ruta_eve(ns, pid), modo, encoding="utf-8") as f:
         f.writelines(lineas)
 
 
@@ -88,7 +101,7 @@ def main():
     tmp = tempfile.mkdtemp()
     ns = entorno(tmp)
 
-    escribir(tmp, [ev("192.168.1.10", 30, dest_ip="8.8.8.8", dest_port=53,
+    escribir(ns, [ev("192.168.1.10", 30, dest_ip="8.8.8.8", dest_port=53,
                       alert={"signature": "ET MALWARE Botnet CnC"}) for _ in range(5)]
              + [ev("192.168.1.11", 20, tipo="dns", dest_ip="8.8.8.8",
                    dns={"rrname": "malo.example.com"})])
@@ -98,23 +111,23 @@ def main():
           alertas_de(ns, "192.168.1.10"))
 
     # --- LO IMPORTANTE: el log desaparece y el historial sigue -----------------------
-    open(os.path.join(tmp, "eve.json"), "w").close()      # logrotate se lo llevo
+    open(ruta_eve(ns), "w").close()                       # logrotate se lo llevo
     check("el historial sobrevive a que se vacie el log",
           alertas_de(ns, "192.168.1.10") == 5, alertas_de(ns, "192.168.1.10"))
     check("y el CPE de DNS tambien sigue ahi",
           any(f["ip"] == "192.168.1.11" for f in ns["hist_conducta"](3)["filas"]))
 
     # --- reinicio: reingerir no puede duplicar ---------------------------------------
-    escribir(tmp, [ev("192.168.1.10", 30, dest_ip="8.8.8.8", dest_port=53,
+    escribir(ns, [ev("192.168.1.10", 30, dest_ip="8.8.8.8", dest_port=53,
                       alert={"signature": "ET MALWARE Botnet CnC"}) for _ in range(5)])
     ns2 = entorno(tmp)                    # conexion nueva = proceso nuevo tras reiniciar
-    ns2["HIST_DB"] = ns["HIST_DB"]
+    ns2["HIST_DB"] = ns["HIST_DB"]       # la misma base del punto (nodos/p001/historial.db)
     ns2["hist_ingerir"]()
     check("tras un reinicio, reingerir lo mismo NO duplica",
           alertas_de(ns2, "192.168.1.10") == 5, alertas_de(ns2, "192.168.1.10"))
 
     # --- lo nuevo si entra ------------------------------------------------------------
-    escribir(tmp, [ev("192.168.1.10", 0.2, dest_ip="1.1.1.1", dest_port=443,
+    escribir(ns, [ev("192.168.1.10", 0.2, dest_ip="1.1.1.1", dest_port=443,
                       alert={"signature": "ET SCAN generico"}) for _ in range(3)], modo="a")
     ns2["hist_ingerir"]()
     check("lo escrito despues de la marca entra entero",
@@ -136,7 +149,7 @@ def main():
     check("y no adelanta al futuro", marca <= time.time() + 1, marca)
 
     # --- poda: recorta la cola larga, no lo mas visto ---------------------------------
-    escribir(tmp, [ev("192.168.2.30", 0.1, dest_ip="10.0.0.%d" % i, dest_port=443,
+    escribir(ns, [ev("192.168.2.30", 0.1, dest_ip="10.0.0.%d" % i, dest_port=443,
                       alert={"signature": "ET SCAN generico"})
                    for i in range(1, 40) for _ in range(1 if i > 3 else 9)])
     ns2["hist_ingerir"]()
@@ -157,7 +170,7 @@ def main():
     # distinguir lo ya contado de lo nuevo y la prueba no probaria nada.
     tmp2 = tempfile.mkdtemp()
     ns3 = entorno(tmp2)
-    escribir(tmp2, [ev("192.168.3.7", 120 - i, dest_ip="8.8.8.8", dest_port=53,
+    escribir(ns3, [ev("192.168.3.7", 120 - i, dest_ip="8.8.8.8", dest_port=53,
                        alert={"signature": "ET SCAN viejo"}) for i in range(60)])
     ns3["hist_ingerir"](limite_lineas=20)          # no cabe todo en una pasada
     n1 = alertas_de(ns3, "192.168.3.7")
@@ -174,22 +187,22 @@ def main():
     # El de antes tenia 60 lineas; el nuevo tiene 4. Si la posicion se guardara por
     # NOMBRE se saltaria hasta el byte del viejo, que en el nuevo ya es el final, y no
     # se leeria ni una linea. Por eso la posicion va por inodo.
-    os.rename(os.path.join(tmp2, "eve.json"), os.path.join(tmp2, "eve.json.1"))
-    escribir(tmp2, [ev("192.168.3.8", 1, dest_ip="9.9.9.9", dest_port=443,
+    os.rename(ruta_eve(ns3), ruta_eve(ns3) + ".1")
+    escribir(ns3, [ev("192.168.3.8", 1, dest_ip="9.9.9.9", dest_port=443,
                        alert={"signature": "ET SCAN nuevo"}) for _ in range(4)])
     ns3["hist_ingerir"]()
     check("tras rotar, el log nuevo se lee desde el principio",
           alertas_de(ns3, "192.168.3.8") == 4, alertas_de(ns3, "192.168.3.8"))
 
     # --- truncado: el archivo encoge y hay que volver al principio --------------------
-    escribir(tmp2, [ev("192.168.3.9", 0.5, dest_ip="9.9.9.9", dest_port=80,
+    escribir(ns3, [ev("192.168.3.9", 0.5, dest_ip="9.9.9.9", dest_port=80,
                        alert={"signature": "ET SCAN tras truncar"}) for _ in range(3)])
     ns3["hist_ingerir"]()
     check("si truncan el log en caliente, se vuelve a leer desde el principio",
           alertas_de(ns3, "192.168.3.9") == 3, alertas_de(ns3, "192.168.3.9"))
 
     # --- la posicion se guarda, tambien cuando no hay nada nuevo ----------------------
-    ruta = os.path.join(tmp2, "eve.json")
+    ruta = ruta_eve(ns3)
     st = os.stat(ruta)
     k = "%d:%d" % (st.st_dev, st.st_ino)
     c = ns3["_hist_con"]()
@@ -209,6 +222,19 @@ def main():
     check("y una pasada sin novedades no la pierde",
           despues.get(k) == antes.get(k), (antes.get(k), despues.get(k)))
 
+    # --- CONTRATO-F2 §3: una base por punto; «Todos» une filas con su nodo -------------
+    # La misma IP en otro punto es OTRO abonado: ni se mezcla en la base de p001 ni se
+    # suma en la vista acumulada.
+    escribir(ns3, [ev("192.168.3.7", 2, dest_ip="8.8.8.8", dest_port=53,
+                      alert={"signature": "ET SCAN otro punto"}) for _ in range(2)], pid="p002")
+    ns3["hist_ingerir"]("p002")
+    check("la base de p001 no ve lo ingerido en p002",
+          alertas_de(ns3, "192.168.3.7") == 60, alertas_de(ns3, "192.168.3.7"))
+    todos = [(f["nodo"], f["alertas"]) for f in
+             ns3["hist_conducta"](3, ns3["nodos"].TODOS)["filas"] if f["ip"] == "192.168.3.7"]
+    check("en «Todos» la misma IP de dos puntos son dos filas con su nodo, sin sumar",
+          sorted(todos) == [("p001", 60), ("p002", 2)], todos)
+
     print("\n" + ("TODO OK" if not fallos else "%d fallo(s)" % fallos))
     return 1 if fallos else 0
 
@@ -216,7 +242,7 @@ def main():
 
 class Legado(unittest.TestCase):
     def test_legado(self):
-        """Tipo: conservacion (prueba heredada de suricata-ids-lab). Historial persistente: lo ya contado no se pierde ni se cuenta dos veces."""
+        """Tipo: conservacion, adaptada a base y eventos por punto (CONTRATO-F2 §3: nodos/<pid>/historial.db, DATOS/<pid>/eve.json*; «Todos» une filas con nodo). Historial persistente: lo ya contado no se pierde ni se cuenta dos veces."""
         _comun.correr_main(self, main)
 
 

@@ -6,10 +6,17 @@ corta es el router, asi que lo que importa es si el router esta en condiciones. 
 se protege aqui es que el diagnostico no mienta: el fallo mas caro es decir "todo bien"
 cuando la address-list no la usa ninguna regla, porque entonces el panel dice "enviado"
 y el abonado sigue atacando.
+
+Adaptada al panel portado (CONTRATO-F2 §3, §4; OPERACION §2): el diagnostico es SIEMPRE de
+un router dado (un punto, `_router_destino` real: sin router no hay "el de por defecto"); el
+espejo ya no es `/tool sniffer` sino las dos reglas mangle `sniff-tzsp` hacia el sensor del
+punto (`punto.sensor`/`tzsp_puerto` de estado.json, `sensor_del_punto` real con `nodos.py`
+real), asi que el router "bien montado" lleva esas dos reglas en vez del sniffer.
 """
 import ast
 import os
 import sys
+import tempfile
 import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -19,8 +26,17 @@ RAIZ = extraer.RAIZ
 
 DASH = extraer.fuente("DASH")
 ARBOL = ast.parse(DASH)
+TMP = tempfile.TemporaryDirectory()
 
-PIEZAS = ("_mk_print", "mk_diagnostico", "ros_lista", "_RE_ROS_RARO", "ACCIONES", "CAT_CPE", "CAT_OTROS")
+# + _router_destino y sensor_del_punto REALES (CONTRATO-F2 §3/§4)
+PIEZAS = ("_mk_print", "mk_diagnostico", "ros_lista", "_RE_ROS_RARO", "ACCIONES", "CAT_CPE", "CAT_OTROS",
+          "_router_destino", "sensor_del_punto")
+R1 = {"id": "p001"}     # el router del punto p001 (sensor 100.64.1.1, TZSP 37008 en _comun.PUNTOS)
+# el espejo del punto (OPERACION §2): dos reglas mangle sniff-tzsp (ida y vuelta) hacia su sensor
+ESPEJO_P001 = [{"action": "sniff-tzsp", "sniff-target": "100.64.1.1", "sniff-target-port": "37008",
+                "comment": "IDS ids-maat:p001 ida"},
+               {"action": "sniff-tzsp", "sniff-target": "100.64.1.1", "sniff-target-port": "37008",
+                "comment": "IDS ids-maat:p001 vuelta"}]
 
 fallos = 0
 def check(d, c, e=""):
@@ -33,15 +49,16 @@ def check(d, c, e=""):
 def entorno(tablas, listas=None):
     """mk_diagnostico contra un router de mentira que devuelve las tablas dadas."""
     _l = listas or {"LIST": "suricata-cuarentena", "LIST_GRAD": "suricata-graduada"}
-    ns = {"re": __import__("re"),
-          "cargar_mk_de": lambda r: dict(_l),
+    nod, _sec = _comun.panel(TMP.name)
+    ns = {"ipaddress": __import__("ipaddress"), "re": __import__("re"), "nodos": nod,
+          # como el real: los datos del router llevan su ROUTER_ID (= pid)
+          "cargar_mk_de": lambda r: dict(_l, ROUTER_ID=r.get("id", "")),
           "cargar_mk": lambda: dict(_l),
           "mk_conectar": lambda d: type("S", (), {"close": lambda self: None})(),
           "_mk_send": lambda s, w: None,
           "_mk_reply": lambda s: (True, [], ""),
-          # doble: lo que se comprueba aqui es el diagnostico, no como se averigua
-          # la IP (eso es tests/test_ip_sensor.py)
-          "ip_del_sensor": lambda hacia="": "10.0.0.9",
+          # la IP del sensor ya no se adivina (ip_del_sensor): es punto.sensor de estado.json,
+          # que da sensor_del_punto REAL (CONTRATO-F2 §4; antes un doble con 10.0.0.9)
           # sin nadie enviado, no hay listas de categoria que vigilar: aqui se prueba
           # el diagnostico base, y que con listas en uso tambien las mire va en
           # tests/test_listas_categoria.py
@@ -66,7 +83,13 @@ def estados(checks):
 def main():
     # --- router recien montado: le falta todo ---
     ns = entorno({})
-    c = ns["mk_diagnostico"]()
+    # CONTRATO-F2 §3: sin router de destino no se diagnostica "el de por defecto"
+    try:
+        ns["mk_diagnostico"](); sin = ""
+    except ValueError as ex:
+        sin = str(ex)
+    check("sin router no hay a quien preguntar (no hay router por defecto)", "sin router" in sin, sin)
+    c = ns["mk_diagnostico"](R1)
     txt = " | ".join(t for _e, t, _d, _f in c)
     check("sin espejo se dice lo primero de todo",
           any(e == "falta" and "espejo" in t for e, t, _d, _f in c), txt)
@@ -81,7 +104,7 @@ def main():
     # justo la regla que el panel dice que hace falta para cortar de verdad es la unica que
     # no se puede copiar, y el error del router no menciona el espacio por ningun lado.
     ns2 = entorno({}, {"LIST": "Cliente Virus", "LIST_GRAD": "suricata-graduada"})
-    c2 = ns2["mk_diagnostico"]()
+    c2 = ns2["mk_diagnostico"](R1)
     fix2 = [f for _e, t, _d, f in c2 if "cuarentena NO corta" in t][0]
     check("una lista con espacios sale entrecomillada",
           'src-address-list="Cliente Virus"' in fix2, fix2)
@@ -101,10 +124,9 @@ def main():
           any("no detecta escaneos" in t for _e, t, _d, _f in c), txt)
 
     # --- router bien montado ---
+    # espejo = las dos sniff-tzsp del punto hacia SU sensor (OPERACION §2), no /tool sniffer
     ns2 = entorno({
-        "/tool/sniffer/print": [{"running": "true", "streaming-enabled": "true",
-                                 "streaming-server": "10.0.0.9:37008",
-                                 "filter-interface": "bridge1"}],
+        "/ip/firewall/mangle/print": ESPEJO_P001,
         "/ip/firewall/filter/print": [
             {"chain": "forward", "action": "drop", "src-address-list": "suricata-cuarentena"},
             {"chain": "forward", "action": "drop", "src-address-list": "suricata-graduada"},
@@ -114,13 +136,20 @@ def main():
         "/ip/firewall/raw/print": [{"action": "drop", "src-address-list": "suricata-cuarentena"}],
         "/ip/settings/print": [{"rp-filter": "strict"}],
     })
-    c2 = ns2["mk_diagnostico"]()
+    c2 = ns2["mk_diagnostico"](R1)
     check("un router bien montado no tiene ningun 'falta'",
           not [t for e, t, _d, _f in c2 if e == "falta"],
           [t for e, t, _d, _f in c2 if e == "falta"])
     check("se reconoce el espejo activo", any("espejo esta activo" in t for _e, t, _d, _f in c2))
     check("y que detecta escaneos por si solo",
           any("detecta escaneos por si solo" in t for _e, t, _d, _f in c2))
+    # CONTRATO-F2 §4: el espejo cuenta si va al sensor de ESTE punto y en los dos sentidos
+    for nom_, esp_ in (("hacia el sensor de otro punto", [dict(f, **{"sniff-target": "100.64.2.1"}) for f in ESPEJO_P001]),
+                       ("solo en un sentido", ESPEJO_P001[:1]),
+                       ("con las reglas desactivadas", [dict(f, disabled="true") for f in ESPEJO_P001])):
+        c_e = entorno({"/ip/firewall/mangle/print": esp_})["mk_diagnostico"](R1)
+        check("  espejo %s: NO se da por activo" % nom_,
+              any(e == "falta" and "espejo" in t for e, t, _d, _f in c_e), [t for _e, t, _d, _f in c_e][:1])
 
     # --- el fallo mas caro: la regla EXISTE pero esta desactivada ---
     ns3 = entorno({
@@ -129,7 +158,7 @@ def main():
              "src-address-list": "suricata-cuarentena", "disabled": "true"},
         ],
     })
-    c3 = ns3["mk_diagnostico"]()
+    c3 = ns3["mk_diagnostico"](R1)
     check("una regla DESACTIVADA no cuenta como que corta",
           any(e == "falta" and "cuarentena NO corta" in t for e, t, _d, _f in c3),
           [t for e, t, _d, _f in c3 if "cuarentena" in t])
@@ -138,27 +167,27 @@ def main():
     ns4 = entorno({
         "/ip/firewall/raw/print": [{"action": "drop", "src-address-list": "suricata-cuarentena"}],
     })
-    c4 = ns4["mk_diagnostico"]()
+    c4 = ns4["mk_diagnostico"](R1)
     check("cortar en raw cuenta igual que en filter",
           not any("cuarentena NO corta" in t for _e, t, _d, _f in c4),
           [t for e, t, _d, _f in c4 if "cuarentena" in t])
 
     # --- rp-filter a medias ---
     ns5 = entorno({"/ip/settings/print": [{"rp-filter": "loose"}]})
-    c5 = ns5["mk_diagnostico"]()
+    c5 = ns5["mk_diagnostico"](R1)
     check("'loose' no se da por bueno", any("falsificada" in t for _e, t, _d, _f in c5))
     det = [d for _e, t, d, _f in c5 if "falsificada" in t][0]
     check("y se avisa de que 'strict' rompe con rutas asimetricas",
           "asimetric" in det.lower(), det[:120])
 
     # --- la accion configurada por clase: aplicada o le faltan cambios ---
-    ns6 = entorno({"/tool/sniffer/print": [{"running": "true", "streaming-enabled": "true", "streaming-server": "10.0.0.9:37008"}],
+    ns6 = entorno({"/ip/firewall/mangle/print": ESPEJO_P001,
                    "/ip/settings/print": [{"rp-filter": "strict"}]})
     ns6["accion_de_clase"] = lambda cat, m=None: {"botnet": "cortar", "spam": "sin-correo"}.get(cat, "nada")
     ns6["_plan_en"] = lambda s_, cat, accion=None, m=None, **k: (
         {"cambios": 0, "acciones": [1], "aviso": "", "lista": "clientes-botnet"} if cat == "botnet"
         else {"cambios": 3, "acciones": [1, 2, 3], "aviso": "", "lista": "clientes-spam"})
-    c6 = ns6["mk_diagnostico"]()
+    c6 = ns6["mk_diagnostico"](R1)
     e6 = estados(c6)
     check("la accion aplicada sale en verde", any(k.startswith("Botnet / CnC: 'Cortar todo' aplicada") and v == "ok" for k, v in e6.items()), e6)
     check("la accion sin aplicar sale como falta, con los cambios que le faltan",
@@ -173,7 +202,7 @@ def main():
 
 class Legado(unittest.TestCase):
     def test_legado(self):
-        """Tipo: conservacion (prueba heredada de suricata-ids-lab). Diagnostico del MikroTik: que le falta para poder cortar."""
+        """Tipo: conservacion, adaptada (CONTRATO-F2 §3, §4; OPERACION §2): router = punto p001 obligatorio (sin router por defecto), espejo = dos sniff-tzsp hacia punto.sensor en vez de /tool sniffer (sensor_del_punto real). Diagnostico del MikroTik: que le falta para poder cortar."""
         _comun.correr_main(self, main)
 
 

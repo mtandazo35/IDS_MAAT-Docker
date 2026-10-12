@@ -117,6 +117,11 @@ class Self:
     def _operador(self):
         return True
     def _set_ctx(self):
+        # (adaptada, CONTRATO-F2 §10.1) el _set_ctx real pone el nodo de la peticion: sin
+        # ?nodo= ni nodo guardado en la sesion, la vista consolidada «Todos». El doble hace
+        # eso mismo con el nodos REAL; el _ctx_nodo que lo llama es el real (ver main)
+        if NODOS:
+            NODOS[0].poner_nodo(NODOS[0].TODOS)
         return None
     def _html(self, x, code=200):
         self.salida.append(("html", code))
@@ -143,6 +148,9 @@ class Self:
         return Cualquiera()
 
 
+NODOS = []      # el nodos REAL del panel portado (lo carga main con _comun.panel)
+
+
 def preparar(fn):
     g = Globales({
         "re": re, "json": json, "os": os, "time": time, "html": html, "glob": glob,
@@ -153,11 +161,33 @@ def preparar(fn):
         "ip_confiable": lambda *a, **k: True,
         "cargar_confianza": lambda *a, **k: [],
     })
+    if NODOS:
+        # (adaptada) panel portado: el contexto de nodo por peticion es del nodos REAL
+        g["nodos"] = NODOS[0]
+    # rutas nuevas del panel portado (CONTRATO-F2 §5 y §9): /eventos ejecuta el eventos_web
+    # REAL (importado en la cabecera del dashboard, como el modulo) y pega BASE_CSS a un str, asi que la hoja tiene que
+    # ser un str; /puntos delega en puntos_web.get(self, path, q), modulo con sus propias
+    # pruebas: aqui un doble que apunta que el manejador llego a delegar
+    g["BASE_CSS"] = ""
+    import eventos_web                       # (adaptada) va en la cabecera del dashboard
+    g["eventos_web"] = eventos_web
+    g["puntos_web"] = types.SimpleNamespace(
+        get=lambda h, ruta, q: h.salida.append(("puntos_web", ruta)) or True,
+        post=lambda h, ruta, q: h.salida.append(("puntos_web", ruta)) or True)
     exec(compile(ast.Module(body=[fn], type_ignores=[]), "<h>", "exec"), g)
     return g[fn.name]
 
 
 def main():
+    import tempfile
+    nod, _sec = _comun.panel(tempfile.mkdtemp(prefix="legado-rutas-"))
+    NODOS[:] = [nod]
+    # (adaptada, CONTRATO-F2 §10.1) _get llama a self._ctx_nodo() tras la sesion y, si da
+    # falso, no sigue (400/404 ya respondidos). El doble Self no lo tenia: __getattr__
+    # devolvia un Cualquiera (falso) y _get volvia ANTES de cualquier ruta, sin responder
+    # nada (eso eran las «mudas»). Se le pone el _ctx_nodo REAL, que llama al _set_ctx
+    # del doble (nodo «Todos», lo que da una peticion sin ?nodo= ni nodo en la sesion).
+    Self._ctx_nodo = preparar(metodo("_ctx_nodo"))
     get = metodo("_get")
     fn = preparar(get)
     rutas = rutas_de(get, "path")
@@ -186,6 +216,11 @@ def main():
     # Si una ruta no respondio NADA es que no se llego a ella y la comprobacion de arriba
     # seria vacia. Paso de verdad: un AttributeError cortaba antes que cualquier ruta.
     check("las rutas criticas se ejecutaron de verdad", not mudas, mudas)
+    # (capacidad nueva) las rutas que anade el panel portado tambien se recorren
+    NUEVAS = ("/eventos", "/eventos/detalle", "/puntos")
+    check("las rutas nuevas (Eventos, Puntos) tambien se ejecutaron",
+          all(r in rutas for r in NUEVAS) and not [r for r in NUEVAS if r in sin_cubrir],
+          ([r for r in NUEVAS if r not in rutas], [r for r in NUEVAS if r in sin_cubrir]))
     if sin_cubrir:
         print("       (no cubiertas por los dobles: %s)" % ", ".join(sin_cubrir))
 
@@ -239,7 +274,13 @@ def main():
 
 class Legado(unittest.TestCase):
     def test_legado(self):
-        """Tipo: conservacion (prueba heredada de suricata-ids-lab). Ninguna ruta del panel puede reventar por un nombre sin definir."""
+        """Tipo: conservacion, adaptada (prueba heredada de suricata-ids-lab). Ninguna ruta del panel puede reventar por un nombre sin definir.
+
+        Adaptada (CONTRATO-F2 §10.1): el doble de peticion lleva el _ctx_nodo REAL y un
+        _set_ctx que pone la vista «Todos» con el nodos real; sin el, _get volvia antes de
+        cualquier ruta. Se recorren tambien las rutas nuevas /eventos (eventos_web real) y
+        /puntos (puntos_web doble). La comprobacion «ningun import dentro de una rama» NO se
+        relaja: hoy falla por `import eventos_web` dentro de _get (defecto del codigo)."""
         _comun.correr_main(self, main)
 
 

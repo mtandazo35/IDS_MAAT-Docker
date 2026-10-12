@@ -37,7 +37,8 @@ RAIZ = extraer.RAIZ
 DASH = extraer.fuente("DASH")
 ARBOL = ast.parse(DASH)
 
-PIEZAS = ("FEEDS_CONF", "AIDB_CACHE", "AIDB_ESTADO", "AIDB_TTL_LIMPIA", "AIDB_TTL_SUCIA",
+PIEZAS = ("FEEDS_CONF", "FEEDS_SECRETOS", "SECRETOS_AVISO", "_feeds_conf_crudo",
+          "clave_cpe", "ip_de", "rid_de", "AIDB_CACHE", "AIDB_ESTADO", "AIDB_TTL_LIMPIA", "AIDB_TTL_SUCIA",
           "AIDB_CUOTA", "AIDB_RESERVA_MANUAL", "AIDB_MAX_LOTE", "AIDB_MAX_CACHE",
           "_AIDB_LOCK", "AIDB_CATS", "AIDB_REMEDIO",
           "_feeds_conf_get", "_feeds_conf_set", "aidb_key", "aidb_configurada", "aidb_set",
@@ -107,8 +108,11 @@ def http(code, cabeceras=None):
                                   cabeceras or {}, None)
 
 
-def entorno(tmp, red):
-    ns = {"json": json, "os": os, "re": re, "time": __import__("time"), "html": __import__("html"),
+def entorno(tmp, red, panel):
+    # panel portado (CONTRATO-F2 §2, §10.3): `nodos` y `secretos` REALES; la clave de
+    # AbuseIPDB se guarda cifrada en feeds.conf y se descifra en memoria al consultar
+    ns = {"nodos": panel[0], "secretos": panel[1],
+          "json": json, "os": os, "re": re, "time": __import__("time"), "html": __import__("html"),
           "threading": __import__("threading"), "ipaddress": __import__("ipaddress"),
           "socket": __import__("socket"), "sys": __import__("sys"),
           # sin clave de Groq no se consulta: aqui se prueba AbuseIPDB, no la IA
@@ -117,9 +121,7 @@ def entorno(tmp, red):
           "urllib": types.SimpleNamespace(request=red, error=urllib.error, parse=urllib.parse),
           "BASE_CSS": "", "nav": lambda a="": "<!--nav-->",
           "cargar_routers": lambda: [], "cargar_enviados": lambda *a, **k: {},
-          "MK_SENT": "", "MK_SENT_DNS": "", "LOGDIR": tmp,
-          "clave_cpe": lambda ip, rid: (rid + "|" + ip) if rid else ip,
-          "ip_de": lambda k: k.split("|", 1)[1] if "|" in k else k}
+          "MK_SENT": "", "MK_SENT_DNS": "", "LOGDIR": tmp}
     for n in ARBOL.body:
         nombre = getattr(n, "name", None) or (
             getattr(n.targets[0], "id", "") if isinstance(n, ast.Assign) and n.targets else "")
@@ -150,8 +152,11 @@ FICHA = {"data": {
 
 def main():
     tmp = tempfile.mkdtemp()
+    # un solo arbol del panel para todos los entornos de esta prueba; el nodo del hilo es
+    # p001, el que se mira (CONTRATO-F2 §1: el router r1 del multi-nodo viejo es el punto p001)
+    pan = _comun.panel(os.path.join(tmp, "_panel"), nodo="p001")
     red = Red()
-    ns = entorno(tmp, red)
+    ns = entorno(tmp, red, pan)
 
     # --- 1) sin clave no se llama a nadie ---
     d, orig, err = ns["aidb_consultar"]("1.1.1.1")
@@ -161,6 +166,11 @@ def main():
     ns["aidb_set"]("CLAVE-DE-PRUEBA-NO-REAL")
     check("la clave queda guardada en el .conf", ns["aidb_configurada"]() is True)
     check("con permisos y sin mostrarse", isinstance(ns["aidb_configurada"](), bool))
+    # CONTRATO-F2 §10.3: la clave de un feed es un secreto y se guarda CIFRADA, nunca en claro
+    with open(ns["FEEDS_CONF"], encoding="utf-8") as f:
+        _conf = f.read()
+    check("  y en el .conf va cifrada, no en claro (§10.3)",
+          "ABUSEIPDB_KEY=" in _conf and "CLAVE-DE-PRUEBA-NO-REAL" not in _conf, _conf[:80])
 
     # --- 2) una IP privada NUNCA sale del servidor ---
     for priv in ("10.6.1.165", "192.168.1.1", "172.19.1.3", "100.64.0.9"):
@@ -238,7 +248,7 @@ def main():
     check("y cuanta cuota queda", "900" in pag)
 
     # --- 9) una RED entera: UNA peticion cubre todas sus direcciones ---
-    tmp3 = tempfile.mkdtemp(); red3 = Red(); ns3 = entorno(tmp3, red3)
+    tmp3 = tempfile.mkdtemp(); red3 = Red(); ns3 = entorno(tmp3, red3, pan)
     ns3["aidb_set"]("K")
     BLOQUE = {"data": {"networkAddress": "200.0.0.0", "netmask": "255.255.255.0",
                        "numPossibleHosts": 256, "addressSpaceDesc": "Public",
@@ -279,7 +289,7 @@ def main():
     check("si el plan no llega a ese tamaño, se dice", "plan" in (err402 or ""), err402)
 
     # --- 10) el repartidor: mezcla de IPs y redes en el mismo cuadro ---
-    tmp4 = tempfile.mkdtemp(); red4 = Red(); ns4 = entorno(tmp4, red4)
+    tmp4 = tempfile.mkdtemp(); red4 = Red(); ns4 = entorno(tmp4, red4, pan)
     ns4["aidb_set"]("K")
     red4.guion.extend([BLOQUE, FICHA])
     lote, aviso = ns4["aidb_lote"]("200.0.0.0/24, 1.1.1.1")
@@ -323,8 +333,8 @@ def main():
           "class=volver" not in ns["reputacion_page"]())
 
     # --- interfaz: ni cajones enormes ni titulos repetidos ---
-    ns["cargar_routers"] = lambda: [{"id": "r1", "nombre": "MikroTik"}]
-    ns["guardar_publicas_de"]("r1", "200.0.0.0/24")
+    ns["cargar_routers"] = lambda: [{"id": "p001", "nombre": "MikroTik"}]
+    ns["guardar_publicas_de"]("p001", "200.0.0.0/24")
     adm = ns["reputacion_page"](es_admin=True)
 
     # --- el resultado de detectar/agregar/quitar llega en el modal, no se pierde ---
@@ -353,9 +363,9 @@ def main():
               _arg, ""), "")
     # Detectar avisa de las que ya no salen y las deja MARCADAS: el boton de quitar tiene
     # que nacer habilitado con la cuenta, y solo esas casillas marcadas. Nada se borra solo.
-    ns["guardar_publicas_de"]("r1", "200.0.0.0/24\n200.0.1.7")
+    ns["guardar_publicas_de"]("p001", "200.0.0.0/24\n200.0.1.7")
     try:
-        pmar = ns["reputacion_page"](es_admin=True, marcar={"r1": ["200.0.1.7"],
+        pmar = ns["reputacion_page"](es_admin=True, marcar={"p001": ["200.0.1.7"],
                                                              "otro": ["200.0.0.0/24"]})
     except TypeError as ex:
         pmar = "ERROR " + str(ex)
@@ -370,7 +380,7 @@ def main():
           _bq is not None and " disabled" not in _bq.group(0)
           and "Quitar marcadas (1)" in _bq.group(0) and "ask(this" in _bq.group(0),
           _bq.group(0) if _bq else pmar[:120])
-    ns["guardar_publicas_de"]("r1", "200.0.0.0/24")
+    ns["guardar_publicas_de"]("p001", "200.0.0.0/24")
     check("las IPs declaradas se ven como fichas, no en un textarea",
           "pchip" in adm and "<textarea" not in adm, "textarea=%s" % ("<textarea" in adm))
     check("se agregan de una en una, en un campo pequeño",
@@ -420,7 +430,7 @@ def main():
     check("pero sin consulta si sale", "Tus IPs publicas" in adm)
 
     # --- 12) una clave rechazada no se confunde con 'sin red' ---
-    tmp2 = tempfile.mkdtemp(); red2 = Red(); ns2 = entorno(tmp2, red2)
+    tmp2 = tempfile.mkdtemp(); red2 = Red(); ns2 = entorno(tmp2, red2, pan)
     ns2["aidb_set"]("MALA")
     red2.guion.append(http(401))
     _d8, _o8, err8 = ns2["aidb_consultar"]("1.1.1.1")
@@ -433,7 +443,7 @@ def main():
 
 class Legado(unittest.TestCase):
     def test_legado(self):
-        """Tipo: conservacion (prueba heredada de suricata-ids-lab). Consultas a AbuseIPDB: cuota diaria, cache, privacidad y categorias."""
+        """Tipo: conservacion, adaptada al panel portado (CONTRATO-F2 §1, §2, §10.3): nodos/secretos reales, clave de AbuseIPDB cifrada en feeds.conf, router r1 -> punto p001. Consultas a AbuseIPDB: cuota diaria, cache, privacidad y categorias."""
         _comun.correr_main(self, main)
 
 

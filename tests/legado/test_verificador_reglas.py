@@ -130,7 +130,7 @@ def main():
     check("la que tiene entradas no avisa (Redes-Privadas)", not tiene(vr, "aviso", "'Redes-Privadas' esta vacia"), "")
 
     # ---------- aplicar: bloqueado con errores; verificado tras aplicar ----------
-    router = {"id": "r1"}
+    router = {"id": "p001"}          # un punto = un router del multi-nodo viejo (CONTRATO-F2 §1)
     ns["RESPALDOS_MK"] = os.path.join(td, "bk_v")
     m["ACCION_DNS"] = "dns-protegido"                                    # usa !WAN: el router no la tiene
     antes = json.dumps(rt.t, sort_keys=True)
@@ -168,7 +168,7 @@ def main():
 
 class Legado(unittest.TestCase):
     def test_legado(self):
-        """Tipo: conservacion (prueba heredada de suricata-ids-lab). Verificador de reglas: lo que RouterOS acepta sin quejarse y no es lo que querias."""
+        """Tipo: conservacion (prueba heredada de suricata-ids-lab; solo cambia la carga: el entorno de test_acciones_router con nodos real y el router r1 -> punto p001, CONTRATO-F2 §1). Verificador de reglas: lo que RouterOS acepta sin quejarse y no es lo que querias."""
         _comun.correr_main(self, main)
 
 

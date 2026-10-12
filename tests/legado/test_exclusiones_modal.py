@@ -24,7 +24,10 @@ RAIZ = extraer.RAIZ
 DASH = extraer.fuente("DASH")
 ARBOL = ast.parse(DASH)
 
-PIEZAS = ("EXCL_FILE", "cargar_exclusiones", "guardar_exclusiones", "exclusiones_page")
+# REPORT_CONF: en el panel portado el .conf legacy (IGNORAR_*) es nodos.ruta("conf",
+# "report.conf") en vez del literal /etc/suricata-report.conf
+PIEZAS = ("EXCL_FILE", "REPORT_CONF", "cargar_exclusiones", "guardar_exclusiones",
+          "exclusiones_page")
 
 fallos = 0
 
@@ -42,6 +45,9 @@ def entorno(tmp):
     import time as _t
     ns = {"os": os, "json": _j, "time": _t, "html": _h, "re": re,
           "BASE_CSS": "/*base*/", "nav": lambda r: "<div class=nav></div>"}
+    # panel portado: EXCL_FILE se define con nodos.ruta(); se carga el nodos REAL sobre el
+    # arbol temporal y luego se apunta al tmp como antes
+    ns["nodos"], ns["secretos"] = _comun.panel(tmp)
     for n in ARBOL.body:
         nom = getattr(n, "name", None) or (
             getattr(n.targets[0], "id", "") if isinstance(n, ast.Assign) and n.targets else "")

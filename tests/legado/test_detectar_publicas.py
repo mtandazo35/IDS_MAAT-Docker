@@ -37,6 +37,11 @@ Lo que se protege:
   - si no se sabe cual es la WAN NO se cae a "todas": solo los pools y un aviso;
   - solo el to-addresses de srcnat, nunca el de dstnat;
   - y lo privado nunca entra.
+
+Adaptada al panel portado (CONTRATO-F2 §1, §3, §10.1): el router es un punto (p001) y la
+deteccion es SIEMPRE de un router dado (`_router_destino` real: sin router no hay "el de por
+defecto"); la ruta elige el router por el `rid` del formulario con `_router_de_pid` real (en
+vez de `router_por_id`), con `nodos.py` real; las publicas se guardan por pid.
 """
 import ast
 import ipaddress
@@ -44,6 +49,7 @@ import json
 import os
 import re
 import sys
+import tempfile
 import unittest
 import time
 import types
@@ -56,11 +62,14 @@ RAIZ = extraer.RAIZ
 
 DASH = extraer.fuente("DASH")
 ARBOL = ast.parse(DASH)
+TMP = tempfile.TemporaryDirectory()
 
+# + _router_destino y _router_de_pid REALES (CONTRATO-F2 §3, §10.1)
 PIEZAS = ("_a_cidr", "_params_accion", "_ifaces_de_ruta", "_redes_de",
           "mk_publicas_detectadas", "publicas_ya_no_detectadas",
           "_REP_AVISOS", "_REP_AVISOS_TTL", "rep_aviso_guardar", "rep_aviso_tomar",
-          "rep_aviso_url")
+          "rep_aviso_url", "_router_destino", "_router_de_pid")
+R1 = {"id": "p001"}     # el router del punto p001 (antes r1)
 
 fallos = 0
 
@@ -172,7 +181,10 @@ def entorno(router, conf=None):
     conf = dict(conf or {})
     conf.setdefault("HOST", "192.0.2.1")
     import secrets
+    nod, _sec = _comun.panel(TMP.name)
     ns = {"ipaddress": IPADDRESS, "re": re, "time": time, "secrets": secrets,
+          "urllib": urllib, "nodos": nod,
+          "cargar_routers": lambda: [{"id": p} for p in nod.pids()],
           "cargar_mk": lambda: conf,
           "cargar_mk_de": lambda r: conf,
           "mk_conectar": lambda d, timeout=6: router,
@@ -189,7 +201,7 @@ def entorno(router, conf=None):
 def detectar(tablas, conf=None):
     """(lista, aviso). Tolera la forma vieja (solo lista) para que la prueba FALLE por lo
     que devuelve y no por como lo devuelve."""
-    r = entorno(Router(tablas), conf)["mk_publicas_detectadas"]()
+    r = entorno(Router(tablas), conf)["mk_publicas_detectadas"](R1)
     return r if isinstance(r, tuple) else (r, "")
 
 
@@ -246,6 +258,10 @@ class _Peticion:
         self.salida.append(("html", x))
     def _deny(self):
         self.salida.append(("deny", 403))
+    def _prohibido(self):        # el _deny del original (CONTRATO-F2 §10.2)
+        self.salida.append(("deny", 403))
+    def _ctx_nodo(self):         # selector de nodo (§10.1): sin ?nodo= vale la vista por defecto
+        return True
     def __getattr__(self, _n):
         return _Doble()
 
@@ -282,20 +298,23 @@ def rutas_del_panel():
         return "pagina"
 
     deteccion = {"r": (["198.51.100.0/30", "203.0.113.0/29"], "")}
+    preguntados = []
 
     def mk(r):
         if isinstance(deteccion["r"], Exception):
             raise deteccion["r"]
         if isinstance(deteccion["r"], dict):
             # la deteccion REAL contra un router de mentira (lo que contesta cada tabla)
-            return entorno(Router(deteccion["r"]))["mk_publicas_detectadas"]()
+            return entorno(Router(deteccion["r"]))["mk_publicas_detectadas"](r)
+        preguntados.append(r.get("id"))
         return deteccion["r"]
 
     g = _Globales({
         "re": re, "json": json, "time": time, "urllib": urllib, "_up": urllib.parse,
         "ipaddress": IPADDRESS, "BaseHTTPRequestHandler": object,
         "ip_confiable": lambda *a, **k: True, "cargar_confianza": lambda *a, **k: [],
-        "router_por_id": lambda rid: {"id": rid} if rid == "r1" else None,
+        # el router sale del rid validado (_router_de_pid real), no de router_por_id (§10.1)
+        "_router_de_pid": ns["_router_de_pid"],
         "mk_publicas_detectadas": mk,
         "cargar_publicas": lambda: {k: list(v) for k, v in disco["nodos"].items()},
         "origen_publicas": lambda: {k: dict(v) for k, v in disco["origen"].items()},
@@ -313,8 +332,8 @@ def rutas_del_panel():
         exec(compile(ast.Module(body=[_metodo(nombre)], type_ignores=[]), "<h>", "exec"), g)
     post, get = g["_post"], g["_get"]
 
-    def pulsar_detectar():
-        p = _Peticion("/publicas/detectar", "rid=r1")
+    def pulsar_detectar(rid="p001"):
+        p = _Peticion("/publicas/detectar", "rid=" + rid)
         post(p)
         return p.salida[-1][1] if p.salida and p.salida[-1][0] == "redirect" else ""
 
@@ -331,9 +350,9 @@ def rutas_del_panel():
           cebo not in msg and "panel-falso" not in msg, msg)
 
     # --- 9. Detectar avisa de lo que una deteccion anterior declaro mal, sin borrarlo ------
-    disco["nodos"]["r1"] = ["198.51.100.0/30", "192.0.2.0/25", "203.0.113.53",
-                            "198.51.100.77", "203.0.113.2"]
-    disco["origen"]["r1"] = {"198.51.100.0/30": "mikrotik",
+    disco["nodos"]["p001"] = ["198.51.100.0/30", "192.0.2.0/25", "203.0.113.53",
+                              "198.51.100.77", "203.0.113.2"]
+    disco["origen"]["p001"] = {"198.51.100.0/30": "mikrotik",
                              "192.0.2.0/25": "mikrotik",        # la LAN que se colo
                              "203.0.113.53": "mikrotik",        # el DNS de otro
                              "198.51.100.77": "manual",         # a mano: no se discute
@@ -352,10 +371,10 @@ def rutas_del_panel():
     check("  las de origen manual y las que caen en lo hallado no se ponen en duda",
           "198.51.100.77" not in msg and not re.search(r"203\.0\.113\.2(?![\d/])", msg), msg)
     check("  quedan MARCADAS en la pagina (solo esas dos)",
-          sorted(marcar.get("r1", [])) == ["192.0.2.0/25", "203.0.113.53"], marcar)
+          sorted(marcar.get("p001", [])) == ["192.0.2.0/25", "203.0.113.53"], marcar)
     check("  y NO se borra nada solo",
-          all(e in disco["nodos"]["r1"] for e in ("192.0.2.0/25", "203.0.113.53",
-                                                  "198.51.100.77")), disco["nodos"]["r1"])
+          all(e in disco["nodos"]["p001"] for e in ("192.0.2.0/25", "203.0.113.53",
+                                                    "198.51.100.77")), disco["nodos"]["p001"])
     msg2, _m = abrir(url)
     check("  el codigo es de un solo uso: recargar no repite el aviso", msg2 == "", msg2)
 
@@ -376,7 +395,7 @@ def rutas_del_panel():
     # de punta a punta: la deteccion de verdad con /ip/address/print fallando (timeout)
     # y la WAN encontrada. Antes salia solo el pool y la WAN 198.51.100.0/30 llegaba
     # PRE-MARCADA para quitar
-    antes = list(disco["nodos"]["r1"])
+    antes = list(disco["nodos"]["p001"])
     for nombre, falla in (("timeout", TimeoutError("timed out")),
                           ("sin permiso (!trap)", Trap("not enough permissions (9)"))):
         deteccion["r"] = tablas(dirs=falla)
@@ -385,8 +404,8 @@ def rutas_del_panel():
               not marcar and "ya no son de la WAN" not in msg, (msg, marcar))
         check("  y avisa de que la lectura fue parcial y de cual fallo",
               "PARCIAL" in msg and "/ip/address/print" in msg, msg)
-        check("  y no se borra nada", all(e in disco["nodos"]["r1"] for e in antes),
-              disco["nodos"]["r1"])
+        check("  y no se borra nada", all(e in disco["nodos"]["p001"] for e in antes),
+              disco["nodos"]["p001"])
     # el error del router llega igual, pero por codigo
     deteccion["r"] = RuntimeError("timeout")
     url = pulsar_detectar()
@@ -395,8 +414,26 @@ def rutas_del_panel():
           "No se pudo preguntar al MikroTik: timeout" in msg and "timeout" not in url,
           (url, msg))
 
+    # CONTRATO-F2 §3/§10.1: sin rid, con un id del multi-nodo viejo o con un punto que no
+    # existe no hay destino inequivoco: no se pregunta a ningun router ni se guarda nada
+    deteccion["r"] = (["198.51.100.0/30"], "")
+    antes = {k: list(v) for k, v in disco["nodos"].items()}
+    for rid in ("", "r1", "p009"):
+        del preguntados[:]
+        url = pulsar_detectar(rid)
+        check("sin destino inequivoco (rid=%r): vuelve a /reputacion sin tocar ningun router" % rid,
+              url == "/reputacion" and not preguntados and disco["nodos"] == antes,
+              (url, preguntados, disco["nodos"]))
+
 
 def main():
+    # --- 0. CONTRATO-F2 §3: sin router de destino no se detecta "el de por defecto" ----------
+    try:
+        entorno(Router(tablas()))["mk_publicas_detectadas"](); sin = ""
+    except ValueError as ex:
+        sin = str(ex)
+    check("sin router no hay a quien preguntar (no hay router por defecto)", "sin router" in sin, sin)
+
     # --- 1. lista WAN + ruta v7: lo de siempre ---------------------------------------------
     res, aviso = detectar(tablas())
     check("v7: la direccion de la WAN entra (de ahi sale el masquerade)",
@@ -481,7 +518,7 @@ def main():
           res == ESPERADO, res)
     # el router se pregunta solo por la lista que usa el srcnat, no por todas
     rt = Router(tablas(lista=con_lan))
-    entorno(rt)["mk_publicas_detectadas"]()
+    entorno(rt)["mk_publicas_detectadas"](R1)
     pedidas = [w for w in rt.pedidos if w[0] == "/ip/firewall/address-list/print"]
     check("  la address-list se pide filtrada (?list=LAN-ABONADOS), no entera",
           pedidas and all("?list=LAN-ABONADOS" in w for w in pedidas), pedidas)
@@ -540,7 +577,7 @@ def main():
 
 class Legado(unittest.TestCase):
     def test_legado(self):
-        """Tipo: conservacion (prueba heredada de suricata-ids-lab). Detectar del MikroTik: que traiga TUS publicas y no las de otros."""
+        """Tipo: conservacion, adaptada (CONTRATO-F2 §1, §3, §10.1): router = punto p001 obligatorio (_router_destino real, sin router por defecto), la ruta elige por rid validado (_router_de_pid real) y sin destino no toca nada. Detectar del MikroTik: que traiga TUS publicas y no las de otros."""
         _comun.correr_main(self, main)
 
 

@@ -73,10 +73,14 @@ def main():
     check("y una vista completa para imprimir o Ctrl+F", '?p=todo' in portada)
 
     # --- una pagina concreta ---
-    uno = render("salud-del-sensor")
-    check("abre el tema pedido", "<h1>Salud del sensor</h1>" in uno, uno[:200])
+    # (adaptada) el tema de ejemplo era «Salud del sensor» (suricatasc iface-stat y
+    # systemctl del servidor viejo, que se quitan: CONTRATO-F2 §1); en el panel portado su
+    # sitio lo ocupa «Salud de cada punto (por etapas)» (§10.6). Mismo papel, otro tema.
+    TEMA, TITULO = "salud-de-cada-punto-por-etapas", "Salud de cada punto (por etapas)"
+    uno = render(TEMA)
+    check("abre el tema pedido", "<h1>%s</h1>" % TITULO in uno, uno[:200])
     check("marca ese tema como activo en la barra",
-          re.search(r'<a href="\?p=salud-del-sensor" class=on', uno) is not None)
+          re.search(r'<a href="\?p=%s" class=on' % re.escape(TEMA), uno) is not None)
     check("muestra a que categoria pertenece", "docbreadcrumb" in uno)
     check("NO trae los demas temas", uno.count("<h2 id=") <= 1, uno.count("<h2 id="))
     check("tiene navegacion anterior/siguiente", "docpn" in uno and "Siguiente" in uno)
@@ -101,7 +105,7 @@ def main():
     sueltos = re.findall(r'href="\?p=([^"&]+)"(?!\S*embed)', emb)
     check("cada enlace arrastra embed=1 (si no, el panel entero se carga dentro)",
           not sueltos, sueltos[:5])
-    emb2 = render("salud-del-sensor", embed=True)
+    emb2 = render(TEMA, embed=True)
     check("anterior/siguiente tambien lo arrastran",
           emb2.count("embed=1") >= 20 and "<!--nav-->" not in emb2,
           emb2.count("embed=1"))
@@ -114,7 +118,11 @@ def main():
 
 class Legado(unittest.TestCase):
     def test_legado(self):
-        """Tipo: conservacion (prueba heredada de suricata-ids-lab). La documentacion del panel: una pagina por tema, con categorias y buscador."""
+        """Tipo: conservacion, adaptada (prueba heredada de suricata-ids-lab). La documentacion del panel: una pagina por tema, con categorias y buscador.
+
+        Adaptada: el tema de ejemplo «Salud del sensor» (suricatasc/systemctl, retirados por
+        CONTRATO-F2 §1) pasa a «Salud de cada punto (por etapas)» (§10.6); el resto de
+        comprobaciones (>= 20 temas, categorias, anclas, embed) no cambia."""
         _comun.correr_main(self, main)
 
 

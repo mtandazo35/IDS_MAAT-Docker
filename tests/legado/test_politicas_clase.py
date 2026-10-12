@@ -19,6 +19,7 @@ import os
 import sys
 import unittest
 import tempfile
+import threading
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import _comun  # noqa: E402  (pone tests/legado en sys.path)
@@ -82,18 +83,32 @@ def main():
     check("banda desconocida nunca corta", acc("botnet", "", {"POL_BOTNET": "siempre"}) == "nada", "")
 
     # --- aplicar_politicas con dobles ---------------------------------------------------
+    # Panel portado (CONTRATO-F2 §1, §3): aplicar_politicas corre POR PUNTO (pid), lee el
+    # cuarentena.json de ese punto (nodos.salida), las claves son `pid|ip` (clave_cpe, ip_de,
+    # rid_de y _suf_nodo REALES) y el router es el del punto; el "r0" del multi-nodo viejo es
+    # p001. La conexion y la politica llegan juntas en cargar_mk_de(r) (cargar_mk ya no trae
+    # router) y "habilitado" es mk_listo de ESE router. La lista heredada sigue siendo LIST.
     td = tempfile.mkdtemp()
+    nod, _sec = _comun.panel(td)
     cq = {"top_riesgo": [
         {"ip": "10.0.0.7", "router": "", "riesgo": 85, "banda": "ALTO", "cats_top": {"Botnet CnC": 20}},
         {"ip": "10.0.0.8", "router": "", "riesgo": 80, "banda": "ALTO", "cats_top": {"BitTorrent / P2P": 90}},
         {"ip": "10.0.0.9", "router": "", "riesgo": 50, "banda": "MEDIO", "cats_top": {"Fuerza bruta": 30}},
         {"ip": "10.0.0.10", "router": "", "riesgo": 45, "banda": "MEDIO", "cats_top": {"Spam": 30}},
+        # (nuevos, §3 y §10.4) uno de otro punto y uno con evidencia vieja
+        {"ip": "10.0.0.12", "router": "p002", "riesgo": 90, "banda": "ALTO", "cats_top": {"Botnet CnC": 20}},
+        {"ip": "10.0.0.11", "router": "", "riesgo": 88, "banda": "ALTO", "cats_top": {"Botnet CnC": 20}},
     ]}
-    json.dump(cq, open(os.path.join(td, "cuarentena.json"), "w"))
+    os.makedirs(nod.dir_salida("p001"), exist_ok=True)
+    with open(nod.salida("cuarentena.json", "p001"), "w", encoding="utf-8") as f:
+        json.dump(cq, f)
     m = {"ENABLED": "1", "POL_AUTO": "1", "POL_BOTNET": "alto", "POL_P2P": "nada",
          "POL_FUERZA": "medio", "POL_SPAM": "notificar", "POL_ALTO": "cuarentena"}
     anadidos = []; quitados = []; logs = []
-    envs = {"sent": {"r0|10.0.0.99": {"pol": True, "lista": "lista-vieja", "router": ""}}, "dns": {}}
+    envs = {"sent": {"p001|10.0.0.99": {"pol": True, "lista": "lista-vieja", "router": "p001"},
+                     # (nuevo, §3) uno de OTRO punto que tampoco esta en el Top de p001
+                     "p002|10.0.0.98": {"pol": True, "lista": "lista-otro", "router": "p002"}},
+            "dns": {}}
     def mk_add(ip, comment="", lista="", ttl="", router=None):
         anadidos.append((ip, lista)); return True, ""
     def mk_remove(ip, lista="", router=None):
@@ -102,17 +117,22 @@ def main():
         return dict(envs["sent"] if path == "SENT" else envs["dns"])
     def guardar_enviados(env, path):
         envs["sent" if path == "SENT" else "dns"] = env
-    extra = {"_mk_globales": lambda: m, "cargar_mk": lambda: m, "mk_configurado": lambda: True,
-             "LOGDIR": td, "POL_NOTIF": os.path.join(td, "notif.json"),
-             "clave_cpe": lambda ip, rid: ("r0|" + ip), "ip_de": lambda k: k.split("|")[-1],
-             "router_de_clave": lambda k: {"id": "r0"}, "cargar_mk_de": lambda r: {"ENABLED": "1", "LIST": "heredada"},
+    extra = {"_mk_globales": lambda: m, "nodos": nod, "threading": threading,
+             "POL_NOTIF": os.path.join(td, "notif.json"),
+             "router_por_id": lambda pid: {"id": pid},
+             "cargar_mk_de": lambda r: dict(m, ROUTER_ID=r["id"], USER="u", PASS="p", LIST="heredada"),
+             "evidencia_reciente": lambda k, cq=None: (
+                 {"ok": False, "detalle": "ultima alerta hace 3 dias"} if k.endswith("|10.0.0.11")
+                 else {"ok": True, "detalle": ""}),
              "lista_de_categoria": lambda c: "clientes-" + c, "mk_add": mk_add, "mk_remove": mk_remove,
              "cargar_enviados": cargar_enviados, "guardar_enviados": guardar_enviados,
              "MK_SENT": "SENT", "MK_SENT_DNS": "DNS", "_motivo_bloqueo": lambda k: {},
-             "notificar_cuarentena": lambda *a, **k: None, "_suf_nodo": lambda k: "",
+             "notificar_cuarentena": lambda *a, **k: None,
              "mk_log": lambda accion, ip, quien, det="": logs.append((accion, ip, det))}
-    ns2 = piezas(BASE + ("aplicar_politicas",), extra)
-    ns2["aplicar_politicas"]()
+    ns2 = piezas(BASE + ("aplicar_politicas", "clave_cpe", "ip_de", "rid_de", "_suf_nodo", "mk_listo",
+                         "_registrar_enviados", "_ENV_LOCK", "cuarentena_json", "_cargar_cuarentena"),
+                 extra)
+    ns2["aplicar_politicas"]("p001")
     check("la botnet ALTA va a la lista de SU clase, no a la heredada",
           ("10.0.0.7", "clientes-botnet") in anadidos, anadidos)
     check("la fuerza bruta MEDIA tambien (politica 'medio')", ("10.0.0.9", "clientes-fuerza") in anadidos, anadidos)
@@ -120,12 +140,23 @@ def main():
     check("el spam 'notificar' no se corta y deja bitacora",
           not any(ip == "10.0.0.10" for ip, _l in anadidos)
           and any(a == "POLITICA-NOTIFICAR" and ip == "10.0.0.10" and "clase=spam" in d for a, ip, d in logs), logs)
-    e7 = envs["sent"].get("r0|10.0.0.7", {})
+    e7 = envs["sent"].get("p001|10.0.0.7", {})
     check("el registro guarda clase y lista", e7.get("categoria") == "botnet" and e7.get("lista") == "clientes-botnet"
           and e7.get("pol") is True, e7)
     check("el que ya no califica sale de la lista GUARDADA, no de la de hoy",
-          ("10.0.0.99", "lista-vieja") in quitados and "r0|10.0.0.99" not in envs["sent"], quitados)
+          ("10.0.0.99", "lista-vieja") in quitados and "p001|10.0.0.99" not in envs["sent"], quitados)
     check("nadie va a la lista heredada", not any(l == "heredada" for _ip, l in anadidos), anadidos)
+    # (nuevo, CONTRATO-F2 §3) corre por punto: lo de otro punto ni entra ni sale
+    check("un CPE del Top marcado de otro punto no se envia desde este",
+          not any(ip == "10.0.0.12" for ip, _l in anadidos), anadidos)
+    check("y el registrado por politica en OTRO punto no se libera (no esta en el Top de este)",
+          ("10.0.0.98", "lista-otro") not in quitados and "p002|10.0.0.98" in envs["sent"], (quitados, envs))
+    check("el registro usa la clave pid|ip y el router del punto",
+          e7.get("router") == "p001" and not any("|" not in k for k in envs["sent"]), envs["sent"])
+    # (nuevo, CONTRATO-F2 §10.4) con evidencia vieja la accion automatica no se hace
+    check("evidencia vieja: no se envia y queda en la bitacora",
+          not any(ip == "10.0.0.11" for ip, _l in anadidos)
+          and any(a == "POLITICA-EVIDENCIA-VIEJA" and ip == "10.0.0.11" for a, ip, _d in logs), logs)
 
     # --- barrido rapido: se rige por la politica de botnet ------------------------------
     br = DASH[DASH.index("def barrido_alto_rapido"):]
@@ -143,8 +174,9 @@ def main():
           "<option value='nada' selected>" in h[h.index("pol_p2p"):]
           and "<option value='alto' selected>" in h[h.index("pol_botnet"):h.index("pol_dns")], "")
     check("ya no hay selects por banda", "pol_bajo" not in h and "pol_alto'" not in h and "Riesgo BAJO" not in h, "")
+    # (adaptada, CONTRATO-F2 §4) /routers/guardar desaparece: la ruta acaba en la siguiente
     ruta = DASH[DASH.index('if ruta == "/mikrotik":'):]
-    ruta = ruta[:ruta.index('if ruta == "/routers/')]
+    ruta = ruta[:ruta.index('\n        if ruta == ', 10)]
     check("la ruta guarda POL_<CLASE> validando contra la lista",
           '_v in POL_CLASE_VALORES' in ruta and 'm["POL_" + _cat.upper()] = _v' in ruta
           and 'm["POL_ALTO"] =' not in ruta, "")
@@ -158,7 +190,7 @@ def main():
 
 class Legado(unittest.TestCase):
     def test_legado(self):
-        """Tipo: conservacion (prueba heredada de suricata-ids-lab). Politicas por clase de abuso: que hacer depende de QUE hace el CPE, no solo de cuanto puntua."""
+        """Tipo: conservacion, adaptada (CONTRATO-F2 §1, §3, §4, §10.4): aplicar_politicas(pid) por punto con claves pid|ip reales, cuarentena.json del punto y mk_listo del router del punto; subcasos nuevos de otro punto y de evidencia vieja. Politicas por clase de abuso: que hacer depende de QUE hace el CPE, no solo de cuanto puntua."""
         _comun.correr_main(self, main)
 
 

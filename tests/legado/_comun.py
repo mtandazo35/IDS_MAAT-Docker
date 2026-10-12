@@ -43,15 +43,89 @@ def _veredicto(caso, salida, rc):
 
 
 def correr_main(caso, main, *args):
-    """Ejecuta el main() de una prueba heredada y falla con sus lineas FALLA."""
+    """Ejecuta el main() de una prueba heredada y falla con sus lineas FALLA.
+
+    Al acabar (tambien con excepcion) deja el entorno como estaba si la prueba uso
+    `panel()`: la clave maestra temporal y el nodo del hilo no pasan a la siguiente."""
     out = io.StringIO()
     rc = None
-    with contextlib.redirect_stdout(out):
-        try:
-            rc = main(*args)
-        except SystemExit as e:
-            rc = e.code
+    try:
+        with contextlib.redirect_stdout(out):
+            try:
+                rc = main(*args)
+            except SystemExit as e:
+                rc = e.code
+    finally:
+        restaurar_panel()
     _veredicto(caso, out.getvalue(), rc)
+
+
+# Dos puntos de prueba (CONTRATO-F2 §1: un punto = un router del multi-nodo viejo, id = pid).
+# Redes de abonados 10.x; nada real.
+PUNTOS = {"p001": {"nombre": "MikroTik", "redes": ["10.0.0.0/8", "100.64.0.0/10"],
+                   "api_puerto": 8729, "sensor": "100.64.1.1", "mk": "100.64.1.2",
+                   "tzsp_puerto": 37008},
+          "p002": {"nombre": "Sucursal", "redes": ["10.0.0.0/8"],
+                   "api_puerto": 8729, "sensor": "100.64.2.1", "mk": "100.64.2.2",
+                   "tzsp_puerto": 37008}}
+
+_PANEL_ENV = {}
+_PANEL_MOD = []
+
+
+def panel(raiz, puntos=None, nodo=None):
+    """`nodos` y `secretos` REALES del panel portado sobre un arbol temporal `raiz`:
+    panel/, datos/, run/estado.json con `puntos` (por defecto PUNTOS) y una clave maestra
+    de prueba en raiz/secretos/master_key (IDS_MASTER_KEY queda apuntando ahi hasta que
+    `correr_main` llama a `restaurar_panel()`). Con `nodo`, se pone como nodo del hilo
+    (nodos.poner_nodo). Devuelve (nodos, secretos), para meterlos en el espacio de nombres
+    de lo que se extrae del dashboard: `ns["nodos"], ns["secretos"] = _comun.panel(tmp)`."""
+    import importlib
+    nod = cargar_nodos(raiz, PUNTOS if puntos is None else puntos)
+    clave = os.path.join(raiz, "secretos", "master_key")
+    os.makedirs(os.path.dirname(clave), exist_ok=True)
+    with open(clave, "w", encoding="ascii") as f:
+        f.write("5a" * 32 + "\n")
+    if "IDS_MASTER_KEY" not in _PANEL_ENV:
+        _PANEL_ENV["IDS_MASTER_KEY"] = os.environ.get("IDS_MASTER_KEY")
+    os.environ["IDS_MASTER_KEY"] = clave
+    import secretos
+    sec = importlib.reload(secretos)
+    nod.quitar_nodo()
+    if nodo is not None:
+        nod.poner_nodo(nodo)
+    _PANEL_MOD[:] = [nod]
+    return nod, sec
+
+
+def piezas(ns, nombres, fichero="DASH"):
+    """Ejecuta en `ns` las definiciones de nivel de modulo (funciones, clases y asignaciones)
+    de `fichero` cuyo nombre esta en `nombres`: el codigo REAL del panel portado, no una
+    copia. Devuelve `ns`."""
+    import ast
+    src = extraer.fuente(fichero)
+    for n in ast.parse(src).body:
+        nombre = getattr(n, "name", None) or (
+            getattr(n.targets[0], "id", "") if isinstance(n, ast.Assign) and n.targets else "")
+        if nombre in nombres:
+            exec(ast.get_source_segment(src, n) or "", ns)
+    return ns
+
+
+def restaurar_panel():
+    """Quita el nodo del hilo y devuelve IDS_MASTER_KEY a su valor de antes de `panel()`."""
+    for nod in _PANEL_MOD:
+        try:
+            nod.quitar_nodo()
+        except Exception:
+            pass
+    del _PANEL_MOD[:]
+    for k, v in _PANEL_ENV.items():
+        if v is None:
+            os.environ.pop(k, None)
+        else:
+            os.environ[k] = v
+    _PANEL_ENV.clear()
 
 
 def cargar_nodos(raiz, puntos=None):

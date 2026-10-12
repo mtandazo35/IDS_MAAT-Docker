@@ -34,6 +34,9 @@ PIEZAS = ("PUBLICAS_CONF", "PUB_HIST", "PUB_HIST_DIAS", "PUB_UMBRAL_AVISO", "_PU
           "AIDB_SENAL", "AIDB_CATS", "AIDB_CUOTA", "AIDB_CUOTA_BLOQUE", "AIDB_PREFIJO_MIN",
           "AIDB_TTL_LIMPIA", "AIDB_TTL_SUCIA", "AIDB_CACHE", "AIDB_ESTADO", "AIDB_MAX_CACHE",
           "AIDB_RESERVA_MANUAL", "_AIDB_LOCK", "FEEDS_CONF",
+          # panel portado: secretos cifrados (§10.3), clave pid|ip y cuarentena.json por nodo
+          "FEEDS_SECRETOS", "SECRETOS_AVISO", "_feeds_conf_crudo",
+          "clave_cpe", "ip_de", "rid_de", "cuarentena_json", "_cargar_cuarentena",
           "_feeds_conf_get", "_feeds_conf_set", "aidb_key", "aidb_configurada", "aidb_set",
           "aidb_ip_valida", "aidb_red_valida", "_aidb_cache", "_aidb_guardar_cache",
           "_aidb_sello", "_AIDB_MEM",
@@ -81,9 +84,10 @@ class Red:
         return Resp()
 
 
-def entorno(tmp, red, enviados=()):
+def entorno(tmp, red, panel, enviados=()):
     avisos = []
-    ns = {"json": json, "os": os, "re": re, "time": __import__("time"),
+    # panel portado (CONTRATO-F2 §2, §10.3): `nodos` y `secretos` REALES
+    ns = {"nodos": panel[0], "secretos": panel[1], "json": json, "os": os, "re": re, "time": __import__("time"),
           "threading": __import__("threading"), "ipaddress": __import__("ipaddress"),
           "socket": __import__("socket"),
           "ThreadPoolExecutor": __import__("concurrent.futures", fromlist=["futures"]).ThreadPoolExecutor,
@@ -91,8 +95,6 @@ def entorno(tmp, red, enviados=()):
           "LOGDIR": tmp,
           "MK_SENT": "cuar", "MK_SENT_DNS": "dns",
           "cargar_enviados": lambda path=None: {k: 1 for k in enviados} if path == "cuar" else {},
-          "clave_cpe": lambda ip, rid: (rid + "|" + ip) if rid else ip,
-          "ip_de": lambda k: k.split("|", 1)[1] if "|" in k else k,
           "router_por_id": lambda r: {"id": r, "nombre": "Nodo " + r},
           "enviar_telegram": lambda t: avisos.append(t) or True,
           "bitacora": lambda *a, **k: None,
@@ -112,22 +114,25 @@ def entorno(tmp, red, enviados=()):
     return ns
 
 
-# Reporte con CPEs de dos nodos. El de r1 hace SSH; el de r1 tambien hace spam por 25;
-# y un tercero, del OTRO nodo, tambien hace SSH (no debe salir al mirar r1).
+# Reporte con CPEs de dos nodos. El de p001 hace SSH; el de p001 tambien hace spam por 25;
+# y un tercero, del OTRO nodo, tambien hace SSH (no debe salir al mirar p001).
+# CONTRATO-F2 §1/§4: los routers r1/r2 del multi-nodo viejo son los puntos p001/p002 y el
+# reporte es POR NODO (nodos.salida("cuarentena.json", pid)). Se deja la mezcla en el de
+# p001 (asi tambien se prueba el filtro por `router`) y el CPE de p002 ademas en el suyo.
 CUARENTENA = {
     "candidatos": [
-        {"ip": "10.6.1.10", "router": "r1", "riesgo": 80, "banda": "ALTO",
+        {"ip": "10.6.1.10", "router": "p001", "riesgo": 80, "banda": "ALTO",
          "puertos_top": {"22/tcp": 900, "443/tcp": 12},
          "cats_top": {"Escaneo SSH": 700, "Fuerza bruta": 200}},
     ],
     "dns_candidatos": [],
     "top_riesgo": [
-        {"ip": "10.6.1.10", "router": "r1", "riesgo": 80},
-        {"ip": "10.6.1.44", "router": "r1", "riesgo": 60,
+        {"ip": "10.6.1.10", "router": "p001", "riesgo": 80},
+        {"ip": "10.6.1.44", "router": "p001", "riesgo": 60,
          "puertos_top": {"25/tcp": 1500}, "cats_top": {"Spam": 1400}},
-        {"ip": "10.6.1.99", "router": "r1", "riesgo": 20,
+        {"ip": "10.6.1.99", "router": "p001", "riesgo": 20,
          "puertos_top": {"443/tcp": 400}, "cats_top": {"Anomalia TLS/SSL": 400}},
-        {"ip": "10.9.9.5", "router": "r2", "riesgo": 90,
+        {"ip": "10.9.9.5", "router": "p002", "riesgo": 90,
          "puertos_top": {"22/tcp": 5000}, "cats_top": {"Escaneo SSH": 5000}},
     ],
 }
@@ -135,20 +140,26 @@ CUARENTENA = {
 
 def main():
     tmp = tempfile.mkdtemp()
-    json.dump(CUARENTENA, open(os.path.join(tmp, "cuarentena.json"), "w", encoding="utf-8"))
+    pan = _comun.panel(os.path.join(tmp, "_panel"))
+    nod = pan[0]
+    with open(nod.salida("cuarentena.json", "p001"), "w", encoding="utf-8") as f:
+        json.dump(CUARENTENA, f)
+    with open(nod.salida("cuarentena.json", "p002"), "w", encoding="utf-8") as f:
+        json.dump({"top_riesgo": [c for c in CUARENTENA["top_riesgo"]
+                                  if c.get("router") == "p002"]}, f)
     red = Red()
-    ns = entorno(tmp, red)
+    ns = entorno(tmp, red, pan)
     ns["aidb_set"]("CLAVE-DE-PRUEBA-NO-REAL")
 
     # --- 1) declarar las publicas del cliente ---
-    ok, mal, _tap = ns["guardar_publicas_de"]("r1", "200.0.0.0/24\n190.0.2.7")
+    ok, mal, _tap = ns["guardar_publicas_de"]("p001", "200.0.0.0/24\n190.0.2.7")
     check("se declaran IPs y redes publicas del nodo",
-          ns["cargar_publicas"]().get("r1") == ["190.0.2.7", "200.0.0.0/24"] and not mal,
+          ns["cargar_publicas"]().get("p001") == ["190.0.2.7", "200.0.0.0/24"] and not mal,
           (ns["cargar_publicas"](), mal))
     check("y se releen tal cual para editarlas",
-          set(ns["publicas_texto"]("r1").split()) == {"190.0.2.7", "200.0.0.0/24"},
-          ns["publicas_texto"]("r1"))
-    ok2, mal2, _tap = ns["guardar_publicas_de"]("r2", "10.0.0.0/8, 192.168.1.5, basura")
+          set(ns["publicas_texto"]("p001").split()) == {"190.0.2.7", "200.0.0.0/24"},
+          ns["publicas_texto"]("p001"))
+    ok2, mal2, _tap = ns["guardar_publicas_de"]("p002", "10.0.0.0/8, 192.168.1.5, basura")
     check("las privadas y la basura se rechazan", ok2 == [] and len(mal2) == 3, (ok2, mal2))
     check("y se explica cada rechazo", all("(" in m for m in mal2), mal2)
 
@@ -161,26 +172,30 @@ def main():
     check("una categoria sin traduccion no inventa señal", ns["senal_de_categorias"]([13]) == (set(), set()))
 
     # --- 3) EL CRUCE: quien ensucia la publica ---
-    culp = ns["culpables_de"]("r1", [22, 18])
+    culp = ns["culpables_de"]("p001", [22, 18])
     claves = [k for k, _c, _p, _m, _e in culp]
-    check("señala al CPE que habla por 22 de ese nodo", claves and claves[0] == "r1|10.6.1.10", claves)
-    check("NO acusa al que solo hace TLS", "r1|10.6.1.99" not in claves, claves)
+    check("señala al CPE que habla por 22 de ese nodo", claves and claves[0] == "p001|10.6.1.10", claves)
+    check("NO acusa al que solo hace TLS", "p001|10.6.1.99" not in claves, claves)
     check("NO mezcla el CPE del OTRO nodo, aunque haga lo mismo",
-          "r2|10.9.9.5" not in claves, claves)
+          "p002|10.9.9.5" not in claves, claves)
     check("explica POR QUE lo señala", culp and any("22/tcp" in m for m in culp[0][3]), culp[0][3] if culp else None)
 
-    culp_spam = ns["culpables_de"]("r1", [11])
+    culp_spam = ns["culpables_de"]("p001", [11])
     check("con spam señala al del 25, no al del 22",
-          [k for k, *_r in culp_spam] == ["r1|10.6.1.44"], [k for k, *_r in culp_spam])
+          [k for k, *_r in culp_spam] == ["p001|10.6.1.44"], [k for k, *_r in culp_spam])
 
-    check("sin categorias no se acusa a nadie", ns["culpables_de"]("r1", []) == [])
+    check("sin categorias no se acusa a nadie", ns["culpables_de"]("p001", []) == [])
+    # CONTRATO-F2 §1/§4: el CPE del otro nodo sale al mirar SU nodo, de SU cuarentena.json
+    check("  y mirando p002 sale el suyo, con clave pid|ip",
+          [k for k, *_r in ns["culpables_de"]("p002", [22, 18])] == ["p002|10.9.9.5"],
+          [k for k, *_r in ns["culpables_de"]("p002", [22, 18])])
 
     # el que ya esta en cuarentena se marca como tal, no se propone otra vez
-    ns2 = entorno(tmp, red, enviados=("r1|10.6.1.10",))
+    ns2 = entorno(tmp, red, pan, enviados=("p001|10.6.1.10",))
     ns2["aidb_set"]("K")
-    c2 = ns2["culpables_de"]("r1", [22, 18])
+    c2 = ns2["culpables_de"]("p001", [22, 18])
     check("el que ya esta en cuarentena sale marcado",
-          c2 and c2[0][0] == "r1|10.6.1.10" and c2[0][4] is True, c2[0][:1] + c2[0][3:] if c2 else None)
+          c2 and c2[0][0] == "p001|10.6.1.10" and c2[0][4] is True, c2[0][:1] + c2[0][3:] if c2 else None)
 
     # --- 4) vigilancia: serie por dia y aviso al cruzar el umbral ---
     red.guion.append({"data": {"ipAddress": "190.0.2.7", "abuseConfidenceScore": 88,
@@ -268,7 +283,7 @@ def main():
           "SORBS" in (r.get("rechazadas") or []), r.get("rechazadas"))
 
     # y el aviso solo la primera vez
-    ns["cargar_publicas"] and ns["guardar_publicas_de"]("r1", "181.224.173.224/29")
+    ns["cargar_publicas"] and ns["guardar_publicas_de"]("p001", "181.224.173.224/29")
     antes = len(ns["_avisos"])
     ns["vigilar_dnsbl"]()
     check("avisa cuando aparece en una lista negra",
@@ -281,7 +296,7 @@ def main():
           bool(h.get("181.224.173.224/29", {}).get("dias")), h)
 
     # --- 6) sin nada declarado no se gasta cuota ---
-    tmp3 = tempfile.mkdtemp(); red3 = Red(); ns3 = entorno(tmp3, red3)
+    tmp3 = tempfile.mkdtemp(); red3 = Red(); ns3 = entorno(tmp3, red3, pan)
     ns3["aidb_set"]("K")
     check("sin publicas declaradas no se llama a nadie",
           ns3["vigilar_publicas"]() == 0 and red3.llamadas == [], red3.llamadas)
@@ -293,7 +308,7 @@ def main():
 
 class Legado(unittest.TestCase):
     def test_legado(self):
-        """Tipo: conservacion (prueba heredada de suricata-ids-lab). De 'a tu IP publica la denuncian por X' a 'este abonado es el que lo hace'."""
+        """Tipo: conservacion, adaptada al panel portado (CONTRATO-F2 §1, §2, §4, §10.3): nodos/secretos reales, clave AbuseIPDB cifrada, routers r1/r2 -> puntos p001/p002 con claves pid|ip y cuarentena.json por nodo (nodos.salida). De 'a tu IP publica la denuncian por X' a 'este abonado es el que lo hace'."""
         _comun.correr_main(self, main)
 
 

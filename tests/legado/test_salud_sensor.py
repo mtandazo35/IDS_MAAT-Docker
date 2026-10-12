@@ -8,6 +8,11 @@ memoria. Las alertas que faltan no dejan rastro en ningun sitio.
 Y la regla que da sentido a todo lo demas: con cobertura incompleta el panel NO puede
 decir "sin amenazas". No hay alertas porque no estamos mirando, y quien lo lee entiende
 que la red esta limpia. Es la afirmacion mas cara que puede hacer un IDS.
+
+Adaptada al panel portado (CONTRATO-F2 §3): el eve.json ya no esta en un LOGDIR unico sino
+en el directorio de eventos del punto (`nodos.eve_vivo(pid)` = DATOS/<pid>/eve.json), y
+`suricata_stats()` lee el del nodo del hilo. Se usa el `nodos.py` real sobre un arbol
+temporal con el nodo p001 puesto. Las comprobaciones son las mismas.
 """
 import ast
 import json
@@ -39,7 +44,8 @@ def check(d, c, e=""):
 
 
 def entorno(tmp):
-    ns = {"json": json, "os": os, "time": time, "LOGDIR": tmp}
+    ns = {"json": json, "os": os, "time": time}
+    ns["nodos"], ns["secretos"] = _comun.panel(tmp, nodo="p001")
     for n in ARBOL.body:
         nom = getattr(n, "name", None) or (
             getattr(n.targets[0], "id", "") if isinstance(n, ast.Assign) and n.targets else "")
@@ -48,8 +54,14 @@ def entorno(tmp):
     return ns
 
 
-def eve(tmp, *lineas):
-    with open(os.path.join(tmp, "eve.json"), "w", encoding="utf-8") as f:
+def ruta_eve(ns):
+    """eve.json del nodo del hilo (CONTRATO-F2 §3: DATOS/<pid>/eve.json)."""
+    return ns["nodos"].eve_vivo("p001")
+
+
+def eve(ns, *lineas):
+    os.makedirs(os.path.dirname(ruta_eve(ns)), exist_ok=True)
+    with open(ruta_eve(ns), "w", encoding="utf-8") as f:
         f.writelines(lineas)
 
 
@@ -63,7 +75,7 @@ def main():
         "flow": {"memcap": 0}, "tcp": {"ssn_memcap_drop": 0}}}) + "\n"
 
     # --- leer los contadores ---------------------------------------------------------
-    eve(tmp, alerta, stats_ok, alerta)
+    eve(ns, alerta, stats_ok, alerta)
     st = ns["suricata_stats"]()
     check("se leen los contadores del ultimo stats, aunque no sea la ultima linea",
           (st.get("capture") or {}).get("kernel_packets") == 1000000, st)
@@ -71,7 +83,7 @@ def main():
           ns["salud_memcaps"](st) == {}, ns["salud_memcaps"](st))
 
     # el ULTIMO stats manda: un contador viejo daria una foto que ya no es
-    eve(tmp, stats_ok,
+    eve(ns, stats_ok,
         json.dumps({"event_type": "stats", "stats": {
             "capture": {"kernel_packets": 2000000, "kernel_drops": 7}}}) + "\n")
     check("gana el stats mas reciente, no el primero que aparece",
@@ -90,14 +102,18 @@ def main():
           any("flujos descartados" in k for k in m), list(m))
 
     # --- sin eve.json no se afirma nada ----------------------------------------------
-    os.remove(os.path.join(tmp, "eve.json"))
+    os.remove(ruta_eve(ns))
     check("sin eve.json no se reportan contadores falsos", ns["suricata_stats"]() == {})
     check("y sin contadores no se inventan memcaps", ns["salud_memcaps"]({}) == {})
 
     # una linea de stats rota no puede tumbar la salud
-    eve(tmp, '{"event_type":"stats", roto\n', stats_ok)
+    eve(ns, '{"event_type":"stats", roto\n', stats_ok)
     check("una linea corrupta no rompe la lectura",
           (ns["suricata_stats"]().get("capture") or {}).get("kernel_packets") == 1000000)
+
+    # CONTRATO-F2 §3: cada punto tiene su eve.json; los contadores de p001 no son los de p002
+    check("los contadores son del punto pedido: p002 sin eve.json no hereda los de p001",
+          ns["suricata_stats"]("p002") == {}, ns["suricata_stats"]("p002"))
 
     # --- umbrales coherentes -----------------------------------------------------------
     check("el umbral de perdida es un porcentaje bajo, no un valor simbolico",
@@ -116,7 +132,7 @@ def main():
 
 class Legado(unittest.TestCase):
     def test_legado(self):
-        """Tipo: conservacion (prueba heredada de suricata-ids-lab). Salud completa del sensor: mirar solo kernel_drops deja ciego al peor caso."""
+        """Tipo: conservacion, adaptada a eventos por punto (CONTRATO-F2 §3: DATOS/<pid>/eve.json). Salud completa del sensor: mirar solo kernel_drops deja ciego al peor caso."""
         _comun.correr_main(self, main)
 
 

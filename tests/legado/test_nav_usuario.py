@@ -56,6 +56,28 @@ def cargar(nombres, ns):
     return ns
 
 
+def sin_sesion_al_login():
+    """(CONTRATO-F2 §1) El modo sin usuarios desaparece: los _auth_ok/_deny/_sesion_ok REALES
+    de la clase H, con un doble de peticion sin sesion y una lista de usuarios VACIA (lo
+    que antes abria el panel sin autenticacion). Devuelve (condicion, evidencia)."""
+    cls = next(n for n in ARBOL.body if isinstance(n, ast.ClassDef) and n.name == "H")
+    nsh = {"time": time, "cargar_usuarios": lambda: []}
+    metodos = {}
+    for m in cls.body:
+        if isinstance(m, ast.FunctionDef) and m.name in ("_auth_ok", "_deny", "_sesion_ok"):
+            exec(compile(ast.Module(body=[m], type_ignores=[]), "<H.%s>" % m.name, "exec"), nsh)
+            metodos[m.name] = nsh[m.name]
+    P = type("PeticionSinSesion", (object,), metodos)
+    p = P()
+    p.hecho = []
+    p._sesion = lambda: {}
+    p._redirect = lambda loc, cookie=None: p.hecho.append(("redirect", loc))
+    p._html = lambda s, code=200: p.hecho.append(("html", code))
+    entra = p._auth_ok()
+    p._deny()
+    return (entra is False and p.hecho == [("redirect", "/login")], (entra, p.hecho))
+
+
 def main():
     USUARIOS = []
     CTX = types.SimpleNamespace(user=None, role=None, exp=None)
@@ -66,7 +88,12 @@ def main():
     menu, foto_de = ns["_menu_usuario"], ns["foto_de"]
 
     b, p = menu()
+    # (adaptada, CONTRATO-F2 §1: sin modo sin autenticacion) el «panel sin usuarios» ya no
+    # existe; este Salir solo queda para la barra que se arma sin peticion (al cargar el
+    # modulo). Una PETICION sin sesion ni siquiera llega a pintar la barra: ver abajo.
     check("sin sesion: el Salir de siempre y sin menu", 'href="/logout"' in b and "Salir" in b and p == "", (b, p))
+    check("  y una peticion sin sesion no ve el panel: aunque no haya usuarios, va al login",
+          *sin_sesion_al_login())
 
     USUARIOS.append({"user": "op1", "role": "operador", "nombre": "Ana Perez"})
     CTX.user, CTX.role, CTX.exp = "op1", "operador", time.time() + 3 * 3600 + 120
@@ -118,8 +145,12 @@ def main():
     check("  el usuario que va al JS no puede cerrar el <script>", "</" not in salida and json.loads(salida) == raro, salida)
 
     # ---- donde va ----
+    # (adaptada, CONTRATO-F2 §1: el actualizador por git se quita) en el original detras de
+    # _upanel venian los modales del actualizador (upd_modal + updask); ahora viene un
+    # comentario y el modal _ASK. Lo que se comprueba es lo mismo: el boton cierra la barra
+    # ('</div></div>' justo despues) y el panel va FUERA, a continuacion.
     check("el boton en la barra y el panel fuera de ella",
-          "+ _ubtn + '</div></div>' + _upanel +" in DASH, "")
+          re.search(r"\+ _ubtn \+ '</div></div>' \+ _upanel\s*(#[^\n]*\n\s*)*\+", DASH) is not None, "")
     i_ruta = DASH.index('if path == "/mi-foto":')
     i_get = DASH.rindex("def do_GET", 0, i_ruta)
     i_auth = DASH.index("if not self._auth_ok():", i_get)   # la puerta, no el /login de antes
@@ -133,7 +164,11 @@ def main():
 
 class Legado(unittest.TestCase):
     def test_legado(self):
-        """Tipo: conservacion (prueba heredada de suricata-ids-lab). El menu del usuario, arriba a la derecha (sustituye al boton Salir)."""
+        """Tipo: conservacion, adaptada (prueba heredada de suricata-ids-lab). El menu del usuario, arriba a la derecha (sustituye al boton Salir).
+
+        Adaptada (CONTRATO-F2 §1): sin modo sin autenticacion, «sin sesion» se completa con
+        _auth_ok/_deny reales (sin usuarios tampoco se entra: al login); la posicion del boton
+        y del panel se busca sin depender de los modales del actualizador, retirado."""
         _comun.correr_main(self, main)
 
 

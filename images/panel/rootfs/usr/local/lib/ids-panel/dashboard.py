@@ -3152,7 +3152,16 @@ def sensor_del_punto(pid):
     MikroTik. Lo publica el orquestador en estado.json; ya no se adivina con un socket
     (en el contenedor saldria la IP de la red de Docker, que el router no ve)."""
     p = nodos.punto(pid) or {}
-    return (p.get("sensor") or ""), int(p.get("tzsp_puerto") or nodos.TZSP_PUERTO)
+    sensor = p.get("sensor") or ""
+    try:
+        ip = ipaddress.ip_address(sensor)
+        # como el ip_del_sensor de siempre: loopback, 0.0.0.0 y compania romperian el espejo
+        # y parecerian validos; mejor el hueco (y el espejo se niega) que una IP que no sirve
+        if ip.version != 4 or ip.is_loopback or ip.is_unspecified or ip.is_multicast or ip.is_link_local:
+            sensor = ""
+    except ValueError:
+        sensor = ""
+    return sensor, int(p.get("tzsp_puerto") or nodos.TZSP_PUERTO)
 
 def blocklist_reglas(lista=BL_LISTA):
     """Las reglas. El detalle que decide si esto sirve o rompe clientes es

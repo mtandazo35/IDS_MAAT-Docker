@@ -7,6 +7,11 @@ encola, el DNS se redirige al resolutor propio.
 
 Lo que se protege aqui es la clasificacion. Si un CPE cae en la lista equivocada, o se
 corta a quien no habia que cortar, o se deja suelto a quien si.
+
+Adaptada al panel portado (CONTRATO-F2 §1, §3): `cuarentena.json` es el del nodo, en
+`nodos.dir_salida(pid)`, y la identidad del CPE es SIEMPRE `pid|ip` (`clave_cpe` REAL con
+`nodos.py` real); `categoria_cpe` busca en el reporte del punto de la clave. Las
+comprobaciones son las mismas.
 """
 import ast
 import json
@@ -23,7 +28,8 @@ RAIZ = extraer.RAIZ
 DASH = extraer.fuente("DASH")
 ARBOL = ast.parse(DASH)
 
-PIEZAS = ("CAT_CPE", "CAT_OTROS", "_CPES_CACHE", "_cpes_de_reporte",
+PIEZAS = ("CAT_CPE", "CAT_OTROS", "_CPES_CACHE", "_CPES_LOCK", "_cpes_de_reporte",
+          "cuarentena_json", "clave_cpe", "rid_de",
           "lista_de_categoria", "nombre_categoria", "categoria_de_cats", "categoria_cpe", "listas_cpe_reglas",
           "_TRAD", "_TRAD_CACHE", "_TRAD_CACHE_MAX", "_traducir_lento", "traducir", "AIDB_SENAL", "senal_de_categorias", "listas_en_uso",
           "ros_lista", "_RE_ROS_RARO")
@@ -37,10 +43,11 @@ def check(d, c, e=""):
 
 
 def entorno(tmp, globales=None, enviados=None):
+    # nodos.py real sobre el arbol de prueba (CONTRATO-F2 §3: el reporte es por nodo)
+    nod, _sec = _comun.panel(tmp)
     ns = {"json": json, "os": os, "time": __import__("time"), "re": __import__("re"),
-          "LOGDIR": tmp, "MK_SENT": "",
+          "threading": __import__("threading"), "nodos": nod, "MK_SENT": "",
           "cargar_enviados": lambda path=None: dict(enviados or {}),
-          "clave_cpe": lambda ip, rid: (rid + "|" + ip) if rid else ip,
           "_mk_globales": lambda: dict(globales or {})}
     for n in ARBOL.body:
         nom = getattr(n, "name", None) or (
@@ -82,24 +89,27 @@ REPORTE = {"candidatos": [], "dns_candidatos": [], "top_riesgo": [
 
 def main():
     tmp = tempfile.mkdtemp()
-    json.dump(REPORTE, open(os.path.join(tmp, "cuarentena.json"), "w", encoding="utf-8"))
     ns = entorno(tmp)
+    # CONTRATO-F2 §3: el cuarentena.json del punto, en nodos.dir_salida(pid)
+    with open(ns["nodos"].salida("cuarentena.json", "p001"), "w", encoding="utf-8") as f:
+        json.dump(REPORTE, f)
 
     # --- cada CPE a su categoria ---
     casos = [("10.0.0.2", "p2p"), ("10.0.0.3", "dns"), ("10.0.0.4", "escaneo"),
              ("10.0.0.5", "spam"), ("10.0.0.6", "minado"), ("10.0.0.7", "fuerza"),
              ("10.0.0.8", "otros")]
     for ip, esperada in casos:
-        check("%s -> %s" % (ip, esperada), ns["categoria_cpe"](ip) == esperada,
-              ns["categoria_cpe"](ip))
+        # CONTRATO-F2 §1: la identidad es pid|ip
+        check("%s -> %s" % (ip, esperada), ns["categoria_cpe"]("p001|" + ip) == esperada,
+              ns["categoria_cpe"]("p001|" + ip))
 
     # el caso que decide el diseño: uno que hace las dos cosas
     check("quien tiene botnet Y P2P es un CPE con BOTNET, no un CPE de P2P",
-          ns["categoria_cpe"]("10.0.0.1") == "botnet", ns["categoria_cpe"]("10.0.0.1"))
+          ns["categoria_cpe"]("p001|10.0.0.1") == "botnet", ns["categoria_cpe"]("p001|10.0.0.1"))
     check("aunque el P2P tenga diez veces mas alertas", True)
 
     check("un CPE que no esta en el reporte cae en 'otros'",
-          ns["categoria_cpe"]("10.9.9.9") == "otros")
+          ns["categoria_cpe"]("p001|10.9.9.9") == "otros")
 
     # --- nombres de lista ---
     check("la botnet va a clientes-botnet",
@@ -257,10 +267,10 @@ def main():
     # Las listas se pueden ver: cuales son y quien esta dentro
     # =====================================================================================
     ns3 = entorno(tmp, enviados={
-        "10.0.0.1": {"lista": "clientes-botnet"},
-        "10.0.0.2": {"lista": "clientes-botnet"},
-        "10.0.0.3": {"lista": "clientes-p2p"},
-        "10.0.0.4": {},                      # sin lista guardada
+        "p001|10.0.0.1": {"lista": "clientes-botnet"},
+        "p001|10.0.0.2": {"lista": "clientes-botnet"},
+        "p002|10.0.0.3": {"lista": "clientes-p2p"},
+        "p001|10.0.0.4": {},                 # sin lista guardada
     })
     uso = {l: n for _c, _nom, l, n in ns3["listas_en_uso"]()}
     check("se cuenta cuantos CPEs hay en cada lista",
@@ -301,7 +311,7 @@ def main():
 
 class Legado(unittest.TestCase):
     def test_legado(self):
-        """Tipo: conservacion (prueba heredada de suricata-ids-lab). Una address-list por categoria de abuso, no un unico cajon."""
+        """Tipo: conservacion, adaptada a cuarentena.json por nodo y claves pid|ip (CONTRATO-F2 §1, §3). Una address-list por categoria de abuso, no un unico cajon."""
         _comun.correr_main(self, main)
 
 

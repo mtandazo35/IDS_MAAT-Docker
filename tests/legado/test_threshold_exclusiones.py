@@ -16,10 +16,18 @@ Lo que se protege, en orden:
     compartido y el bloque del panel va entre marcas.
   - que antes de recargar se valide con `suricata -T` y, si falla, se restaure lo anterior.
     Un threshold.config roto deja el sensor SIN NINGUNA regla.
+
+Adaptada al panel portado (CONTRATO-F2 §3 y §6): el threshold.config ya no es un fichero
+compartido del servidor. Cada punto tiene el suyo (/srv/ids/puntos/<pid>/suricata/), el panel
+genera su contenido ENTERO con `threshold_contenido(reglas, pid)` y el orquestador lo escribe
+(`punto.threshold`). `_threshold_fusionar` (meter el bloque entre marcas conservando lo escrito
+a mano) desaparece con el fichero compartido: las comprobaciones de «no pisar lo del operador»
+pasan a «no mezclar lo de otro punto» (exclusiones con campo `nodo`, §3), y las de «el bloque
+se reemplaza, no se apila» se hacen sobre el contenido por punto.
 """
-import ast
 import ipaddress
 import os
+import re
 import sys
 import unittest
 import time
@@ -29,11 +37,11 @@ import _comun  # noqa: E402  (pone tests/legado en sys.path)
 import extraer  # noqa: E402
 RAIZ = extraer.RAIZ
 
-DASH = extraer.fuente("DASH")
-ARBOL = ast.parse(DASH)
-
-PIEZAS = ("THRESHOLD_FILE", "THRESHOLD_MARCA", "threshold_desde_exclusiones",
-          "_threshold_fusionar")
+# THRESHOLD_FILE (/etc/suricata/threshold.config) ya no existe en el panel: el fichero es
+# del punto y lo escribe el orquestador (§6). THRESHOLD_FIN es la marca de cierre que antes
+# vivia dentro de _threshold_fusionar.
+PIEZAS = ("THRESHOLD_MARCA", "THRESHOLD_FIN", "threshold_desde_exclusiones",
+          "threshold_contenido")
 
 fallos = 0
 
@@ -46,13 +54,7 @@ def check(d, c, e=""):
 
 
 def piezas():
-    ns = {"time": time, "ipaddress": ipaddress}
-    for n in ARBOL.body:
-        nom = getattr(n, "name", None) or (
-            getattr(n.targets[0], "id", "") if isinstance(n, ast.Assign) and n.targets else "")
-        if nom in PIEZAS:
-            exec(ast.get_source_segment(DASH, n) or "", ns)
-    return ns
+    return _comun.piezas({"time": time, "ipaddress": ipaddress, "re": re}, PIEZAS)
 
 
 def regla(**k):
@@ -65,7 +67,8 @@ def regla(**k):
 def main():
     ns = piezas()
     gen = ns["threshold_desde_exclusiones"]
-    fus = ns["_threshold_fusionar"]
+    # (adaptada, §6) el contenido entero del threshold.config de un punto
+    cont = ns["threshold_contenido"]
 
     # =====================================================================================
     # Lo que baja, y como
@@ -109,24 +112,39 @@ def main():
     check("sin exclusiones, sin lineas", gen([]) == [] and gen(None) == [], "")
 
     # =====================================================================================
-    # El archivo es compartido: lo del operador no se pisa
+    # (adaptada, CONTRATO-F2 §3/§6) Cada punto tiene SU archivo: lo de otro no se mezcla
     # =====================================================================================
-    a_mano = "# mi regla\nsuppress gen_id 1, sig_id 1, track by_src, ip 10.9.9.9\n"
-    f1 = fus(a_mano, ["suppress gen_id 1, sig_id 2, track by_dst, ip 1.2.3.4"])
-    check("lo escrito a mano se conserva", "ip 10.9.9.9" in f1, f1)
+    # Antes el archivo era compartido con el operador y el panel fusionaba su bloque entre
+    # marcas (_threshold_fusionar). Ahora cada punto tiene su threshold.config, lo escribe
+    # entero el orquestador con lo que manda el panel, y lo que no debe pisarse es lo de los
+    # OTROS puntos: una exclusion con `nodo` solo baja a ese punto; sin `nodo`, a todos.
+    otra = regla(ip="192.0.2.99", sid="2000001", nodo="p002", motivo="solo en p002")
+    f1 = cont([regla(ip="198.51.100.4", sid="2000002"), otra], "p001")
+    check("lo de otro punto no entra en el archivo de este (antes: lo escrito a mano se conserva)",
+          "ip 192.0.2.99" not in f1 and "ip 192.0.2.99" in cont([otra], "p002"), f1)
     check("y lo del panel entra entre marcas",
-          ns["THRESHOLD_MARCA"] in f1 and "fin de lo generado" in f1 and "ip 1.2.3.4" in f1, f1)
+          f1.startswith(ns["THRESHOLD_MARCA"] + "\n") and "fin de lo generado" in f1
+          and f1.endswith(ns["THRESHOLD_FIN"] + "\n") and "ip 198.51.100.4" in f1, f1)
     # regenerar REEMPLAZA el bloque; si lo anadiera, el archivo creceria con cada cambio
-    f2 = fus(f1, ["suppress gen_id 1, sig_id 3, track by_dst, ip 5.6.7.8"])
+    f2 = cont([regla(ip="203.0.113.8", sid="2000003"), otra], "p001")
     check("regenerar reemplaza el bloque, no lo apila",
-          f2.count(ns["THRESHOLD_MARCA"]) == 1 and "ip 1.2.3.4" not in f2 and "ip 5.6.7.8" in f2,
-          f2)
-    check("y sigue sin tocar lo del operador", "ip 10.9.9.9" in f2, f2)
-    f3 = fus(f2, [])
+          f2.count(ns["THRESHOLD_MARCA"]) == 1 and "ip 198.51.100.4" not in f2
+          and "ip 203.0.113.8" in f2, f2)
+    check("y sigue sin mezclar lo del otro punto (antes: sin tocar lo del operador)",
+          "ip 192.0.2.99" not in f2, f2)
+    f3 = cont([otra], "p001")
     check("sin exclusiones queda el bloque vacio, no desaparecen las marcas",
-          ns["THRESHOLD_MARCA"] in f3 and "ip 5.6.7.8" not in f3, f3)
-    check("desde un archivo vacio tambien funciona",
-          "ip 1.2.3.4" in fus("", ["suppress gen_id 1, sig_id 2, track by_dst, ip 1.2.3.4"]), "")
+          f3 == ns["THRESHOLD_MARCA"] + "\n" + ns["THRESHOLD_FIN"] + "\n", f3)
+    check("desde un punto sin nada anterior (antes: desde un archivo vacio) tambien funciona",
+          "ip 198.51.100.4" in cont([regla(ip="198.51.100.4", sid="2000002")], "p002")
+          and cont(None, "p002") == f3, "")
+    # el campo `nodo` (§3): vacio = todos los nodos; sin pid, todas (lo que hacia el original)
+    check("una exclusion de un nodo solo baja a ese nodo",
+          len(gen([regla(nodo="p001")], "p001")) == 1 and gen([regla(nodo="p001")], "p002") == [], "")
+    check("con nodo vacio baja a todos",
+          len(gen([regla(nodo="")], "p001")) == 1 and len(gen([regla(nodo="")], "p002")) == 1, "")
+    check("sin pid se generan todas, como antes del multi-nodo",
+          len(gen([regla(nodo="p001"), regla(nodo="p002"), regla()])) == 3, "")
 
     # (adaptada) Lo que hacia escribir_threshold() en el servidor viejo (suricata -T antes de
     # recargar, restaurar si falla, sin tocar nada si no cambio) y el threshold-file que activaba
@@ -141,7 +159,7 @@ def main():
 
 class Legado(unittest.TestCase):
     def test_legado(self):
-        """Tipo: conservacion (prueba heredada de suricata-ids-lab). Las exclusiones del panel bajan a threshold.config, y SOLO las que caben exactas."""
+        """Tipo: conservacion, adaptada (CONTRATO-F2 §3, §6): threshold.config por punto con threshold_contenido(reglas, pid) en vez de fusionar en un fichero compartido; exclusiones con campo `nodo`. Las exclusiones del panel bajan a threshold.config, y SOLO las que caben exactas."""
         _comun.correr_main(self, main)
 
 

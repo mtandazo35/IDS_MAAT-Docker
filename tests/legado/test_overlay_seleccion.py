@@ -22,8 +22,14 @@ import _comun  # noqa: E402  (pone tests/legado en sys.path)
 import extraer  # noqa: E402
 RAIZ = extraer.RAIZ
 # (adaptada) antes se recorria install-suricata.sh entero; ahora, los programas del panel que
-# pintan HTML: dashboard.py y html_report.py
-SRC = extraer.fuente("DASH") + "\n" + extraer.fuente("HREP")
+# pintan HTML: dashboard.py y html_report.py, y los modulos nuevos del panel portado que
+# tambien pintan paginas (Puntos y Eventos): si algun dia traen una capa propia, cuenta aqui
+SRC = "\n".join(extraer.fuente(f) for f in ("DASH", "HREP", "puntos_web.py", "eventos_web.py"))
+
+# Capas con guarda en el panel portado. Eran 11 en suricata-ids-lab (10 en el dashboard + 1
+# en html_report); el actualizador por git se quita (CONTRATO-F2 §1) y con el sus dos capas,
+# `updov` (upd_modal) y `updask`. Ninguna otra capa se quito ni quedo sin guarda.
+CAPAS_MIN = 9
 
 
 
@@ -67,7 +73,11 @@ def main():
     con_guarda = re.findall(
         r'onmousedown=\\?"this\._dn=event\.target\\?" onclick=\\?"if\(event\.target===this&&this\._dn===this\)\{', SRC)
     check("las capas que cierran al pulsar fuera llevan la guarda (hay %d)" % len(con_guarda),
-          len(con_guarda) >= 11, len(con_guarda))
+          len(con_guarda) >= CAPAS_MIN, len(con_guarda))
+    # (adaptada, §1) las dos capas que faltan son las del actualizador retirado: que no
+    # vuelvan a medias (sin su guarda) ni queden restos
+    check("las capas del actualizador retirado no quedan", "id=updov" not in SRC
+          and "id=updask" not in SRC, "")
     for nombre in ("aptmodal", "fichamodal", "askov", "exmodal", "mmasivo", "mkwait", "ovlNew"):
         i = SRC.find("id=" + nombre) if ("id=" + nombre) in SRC else SRC.find(nombre)
         trozo = SRC[max(0, i - 40): i + 320]
@@ -88,7 +98,11 @@ def main():
 
 class Legado(unittest.TestCase):
     def test_legado(self):
-        """Tipo: conservacion (prueba heredada de suricata-ids-lab). Seleccionar texto dentro de un modal no lo cierra."""
+        """Tipo: conservacion, adaptada (prueba heredada de suricata-ids-lab). Seleccionar texto dentro de un modal no lo cierra.
+
+        Adaptada: se recorren dashboard.py, html_report.py, puntos_web.py y eventos_web.py;
+        las capas con guarda pasan de 11 a 9 porque el actualizador por git (updov, updask)
+        se quita (CONTRATO-F2 §1)."""
         _comun.correr_main(self, main)
 
     def test_guarda_real_en_node(self):
