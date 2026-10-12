@@ -498,6 +498,12 @@ _CSS = (
     "border:1px solid #d7d6d2;border-radius:20px;text-decoration:none;color:#33322f;background:#fff}"
     "progress{width:100%;height:14px}"
     ".tablewrap{overflow-x:auto}"
+    ".pacc{display:flex;gap:6px;flex-wrap:nowrap}.pacc form{margin:0}"
+    ".btn.chico{padding:6px 11px;font-size:13px}"
+    ".pbajaov{display:none;position:fixed;inset:0;background:rgba(11,11,11,.55);z-index:150;align-items:center;"
+    "justify-content:center;padding:24px}"
+    ".pbajabox{background:#fff;border-radius:14px;max-width:520px;width:100%;padding:22px 24px;"
+    "box-shadow:0 16px 54px rgba(0,0,0,.45)}.pbajabox h3{margin:0 0 8px;font-size:19px}"
 )
 
 _JS = ("<script>function pcopiar(id,b){var e=document.getElementById(id);if(!e)return;"
@@ -591,7 +597,7 @@ def lista(h, consulta):
         filas += (
             "<tr><td><a href='/puntos/%s'><b>%s</b></a><div class=hint>%s</div></td>"
             "<td>%s%s</td><td>%s<div class=hint>%s</div></td>"
-            "<td>%s</td><td>%s</td><td>%s%s</td><td class=num>%s%s</td><td>%s</td></tr>"
+            "<td>%s</td><td>%s</td><td>%s%s</td><td class=num>%s%s</td><td>%s</td><td>%s</td></tr>"
             % (esc(pid), esc(p.get("nombre") or pid), esc(pid), esc(estado), avisos,
                salud_chip(sal), " &middot; ".join(esc("%s: %s" % (e["nombre"], e["estado"])) for e in sal["etapas"]),
                "conectado" if (p.get("vpn_cliente") or {}).get("conectado") else "desconectado",
@@ -599,9 +605,9 @@ def lista(h, consulta):
                + (("<div class=hint>hace %s</div>" % _edad(ahora - ultimo)) if ultimo else ""),
                esc(_contenedor(cont.get("suricata"))), descarte,
                _num(n24), "+" if not completo else "",
-               retencion_html(retencion(pid, p), ahora)))
+               retencion_html(retencion(pid, p), ahora), _acciones_fila(p)))
     if not filas:
-        filas = ("<tr><td colspan=8 class=hint style='padding:16px'>Todavia no hay puntos. "
+        filas = ("<tr><td colspan=9 class=hint style='padding:16px'>Todavia no hay puntos. "
                  "<a href='/puntos/nuevo'>Agrega el primero</a>.</td></tr>")
     cola = est.get("cola") or {}
     en = cola.get("en_curso")
@@ -626,12 +632,63 @@ def lista(h, consulta):
         "<a class=btn href='/puntos/nuevo'>Agregar punto</a></div>%s"
         "<div class='card tablewrap'><table><thead><tr><th>Punto</th><th>Estado</th><th>Salud por etapas</th>"
         "<th>VPN</th><th>Espejo</th><th>Suricata</th><th class=num>Alertas 24 h</th>"
-        "<th>Retencion efectiva</th></tr></thead><tbody>%s</tbody></table></div>"
+        "<th>Retencion efectiva</th><th>Acciones</th></tr></thead><tbody>%s</tbody></table></div>"
         "<p class=hint>Retencion: el objetivo es %d dias de eventos por punto; la columna dice desde cuando "
         "hay datos de verdad (si el disco se llena, se borran antes los mas viejos y aqui se ve). La "
         "captura es reducida: los primeros 10 KB de cada conexion de los prefijos elegidos.</p>"
         % (esc(linea_cola), esc(cola.get("pendientes", 0)), esc(caben), viejo, filas, RETENCION_OBJETIVO_DIAS))
-    return h._html(pagina(d, "Puntos", cuerpo, refresco=30))
+    # sin <meta refresh>: recargaria la pagina con el modal de Eliminar a medio escribir. Se recarga
+    # cada 30 s solo si no hay ningun modal abierto.
+    return h._html(pagina(d, "Puntos", cuerpo + _MODAL_BAJA + _RECARGA_LISTA))
+
+
+def _acciones_fila(p):
+    """Iniciar o Detener (segun como este el punto) y Eliminar, en la propia lista. Iniciar/Detener
+    son las ordenes de la ficha (punto.arrancar / punto.parar, con su token y el modal de confirmar);
+    Eliminar abre el modal de baja con lo mismo que la ficha: escribir el nombre y limpiar el MikroTik."""
+    pid, nombre = p["pid"], p.get("nombre") or p["pid"]
+    parado = p.get("deseado") == "parado" or p.get("estado") == "parado"
+    # textos fijos: el nombre no entra en el JavaScript del onsubmit
+    acc, tit, txt, tono = (("arrancar", "Iniciar", "Arranca la VPN y el Suricata del punto.", "")
+                           if parado else
+                           ("parar", "Detener", "Para la VPN y el Suricata del punto: deja de vigilarse hasta "
+                                                "que lo inicies.", ",'danger'"))
+    return ("<div class=pacc>"
+            "<form method=post action='/puntos/%s/%s' onsubmit=\"return ask(this,'%s','%s','%s'%s)\">%s"
+            "<button class='btn sec chico' type=submit>%s</button></form>"
+            "<button class='btn peligro chico' type=button data-pid='%s' data-nombre='%s' data-op='%s' "
+            "onclick='pbaja(this)'>Eliminar</button></div>"
+            % (esc(pid), acc, tit, txt, tit, tono, campo_token(), tit,
+               esc(pid), esc(nombre), uuid.uuid4()))
+
+
+_MODAL_BAJA = (
+    "<div id=pbajaov class=pbajaov><form method=post id=pbajaf class=pbajabox data-nombre=''>"
+    "<h3>Eliminar el punto <span id=pbajan></span></h3>"
+    "<p>Quita del servidor su VPN, su Suricata y <b>todos sus datos</b>, y del panel sus salidas, su conexion "
+    "y sus registros. No se puede deshacer.</p>"
+    "<p class=hint>Antes, mientras el tunel sigue arriba, el panel limpia el MikroTik: saca de sus "
+    "address-lists las IPs que puso en cuarentena y retira el espejo. Si el router no responde, no se elimina; "
+    "si ese router ya no existe, desmarca la casilla.</p>"
+    "<input type=hidden name=op id=pbajaop value=''>"
+    "<label class=l><input type=checkbox name=limpiar_router value=1 checked> Limpiar antes el MikroTik "
+    "(espejo y cuarentena)</label>"
+    "<label class=l>Para confirmar, escribe el nombre del punto: <b id=pbajan2></b></label>"
+    "<input class=t name=confirmar id=pbajac autocomplete=off maxlength=31 oninput='pnombre(this)'>"
+    "<div class=acciones><button class='btn sec' type=button onclick='pbajano()'>Cancelar</button>"
+    "<button class='btn peligro' type=submit disabled>Eliminar</button></div></form></div>"
+    "<script>function pbaja(b){var f=document.getElementById('pbajaf'),n=b.getAttribute('data-nombre');"
+    "f.action='/puntos/'+b.getAttribute('data-pid')+'/borrar';f.setAttribute('data-nombre',n);"
+    "document.getElementById('pbajan').textContent=n;document.getElementById('pbajan2').textContent=n;"
+    "document.getElementById('pbajaop').value=b.getAttribute('data-op');var c=document.getElementById('pbajac');"
+    "c.value='';pnombre(c);document.getElementById('pbajaov').style.display='flex';c.focus();}"
+    "function pbajano(){document.getElementById('pbajaov').style.display='none';}"
+    "document.addEventListener('keydown',function(e){if(e.key==='Escape')pbajano();});</script>")
+
+_RECARGA_LISTA = (
+    "<script>setInterval(function(){function abierto(id){var m=document.getElementById(id);"
+    "return m&&m.style.display&&m.style.display!=='none';}"
+    "if(!abierto('pbajaov')&&!abierto('askov'))location.reload();},30000);</script>")
 
 
 # --------------------------------------------------------------------------------------------

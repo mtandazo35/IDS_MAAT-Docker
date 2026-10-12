@@ -492,6 +492,44 @@ class IpsUnicas(Entorno):
         self.assertEqual(m.group(1), "2")
 
 
+class AccionesEnLaLista(unittest.TestCase):
+    def setUp(self):
+        self.p = PanelP()
+        self.addCleanup(self.p.cerrar)
+        self.ana = self.p.entrar("ana")
+
+    def test_iniciar_detener_eliminar_por_punto(self):
+        """Capacidad nueva (el user, 2026-10-12): cada fila de Puntos trae Detener (o Iniciar si esta
+        parado) con su token y el modal de confirmar, y Eliminar abre el modal de baja (nombre + limpiar
+        el MikroTik). La lista no lleva <meta refresh> (cerraria el modal a medio escribir)."""
+        r = self.p.pedir("GET", "/puntos", cookie=self.ana)
+        self.assertEqual(r.status, 200)
+        self.assertIn("<th>Acciones</th>", r.texto)
+        self.assertRegex(r.texto, r"<form method=post action='/puntos/p001/parar' onsubmit=\"return ask\(this,"
+                                  r"'Detener'.*?name=op value='[0-9a-f-]{36}'")
+        self.assertIn("data-pid='p002' data-nombre='sur'", r.texto)
+        self.assertIn("name=limpiar_router value=1 checked", r.texto)
+        self.assertNotIn("http-equiv=refresh", r.texto)
+
+    def test_detener_desde_la_lista_pide_la_orden(self):
+        """Capacidad nueva: el formulario de la fila pide punto.parar del punto de esa fila."""
+        r = self.p.pedir("GET", "/puntos", cookie=self.ana)
+        tok = re.search(r"action='/puntos/p002/parar'.*?name=op value='([0-9a-f-]{36})'", r.texto, re.S).group(1)
+        r = self.p.pedir("POST", "/puntos/p002/parar", {"op": tok}, cookie=self.ana)
+        self.assertEqual(r.status, 303)
+        self.assertEqual(self.p.orq.ordenes("punto.parar")[-1]["params"], {"pid": "p002"})
+
+    def test_parado_ofrece_iniciar(self):
+        """Capacidad nueva: un punto parado ofrece Iniciar (punto.arrancar) en vez de Detener."""
+        est = json.load(open(os.path.join(self.p.nodos.RUN, "estado.json"), encoding="utf-8"))
+        est["puntos"]["p001"].update(estado="parado", deseado="parado")
+        with open(os.path.join(self.p.nodos.RUN, "estado.json"), "w", encoding="utf-8") as f:
+            json.dump(est, f)
+        r = self.p.pedir("GET", "/puntos", cookie=self.ana)
+        self.assertIn("action='/puntos/p001/arrancar'", r.texto)
+        self.assertNotIn("action='/puntos/p001/parar'", r.texto)
+
+
 class SoloElUltimoReporte(Entorno):
     def test_borra_las_instantaneas_viejas(self):
         """Capacidad nueva (el user quito «Reportes guardados», 2026-10-12): el generador deja solo el
