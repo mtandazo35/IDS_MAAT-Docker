@@ -8224,6 +8224,7 @@ def informe_diario_hilo():
             pass
 
 import puntos_web   # noqa: E402  (apartado Puntos; importa nodos y idspanel, no el dashboard)
+import eventos_web  # noqa: E402  (pagina Eventos; tampoco importa el dashboard)
 
 _NAV_LINKS = [("/", "En vivo"), ("/top", "Top origenes"), ("/detalle", "Detalle"),
               ("/cuarentena", "Cuarentena"), ("/reputacion", "Consultar IP"),
@@ -15333,7 +15334,6 @@ class H(BaseHTTPRequestHandler):
                 return
         if path in ("/eventos", "/eventos/detalle"):
             # Eventos (modulo de E): todos los roles; el nodo ya esta validado en el contexto
-            import eventos_web
             _cq = {k: v[0] for k, v in _up.parse_qs(self.path.split("?", 1)[1]).items()} if "?" in self.path else {}
             fn = eventos_web.pagina if path == "/eventos" else eventos_web.detalle
             try:

@@ -211,7 +211,7 @@ descompone por punto y da el resultado por punto.
 
 Las claves de la API de cada router, las claves de AbuseIPDB/abuse.ch/Groq y el token de Telegram se guardan
 **cifrados** con `/etc/ids-maat/master.key` ([DATOS.md](DATOS.md) §6), montada en el panel en
-`/run/secrets/master_key` (ro). AES-GCM con `cryptography` instalada en la imagen con `--require-hashes`. En disco
+`/run/secrets/master_key` (ro). AES-GCM con el paquete `python3-cryptography` de Debian (apt verifica su sha256 contra el índice firmado de la base fijada por digest). En disco
 solo va el texto cifrado; se descifra en memoria al usarlo; nunca sale en logs, bitácora, CI ni pantallas. Sin
 la clave maestra el panel arranca y avisa de que no puede usar esos secretos (no los borra). Los ficheros de
 configuración siguen en 0600. La clave maestra se respalda aparte (OPERACION §3) y su recuperación forma parte de
