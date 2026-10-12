@@ -8632,7 +8632,6 @@ box-shadow:0 10px 32px rgba(0,0,0,.22);padding:6px 0;font:14px system-ui,-apple-
 .umenu .ufin{border-top:1px solid #efeeea;margin-top:4px;padding:8px 16px 4px;font-size:12px;color:#6b6a66}
 .umenu .ufin b{font-variant-numeric:tabular-nums;color:#33322f}
 @media(max-width:1440px){.nav .ubtn .un{display:none}}  /* sin sitio: solo la foto y la flecha */
-border:0;padding:9px 15px;border-radius:8px;font:600 14px system-ui;box-shadow:0 2px 8px rgba(230,126,34,.4)}
 .askov{display:none;position:fixed;inset:0;background:rgba(11,11,11,.55);z-index:160;align-items:center;justify-content:center;padding:24px}.askov .askbox{background:#fff;color:#0b0b0b;border-radius:14px;max-width:460px;width:100%;padding:22px 24px;box-shadow:0 16px 54px rgba(0,0,0,.45)}.askov h3{margin:0 0 8px;font-size:19px}.askov p{margin:0 0 18px;color:#52514e;font-size:14px;line-height:1.5}.askov .askacts{display:flex;gap:10px;justify-content:flex-end}.askov .askno{background:#eef0f2;color:#33322f;border:1px solid #d7d6d2;padding:10px 16px;border-radius:9px;font:600 14px system-ui;cursor:pointer}.askov .askno:hover{background:#e2e5e8}.askov .askok{background:#2a78d6;color:#fff;border:0;padding:10px 18px;border-radius:9px;font:600 14px system-ui;cursor:pointer}.askov .askok:hover{background:#1c5cab}.askov .askok.danger{background:#c0392b}.askov .askok.danger:hover{background:#9c2f22}
 .nav .nodosel{display:flex;align-items:center;gap:7px;margin:0 6px 0 10px;flex:0 0 auto}
 .nav .nodosel label{color:#c9d2dd;font-size:13px;font-weight:600}
