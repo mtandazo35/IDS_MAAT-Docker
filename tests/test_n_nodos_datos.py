@@ -79,16 +79,6 @@ class Aislamiento(Base):
             filas, _ = self.d.top_origenes()
         self.assertEqual([(f["pid"], f["total"]) for f in filas], [("p002", 3)])
 
-    def test_feed_en_todos_lleva_la_etiqueta_de_nodo(self):
-        """Tipo: capacidad nueva. En «Todos» cada fila del feed en vivo lleva su nodo."""
-        with self.n.contexto(self.n.TODOS):
-            h = self.d.live_feed_html()
-        self.assertEqual(h.count("class='nodochip'"), 2)
-        self.assertIn(">norte<", h)
-        self.assertIn(">sur<", h)
-        with self.n.contexto("p001"):
-            self.assertNotIn("class='nodochip'", self.d.live_feed_html())
-
     def test_historial_y_conducta_por_nodo(self):
         """Tipo: capacidad nueva. Una base por punto en nodos/<pid>/; en «Todos» se unen
         las filas con su campo nodo, sin fusionar la IP repetida."""

@@ -1204,6 +1204,23 @@ for _s, _c in dport_cnt_by_src.items():
         by_src_dport[(_s, _p)] = _n
 src_dport_top = [(f"{etiqueta_cpe(_s)} → {_p}", n) for (_s, _p), n in by_src_dport.most_common(12)]
 
+# IPs destino con el puerto por el que las atacan: «203.0.113.9 · 443/TCP» (+N si hay mas).
+# Los puertos salen de los flujos (acotados) y solo para el top, no se guarda nada por destino.
+_dst_top = by_dst.most_common(12)
+_dst_pto = {_d: Counter() for _d, _ in _dst_top}
+for (_s, _sp, _d, _dp, _pr, _sig), _v in flujos.items():
+    if _d in _dst_pto and _dp:
+        _dst_pto[_d][f"{_dp}/{(_pr or '').upper()}"] += _v[0]
+
+def _etq_dst(d):
+    c = _dst_pto.get(d)
+    if not c:
+        return d
+    p = c.most_common(1)[0][0]
+    return f"{d} · {p}" + (f" +{len(c) - 1}" if len(c) > 1 else "")
+
+dst_top = [(_etq_dst(_d), n) for _d, n in _dst_top]
+
 # ---- Dueno de cada IP destino (DNS inverso PTR -> marca conocida), cacheado ----
 _IPINFO_CACHE = os.path.join(nodos.CACHE, "ipinfo-cache.json")
 _IPINFO_TTL = 7 * 24 * 3600          # 7 dias: pasado eso se vuelve a resolver
@@ -2463,7 +2480,7 @@ td.num{{text-align:right;font-variant-numeric:tabular-nums}}
   <div class="grid">
     {hbar("Atacantes por puerto", src_dport_top, "alertas", que="atacante", lblw=215, barw=380, tip="Pares IP origen -> puerto destino con mas alertas: QUIEN golpea QUE servicio (23 Telnet, 445 SMB, 22 SSH, 443 HTTPS...). Una misma IP sale en varias filas si ataca varios puertos. Solo el top; el total de puertos distintos esta en el recuadro de arriba.")}
     {hbar("IPs origen (atacantes)", top(by_src, fmt=etiqueta_cpe), "alertas", que="IP", lblw=165, barw=430, tip="IPs de ORIGEN que mas alertas dispararon (los equipos/CPE que generan el trafico). Ojo: muchas pueden ser solo consultas DNS sospechosas, no ataque real. Solo el top; el total esta arriba.")}
-    {hbar("IPs destino (objetivos)", top(by_dst), "alertas", que="IP", tip="IPs de DESTINO mas frecuentes: hacia donde va el trafico alertado (el objetivo). Los resolutores DNS conocidos NO cuentan aqui: una consulta maliciosa es culpa del CPE, no un ataque al DNS; van aparte, mas abajo, como resolutores usados (Ajustes -> DNS).")}
+    {hbar("IPs destino (objetivos)", dst_top, "alertas", que="IP", lblw=190, barw=405, tip="IPs de DESTINO mas frecuentes: hacia donde va el trafico alertado (el objetivo) y por que puerto (el mas usado; +N = otros puertos). Los resolutores DNS conocidos NO cuentan aqui: una consulta maliciosa es culpa del CPE, no un ataque al DNS; van aparte, mas abajo, como resolutores usados (Ajustes -> DNS).")}
     {hbar("Firmas mas frecuentes (tipo de ataque)", firmas_top, "alertas", que="firma", tip="Tipos de ataque (firmas de Suricata) mas frecuentes, agrupados y traducidos al espanol. Indica que clase de amenaza predomina.")}
   </div>
   {top_sec}

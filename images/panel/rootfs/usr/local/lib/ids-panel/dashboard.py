@@ -583,90 +583,6 @@ def _chip_pid(pid):
     return ("<span class='nodochip' title='Punto %s'>%s</span>"
             % (html.escape(pid), html.escape(nodos.nombre(pid))))
 
-def live_feed_html():
-    filas = tail_grupos()
-    todos = nodos.hay_nodo() and nodos.es_todos()
-    if not filas:
-        cuerpo = '<tr><td colspan="6" class="muted" style="padding:14px">Sin ataques recientes o esperando trafico...</td></tr>'
-    else:
-        tr = []
-        for hh, src, dst, puerto, sig, cnt, pid in filas:
-            color, etq = sev(sig)
-            veces = f'<span class="veces">&times;{cnt}</span>' if cnt > 1 else ""
-            pnum = puerto.split("/", 1)[0]
-            pnum = int(pnum) if pnum.isdigit() else -1
-            sig_es = traducir(sig)
-            tr.append(
-                f'<tr data-r style="border-left:4px solid {color}">'
-                f'<td class="mono t" data-s="{html.escape(hh)}">{html.escape(hh)}</td>'
-                f'<td data-s="{_SEVRANK.get(etq, 0)}"><span class="badge" style="background:{color}">{etq}</span></td>'
-                f'<td class="mono" data-s="{_ipnum(src)}">{html.escape(src)}{(" " + _chip_pid(pid)) if todos else ""}</td>'
-                f'<td class="mono dst" data-s="{_ipnum(dst)}">{html.escape(dst)}</td>'
-                f'<td class="mono" data-s="{pnum}">{html.escape(puerto)}</td>'
-                f'<td title="{html.escape(sig)}" data-s="{html.escape(sig_es)}">{html.escape(sig_es)} {veces}</td></tr>')
-        cuerpo = "".join(tr)
-    ahora = datetime.now(TZ_EC).strftime("%H:%M:%S")
-    return (
-        '<style>'
-        '.feed{max-width:1360px;margin:20px auto;padding:0 28px}'
-        '.feed h2{display:flex;align-items:center;gap:10px;margin:0 0 12px}'
-        '.pulse{width:9px;height:9px;border-radius:50%;background:#e34948;display:inline-block;'
-        'box-shadow:0 0 0 0 rgba(227,73,72,.6);animation:pulse 1.6s infinite}'
-        '@keyframes pulse{0%{box-shadow:0 0 0 0 rgba(227,73,72,.5)}70%{box-shadow:0 0 0 8px rgba(227,73,72,0)}100%{box-shadow:0 0 0 0 rgba(227,73,72,0)}}'
-        '.feedwrap{max-height:420px;overflow:auto;border:1px solid #e7e6e2;border-radius:10px}'
-        '.feed table{width:100%;border-collapse:collapse;font-size:12.5px}'
-        '.feed thead th{position:sticky;top:0;background:#f4f4f2;color:#52514e;text-align:left;'
-        'padding:9px 10px;font-weight:600;border-bottom:1px solid #e7e6e2;z-index:1}'
-        '.feed thead th.sortable{cursor:pointer;user-select:none;white-space:nowrap}'
-        '.feed thead th.sortable:hover{color:#2a78d6}'
-        '.feed thead th .ar{opacity:.35;font-size:10px;margin-left:3px}'
-        '.feed thead th.asc .ar,.feed thead th.desc .ar{opacity:1;color:#2a78d6}'
-        '.feed tbody td{padding:7px 10px;border-bottom:1px solid #f0efec;vertical-align:middle}'
-        '.feed tbody tr:nth-child(even){background:#fbfbfa}'
-        '.feed tbody tr:hover{background:#eef4fd}'
-        '.feed .mono{font-family:ui-monospace,Consolas,monospace}'
-        '.feed .t{color:#52514e;white-space:nowrap}'
-        '.feed .dst{color:#184f95}'
-        '.badge{color:#fff;font-size:10px;font-weight:700;letter-spacing:.3px;'
-        'padding:2px 7px;border-radius:20px;white-space:nowrap}'
-        '.veces{background:#ecebe7;color:#52514e;font-size:11px;padding:1px 6px;border-radius:10px;margin-left:4px}'
-        '.feed .nodochip{font-family:system-ui;background:#eef4fd;color:#184f95;border:1px solid #cfe0f6;'
-        'font-size:10.5px;padding:1px 6px;border-radius:10px;margin-left:4px;white-space:nowrap}'
-        '</style>'
-        f'<section class="feed">'
-        f'<h2><span class="pulse"></span>Ultimos ataques en vivo'
-        f'<span style="font-weight:400;color:#52514e;font-size:12px">se actualiza solo &middot; {ahora}</span></h2>'
-        f'<div class="feedwrap"><table id="feedtbl">'
-        f'<thead><tr>'
-        f'<th class="sortable" data-col="0">Hora<span class="ar">&#8597;</span></th>'
-        f'<th class="sortable" data-col="1">Tipo<span class="ar">&#8597;</span></th>'
-        f'<th class="sortable" data-col="2">Origen (equipo)<span class="ar">&#8597;</span></th>'
-        f'<th class="sortable" data-col="3">Destino<span class="ar">&#8597;</span></th>'
-        f'<th class="sortable" data-col="4">Puerto<span class="ar">&#8597;</span></th>'
-        f'<th class="sortable" data-col="5">Ataque<span class="ar">&#8597;</span></th></tr></thead>'
-        f'<tbody>{cuerpo}</tbody></table></div>'
-        f'<p class="muted" style="margin:8px 2px">Agrupado por equipo y tipo &middot; &times;N = veces repetido '
-        f'&middot; pulsa un encabezado para ordenar</p>'
-        '<script>(function(){'
-        'var tb=document.getElementById("feedtbl");if(!tb)return;'
-        'var tbody=tb.querySelector("tbody");'
-        'var ths=[].slice.call(tb.querySelectorAll("thead th.sortable"));'
-        'function val(tr,i){var td=tr.children[i];if(!td)return"";var s=td.getAttribute("data-s");'
-        'if(s===null)s=td.textContent;if(s!==""&&/^-?\\d/.test(s)&&!isNaN(parseFloat(s)))return parseFloat(s);'
-        'return String(s).toLowerCase();}'
-        'function apply(col,asc){var rows=[].slice.call(tbody.querySelectorAll("tr[data-r]"));if(!rows.length)return;'
-        'rows.sort(function(a,b){var x=val(a,col),y=val(b,col);if(x<y)return asc?-1:1;if(x>y)return asc?1:-1;return 0;});'
-        'rows.forEach(function(r){tbody.appendChild(r);});'
-        'ths.forEach(function(o){o.classList.remove("asc","desc");var a=o.querySelector(".ar");if(a)a.innerHTML="&#8597;";});'
-        'var th=ths.filter(function(o){return +o.getAttribute("data-col")===col;})[0];'
-        'if(th){th.classList.add(asc?"asc":"desc");var a=th.querySelector(".ar");if(a)a.innerHTML=asc?"&#8593;":"&#8595;";}}'
-        'ths.forEach(function(th){th.onclick=function(){var col=+th.getAttribute("data-col");'
-        'var asc=!th.classList.contains("asc");apply(col,asc);'
-        'try{sessionStorage.setItem("feedsort",col+","+(asc?1:0));}catch(e){}};});'
-        'try{var s=sessionStorage.getItem("feedsort");if(s){var p=s.split(",");apply(+p[0],p[1]==="1");}}catch(e){}'
-        '})();</script>'
-        f'</section>')
-
 def top_origenes(path=None, maxbytes=12_000_000, topn=5, subn=8):
     """Top de IPs origen que mas alertan, con el desglose de cada una:
     desde que puerto origen, hacia que IP destino y hacia que puerto destino.
@@ -10993,8 +10909,7 @@ def documentacion_page(embed=False, pagina=""):
 <table><tr><th>Pestaña</th><th>Que hace</th></tr>
 <tr><td><b>En vivo</b></td><td>Vista principal. Arriba, el <b>resumen de las ultimas 24h</b>:
 atacantes por puerto (que IP golpea que puerto), IPs origen (atacantes), IPs destino (objetivos) y la
-linea de tiempo por intervalos de 30 minutos. Abajo, el <b>feed de los ultimos ataques</b>,
-que se actualiza solo cada 20 segundos.</td></tr>
+linea de tiempo por intervalos de 30 minutos. Se actualiza sola cada 20 segundos.</td></tr>
 <tr><td><b>Top origenes</b></td><td>Ranking del <b>Top 5 de CPEs que mas alertan</b> (quien ataca mas),
 con el desglose de cada uno: puerto origen, IP destino, dueño/organizacion del destino, puerto y
 protocolo. Debajo, el <b>espejo</b>: <b>Top IPs destino mas atacadas</b> (los blancos que reciben mas
@@ -16524,7 +16439,6 @@ class H(BaseHTTPRequestHandler):
             self.end_headers(); self.wfile.write(cuerpo)
             return
         if path in ("/", "/index.html"):
-            feed = live_feed_html()
             head_css, resumen_inner, _ = partes_reporte()   # resumen SIN la tabla de detalle
             ahora_ec = datetime.now(TZ_EC).strftime("%d/%m/%Y %H:%M")
             # selector de ventana (solo admin): elegir cuanto tiempo abarca el resumen
@@ -16560,14 +16474,13 @@ class H(BaseHTTPRequestHandler):
                     "<p class='ph-sub'>Panel IDS Suricata &middot; " + html.escape(nodos.nombre(nodos.nodo_actual()))
                     + f" &middot; actualizado {ahora_ec} (hora local)</p></div>{wsel}</header>")
                 resumen = (cabecera + "<main style='padding:8px 28px 24px'><p style='color:#52514e'>El resumen se "
-                           "esta generando en segundo plano; aparecera aqui en unos minutos. "
-                           "El feed de abajo ya esta en vivo.</p></main>")
+                           "esta generando en segundo plano; aparecera aqui en unos minutos.</p></main>")
             page = (f"<!doctype html><html lang=es><head><meta charset=utf-8><link rel=icon type=image/png href=/favicon.ico>"
                     f"<meta name=viewport content='width=device-width,initial-scale=1'>"
                     f"<meta http-equiv=refresh content=20><title>Suricata</title>"
                     f"{_PAGEH_CSS}{head_css}"
                     "<style>main{max-width:1360px;margin:0 auto;padding-top:8px}</style>"
-                    f"</head><body>{nav('/')}{resumen}{feed}"
+                    f"</head><body>{nav('/')}{resumen}"
                     "<script>(function(){var s=20,e=document.getElementById('cd');"
                     "var t=setInterval(function(){s--;if(s<0)s=0;if(e)e.textContent=s;"
                     "if(s<=0)clearInterval(t);},1000);})();</script></body></html>")

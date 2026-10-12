@@ -40,6 +40,18 @@ class AtacantesPorPuerto(Entorno):
         self.assertNotIn("p001|", origen)
         self.assertIn("10.0.0.5 · Nodo A", origen)
 
+    def test_ips_destino_con_su_puerto(self):
+        """Capacidad nueva: cada IP destino lleva el puerto por el que la atacan (el mas usado) y
+        «+N» si la atacan por mas puertos."""
+        self.eventos("p001", "eve.json",
+                     [alerta("10.0.0.5", "192.0.2.10", dport=23, flow_id=50 + i) for i in range(4)]
+                     + [alerta("10.0.0.6", "192.0.2.10", dport=2323, flow_id=60)]
+                     + [alerta("10.0.0.5", "192.0.2.11", dport=443, flow_id=70 + i) for i in range(2)])
+        self.ok("60", "--nodo", "p001")
+        t = tarjeta(self.html("p001"), "IPs destino (objetivos)")
+        self.assertEqual(re.findall(r'class="lbl">([^<]+)</text>', t),
+                         ["192.0.2.10 · 23/TCP +1", "192.0.2.11 · 443/TCP"])
+
     def test_un_solo_nodo_sin_nombre_y_una_fila_no_empata(self):
         """Correccion de defecto: con una sola fila no sale «los 1 van empatados», sino «solo 1
         ...»; con un solo nodo la etiqueta es la IP sola (el nombre del nodo seria ruido)."""
