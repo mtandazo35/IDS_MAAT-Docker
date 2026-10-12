@@ -234,7 +234,7 @@ def salud_etapas_html(sal):
     out = "<ul class=etapas>"
     for e in sal["etapas"]:
         out += ("<li><span class=edot style='background:%s'></span><b>%s</b> &middot; %s%s</li>"
-                % (SALUD_COLOR.get(e["estado"], "#9a9a95"), esc(e["nombre"]), esc(e["estado"]),
+                % (_COLOR_ETAPA.get(e["estado"], SALUD_COLOR.get(e["estado"], "#9a9a95")), esc(e["nombre"]), esc(e["estado"]),
                    (" <span class=hint>%s</span>" % esc(e["detalle"])) if e["detalle"] else ""))
     return out + "</ul>" + (("<div class=hint>%s</div>" % esc(sal["nota"])) if sal.get("nota") else "")
 
@@ -465,7 +465,7 @@ def _contenedor(c):
 # Esqueleto de pagina (estilo del dashboard)
 # --------------------------------------------------------------------------------------------
 _CSS = (
-    "main{max-width:1100px;padding:20px 24px 40px}"
+    "main{max-width:1360px;padding:20px 28px 40px}"
     ".ptit{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin:0 0 12px}"
     ".card{padding:16px 18px}"
     ".pchip{display:inline-block;color:#fff;font-size:11px;font-weight:700;padding:2px 9px;border-radius:20px}"
@@ -569,12 +569,35 @@ def comandos_html(texto, ros_version, prefijo):
 # --------------------------------------------------------------------------------------------
 # Lista
 # --------------------------------------------------------------------------------------------
+_COLOR_ETAPA = {"ok": "#1a7f37", "sano": "#1a7f37", "aviso": "#e58a00", "degradada": "#e58a00",
+                "fallo": "#c0392b", "error": "#c0392b", "caido": "#c0392b"}
+
+
+def _kpis(total, operativos, vpn, alertas):
+    """Franja de cuatro indicadores sobre la lista (Tailwind compilado, prefijo tw-)."""
+    def k(titulo, valor, sub, tono):
+        return ("<div class='tw-rounded-md tw-border tw-border-line tw-bg-surface tw-p-4 tw-shadow-1'>"
+                "<div class='tw-text-xs tw-font-semibold tw-uppercase tw-tracking-wide tw-text-ink-2'>%s</div>"
+                "<div class='tw-mt-1 tw-break-words tw-text-2xl tw-font-bold tw-tabular-nums sm:tw-text-3xl %s'>%s</div>"
+                "<div class='tw-mt-0.5 tw-text-xs tw-text-ink-3'>%s</div></div>"
+                % (esc(titulo), tono, esc(valor), esc(sub)))
+    sano = "tw-text-ok" if total and operativos == total else ("tw-text-warn" if total else "tw-text-ink")
+    return ("<div class='tw-mb-4 tw-grid tw-grid-cols-[repeat(2,minmax(0,1fr))] tw-gap-3 lg:tw-grid-cols-[repeat(4,minmax(0,1fr))]'>"
+            + k("Puntos", _num(total), "registrados", "tw-text-ink")
+            + k("Operativos", "%s / %s" % (_num(operativos), _num(total)), "salud por etapas", sano)
+            + k("VPN conectadas", "%s / %s" % (_num(vpn), _num(total)), "tuneles activos",
+                "tw-text-ok" if total and vpn == total else "tw-text-warn")
+            + k("Alertas 24 h", _num(alertas), "todos los puntos", "tw-text-ink")
+            + "</div>")
+
+
 def lista(h, consulta):
     d = _dash(h)
     barrer_bajas(d)              # limpieza de bajas sin depender de quien las pidio (A-09)
     est = nodos.leer_estado() or {}
     ahora = time.time()
     filas = ""
+    n_ok = n_vpn = tot_24 = 0
     fn = getattr(d, "salud_punto", None)
     for p in nodos.puntos():
         pid = p["pid"]
@@ -594,13 +617,27 @@ def lista(h, consulta):
                                                            / float(su["kernel_packets"]))
         except (TypeError, ValueError, ZeroDivisionError):
             descarte = ""
+        vpn_ok = bool((p.get("vpn_cliente") or {}).get("conectado"))
+        n_ok += 1 if sal.get("estado") == "operativa" else 0
+        n_vpn += 1 if vpn_ok else 0
+        tot_24 += n24 or 0
+        puntos_etapas = "".join(
+            "<span class='tw-inline-block tw-h-2.5 tw-w-2.5 tw-rounded-full' title='%s' style='background:%s'></span>"
+            % (esc("%s: %s%s" % (e["nombre"], e["estado"], (" - " + e["detalle"]) if e["detalle"] else "")),
+               _COLOR_ETAPA.get(e["estado"], SALUD_COLOR.get(e["estado"], "#9a9a95"))) for e in sal["etapas"])
+        pill_vpn = ("<span class='tw-inline-flex tw-items-center tw-gap-1.5 tw-rounded-full tw-px-2.5 tw-py-0.5 "
+                    "tw-text-xs tw-font-semibold %s'><span class='tw-h-1.5 tw-w-1.5 tw-rounded-full %s'></span>%s</span>"
+                    % (("tw-bg-green-50 tw-text-ok", "tw-bg-ok", "conectado") if vpn_ok
+                       else ("tw-bg-red-50 tw-text-bad", "tw-bg-bad", "desconectado")))
         filas += (
             "<tr><td><a href='/puntos/%s'><b>%s</b></a><div class=hint>%s</div></td>"
-            "<td>%s%s</td><td>%s<div class=hint>%s</div></td>"
+            "<td>%s%s</td>"
+            "<td><div class='tw-flex tw-items-center tw-gap-2'>%s<span class='tw-flex tw-gap-1'>%s</span></div>"
+            "<div class=hint>%s</div></td>"
             "<td>%s</td><td>%s</td><td>%s%s</td><td class=num>%s%s</td><td>%s</td><td>%s</td></tr>"
             % (esc(pid), esc(p.get("nombre") or pid), esc(pid), esc(estado), avisos,
-               salud_chip(sal), " &middot; ".join(esc("%s: %s" % (e["nombre"], e["estado"])) for e in sal["etapas"]),
-               "conectado" if (p.get("vpn_cliente") or {}).get("conectado") else "desconectado",
+               salud_chip(sal), puntos_etapas, esc(sal.get("nota") or ""),
+               pill_vpn,
                ("%.0f paq/s" % pps if pps is not None else "-")
                + (("<div class=hint>hace %s</div>" % _edad(ahora - ultimo)) if ultimo else ""),
                esc(_contenedor(cont.get("suricata"))), descarte,
@@ -629,14 +666,15 @@ def lista(h, consulta):
     cuerpo = (
         "<div class=ptit><div><h1>Puntos</h1><p class=sub>Cada punto es un MikroTik con su propia VPN y su "
         "propio Suricata. Cola del orquestador: %s &middot; pendientes: %s &middot; caben mas puntos: %s</p></div>"
-        "<a class=btn href='/puntos/nuevo'>Agregar punto</a></div>%s"
+        "<a class=btn href='/puntos/nuevo'>Agregar punto</a></div>%s%s"
         "<div class='card tablewrap'><table><thead><tr><th>Punto</th><th>Estado</th><th>Salud por etapas</th>"
         "<th>VPN</th><th>Espejo</th><th>Suricata</th><th class=num>Alertas 24 h</th>"
         "<th>Retencion efectiva</th><th>Acciones</th></tr></thead><tbody>%s</tbody></table></div>"
         "<p class=hint>Retencion: el objetivo es %d dias de eventos por punto; la columna dice desde cuando "
         "hay datos de verdad (si el disco se llena, se borran antes los mas viejos y aqui se ve). La "
         "captura es reducida: los primeros 10 KB de cada conexion de los prefijos elegidos.</p>"
-        % (esc(linea_cola), esc(cola.get("pendientes", 0)), esc(caben), viejo, filas, RETENCION_OBJETIVO_DIAS))
+        % (esc(linea_cola), esc(cola.get("pendientes", 0)), esc(caben), viejo, _kpis(len(nodos.puntos()), n_ok, n_vpn, tot_24),
+           filas, RETENCION_OBJETIVO_DIAS))
     # sin <meta refresh>: recargaria la pagina con el modal de Eliminar a medio escribir. Se recarga
     # cada 30 s solo si no hay ningun modal abierto.
     return h._html(pagina(d, "Puntos", cuerpo + _MODAL_BAJA + _RECARGA_LISTA))

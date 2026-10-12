@@ -8707,7 +8707,6 @@ min-height:30px}
 .wpend{display:inline-block;margin-left:9px;padding:3px 10px;border-radius:999px;
        background:#fff3cd;border:1px solid #f0d78c;color:#7a5c00;font-size:12px;
        font-weight:600;white-space:nowrap}
-@media(prefers-color-scheme:dark){.wpend{background:#2e2712;border-color:#5c4d1c;color:#f0d78c}}
  .nav .out{margin-left:8px;padding:7px 12px;font-size:14px}
  .nav .ubtn{margin-left:8px}
  .askov{padding:14px}
@@ -8728,6 +8727,137 @@ table.orden th[data-sort]::after{content:"⇅";position:absolute;right:6px;opaci
 table.orden th[data-sort][aria-sort="ascending"]::after{content:"▲";opacity:.9;color:#2a78d6}
 table.orden th[data-sort][aria-sort="descending"]::after{content:"▼";opacity:.9;color:#2a78d6}
 @media(max-width:820px){table.orden th[data-sort]::after{display:none}}
+/* --- capa de diseno compartida (tokens + pulido) ---------------------------------------
+   Va la ultima de _NAV_CSS, asi que unifica tipografia, foco, tablas y botones en TODAS las
+   paginas sin tocar su CSS propio. Solo propiedades de acabado: nada cambia de sitio. */
+:root{--bg:#f6f7f9;--surface:#fff;--ink:#0f1720;--ink-2:#4b5563;--ink-3:#8a93a0;
+--line:#e5e8ec;--line-2:#eef0f3;--brand:#2a78d6;--brand-ink:#1c5cab;--brand-soft:#eaf2fd;
+--ok:#1a7f37;--warn:#b45309;--bad:#c0392b;--r-sm:8px;--r-md:12px;--r-lg:16px;
+--sh-1:0 1px 2px rgba(15,23,32,.06),0 1px 1px rgba(15,23,32,.04);
+--sh-2:0 4px 14px rgba(15,23,32,.08),0 1px 3px rgba(15,23,32,.06);
+--font:Inter,system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;
+--mono:ui-monospace,SFMono-Regular,"Cascadia Mono",Consolas,monospace}
+html{-webkit-text-size-adjust:100%}
+body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--font);
+-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility}
+h1,h2,h3{font-family:var(--font);letter-spacing:-.01em;color:var(--ink)}
+.mono,code,pre,td.mono{font-family:var(--mono)}
+::selection{background:var(--brand-soft)}
+a{color:var(--brand)}a:hover{color:var(--brand-ink)}
+:where(a,button,input,select,textarea,summary):focus-visible{outline:2px solid var(--brand);
+outline-offset:2px;border-radius:var(--r-sm)}
+.card,.feedwrap,.tcard,.saludc{border-color:var(--line);box-shadow:var(--sh-1)}
+.card,.tcard,.saludc{border-radius:var(--r-md)}
+thead th,.feed thead th,.topwrap thead th{font-size:11.5px;text-transform:uppercase;letter-spacing:.04em;
+color:var(--ink-2);background:#f8f9fb;border-bottom:1px solid var(--line)}
+tbody td,.feed tbody td,.topwrap tbody td{border-bottom-color:var(--line-2)}
+tbody tr:hover,.feed tbody tr:hover,.topwrap tbody tr:hover{background:#f8fafd}
+input:not([type=checkbox]):not([type=radio]):not([type=range]),select,textarea{font-family:var(--font);
+border:1px solid #d3d8de;border-radius:var(--r-sm);background:#fff;color:var(--ink);
+transition:border-color .15s,box-shadow .15s}
+input:not([type=checkbox]):not([type=radio]):focus,select:focus,textarea:focus{outline:none;
+border-color:var(--brand);box-shadow:0 0 0 3px rgba(42,120,214,.18)}
+button{font-family:var(--font);transition:background .15s,border-color .15s,box-shadow .15s,transform .05s}
+button:active:not(:disabled){transform:translateY(1px)}
+button:disabled{opacity:.55;cursor:not-allowed}
+.banner{border-radius:var(--r-md);box-shadow:var(--sh-1)}
+.empbar{background:var(--surface);border-bottom-color:var(--line)}
+/* --- identidad visual: barra, contexto, titulos, tarjetas, botones --- */
+body{background:linear-gradient(180deg,#e9eef6 0,var(--bg) 360px) no-repeat,var(--bg);min-height:100vh}
+.nav{background:linear-gradient(90deg,#0a1020 0%,#10213d 55%,#0a1020 100%);
+border-bottom:1px solid rgba(120,170,255,.16);box-shadow:0 6px 24px rgba(10,16,32,.28)}
+.nav .navwrap{height:62px}
+.nav .brand{letter-spacing:.1px;font-weight:800}
+.nav a.tab{padding:8px 14px;margin:0 1px;border-radius:999px;color:#a9b6ca;font-weight:600;font-size:14.5px}
+.nav a.tab:hover{color:#fff;background:rgba(255,255,255,.09)}
+.nav a.tab.on{color:#fff;background:linear-gradient(180deg,rgba(66,140,240,.42),rgba(42,120,214,.26));
+box-shadow:inset 0 0 0 1px rgba(110,170,255,.45),0 4px 14px rgba(42,120,214,.28)}
+.nav a.tab.on::after{display:none}
+.nav .ubtn{border-color:rgba(255,255,255,.12);background:rgba(255,255,255,.05)}
+.empbar{background:rgba(255,255,255,.72);backdrop-filter:saturate(1.4) blur(8px);
+border-bottom:1px solid var(--line)}
+.empbar .nodosel label{text-transform:uppercase;letter-spacing:.06em;font-size:11px;color:var(--ink-3)}
+.empbar .en{color:var(--ink);font-weight:800;letter-spacing:-.01em}
+/* sin animacion ni transform en main: crearia un contenedor para los modales position:fixed */
+/* --- boton de tema --- */
+.nav .themebtn{flex:0 0 auto;width:36px;height:36px;margin-left:10px;border-radius:50%;cursor:pointer;
+padding:0;box-sizing:border-box;line-height:0;font-size:0;
+display:inline-flex;align-items:center;justify-content:center;color:#cbd5e3;
+background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.12);transition:background .15s,color .15s}
+.nav .themebtn:hover{background:rgba(255,255,255,.14);color:#fff}
+.nav .themebtn svg{width:18px;height:18px;flex:none;display:block}
+.nav .themebtn .ic-sun{display:none}
+.nav .ubtn{flex:none;padding:4px 8px 4px 4px}
+/* la barra tiene que caber: con el boton de tema ya no entraba en anchos medios y recortaba la cuenta */
+@media(max-width:1700px){.nav .ubtn .un{display:none}}
+@media(max-width:1560px){.nav a.tab{padding:8px 10px;font-size:14px}
+.nav .brand{font-size:15px;margin-right:6px}.nav .navwrap{padding:0 18px}}
+.nav .burger{display:none;flex:0 0 auto;width:38px;height:38px;border-radius:10px;cursor:pointer;
+padding:0;box-sizing:border-box;line-height:0;font-size:0;align-items:center;justify-content:center;
+color:#e8edf3;background:rgba(255,255,255,.07);border:1px solid rgba(255,255,255,.16)}
+.nav .burger .ic-x{display:none}
+.nav.open .burger .ic-bars{display:none}.nav.open .burger .ic-x{display:block}
+/* movil y tableta: marca + tema + cuenta + hamburguesa; las pestanas se despliegan debajo */
+@media(max-width:1240px){
+.nav .burger{display:inline-flex}
+.nav .navwrap{height:auto;min-height:58px;flex-wrap:wrap;padding:9px 14px;gap:8px;overflow:visible}
+.nav .push{display:none}
+.nav .brand{order:0;flex:1 1 0;min-width:0;width:auto;margin:0;font-size:15px;overflow:hidden}
+.nav .brand .applogo{height:28px}
+.nav .themebtn{order:1;margin:0}
+.nav .ubtn{order:2;margin:0}
+.nav .burger{order:3}
+.nav a.tab{display:none;order:4;flex:1 0 100%;margin:0;padding:12px 14px;border-radius:10px;font-size:15px}
+.nav.open a.tab{display:block}
+.nav.open .navwrap{padding-bottom:12px}
+.nav a.tab.on::after{display:none}
+}
+html[data-theme=dark] .nav .themebtn .ic-sun{display:block}
+html[data-theme=dark] .nav .themebtn .ic-moon{display:none}
+/* --- tema oscuro ---------------------------------------------------------------------
+   El panel tiene miles de colores escritos a mano en cada pagina, el reporte generado y
+   los modales. En vez de reescribirlos uno a uno (y dejar huecos) se invierte la raiz
+   y se devuelven a su estado lo que no debe invertirse:
+     - imagenes (fotos, logos, avatares, mapas raster), y
+     - la barra de navegacion, que ya es oscura de diseno.
+   `filter` en la RAIZ no crea contenedor para los position:fixed (modales); en `main`
+   o en `body` si lo crearia, por eso solo va en html. */
+html[data-theme=dark]{filter:invert(1) hue-rotate(180deg) brightness(.9) contrast(.92);background:#f4f6f9}
+html[data-theme=dark] img,html[data-theme=dark] video{filter:invert(1) hue-rotate(180deg)}
+html[data-theme=dark] .nav{filter:invert(1) hue-rotate(180deg)}
+html[data-theme=dark] .nav img{filter:none}
+/* velos de modales: son oscuros de diseno; al invertir quedarian claros y lavarian la pagina */
+html[data-theme=dark] .aptmodal,html[data-theme=dark] .askov,html[data-theme=dark] .pbajaov,
+html[data-theme=dark] .masov,html[data-theme=dark] .mkwait,html[data-theme=dark] .ovl,
+html[data-theme=dark] .exmodal,html[data-theme=dark] .fichaov{background:rgba(244,244,244,.6)}
+/* bloques de comandos: oscuros de diseno, se quedan oscuros */
+html[data-theme=dark] pre.cmd{filter:invert(1) hue-rotate(180deg)}
+@media print{html[data-theme=dark]{filter:none}}
+h1{font-size:25px;font-weight:800;letter-spacing:-.02em}
+h1+.sub,h1+p.sub,.ph-sub{color:var(--ink-2)}
+.card,.tcard,.saludc{border-radius:14px;box-shadow:var(--sh-1),0 0 0 1px rgba(15,23,32,.02)}
+.card:not(.tablewrap):hover{box-shadow:var(--sh-2)}
+tbody tr:nth-child(even) td{background:rgba(15,23,32,.012)}
+.btn,.qbtn{background:linear-gradient(180deg,#3a8af0,#2a78d6);
+box-shadow:0 1px 2px rgba(28,92,171,.45),inset 0 1px 0 rgba(255,255,255,.2);border-radius:9px}
+.btn:hover,.qbtn:hover{filter:brightness(1.06)}
+.btn.sec{background:#fff;box-shadow:var(--sh-1)}
+.btn.peligro{background:linear-gradient(180deg,#d4493a,#c0392b)}
+.datos .dato{background:#f8f9fb;border:1px solid var(--line-2);border-radius:10px;padding:10px 12px}
+.datos .dato .et{text-transform:uppercase;letter-spacing:.05em;font-size:11px;font-weight:600}
+button.primary{padding:9px 16px;background:linear-gradient(180deg,#3a8af0,#2a78d6);color:#fff;border:0;
+border-radius:9px;font:600 13.5px var(--font);cursor:pointer;
+box-shadow:0 1px 2px rgba(28,92,171,.45),inset 0 1px 0 rgba(255,255,255,.2)}
+button.primary:hover:not(:disabled){filter:brightness(1.07)}
+.cancelbtn{padding:8px 14px;background:#fff;border:1px solid #d3d8de;border-radius:9px;color:var(--ink-2);
+font:600 13px var(--font);cursor:pointer;box-shadow:var(--sh-1)}
+.cancelbtn:hover{background:#f4f6f9;border-color:#c3cad3}
+.delbtn{border-radius:9px;font-family:var(--font)}
+.hint{color:var(--ink-3);font-size:12.5px}
+.secnav a{transition:background .15s,border-color .15s,color .15s}
+.secnav a:hover{background:var(--brand-soft);border-color:var(--brand);color:var(--brand-ink)}
+.badge,.pchip{letter-spacing:.04em}
+@media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
 </style>"""
 
 # Ordenamiento de tablas del lado del cliente. Se aplica a cualquier <table class="orden">:
@@ -8791,7 +8921,7 @@ _POS_JS = ("<script>(function(){"
 BASE_CSS = (
     "*{box-sizing:border-box}"
     "body{margin:0;background:#fcfcfb;font:14px/1.5 system-ui,-apple-system,Segoe UI,sans-serif;color:#0b0b0b}"
-    "main{max-width:1000px;margin:0 auto;padding:20px 24px}"
+    "main{max-width:1360px;margin:0 auto;padding:20px 28px}"
     "h1{font-size:21px;margin:0 0 4px}h2{font-size:16px;margin:0 0 10px}"
     ".sub,.subx,.sub2{color:#52514e;font-size:13px}"
     ".mono{font-family:ui-monospace,Consolas,monospace}"
@@ -8813,6 +8943,34 @@ BASE_CSS = (
     "@media(max-width:820px){main{padding:16px 14px}h1{font-size:19px}}"
 )
 
+_TW_LINK = "<link rel=stylesheet href=/vendor/tailwind.css>"
+
+# Tema claro/oscuro. El script va al principio del body (antes de pintar) y fija
+# html[data-theme]: lo guardado en localStorage ('ids-theme') o, si no hay, el del sistema.
+# El CSS del tema (capa final de _NAV_CSS) no cambia colores uno a uno: invierte la raiz y
+# devuelve a su estado las imagenes y la barra, que ya es oscura.
+_THEME_JS = ("<script>(function(){var t=null;try{t=localStorage.getItem('ids-theme');}catch(e){}"
+             "if(t!=='dark'&&t!=='light'){t=(window.matchMedia&&matchMedia('(prefers-color-scheme: dark)').matches)"
+             "?'dark':'light';}document.documentElement.setAttribute('data-theme',t);"
+             "window.idsMenu=function(b){var n=b.closest('.nav'),o=n.classList.toggle('open');"
+             "b.setAttribute('aria-expanded',o?'true':'false');};"
+             "window.idsTema=function(){var d=document.documentElement,n=d.getAttribute('data-theme')==='dark'"
+             "?'light':'dark';try{localStorage.setItem('ids-theme',n);}catch(e){}d.setAttribute('data-theme',n);};"
+             "})();</script>")
+_BURGER_BTN = ('<button type=button class=burger id=burger aria-label="Menu" aria-expanded=false '
+               'aria-controls=navtabs title="Menu" onclick="idsMenu(this)">'
+               '<svg class=ic-bars viewBox="0 0 24 24" width="20" height="20"><path fill="none" stroke="currentColor" '
+               'stroke-width="2.2" stroke-linecap="round" d="M4 7h16M4 12h16M4 17h16"/></svg>'
+               '<svg class=ic-x viewBox="0 0 24 24" width="20" height="20"><path fill="none" stroke="currentColor" '
+               'stroke-width="2.2" stroke-linecap="round" d="M6 6l12 12M18 6L6 18"/></svg></button>')
+_THEME_BTN = ('<button type=button class=themebtn onclick="idsTema()" title="Cambiar entre tema claro y oscuro" '
+              'aria-label="Cambiar tema">'
+              '<svg class=ic-moon viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" '
+              'd="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>'
+              '<svg class=ic-sun viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" '
+              'd="M12 7a5 5 0 1 0 0 10 5 5 0 0 0 0-10zM2 13h2a1 1 0 0 0 0-2H2a1 1 0 0 0 0 2zm18 0h2a1 1 0 0 0 0-2h-2a1 1 0 0 0 0 2zM11 2v2a1 1 0 0 0 2 0V2a1 1 0 0 0-2 0zm0 18v2a1 1 0 0 0 2 0v-2a1 1 0 0 0-2 0zM5.6 7a1 1 0 0 0 1.4-1.4L5.6 4.2A1 1 0 0 0 4.2 5.6zm12.8 12.8a1 1 0 0 0 1.4-1.4L18.4 17A1 1 0 0 0 17 18.4zM18.4 7l1.4-1.4A1 1 0 0 0 18.4 4.2L17 5.6A1 1 0 0 0 18.4 7zM5.6 17 4.2 18.4a1 1 0 0 0 1.4 1.4L7 18.4A1 1 0 0 0 5.6 17z"/></svg>'
+              '</button>')
+
 def nav(active=""):
     _rl = getattr(CTX, "role", None)
     es_admin_nav = _rl == "admin"   # exclusiones/tuning y Puntos: solo admin (ni operador ni lectura)
@@ -8828,7 +8986,7 @@ def nav(active=""):
     _ubtn, _upanel = _menu_usuario()
     navbar = ('<div class="nav"><div class="navwrap">' + brand + '<span class="push"></span>'
               + "".join(parts) + '<span class="push"></span>'
-              + _ubtn + '</div></div>' + _upanel
+              + _THEME_BTN + _ubtn + _BURGER_BTN + '</div></div>' + _upanel
               # el modal de confirmacion/aviso: sustituye a confirm() y alert() del navegador
               + _ASK)
     # franja de debajo: a la izquierda el selector de nodo; a la derecha la marca de la empresa
@@ -8841,7 +8999,7 @@ def nav(active=""):
     if selector or elogo or enom:
         empbar = ('<div class="empbar"><div class="empwrap">' + selector
                   + '<span class="push"></span>' + elogo + enom + '</div></div>')
-    return _NAV_CSS + _SORT_JS + _POS_JS + navbar + empbar
+    return _THEME_JS + _TW_LINK + _NAV_CSS + _SORT_JS + _POS_JS + navbar + empbar
 
 _ROL_TXT = {"admin": "Administrador", "operador": "Operador", "lectura": "Solo lectura"}
 
@@ -10295,7 +10453,7 @@ def perfil_page(msg="", ok=False, edit_user=None):
             "</section>")
     css = (
         BASE_CSS +
-        "body{background:#f6f6f4}main{max-width:900px;padding:26px 20px 40px}"
+        "main{max-width:1360px;padding:26px 28px 40px}"
         "h1{font-size:22px;margin:0 0 2px}h2{margin:0}"
         ".psub{color:#6b6a66;font-size:13px;margin:0 0 18px}.sub2{color:#6b6a66;font-size:12.5px;margin:6px 0 12px}"
         ".card{border:1px solid #e7e6e2;border-radius:14px;padding:22px 22px 20px;background:#fff;margin-bottom:16px;box-shadow:0 1px 3px rgba(0,0,0,.03)}"
@@ -10392,25 +10550,41 @@ def perfil_page(msg="", ok=False, edit_user=None):
               "document.addEventListener('keydown',function(e){if(e.key==='Escape'){cerrar('ovlNew');cerrar('ovlEdit');}});"
               "</script>")
     # --- hub de accesos: cada apartado abre en su MODAL (Log y Documentacion incluidos) ---
+    # tarjetas de acceso (Tailwind compilado, prefijo tw-): icono + nombre + para que sirve
+    _TILE_DESC = {"perfil": "Tu cuenta y tu clave", "empresa": "Nombre y logo de la empresa",
+                  "usuarios": "Altas, roles y accesos", "acceso": "Desde donde se puede entrar",
+                  "mikrotik": "Router, API y address-lists", "puntos": "Cada MikroTik con su VPN y Suricata",
+                  "dns": "Resolucion de nombres", "feeds": "Listas de reputacion y claves",
+                  "update": "Version y actualizaciones", "log": "Quien entro y cuando",
+                  "bitacora": "Auditoria de cambios", "doc": "Guia de uso del panel"}
+    _TILE_CLS = ("tw-group tw-flex tw-items-start tw-gap-3.5 tw-rounded-md tw-border tw-border-line "
+                 "tw-bg-surface tw-p-4 tw-no-underline tw-shadow-1 tw-transition "
+                 "hover:tw--translate-y-0.5 hover:tw-border-brand hover:tw-shadow-2 tw-cursor-pointer")
+    _TILE_IC = ("tw-grid tw-h-11 tw-w-11 tw-flex-none tw-place-items-center tw-rounded-md tw-bg-brand-soft "
+                "tw-text-brand [&>svg]:tw-h-6 [&>svg]:tw-w-6")
+    def _tile_html(sid, label, icon, href, onclick=""):
+        return (f"<a class='{_TILE_CLS}' href='{href}'{onclick}>"
+                f"<span class='{_TILE_IC}'>{icon}</span>"
+                f"<span class='tw-min-w-0'><span class='tw-block tw-text-[15px] tw-font-semibold tw-text-ink'>{esc(label)}</span>"
+                f"<span class='tw-mt-0.5 tw-block tw-text-[12.5px] tw-leading-snug tw-text-ink-2'>{esc(_TILE_DESC.get(sid, ''))}</span>"
+                f"</span></a>")
     def _tile(sid, label, icon, show=True):
         if not show:
             return ""
-        return (f"<a class=hubt href='#' onclick=\"return openm('{sid}')\">"
-                f"<span class=hubc>{icon}</span><span class=hubl>{esc(label)}</span></a>")
+        return _tile_html(sid, label, icon, "#", f" onclick=\"return openm('{sid}')\"")
     tiles = (_tile("perfil", "Perfil", _IC_USER, bool(card_pw))
              + _tile("empresa", "Empresa", _IC_BLD, bool(card_empresa))
              + _tile("usuarios", "Usuarios y roles", _IC_USERS, bool(card_users))
              + _tile("acceso", "IPs de confianza", _IC_SHIELD, bool(card_acceso))
              + _tile("mikrotik", "MikroTik", _IC_RTR, bool(card_mk))
-             + (f"<a class=hubt href='/puntos'><span class=hubc>{_IC_VPN}</span>"
-                f"<span class=hubl>Puntos</span></a>" if es_admin else "")
+             + (_tile_html("puntos", "Puntos", _IC_VPN, "/puntos") if es_admin else "")
              + _tile("dns", "DNS", _IC_DNS, bool(card_dns))
              + _tile("feeds", "Reputacion", _IC_FEED, bool(card_feeds))
              + _tile("update", "Version", _IC_DL, bool(card_update))
              + _tile("log", "Accesos", _IC_LOG, es_admin)
              + _tile("bitacora", "Bitacora", _IC_AUDIT, es_admin)
              + _tile("doc", "Documentacion", _IC_BOOK, True))
-    hub = f"<div class=hubgrid>{tiles}</div>"
+    hub = f"<div class='tw-my-5 tw-grid tw-gap-3.5 tw-grid-cols-[repeat(auto-fill,minmax(250px,1fr))]'>{tiles}</div>"
     def _modal(sid, contenido):
         return (f"<div class=aptmodal id=m-{sid} onmousedown=\"this._dn=event.target\" onclick=\"if(event.target===this&&this._dn===this){{closem()}}\">"
                 f"<div class=aptbox><button type=button class=aptx onclick=closem() title=Cerrar>&times;</button>"
@@ -10425,11 +10599,7 @@ def perfil_page(msg="", ok=False, edit_user=None):
         modals += _modal("log", "<iframe class=aptframe data-src='/log?embed=1'></iframe>")
         modals += _modal("bitacora", "<iframe class=aptframe data-src='/bitacora?embed=1'></iframe>")
     modals += _modal("doc", "<iframe class=aptframe data-src='/documentacion?embed=1'></iframe>")
-    hubcss = ("<style>.hubgrid{display:flex;flex-wrap:wrap;gap:22px;margin:18px 0}"
-              ".hubt{display:flex;flex-direction:column;align-items:center;gap:9px;width:118px;text-decoration:none;color:#33322f;cursor:pointer}"
-              ".hubc{width:90px;height:90px;border-radius:50%;background:#109c8e;color:#fff;display:flex;align-items:center;justify-content:center;box-shadow:0 4px 12px rgba(16,156,142,.28);transition:transform .12s,box-shadow .12s}"
-              ".hubt:hover .hubc{transform:translateY(-3px);box-shadow:0 9px 20px rgba(16,156,142,.4)}"
-              ".hubl{font-size:13px;font-weight:600;text-align:center;line-height:1.2}"
+    hubcss = ("<style>"
               ".aptmodal{display:none;position:fixed;inset:0;background:rgba(11,11,11,.5);z-index:90;align-items:center;justify-content:center;padding:24px;overflow:auto}"
               ".aptmodal .aptbox{position:relative;margin:auto;background:#fcfcfb;border-radius:14px;max-width:980px;width:100%;max-height:calc(100vh - 48px);overflow:hidden;box-shadow:0 12px 48px rgba(0,0,0,.35)}"
               ".aptmodal .aptscroll{max-height:calc(100vh - 48px);overflow:auto;padding:16px 20px 24px}"
@@ -12183,7 +12353,11 @@ que vuelve a levantar los contenedores de cada punto.</p>"""
         ".anchor{color:#c8ccd1;text-decoration:none;font-size:14px;margin-left:8px;opacity:0;transition:opacity .1s}"
         "article h2:hover .anchor{opacity:1}"
         "@media(max-width:900px){.wiki{flex-direction:column;gap:14px}.toc{position:static;flex:none;width:100%;"
-        "border:1px solid #eaecf0;border-radius:8px;padding:12px 14px;background:#f8f9fa}}")
+        "border:1px solid #eaecf0;border-radius:8px;padding:12px 14px;background:#f8f9fa}"
+        ".wiki{padding:16px 14px 50px;min-width:0}article{min-width:0;width:100%}"
+        "article h1{font-size:22px;overflow-wrap:anywhere}"
+        "article pre,article table{display:block;max-width:100%;overflow-x:auto}"
+        "article img{max-width:100%;height:auto}}")
     body = ("<!doctype html><html lang=es><head><meta charset=utf-8><link rel=icon type=image/png href=/favicon.ico>"
             "<meta name=viewport content='width=device-width,initial-scale=1'>" + refresh_meta +
             "<title>Suricata</title><style>" + wcss + "</style></head><body>"
@@ -12242,7 +12416,7 @@ def log_page(embed=False):
         cuerpo = "<p class=sub2>Todavia no hay ningun intento de acceso registrado.</p>"
     css = (
         BASE_CSS +
-        "body{background:#f6f6f4}main{max-width:1000px;padding:22px 22px 40px}"
+        "main{max-width:1360px;padding:22px 28px 40px}"
         "h1{margin:0 0 2px}.sub2{color:#6b6a66;margin:0 0 14px}"
         ".card{border:1px solid #e7e6e2;border-radius:14px;padding:20px;background:#fff;box-shadow:0 1px 3px rgba(0,0,0,.03)}"
         ".uhead{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:10px}"
@@ -12746,6 +12920,27 @@ def reputacion_page(res=None, texto="", msg="", ok=False, es_admin=False, volver
                 + "".join(bloques) + _psel_js) if bloques else ""
 
     css = BASE_CSS + (
+        ".card{padding:16px 18px}"
+        ".cab h1{font-size:26px}"
+        ".sub2{color:#4b5563;font-size:13.5px;margin:6px 0 14px}"
+        "h2{font-size:17px;font-weight:800;letter-spacing:-.01em}"
+        "section.card>h3{display:flex;align-items:center;gap:8px;font-size:12px!important;font-weight:700;"
+        "text-transform:uppercase;letter-spacing:.06em;color:#4b5563!important;margin:0 0 10px!important}"
+        "section.card>h3::before{content:'';width:8px;height:8px;border-radius:50%;background:#2a78d6}"
+        "section.card>p.hint{margin:12px 0 0!important;padding:12px 14px;border:1px dashed #cfd5dc;"
+        "border-radius:10px;background:#fafbfc;font-size:13px;line-height:1.5}"
+        ".busca{background:#fff;border:1px solid #e5e8ec;border-radius:12px;padding:6px 8px;box-shadow:0 1px 2px rgba(15,23,32,.06)}"
+        ".busca input[name=ips]{border:0;outline:none;background:transparent;min-width:230px}"
+        ".busca input[name=ips]:focus{box-shadow:none}"
+        ".pedit .padd input{min-width:210px}"
+        "@media(max-width:640px){"
+        ".cab{gap:10px}.cab h1{font-size:22px}"
+        ".busca{margin-left:0;width:100%;flex-wrap:wrap}"
+        ".busca input[name=ips]{min-width:0;flex:1 1 140px}"
+        ".pedit{flex-direction:column;align-items:stretch}"
+        ".pedit .padd{display:flex;width:100%}.pedit .padd input{min-width:0;flex:1 1 auto}"
+        ".pedit form{display:block}"
+        "}"
         "textarea{width:100%;min-height:84px;padding:10px 12px;border:1px solid #d9d7d2;"
         "border-radius:9px;font:13px ui-monospace,Consolas,monospace;resize:vertical}"
         ".qbar{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:10px}"
@@ -12857,7 +13052,7 @@ def bitacora_page(embed=False):
         cuerpo = "<p class=sub2>Sin acciones registradas todavia.</p>"
     css = (
         BASE_CSS +
-        "body{background:#f6f6f4}main{max-width:1000px;padding:22px 22px 40px}"
+        "main{max-width:1360px;padding:22px 28px 40px}"
         "h1{margin:0 0 2px}.sub2{color:#6b6a66;margin:0 0 14px}"
         ".card{border:1px solid #e7e6e2;border-radius:14px;padding:20px;background:#fff;box-shadow:0 1px 3px rgba(0,0,0,.03)}"
         ".uhead{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:10px}"
@@ -12958,61 +13153,66 @@ def _media(serie, clave="sal"):
 _DIAS_SEM = ("lun", "mar", "mie", "jue", "vie", "sab", "dom")
 
 def _grafico(serie, esc):
-    """Barras en SVG puro (sin librerias): una por dia, con el dato en el tooltip."""
+    """Barras en HTML/CSS (sin librerias ni SVG estirado): una columna por dia, con el valor
+    encima, el dia debajo y el detalle en el tooltip. Se adapta al ancho y se lee en movil."""
     vals = [int((d or {}).get("sal", 0)) for _f, d in serie]
     ent = [int((d or {}).get("ent", 0)) for _f, d in serie]
     mx = max(vals + ent + [1])
     n = len(serie)
-    W, H, PAD = 900.0, 200.0, 24.0
-    bw = (W - PAD) / max(1, n)
-    barras = []
-    for i, (f, d) in enumerate(serie):
-        v = vals[i]
-        h = (H - PAD * 2) * (v / mx) if mx else 0
-        x = PAD + i * bw
-        y = H - PAD - h
-        col = "#2a78d6"
-        if (d or {}).get("hueco"):
-            col = "#c8ccd1"            # hubo un corte de datos ese dia: no se pinta como bueno
-        cpes = int((d or {}).get("cpes_n", 0))
-        t = f"{f}: {v:,} ataques salientes, {cpes:,} CPE distintos"
-        if (d or {}).get("hueco"):
-            t += " (faltan datos: el panel estuvo parado mas que la ventana)"
-        barras.append(
-            f"<g><title>{esc(t)}</title>"
-            f"<rect x='{x:.1f}' y='{y:.1f}' width='{max(1.0, bw - 1.5):.1f}' height='{max(0.0, h):.1f}' "
-            f"fill='{col}' rx='1.5'/></g>")
-    # el eje: con 7 dias, CADA barra con su dia de la semana y su fecha (dd/mm); con mas,
-    # una fecha cada pocos dias para que no se monten. Antes solo primera, mitad y
-    # ultima en "10-04" (mes-dia), que no se leia como fecha.
-    etiq = []
+    vacio = not any(vals)
+    # con muchos dias el valor encima de cada barra no cabe: solo en los primeros 14
+    con_valor = n <= 14
     paso = 1 if n <= 7 else -(-n // 10)
     marcas = set(range(0, n, paso)) | ({n - 1} if n else set())
-    if n > 7 and (n - 1) % paso and (n - 1) - max(i for i in range(0, n, paso)) < paso / 2:
-        marcas.discard(max(i for i in range(0, n, paso)))     # que la ultima no pise a la anterior
-    for i in sorted(marcas):
-        x = PAD + i * bw + bw / 2
-        f = serie[i][0]
+    cols = []
+    for i, (f, d) in enumerate(serie):
+        v = vals[i]
+        hueco = bool((d or {}).get("hueco"))
+        cpes = int((d or {}).get("cpes_n", 0))
+        t = f"{f}: {v:,} ataques salientes, {cpes:,} CPE distintos"
+        if hueco:
+            t += " (faltan datos: el panel estuvo parado mas que la ventana)"
+        pct = (100.0 * v / mx) if mx else 0.0
         ddmm = f[8:10] + "/" + f[5:7] if len(f) >= 10 else f
         if n <= 7:
             try:
                 dsem = _DIAS_SEM[time.strptime(f, "%Y-%m-%d").tm_wday]
             except ValueError:
                 dsem = ""
-            etiq.append(f"<text x='{x:.1f}' y='{H - 14:.1f}' text-anchor='middle' font-size='11' "
-                        f"fill='#52514e' font-weight='600'>{esc(dsem)}</text>"
-                        f"<text x='{x:.1f}' y='{H - 2:.1f}' text-anchor='middle' "
-                        f"font-size='11' fill='#8a8a86'>{esc(ddmm)}</text>")
+            etq = f"<b>{esc(dsem)}</b><i>{esc(ddmm)}</i>"
         else:
-            # la ultima pegada al borde derecho: centrada se salia del grafico y se cortaba
-            anc, xx = ("end", W - 10) if i == n - 1 else ("middle", x)
-            etiq.append(f"<text x='{xx:.1f}' y='{H - 6:.1f}' text-anchor='{anc}' "
-                        f"font-size='11' fill='#8a8a86'>{esc(ddmm)}</text>")
-    return (f"<svg viewBox='0 0 {W:.0f} {H:.0f}' preserveAspectRatio='none' "
-            f"style='width:100%;height:200px;display:block'>"
-            f"<line x1='{PAD}' y1='{H - PAD}' x2='{W}' y2='{H - PAD}' stroke='#e7e6e2'/>"
-            f"<text x='2' y='{PAD}' font-size='11' fill='#8a8a86'>{mx:,}</text>"
-            + "".join(barras) + "".join(etiq) + "</svg>")
+            etq = f"<i>{esc(ddmm)}</i>" if i in marcas else ""
+        valor = f"<span class=hval>{v:,}</span>" if (con_valor and v) else ""
+        cols.append(
+            f"<div class='hcol{' hueco' if hueco else ''}' title='{esc(t)}'>"
+            f"<div class=hplot>{valor}<div class=hbar style='height:{max(pct, 1.5 if v else (9 if hueco else 0)):.1f}%'></div></div>"
+            f"<div class=hetq>{etq}</div></div>")
+    css = ("<style>"
+           ".hg{display:flex;gap:10px;align-items:stretch;margin:14px 0 4px}"
+           ".hy{display:flex;flex-direction:column;justify-content:space-between;align-items:flex-end;"
+           "height:180px;font-size:11px;color:#8a8a86;font-variant-numeric:tabular-nums;min-width:30px}"
+           ".hcols{position:relative;flex:1;display:flex;gap:clamp(4px,1.2vw,14px);min-width:0}"
+           ".hcols::before{content:'';position:absolute;left:0;right:0;top:0;height:180px;pointer-events:none;"
+           "background:linear-gradient(#e9ecf0 1px,transparent 1px) 0 0/100% 50%,"
+           "linear-gradient(#e9ecf0 1px,transparent 1px) 0 100%/100% 1px no-repeat}"
+           ".hcol{flex:1;min-width:0;display:flex;flex-direction:column;position:relative}"
+           ".hplot{height:180px;display:flex;flex-direction:column;justify-content:flex-end;align-items:center}"
+           ".hbar{width:min(72%,56px);background:linear-gradient(180deg,#4b94ee,#2a78d6);border-radius:7px 7px 0 0;"
+           "transition:filter .15s}"
+           ".hcol:hover .hbar{filter:brightness(1.12)}"
+           ".hcol.hueco .hbar{background:repeating-linear-gradient(45deg,#c8ccd1,#c8ccd1 5px,#d9dce0 5px,#d9dce0 10px)}"
+           ".hval{font-size:11.5px;font-weight:700;color:#33322f;margin-bottom:3px;font-variant-numeric:tabular-nums}"
+           ".hetq{display:flex;flex-direction:column;align-items:center;margin-top:6px;min-height:30px;"
+           "font-size:11px;line-height:1.25;color:#8a8a86}"
+           ".hetq b{color:#52514e;font-weight:600}.hetq i{font-style:normal}"
+           ".hvacio{position:absolute;left:0;right:0;top:0;height:180px;display:flex;align-items:center;"
+           "justify-content:center;text-align:center;color:#8a8a86;font-size:13px;padding:0 12px}"
+           "@media(max-width:520px){.hy{min-width:22px}.hval{font-size:10px}.hetq{font-size:10px}}"
+           "</style>")
+    aviso = ("<div class=hvacio>Sin ataques salientes en este periodo: nada que limpiar.</div>"
+             if vacio else "")
+    return (css + "<div class=hg><div class=hy><span>" + f"{mx:,}" + "</span><span>" + f"{mx // 2:,}"
+            + "</span><span>0</span></div><div class=hcols>" + aviso + "".join(cols) + "</div></div>")
 
 # --- Reporte de conducta por CPE (varios dias) -------------------------------------
 # Lo que la ficha de evidencia no puede dar: la ficha mira la ventana viva (24 h como
@@ -13773,14 +13973,22 @@ a.pg:hover{border-color:var(--linea);background:color-mix(in srgb,var(--azul) 7%
   .inf h2{font-size:17pt}
   a{text-decoration:none;color:inherit}
 }
-@media(prefers-color-scheme:dark){
-  /* pasos propios sobre fondo oscuro, no el claro invertido */
-  .inf{--azul:#5598e7;--pista:#212932;--linea:#2b333e;--tinta:#e8edf3;--tinta2:#c2ccd8;
-       --suave:#95a2b3;--fondo:#161a20;--sombra:none}
-  .cpe:hover{box-shadow:0 5px 16px rgba(0,0,0,.5)}
-  .cpe .b{background:#1f262f;border-color:#2b333e}
-  .acciones input{border-color:#2b333e}
-}
+/* --- aire y jerarquia: antes titulos y tarjetas iban pegados al borde --- */
+.inf{color:var(--tinta)}
+.inf>.card,.inf .card{padding:20px 22px}
+.inf>.card:first-child{background:linear-gradient(180deg,var(--fondo),color-mix(in srgb,var(--azul) 5%,var(--fondo)))}
+.inf h2{font-size:26px;font-weight:800;margin:0 0 4px}
+.inf .per{margin:0 0 20px}
+.tile{padding:16px 18px;transition:box-shadow .15s,transform .15s}
+.tile:hover{box-shadow:0 6px 18px rgba(16,24,40,.1);transform:translateY(-1px)}
+.tile .n{font-size:34px}
+.seccion{background:var(--fondo);border:1px solid var(--linea);border-radius:14px;
+         padding:18px 20px 18px 26px;box-shadow:var(--sombra)}
+.seccion::before{border-radius:14px 0 0 14px}
+.bloque{background:var(--fondo);border:1px solid var(--linea);border-radius:14px;
+        padding:18px 20px;margin:18px 0 0;box-shadow:var(--sombra)}
+.acciones{margin-top:20px}
+.inf .b{box-shadow:var(--sombra)}
 </style>"""
 
 # Un solo tono para las barras. Colorearlas por su puesto en el ranking hace que el
@@ -14566,12 +14774,14 @@ def historico_page(dias_n=7):
     body = ("<!doctype html><html lang=es><head><meta charset=utf-8><link rel=icon type=image/png href=/favicon.ico>"
             "<meta name=viewport content='width=device-width,initial-scale=1'>"
             "<title>Suricata</title><style>" + BASE_CSS +
-            "main{max-width:1100px;padding:20px}a{color:#2a78d6}"
+            "main{max-width:1360px;padding:20px 28px}"
             # rejilla y no flex: con flex, seis cuadros de contenido desigual salian de
             # anchos distintos y las etiquetas a alturas distintas. auto-fit los reparte
             # iguales y los recoloca solo al estrechar la ventana.
             ".kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));"
             "gap:14px;margin:0 0 18px}"
+            "@media(max-width:520px){.kpis{grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}"
+            ".kpi{padding:12px}.kpi .kv{font-size:22px}}"
             ".kpi{background:#fff;border:1px solid #e7e6e2;border-radius:12px;padding:14px 16px;"
             "display:flex;flex-direction:column}"
             # nowrap: un numero largo partido en dos lineas descuadra la fila entera
@@ -14584,6 +14794,10 @@ def historico_page(dias_n=7):
             "text-decoration:none;color:#52514e;background:#fff}"
             ".rango a.on{background:#2a78d6;border-color:#2a78d6;color:#fff;font-weight:600}"
             ".doscol{display:flex;gap:14px;flex-wrap:wrap;margin:16px 0;align-items:flex-start}"
+            ".doscol>*{flex:1 1 320px;min-width:0}"
+            ".doscol .card{padding:16px 18px;overflow-x:auto}"
+            ".doscol h2{font-size:16px;margin:0 0 10px}"
+            ".doscol table{table-layout:auto}"
             ".doscol table{table-layout:fixed;width:100%}"
             ".doscol td:first-child,.doscol th:first-child{word-break:break-word;line-height:1.35}"
             ".doscol .num{text-align:right;white-space:nowrap;width:74px}"
@@ -14611,7 +14825,7 @@ def historico_page(dias_n=7):
             + vacio
             + f"<div class=rango>{sel}</div>"
             + kpis
-            + "<section class=card><h2 style='font-size:15px;margin:0 0 4px'>Ataques salientes por dia</h2>"
+            + "<section class=card style='padding:18px 20px'><h2 style='font-size:17px;margin:0 0 4px'>Ataques salientes por dia</h2>"
             + f"<p class=sub2 style='margin:0 0 8px'>{total:,} en los ultimos {dias_n} dias. "
               "Las barras grises son dias con datos incompletos: el panel estuvo parado mas "
               "que la ventana y ese tramo no se conto.</p>"
@@ -14977,6 +15191,24 @@ def _cfb(conf, n=0):
         return ("<span class='cfb sosp'>Sin confirmar%s</span>"
                 % (" &middot; %d pista" % n if n == 1 else ""))
     return ""
+
+def _kpis_cuarentena(n_inf, n_dns, n_lista, activo):
+    """Franja de indicadores de Cuarentena (Tailwind compilado, prefijo tw-)."""
+    def k(titulo, valor, sub, tono):
+        return ("<div class='tw-rounded-md tw-border tw-border-line tw-bg-surface tw-p-4 tw-shadow-1'>"
+                "<div class='tw-text-xs tw-font-semibold tw-uppercase tw-tracking-wide tw-text-ink-2'>%s</div>"
+                "<div class='tw-mt-1 tw-break-words tw-text-2xl tw-font-bold tw-tabular-nums sm:tw-text-3xl %s'>%s</div>"
+                "<div class='tw-mt-0.5 tw-text-xs tw-text-ink-3'>%s</div></div>"
+                % (html.escape(titulo), tono, html.escape(str(valor)), html.escape(sub)))
+    return ("<div class='tw-mb-4 tw-grid tw-grid-cols-[repeat(2,minmax(0,1fr))] tw-gap-3 lg:tw-grid-cols-[repeat(4,minmax(0,1fr))]'>"
+            + k("Infectados", n_inf, "candidatos CnC en la ventana", "tw-text-bad" if n_inf else "tw-text-ink")
+            + k("DNS sospechoso", n_dns, "consultan dominios de botnet", "tw-text-warn" if n_dns else "tw-text-ink")
+            + k("En la lista", n_lista, "enviados al MikroTik", "tw-text-ink")
+            + k("Envio", "Activo" if activo else "Sugerencia",
+                "se envia al address-list" if activo else "dry-run: no se envia nada",
+                "tw-text-ok" if activo else "tw-text-warn")
+            + "</div>")
+
 
 def cuarentena_page(msg="", es_admin=False):
     """Cuarentena: CPEs INFECTADOS CONFIRMADOS. Si el MikroTik esta configurado y HABILITADO
@@ -15415,7 +15647,7 @@ def cuarentena_page(msg="", es_admin=False):
     flash = ("<div id=notif class='notifm msg'><span class=ni>&#8505;</span><span>" + esc(msg) + "</span></div>") if msg else ""
     css = ("<style>" + BASE_CSS +
            # solo lo propio de Cuarentena (lo comun ya viene de BASE_CSS)
-           "main{max-width:1100px}.sub{margin:0 0 14px}"
+           "main{max-width:1360px}.sub{margin:0 0 14px}"
            ".card{overflow:hidden}"
            ".ipx{font-weight:700}"
            ".rb{color:#fff;font-weight:800;font-size:12px;padding:2px 9px;border-radius:20px;white-space:nowrap}"
@@ -15519,7 +15751,7 @@ def cuarentena_page(msg="", es_admin=False):
             "<h1>Cuarentena y control de CPEs</h1>"
             f"<p class='sub'>Ventana {vmin} min · lista de hace {edad}. Dos categorias: <b>infectados</b> (malware/CnC) "
             "y <b>DNS sospechoso</b> (consultan dominios de botnet), cada una a su address-list del MikroTik.</p>"
-            + _salud_html() + flash + estado + sec_fp + sec_inf + sec_dns + sec_dst + sec_manual +
+            + _salud_html() + flash + _kpis_cuarentena(len(cand), len(dns_cand), len(enviados) + len(enviados_dns), activo) + estado + sec_fp + sec_inf + sec_dns + sec_dst + sec_manual +
             # al final: se consulta cuando hace falta saber a donde fue algo, no
             # cada vez que se abre la pagina a ver quien esta atacando
             sec_listas +
@@ -15853,7 +16085,7 @@ RE_USUARIO = re.compile(r"^[a-z0-9][a-z0-9._-]{0,31}$")   # el mismo patron que 
 _RE_URL_ATTR = re.compile(r"(?<![\w-])((?:href|action|formaction)\s*=\s*)([\"']?)(/(?!/)[^\"'\s>]*)", re.I)
 # lo que no depende del nodo (estaticos y las paginas sin selector: Puntos, operaciones,
 # Ajustes, logs, Documentacion) se deja como esta
-_SIN_NODO = ("/login", "/logout", "/logo.png", "/favicon.ico", "/mi-foto", "/mapa/",
+_SIN_NODO = ("/login", "/logout", "/logo.png", "/favicon.ico", "/mi-foto", "/mapa/", "/vendor/",
              "/puntos", "/operaciones", "/ajustes", "/log", "/bitacora", "/documentacion", "/perfil")
 
 def url_con_nodo(url, nodo=None, amp="&"):
@@ -16211,6 +16443,18 @@ class H(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(img)
             return
+        if path == "/vendor/tailwind.css":
+            # Tailwind compilado en el build (images/panel/tailwind): estatico, publico, cacheable
+            try:
+                with open(os.path.join(nodos.SHARE, "tailwind.css"), "rb") as f:
+                    data = f.read()
+            except OSError:
+                data = b""
+            self.send_response(200)
+            self.send_header("Content-Type", "text/css; charset=utf-8")
+            self.send_header("Cache-Control", "public, max-age=3600")
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers(); self.wfile.write(data); return
         if path.startswith("/vendor/mapa/"):
             # assets del mapa mundial (TopoJSON + topojson-client), publicos y cacheables
             fname = path.rsplit("/", 1)[-1]

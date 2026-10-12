@@ -143,7 +143,7 @@ class Web(Base):
         self.assertTrue(posts)
         self.assertTrue(all("nodo=p001" in a for a in posts), posts)
         hrefs = [h for h in re.findall(r"href=['\"]?(/[^'\" >]*)", txt)
-                 if not h.startswith(("/logo", "/favicon", "/mi-foto", "/login", "/logout", "/mapa/",
+                 if not h.startswith(("/logo", "/favicon", "/mi-foto", "/login", "/logout", "/mapa/", "/vendor/",
                                       "/puntos", "/ajustes", "/log", "/bitacora", "/documentacion"))]
         self.assertTrue(hrefs)
         self.assertTrue(all("nodo=" in h for h in hrefs), [h for h in hrefs if "nodo=" not in h])
