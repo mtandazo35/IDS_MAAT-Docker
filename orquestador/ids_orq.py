@@ -1515,14 +1515,18 @@ def _leer_json(s):
 
 
 def suricata_comando(pid, comando):
+    """Una orden por el socket de control de Suricata. Cada mensaje JSON va terminado en salto
+    de línea: Suricata 7 cierra la conexión si la orden llega sin él (visto en el laboratorio:
+    `reopen-log-files` fallaba tras cada rotación, el eve nuevo se quedaba sin `stats` y el
+    contenedor acababa reiniciado por «unhealthy»)."""
     path = ruta("/srv/ids/ctl/%s/suricata/suricata-command.socket" % pid)
     s = _unix(path)
     try:
-        s.sendall(json.dumps({"version": "0.2"}).encode())
+        s.sendall((json.dumps({"version": "0.2"}) + "\n").encode())
         r = _leer_json(s)
         if r.get("return") != "OK":
             raise ErrorOrden("FALLO", "suricata rechazó la versión del protocolo")
-        s.sendall(json.dumps({"command": comando}).encode())
+        s.sendall((json.dumps({"command": comando}) + "\n").encode())
         r = _leer_json(s)
         if r.get("return") != "OK":
             raise ErrorOrden("FALLO", "suricata: %s" % r.get("message", "error"))
