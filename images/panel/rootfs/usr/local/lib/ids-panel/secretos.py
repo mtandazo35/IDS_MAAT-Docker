@@ -17,7 +17,12 @@ import os
 import threading
 
 PREFIJO = "enc1:"
-RUTA_CLAVE = os.environ.get("IDS_MASTER_KEY", "/run/secrets/master_key")
+RUTA_DEFECTO = "/run/secrets/master_key"
+
+
+def ruta_clave():
+    """Se lee en cada uso (no al importar): las pruebas y el CLI pueden cambiar IDS_MASTER_KEY."""
+    return os.environ.get("IDS_MASTER_KEY", RUTA_DEFECTO)
 
 _lock = threading.Lock()
 _cache = {"ruta": None, "clave": None}
@@ -28,18 +33,19 @@ class SecretoNoDisponible(Exception):
 
 
 def _clave():
+    ruta = ruta_clave()
     with _lock:
-        if _cache["ruta"] == RUTA_CLAVE and _cache["clave"] is not None:
+        if _cache["ruta"] == ruta and _cache["clave"] is not None:
             return _cache["clave"]
         try:
-            with open(RUTA_CLAVE, encoding="ascii") as f:
+            with open(ruta, encoding="ascii") as f:
                 txt = f.read().strip()
             clave = bytes.fromhex(txt)
         except (OSError, ValueError, UnicodeDecodeError):
             raise SecretoNoDisponible("no se puede leer la clave maestra") from None
         if len(clave) != 32:
             raise SecretoNoDisponible("la clave maestra no tiene 32 bytes")
-        _cache.update(ruta=RUTA_CLAVE, clave=clave)
+        _cache.update(ruta=ruta, clave=clave)
         return clave
 
 

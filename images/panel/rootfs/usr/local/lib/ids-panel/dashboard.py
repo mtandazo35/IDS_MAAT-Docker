@@ -7816,7 +7816,8 @@ def cargar_usuarios():
     `ids-panel crear-admin` (o `ids-orq panel crear-admin`). La migracion desde el
     USER/PASS del .conf viejo ya no existe."""
     try:
-        data = json.load(open(USERS_FILE, encoding="utf-8"))
+        with open(USERS_FILE, encoding="utf-8") as f:
+            data = json.load(f)
         if isinstance(data, list):
             return [r for r in data if isinstance(r, dict) and r.get("user")]
     except (OSError, ValueError):
@@ -16952,7 +16953,7 @@ def main():
     if not secretos.disponible():
         sys.stderr.write("panel: AVISO: no se puede leer la clave maestra (%s): las claves de "
                          "la API, feeds, IA y Telegram guardadas no se pueden usar (no se borran)\n"
-                         % secretos.RUTA_CLAVE)
+                         % secretos.ruta_clave())
     httpd = crear_servidor()
 
     def _fin(*_):

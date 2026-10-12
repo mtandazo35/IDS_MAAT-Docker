@@ -137,6 +137,22 @@ class PanelP:
                "p002": {"nombre": "sur", "n": 2, "estado": "activo", "deseado": "activo",
                         "redes": ["10.0.0.0/24"], "api_puerto": 8729, "sensor": "100.64.2.1",
                         "mk": "100.64.2.2", "tzsp_puerto": 37008, "ros_version": 6, "perfil": "reducido"}}
+        # formato real de estado.json (CONTRATO-F1a §5.10): p001 sano y con espejo, p002 con el
+        # MikroTik sin conectar. Asi la salud por etapas del nucleo sale de datos de verdad.
+        sano = {"contenedores": {"vpn": {"estado": "running", "salud": "healthy"},
+                                 "suricata": {"estado": "running", "salud": "healthy"}},
+                "vpn_cliente": {"conectado": True, "desde": int(time.time()) - 600, "ip_real": "198.51.100.7",
+                                "usuario": "mk-p001"},
+                "tzsp": {"edad_s": 5, "rx": 1000, "tx": 990, "rechazados": 0},
+                "suricata": {"stats_edad_s": 10, "reglas_cargadas": 46915, "reglas_fallidas": 0,
+                             "kernel_packets": 990, "kernel_drops": 0}, "avisos": []}
+        sin_mk = {"contenedores": sano["contenedores"],
+                  "vpn_cliente": {"conectado": False, "desde": None, "ip_real": None, "usuario": None},
+                  "tzsp": {"edad_s": 5, "rx": 0, "tx": 0, "rechazados": 0},
+                  "suricata": {"stats_edad_s": 10, "reglas_cargadas": 46915, "reglas_fallidas": 0,
+                               "kernel_packets": 0, "kernel_drops": 0}, "avisos": ["SIN-ESPEJO"]}
+        pts["p001"].update(sano)
+        pts["p002"].update(sin_mk)
         if extra:
             pts.update(extra)
         with open(os.path.join(self.tmp.name, "run", "estado.json"), "w", encoding="utf-8") as f:
