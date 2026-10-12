@@ -15539,6 +15539,9 @@ def cuarentena_page(msg="", es_admin=False):
            ".evlink{border:0;background:0;padding:0;font:inherit;font-size:11.5px;"
            "color:#2a5fa0;text-decoration:underline;cursor:pointer}"
            ".evlink:hover{color:#1c5cab}"
+           # conteos cortos (1, 3, 12) centrados bajo su titulo: alineados a la derecha el
+           # numero quedaba pegado al borde y parecia no ser de su columna (igual que en Top)
+           "th.num,td.num{text-align:center}"
            ".fichaov{display:none;position:fixed;inset:0;background:rgba(11,11,11,.5);z-index:120;align-items:center;justify-content:center;padding:20px}"
            ".fichabox{position:relative;background:#fcfcfb;border-radius:14px;max-width:880px;width:100%;height:min(88vh,820px);box-shadow:0 14px 50px rgba(0,0,0,.4);overflow:hidden}"
            ".fichax{position:absolute;top:8px;right:8px;z-index:2;border:0;background:#eceae6;width:30px;height:30px;border-radius:50%;font-size:19px;line-height:1;cursor:pointer}.fichax:hover{background:#e34948;color:#fff}"
@@ -15612,7 +15615,7 @@ def cuarentena_page(msg="", es_admin=False):
            "tbody td.mot{padding-left:0}"
            "tbody td.mot::before{position:static;display:block;width:auto;margin-bottom:4px}"
            "tbody td[colspan]{padding-left:0;text-align:center}tbody td[colspan]::before{display:none}"
-           ".mot{max-width:none}.num{text-align:left}"
+           ".mot{max-width:none}.num,td.num{text-align:left}"
            "}"
            "</style>")
     body = ("<!doctype html><html lang=es><head><meta charset=utf-8><link rel=icon type=image/png href=/favicon.ico>"
