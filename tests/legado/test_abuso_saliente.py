@@ -214,7 +214,8 @@ def main():
     rot30 = _re.findall(r">(\d\d/\d\d)</text>", pag)
     check("eje de 30 dias: fechas dd/mm repartidas (ni 3 ni 30), y la de hoy al final",
           8 <= len(rot30) <= 12 and rot30[-1] == f7[-1], rot30)
-    check("los reportes guardados siguen listandose", "Reportes guardados" in pag)
+    # el user quito la lista de reportes guardados del Historico (2026-10-12)
+    check("la lista de reportes guardados ya no sale", "Reportes guardados" not in pag)
     # CONTRATO-F2 §3: las metricas son del punto que se mira; p002 no hereda las de p001
     with nod.contexto("p002"):
         _otro = d["historico_page"](30)

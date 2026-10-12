@@ -58,13 +58,14 @@ class Pantallas(unittest.TestCase):
         self.assertEqual(self.p.pedir("GET", "/cuarentena?nodo=p009", cookie=self.ana).status, 404)
 
     def test_enlaces_compartibles_llevan_nodo(self):
-        """Capacidad nueva: los reportes guardados se enlazan con su nodo (inv_B §2)."""
+        """Capacidad nueva: un reporte se sirve con su nodo y no desde otro (inv_B §2). La lista de
+        reportes guardados del Historico se quito (el user, 2026-10-12)."""
         d = os.path.join(self.p.tmp.name, "panel", "nodos", "p002")
         with open(os.path.join(d, "report-20261001-1000.html"), "w", encoding="utf-8") as f:
             f.write("<html><body>reporte p002</body></html>")
         r = self.p.pedir("GET", "/historico?nodo=p002", cookie=self.ana)
         self.assertEqual(r.status, 200, r.texto[:300])
-        self.assertIn('href="/r/report-20261001-1000.html?nodo=p002"', r.texto)
+        self.assertNotIn("Reportes guardados", r.texto)
         r = self.p.pedir("GET", "/r/report-20261001-1000.html?nodo=p002", cookie=self.ana)
         self.assertIn("reporte p002", r.texto)
         self.assertEqual(self.p.pedir("GET", "/r/report-20261001-1000.html?nodo=p001", cookie=self.ana).status, 404)

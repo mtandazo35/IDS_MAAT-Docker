@@ -2543,34 +2543,16 @@ with open(_tmp_out, "w", encoding="utf-8") as _fo:
     _fo.write(doc)
 os.replace(_tmp_out, out)
 
-# Historico acotado: conservar los reportes de los ULTIMOS 3 DIAS, pero solo UNA
-# instantanea por hora (el panel regenera cada ~5 min; sin adelgazar serian ~864
-# archivos). Se conserva SIEMPRE el mas nuevo. Se corre en cada generacion.
+# Solo se conserva el reporte MAS NUEVO del nodo: la lista de instantaneas por hora del
+# Historico se quito (no se usaba) y el resto del panel solo mira el ultimo. Los contadores
+# diarios (metricas.json) no dependen de los HTML.
 try:
-    RET_DIAS = 3
-    ahora = time.time()
     hs = glob.glob(os.path.join(OUTDIR, "report-*.html"))
     nuevo = max(hs, key=os.path.getmtime) if hs else None
-    vistos = set()
-    if nuevo:
-        vistos.add(int(os.path.getmtime(nuevo) // 3600))   # la hora del mas nuevo ya esta cubierta
-    for f in sorted(hs, key=os.path.getmtime, reverse=True):
-        if f == nuevo:
-            continue
-        try:
-            mt = os.path.getmtime(f)
-        except OSError:
-            continue
-        if ahora - mt > RET_DIAS * 86400:          # mas viejo que la retencion -> fuera
+    for f in hs:
+        if f != nuevo:
             try: os.remove(f)
             except OSError: pass
-            continue
-        bucket = int(mt // 3600)                    # 1 por hora: el primero (mas nuevo) manda
-        if bucket in vistos:
-            try: os.remove(f)                        # ya hay uno mas nuevo en esa hora
-            except OSError: pass
-        else:
-            vistos.add(bucket)
 except OSError:
     pass
 

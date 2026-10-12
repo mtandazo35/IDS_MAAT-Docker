@@ -492,5 +492,21 @@ class IpsUnicas(Entorno):
         self.assertEqual(m.group(1), "2")
 
 
+class SoloElUltimoReporte(Entorno):
+    def test_borra_las_instantaneas_viejas(self):
+        """Capacidad nueva (el user quito «Reportes guardados», 2026-10-12): el generador deja solo el
+        reporte mas nuevo del nodo, tambien los de esta misma hora."""
+        d = os.path.join(self.panel, "nodos", "p001")
+        os.makedirs(d, exist_ok=True)
+        for nombre, hace in (("report-20261001-1000.html", 86400), ("report-20261012-0000.html", 120)):
+            ruta = os.path.join(d, nombre)
+            with open(ruta, "w", encoding="utf-8") as f:
+                f.write("<html></html>")
+            os.utime(ruta, (time.time() - hace, time.time() - hace))
+        self.tres_cnc("p001")
+        self.ok("60", "--nodo", "p001")
+        self.assertEqual(len([n for n in os.listdir(d) if n.startswith("report-")]), 1)
+        self.assertNotIn("report-20261001-1000.html", os.listdir(d))
+
 if __name__ == "__main__":
     unittest.main()

@@ -8599,8 +8599,9 @@ _NAV_LINKS = [("/", "En vivo"), ("/top", "Top origenes"), ("/detalle", "Detalle"
               ("/historico", "Historico"), ("/conducta", "Reporte"),
               ("/eventos", "Eventos"),
               ("/exclusiones", "Exclusiones"),
-              ("/puntos", "Puntos"),
               ("/ajustes", "Ajustes")]   # Log y Documentacion viven dentro de Ajustes
+# Puntos no es pestana: va en la franja de debajo de la barra, junto al selector de nodo (con
+# el selector, Eventos y Puntos arriba, la barra no cabia y se comia Ajustes y el menu del usuario)
 _NAV_SOLO_ADMIN = ("/exclusiones", "/puntos")
 # paginas que no dependen del nodo: no llevan selector (CONTRATO-F2 §10, inv_B §2)
 _NAV_SIN_NODO = ("/ajustes", "/puntos", "/log", "/bitacora", "/documentacion")
@@ -8643,22 +8644,23 @@ font:15px system-ui,-apple-system,Segoe UI,sans-serif;box-shadow:0 2px 10px rgba
 overflow-x:auto;overflow-y:hidden;scrollbar-width:none}  /* una pestana de mas no puede empujar "Salir" fuera de la barra */
 .nav .navwrap::-webkit-scrollbar{display:none}
 .nav a.tab{flex:0 0 auto}
-.nav .brand{font-weight:700;font-size:16px;margin-right:14px;display:flex;align-items:center;gap:11px;letter-spacing:.2px}
+.nav .brand{font-weight:700;font-size:16px;margin-right:14px;display:flex;align-items:center;gap:11px;letter-spacing:.2px;
+flex:0 0 auto;white-space:nowrap}
 .nav .brand .applogo{height:30px;width:auto;display:block;filter:drop-shadow(0 1px 2px rgba(0,0,0,.4))}
 .nav .brand .elogo{height:34px;width:auto;max-width:150px;object-fit:contain;border-radius:5px;background:#fff;padding:3px;display:block}
 .nav .brand .bn{white-space:nowrap;max-width:240px;overflow:hidden;text-overflow:ellipsis}
-.nav a.tab{position:relative;color:#c9d2dd;text-decoration:none;padding:11px 15px;margin:9px 1px;border-radius:8px;
+.nav a.tab{position:relative;color:#c9d2dd;text-decoration:none;padding:11px 11px;margin:9px 1px;border-radius:8px;
 font-size:15px;font-weight:500;transition:background .15s,color .15s}
 .nav a.tab:hover{color:#fff;background:rgba(255,255,255,.08)}
 .nav a.tab.on{color:#fff;background:rgba(42,120,214,.22)}  /* sin cambiar el grosor: evita que la pestana activa ensanche y recoloque la barra */
-.nav a.tab.on::after{content:"";position:absolute;left:15px;right:15px;bottom:-9px;height:3px;background:#2a78d6;border-radius:2px}
+.nav a.tab.on::after{content:"";position:absolute;left:11px;right:11px;bottom:-9px;height:3px;background:#2a78d6;border-radius:2px}
 .nav .push{margin-left:auto}
 .nav .out{margin-left:14px;color:#f3b0b0;text-decoration:none;font-weight:600;padding:9px 17px;border-radius:8px;font-size:15px;
 border:1px solid rgba(243,176,176,.35);transition:background .15s,color .15s,border-color .15s}
 .nav .out:hover{background:#e34948;color:#fff;border-color:#e34948}
 /* menu del usuario (sustituye al boton Salir): foto + nombre + flecha; abre Mi cuenta, Cambiar
    contrasena, Cerrar sesion y el tiempo que le queda a la sesion */
-.nav .ubtn{flex:0 0 auto;display:flex;align-items:center;gap:8px;margin-left:14px;padding:4px 8px 4px 4px;border-radius:999px;
+.nav .ubtn{flex:0 0 auto;display:flex;align-items:center;gap:8px;margin-left:10px;padding:4px 8px 4px 4px;border-radius:999px;
 cursor:pointer;color:#e8edf3;background:transparent;border:1px solid transparent;font:600 14px system-ui;transition:background .15s}
 .nav .ubtn:hover,.nav .ubtn[aria-expanded=true]{background:rgba(255,255,255,.1);border-color:rgba(255,255,255,.14)}
 .nav .ubtn .av,.umenu .av{width:32px;height:32px;border-radius:50%;display:flex;align-items:center;justify-content:center;flex:none;
@@ -8682,15 +8684,21 @@ box-shadow:0 10px 32px rgba(0,0,0,.22);padding:6px 0;font:14px system-ui,-apple-
 .umenu .ufin b{font-variant-numeric:tabular-nums;color:#33322f}
 @media(max-width:1440px){.nav .ubtn .un{display:none}}  /* sin sitio: solo la foto y la flecha */
 .askov{display:none;position:fixed;inset:0;background:rgba(11,11,11,.55);z-index:160;align-items:center;justify-content:center;padding:24px}.askov .askbox{background:#fff;color:#0b0b0b;border-radius:14px;max-width:460px;width:100%;padding:22px 24px;box-shadow:0 16px 54px rgba(0,0,0,.45)}.askov h3{margin:0 0 8px;font-size:19px}.askov p{margin:0 0 18px;color:#52514e;font-size:14px;line-height:1.5}.askov .askacts{display:flex;gap:10px;justify-content:flex-end}.askov .askno{background:#eef0f2;color:#33322f;border:1px solid #d7d6d2;padding:10px 16px;border-radius:9px;font:600 14px system-ui;cursor:pointer}.askov .askno:hover{background:#e2e5e8}.askov .askok{background:#2a78d6;color:#fff;border:0;padding:10px 18px;border-radius:9px;font:600 14px system-ui;cursor:pointer}.askov .askok:hover{background:#1c5cab}.askov .askok.danger{background:#c0392b}.askov .askok.danger:hover{background:#9c2f22}
-.nav .nodosel{display:flex;align-items:center;gap:7px;margin:0 6px 0 10px;flex:0 0 auto}
-.nav .nodosel label{color:#c9d2dd;font-size:13px;font-weight:600}
-.nav .nodosel select{max-width:240px;padding:6px 9px;border-radius:8px;border:1px solid rgba(255,255,255,.25);
-background:#1b222c;color:#fff;font:13px system-ui;cursor:pointer}
-.nav .nodosel .nsdot{width:9px;height:9px;border-radius:50%;flex:none}
+.empbar .nodosel{display:flex;align-items:center;gap:7px;margin:0;flex:0 0 auto}
+.empbar .nodosel label{color:#52514e;font-size:13px;font-weight:600}
+.empbar .nodosel select{max-width:320px;padding:6px 9px;border-radius:8px;border:1px solid #d7d6d2;
+background:#fff;color:#0b0b0b;font:13px system-ui;cursor:pointer}
+.empbar .nodosel .nsdot{width:9px;height:9px;border-radius:50%;flex:none}
+.empbar .ptlink{margin-left:8px;padding:6px 12px;border-radius:8px;color:#2a5fa0;text-decoration:none;font:600 13px system-ui;
+border:1px solid #d8e5f7;background:#f3f7fd;white-space:nowrap}
+.empbar .ptlink:hover{background:#e7f0fb}
+.empbar .ptlink.on{background:#2a78d6;color:#fff;border-color:#2a78d6}
+.empbar .push{margin-left:auto}
 .nodochip{display:inline-block;margin-left:6px;padding:1px 8px;border-radius:20px;background:#eef2f7;
 color:#33322f;font:600 11px system-ui;vertical-align:middle}
 .empbar{background:#fff;border-bottom:1px solid #ececec}
-.empbar .empwrap{max-width:1360px;margin:0 auto;padding:7px 28px;display:flex;justify-content:flex-end;align-items:center;gap:10px}
+.empbar .empwrap{max-width:1360px;margin:0 auto;padding:7px 28px;display:flex;align-items:center;gap:10px;flex-wrap:wrap;
+min-height:30px}
 .empbar .elogo{height:30px;width:auto;max-width:150px;object-fit:contain;display:block}
 .empbar .en{color:#33322f;font-size:14px;font-weight:700;white-space:nowrap;max-width:280px;overflow:hidden;text-overflow:ellipsis}
 /* --- responsive de la barra: en pantallas angostas las pestanas se apilan en vez de desbordarse --- */
@@ -8822,19 +8830,25 @@ def nav(active=""):
     # la version es la de la imagen (Ajustes la ensena): se actualiza desde el servidor, no aqui
     selector = _selector_nodo(active)
     _ubtn, _upanel = _menu_usuario()
-    navbar = ('<div class="nav"><div class="navwrap">' + brand + selector + '<span class="push"></span>'
+    navbar = ('<div class="nav"><div class="navwrap">' + brand + '<span class="push"></span>'
               + "".join(parts) + '<span class="push"></span>'
               + _ubtn + '</div></div>' + _upanel
               # el modal de confirmacion/aviso: sustituye a confirm() y alert() del navegador
               + _ASK)
-    # marca de la empresa (logo + nombre) en una franja debajo, alineada a la derecha (bajo Salir)
+    # franja de debajo: a la izquierda el selector de nodo y Puntos (admin); a la derecha la marca
+    # de la empresa (logo + nombre), bajo el menu del usuario
     emp = cargar_empresa()
     tiene_logo = emp.get("logo", "").startswith("data:image/")
+    elogo = f'<img class="elogo" src="{html.escape(emp["logo"])}" alt="">' if tiene_logo else ""
+    enom = f'<span class="en">{html.escape(emp["nombre"])}</span>' if emp.get("nombre") else ""
+    puntos = ""
+    if es_admin_nav:
+        puntos = ('<a href="/puntos" class="ptlink%s" title="Alta, VPN, espejo y baja de cada MikroTik">'
+                  'Gestionar puntos</a>' % (" on" if (active or "").startswith("/puntos") else ""))
     empbar = ""
-    if tiene_logo or emp.get("nombre"):
-        elogo = f'<img class="elogo" src="{html.escape(emp["logo"])}" alt="">' if tiene_logo else ""
-        enom = f'<span class="en">{html.escape(emp["nombre"])}</span>' if emp.get("nombre") else ""
-        empbar = f'<div class="empbar"><div class="empwrap">{elogo}{enom}</div></div>'
+    if selector or puntos or elogo or enom:
+        empbar = ('<div class="empbar"><div class="empwrap">' + selector + puntos
+                  + '<span class="push"></span>' + elogo + enom + '</div></div>')
     return _NAV_CSS + _SORT_JS + _POS_JS + navbar + empbar
 
 _ROL_TXT = {"admin": "Administrador", "operador": "Operador", "lectura": "Solo lectura"}
@@ -10831,8 +10845,9 @@ imprimir a PDF salen todas las filas.</td></tr>
 <b>DNS sospechoso</b>, con su <b>nivel de confianza</b>, la <b>evidencia</b> que lo respalda (boton
 "Ver evidencia") y la <b>salud del sensor</b> arriba. Desde aqui se envian/quitan del MikroTik.
 Se explica mas abajo.</td></tr>
-<tr><td><b>Historico</b></td><td>Los reportes guardados de los <b>ultimos 3 dias</b> (una instantanea
-por hora, mas el mas reciente), cada uno abrible. Los mas viejos se borran solos. Paginado.</td></tr>
+<tr><td><b>Historico</b></td><td>El <b>abuso saliente dia a dia</b>: ataques, tendencia, CPEs, por que
+atacan y por que puerto, y cuantos se pusieron en cuarentena y se liberaron. Del nodo que se mira (o de
+todos). Se guarda solo el reporte mas reciente: no hay instantaneas viejas que abrir.</td></tr>
 <tr><td><b>Reporte 3 dias</b></td><td><b>Todo lo que hizo cada CPE</b> en los ultimos
 3 dias: alertas, firmas, destinos, puertos, dominios consultados, dias en los que estuvo
 activo y cuando se le vio por ultima vez. Se descarga en <b>CSV</b> para mandarselo al
@@ -14556,28 +14571,6 @@ def historico_page(dias_n=7):
              "corrida del generador y la tendencia se vuelve util a partir de los 14 dias.</div>"
              if not hay else "")
 
-    # --- reportes guardados (lo que habia antes, ahora al final) ---
-    fs = sorted(glob.glob(os.path.join(nodos.dir_salida(), "report-*.html")),
-                key=os.path.getmtime, reverse=True)
-    rows = []
-    for f in fs:
-        b = os.path.basename(f)
-        t = time.strftime("%Y-%m-%d %H:%M", time.localtime(os.path.getmtime(f)))
-        kb = os.path.getsize(f) // 1024
-        rows.append(f'<tr><td><a href="/r/{b}{qs_nodo("?")}">{b}</a></td><td>{t}</td><td>{kb} KB</td></tr>')
-    pager = ("<div class=pager><button id=hprev type=button onclick=hprev()>&larr; Anterior</button>"
-             "<span id=hpi></span>"
-             "<button id=hnext type=button onclick=hnext()>Siguiente &rarr;</button></div>") if rows else ""
-    script = ("<script>(function(){var SIZE=20,page=0,"
-              "rows=[].slice.call(document.querySelectorAll('#hbody tr'));"
-              "function render(){var pages=Math.max(1,Math.ceil(rows.length/SIZE));"
-              "if(page>=pages)page=pages-1;if(page<0)page=0;"
-              "rows.forEach(function(r,i){r.style.display=(i>=page*SIZE&&i<page*SIZE+SIZE)?'':'none';});"
-              "var pi=document.getElementById('hpi');if(pi)pi.textContent='Pagina '+(page+1)+' de '+pages+' ('+rows.length+' reportes)';"
-              "var pv=document.getElementById('hprev'),nx=document.getElementById('hnext');"
-              "if(pv)pv.disabled=page<=0;if(nx)nx.disabled=page>=pages-1;}"
-              "window.hprev=function(){page--;render();};window.hnext=function(){page++;render();};"
-              "if(rows.length)render();})();</script>") if rows else ""
     body = ("<!doctype html><html lang=es><head><meta charset=utf-8><link rel=icon type=image/png href=/favicon.ico>"
             "<meta name=viewport content='width=device-width,initial-scale=1'>"
             "<title>Suricata</title><style>" + BASE_CSS +
@@ -14622,7 +14615,7 @@ def historico_page(dias_n=7):
             "<main><h1>Abuso saliente</h1>"
             "<p class=sub2 style='margin:0 0 14px'>Cuantos ataques salen de tu red hacia internet, dia a dia. "
             "Es el numero que hace que las <b>IPs publicas acaben en listas negras</b>, y el unico que sirve "
-            "para demostrar que la limpieza funciona: los reportes HTML se borran a los 3 dias, esto no.</p>"
+            "para demostrar que la limpieza funciona: estos contadores diarios se guardan, no dependen del ultimo reporte.</p>"
             + vacio
             + f"<div class=rango>{sel}</div>"
             + kpis
@@ -14633,12 +14626,7 @@ def historico_page(dias_n=7):
             + _grafico(serie, esc) + "</section>"
             + f"<div class=doscol>{_tabla('cats', 'Por que atacan')}{_tabla('puertos', 'Por que puerto salen')}</div>"
             + reglas_html
-            + "<h2 style='font-size:16px;margin:22px 0 4px'>Reportes guardados</h2>"
-            "<p style='color:#8a8a86;font-size:13px;margin:0 0 8px'>Instantaneas de los ultimos 3 dias "
-            "(una por hora, mas la mas reciente). La tendencia de arriba NO depende de ellas.</p>"
-            "<table><tbody id=hbody>"
-            + ("".join(rows) or "<tr><td>Sin reportes todavia.</td></tr>")
-            + "</tbody></table>" + pager + script + "</main></body></html>")
+            + "</main></body></html>")
     return wrap(body, refresh=False, active="/historico")
 
 def _salud_html():
