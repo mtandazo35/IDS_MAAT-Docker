@@ -834,8 +834,12 @@ for _pid, p in files:
                 if _tv is None or _tv >= cutoff:
                     _ms = _RE["src_ip"].search(line)
                     _md = _RE["dest_ip"].search(line)
-                    if _ms: ips_vistas.add(_ms.group(1))
-                    if _md: ips_vistas.add(_md.group(1))
+                    # una IP de abonado va con su punto: la misma IP privada en dos puntos son dos
+                    # equipos (auditoria A-18); una de internet es la misma en todos
+                    for _mm in (_ms, _md):
+                        if _mm:
+                            _iv = _mm.group(1)
+                            ips_vistas.add(clave_cpe(_iv, _pid) if es_mi_cpe(_iv, _pid) else _iv)
             # Camino B: consulta DNS a dominio malo (cruce con feeds de dominios)
             if DOM_OK and '"event_type":"dns"' in line and '"rrname":"' in line:
                 _qm = _RE["rrname"].search(line); _sm = _RE["src_ip"].search(line)

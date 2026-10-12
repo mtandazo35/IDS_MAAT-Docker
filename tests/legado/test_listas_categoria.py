@@ -22,6 +22,7 @@ import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import _comun  # noqa: E402  (pone tests/legado en sys.path)
+import re  # noqa: E402
 import extraer  # noqa: E402
 RAIZ = extraer.RAIZ
 
@@ -298,11 +299,12 @@ def main():
     # usan y callaba sobre las que si. "La lista de cuarentena NO corta nada" podia estar
     # en verde y aun asi no cortarse nada.
     check("el diagnostico incluye las listas de categoria en uso",
-          "listas_en_uso() if n]" in DASH, "")
+          re.search(r"listas_en_uso\([^)]*\) if n\]", DASH) is not None, "")
     # y solo las que tienen a alguien: una instalacion recien montada no puede salir con
     # siete avisos de listas vacias que nadie ha usado todavia
     check("pero solo las que tienen a alguien dentro",
-          "for _c, nom, l, n in listas_en_uso() if n]" in DASH, "")
+          # auditoria A-18: solo los CPEs de ESE router ([_pid])
+          "for _c, nom, l, n in listas_en_uso([_pid] if _pid else None) if n]" in DASH, "")
 
     print("\n" + ("TODO OK" if not fallos else "%d fallo(s)" % fallos))
     return 1 if fallos else 0

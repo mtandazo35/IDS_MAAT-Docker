@@ -1006,7 +1006,7 @@ def pagina_op(h, op_id):
     return _html_privado(h, pagina(d, "Operacion", cuerpo))
 
 
-def _encolar(h, pid, orden, params, nombre=None, token=""):
+def _encolar(h, pid, orden, params, nombre=None, token="", al_fallar=None):
     """Una orden de cola del orquestador -> 303 a su avance. El op_id es el token del formulario
     (A-08, como el alta): el mismo formulario enviado dos veces lleva a la misma operacion y el
     orquestador no la encola dos veces. Sin token valido (cliente viejo), uno nuevo."""
@@ -1026,6 +1026,8 @@ def _encolar(h, pid, orden, params, nombre=None, token=""):
     if r.get("codigo") in ("ACEPTADA", "OK"):
         return h._redirect("/operaciones/%s" % op_id)
     ops().quitar(op_id)
+    if al_fallar is not None:
+        al_fallar(pid)
     return ficha(h, pid, _orq.traducir(r.get("codigo"), r.get("mensaje"), r.get("datos")), 409)
 
 
@@ -1452,7 +1454,13 @@ def ficha(h, pid, mensaje="", codigo=200, ok=False, extra_espejo=""):
         "<div class=card style='border-color:#f3c4c4'><h2>Dar de baja el punto</h2>"
         "<p>Quita del servidor su VPN, su Suricata y <b>todos sus datos</b>, y del panel sus salidas, su "
         "conexion y sus registros. No se puede deshacer.</p>"
+        "<p class=hint>Antes, mientras el tunel sigue arriba, el panel limpia el MikroTik: retira el espejo "
+        "(devuelve el fasttrack como estaba) y saca de sus address-lists las IPs que puso en cuarentena y los "
+        "destinos bloqueados. Si el router no responde, la baja <b>no sigue</b> y te dice que falta; si ese "
+        "router ya no existe, desmarca la casilla.</p>"
         "<form method=post action='/puntos/%s/borrar' data-nombre='%s'>%s"
+        "<label class=l><input type=checkbox name=limpiar_router value=1 checked> Limpiar antes el MikroTik "
+        "(espejo y cuarentena)</label>"
         "<label class=l>Para confirmar, escribe el nombre del punto: <b>%s</b></label>"
         "<input class=t name=confirmar autocomplete=off maxlength=31 oninput='pnombre(this)'>"
         "<div class=acciones><button class='btn peligro' type=submit disabled>Dar de baja</button></div></form>"
@@ -1760,7 +1768,21 @@ def post(h, ruta, form):
             _bit(_dash(h), "PUNTO-BORRAR", pid=pid, resultado="nombre-no-coincide")
             ficha(h, pid, "Para dar de baja hay que escribir exactamente el nombre del punto.", 400)
             return True
-        _encolar(h, pid, "punto.borrar", {"pid": pid, "confirmar": confirmar}, nombre=confirmar, token=tok)
+        d = _dash(h)
+        limpiar = getattr(d, "baja_limpiar_router", None)
+        if form.get("limpiar_router") and limpiar is not None:
+            # antes de la baja: despues ya no hay tunel para llegar al router (A-21(5))
+            res = limpiar(pid, usuario=_usuario(d))
+            if not res.get("ok"):
+                _bit(d, "PUNTO-BORRAR", pid=pid, resultado="router-sin-limpiar")
+                ficha(h, pid, "No se dio de baja: %s. Arregla la conexion con el router y vuelve a intentarlo; "
+                              "si ese router ya no existe, desmarca \"Limpiar antes el MikroTik\" (lo que el "
+                              "panel le puso tendras que quitarlo a mano)." % res.get("mensaje", "fallo"), 409)
+                return True
+        else:
+            _bit(d, "PUNTO-BORRAR", pid=pid, resultado="sin-limpiar-router")
+        _encolar(h, pid, "punto.borrar", {"pid": pid, "confirmar": confirmar}, nombre=confirmar, token=tok,
+                 al_fallar=getattr(d, "baja_cancelada", None))
     elif acc == "regenerar":
         _encolar(h, pid, "punto.vpn.regenerar", {"pid": pid}, token=tok)
     elif acc in ACCIONES_COLA:

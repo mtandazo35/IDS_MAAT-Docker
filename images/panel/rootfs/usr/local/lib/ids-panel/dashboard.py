@@ -1732,6 +1732,15 @@ def mk_remove(ip, lista=None, router=None):
     d = cargar_mk_de(_router_destino(router))
     lst = lista or d.get("LIST", "suricata-cuarentena")
     s = mk_conectar(d)
+    try:
+        return _mk_quitar_en(s, ip, lst)
+    finally:
+        try: s.close()
+        except Exception: pass
+
+def _mk_quitar_en(s, ip, lst):
+    """mk_remove sobre una conexion ya abierta: la baja de un punto quita muchas IPs y no
+    abre una conexion por cada una. Mismas reglas: exito solo si al releer no queda nada."""
     consulta = ["/ip/firewall/address-list/print", "=.proplist=.id", f"?list={lst}", f"?address={ip}"]
 
     def _ids():
@@ -1741,28 +1750,24 @@ def mk_remove(ip, lista=None, router=None):
             raise ValueError("el router rechazo la consulta de %s en %s: %s" % (ip, lst, err or "?"))
         return [a[len("=.id="):] for f in frases if f and f[0] == "!re" for a in f if a.startswith("=.id=")]
     try:
+        ids = _ids()
+    except ValueError as e:
+        return (False, str(e))
+    errores = []
+    for _id in ids:
+        _mk_send(s, ["/ip/firewall/address-list/remove", f"=.id={_id}"])
+        ok_r, _fr, err_r = _mk_reply(s)
+        if not ok_r and "no such item" not in (err_r or "").lower():
+            errores.append(err_r or "rechazado")
+    if ids:
         try:
-            ids = _ids()
+            quedan = _ids()
         except ValueError as e:
-            return (False, str(e))
-        errores = []
-        for _id in ids:
-            _mk_send(s, ["/ip/firewall/address-list/remove", f"=.id={_id}"])
-            ok_r, _fr, err_r = _mk_reply(s)
-            if not ok_r and "no such item" not in (err_r or "").lower():
-                errores.append(err_r or "rechazado")
-        if ids:
-            try:
-                quedan = _ids()
-            except ValueError as e:
-                return (False, "no se pudo comprobar que se quito: %s" % e)
-            if quedan:
-                return (False, "%d entrada(s) de %s siguen en %s%s" % (
-                    len(quedan), ip, lst, (" (%s)" % errores[0][:120]) if errores else ""))
-        return (True, f"{len(ids)} entrada(s) quitada(s) de {lst}")
-    finally:
-        try: s.close()
-        except Exception: pass
+            return (False, "no se pudo comprobar que se quito: %s" % e)
+        if quedan:
+            return (False, "%d entrada(s) de %s siguen en %s%s" % (
+                len(quedan), ip, lst, (" (%s)" % errores[0][:120]) if errores else ""))
+    return (True, f"{len(ids)} entrada(s) quitada(s) de {lst}")
 # =====================================================================================
 # Politicas de ACCION por categoria: las reglas que usan cada address-list, puestas en
 # el router POR LA API.
@@ -2562,30 +2567,49 @@ ACCIONES_FILE = nodos.ruta("estado", "acciones.json")
 ACCIONES_DIAS = 400
 _ACC_LOCK = threading.RLock()
 
-def cargar_acciones():
+def _leer_acciones():
     try:
         d = json.load(open(ACCIONES_FILE, encoding="utf-8"))
-        return d.get("dias") or {}
-    except (OSError, ValueError, AttributeError):
+        return d if isinstance(d, dict) else {}
+    except (OSError, ValueError):
         return {}
 
-def contar_accion(accion):
-    """Suma 1 a esa accion en el dia de hoy. El log de cuarentena se poda a los 15 dias;
-    esto es lo que permite decir dentro de seis meses cuantos CPEs se limpiaron."""
+def cargar_acciones(nodo=None):
+    """{dia: {accion: n}} del nodo que se mira (o de `nodo`). En «Todos» (o sin contexto), el
+    total de la empresa. Cada punto lleva su cuenta (auditoria A-18: el Historico de un punto
+    contaba las cuarentenas de los demas)."""
+    d = _leer_acciones()
+    if nodo is None:
+        nodo = nodos.nodo_actual() if nodos.hay_nodo() else nodos.TODOS
+    dias = d.get("dias") if nodo == nodos.TODOS else (d.get("nodos") or {}).get(nodo)
+    return dias if isinstance(dias, dict) else {}
+
+_RE_NODO_DET = re.compile(r"\bnodo=(p[0-9]{3})\b")
+
+def contar_accion(accion, pid=""):
+    """Suma 1 a esa accion en el dia de hoy: en el total y, con `pid`, en la cuenta de ese
+    punto. El log de cuarentena se poda a los 15 dias; esto es lo que permite decir dentro
+    de seis meses cuantos CPEs se limpiaron."""
     hoy = time.strftime("%Y-%m-%d")
+    lim = time.strftime("%Y-%m-%d", time.localtime(time.time() - ACCIONES_DIAS * 86400))
+
+    def _sumar(dias):
+        dias = dias if isinstance(dias, dict) else {}
+        dia = dias.get(hoy)
+        if not isinstance(dia, dict):
+            dia = {}
+        dia[accion] = int(dia.get(accion, 0)) + 1
+        dias[hoy] = dia
+        return {k: v for k, v in dias.items() if k >= lim}
     try:
         with _ACC_LOCK:
-            dias = cargar_acciones()
-            dia = dias.get(hoy)
-            if not isinstance(dia, dict):
-                dia = {}
-            dia[accion] = int(dia.get(accion, 0)) + 1
-            dias[hoy] = dia
-            lim = time.strftime("%Y-%m-%d", time.localtime(time.time() - ACCIONES_DIAS * 86400))
-            dias = {k: v for k, v in dias.items() if k >= lim}
+            d = _leer_acciones()
+            por_nodo = d.get("nodos") if isinstance(d.get("nodos"), dict) else {}
+            if nodos.pid_valido(pid):
+                por_nodo[pid] = _sumar(por_nodo.get(pid))
             tmp = "%s.%d.tmp" % (ACCIONES_FILE, os.getpid())
             with open(tmp, "w", encoding="utf-8") as f:
-                json.dump({"dias": dias}, f)
+                json.dump({"dias": _sumar(d.get("dias")), "nodos": por_nodo}, f)
             os.replace(tmp, ACCIONES_FILE)
     except OSError:
         pass
@@ -2596,7 +2620,9 @@ def mk_log(accion, ip, quien, detalle=""):
             f.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} {accion} {ip} por={quien} {detalle}\n")
     except OSError:
         pass
-    contar_accion(accion)
+    # el punto: el de la identidad `pid|ip` o el `nodo=pNNN` que dejan _suf_nodo y los destinos
+    _m = _RE_NODO_DET.search(detalle or "")
+    contar_accion(accion, rid_de(ip or "") or (_m.group(1) if _m else ""))
     bitacora(accion, f"{ip} {detalle}".strip(), quien=quien)   # tambien a la bitacora general
 
 def _ttl_efectivo(m, ttl_key):
@@ -3387,7 +3413,7 @@ def mk_diagnostico(router=None):
     #    callaba sobre las que si. Solo se miran las que tienen a alguien dentro, para no
     #    llenar esto de avisos de listas vacias en una instalacion recien montada.
     _por_cat = [(l, "categoria %s" % nom.lower())
-                for _c, nom, l, n in listas_en_uso() if n]
+                for _c, nom, l, n in listas_en_uso([_pid] if _pid else None) if n]
     for lista, que in ([(d.get("LIST", ""), "cuarentena"),
                         (d.get("LIST_GRAD", ""), "cuarentena graduada")] + _por_cat):
         if not lista:
@@ -4240,14 +4266,20 @@ def categoria_cpe(clave):
             return categoria_de_cats(x.get("cats_top"))
     return CAT_OTROS[0]
 
-def listas_en_uso():
+def listas_en_uso(pids=None):
     """[(categoria, nombre humano, lista, cuantos CPEs hay dentro)] de lo ya enviado.
 
     Sale del registro de enviados, que guarda la lista con la que se mando cada uno: si
     manana cambia la categoria de un CPE o el nombre de la lista, hay que seguir sabiendo
-    de donde sacarlo."""
+    de donde sacarlo. Cuenta solo los CPEs de `pids` (o de lo que se mira; sin contexto, de
+    todos): con varios puntos, la vista de uno contaba los de los demas (auditoria A-18)."""
+    if pids is None and nodos.hay_nodo():
+        pids = nodos.nodos_de()
+    vis = set(pids) if pids is not None else None
     dentro = {}
     for _k, v in (cargar_enviados(MK_SENT) or {}).items():
+        if vis is not None and ((v or {}).get("router") or rid_de(_k)) not in vis:
+            continue
         l = (v or {}).get("lista") or ""
         if l:
             dentro[l] = dentro.get(l, 0) + 1
@@ -4479,7 +4511,7 @@ def notificar_cuarentena(clave, tipo, lista, quien=""):
                 ev = "; ".join((c.get("evidencias") or [])[:3])
                 break
     base = conf_dash_get("PANEL_URL", "").rstrip("/")
-    q = urllib.parse.urlencode({"ip": ip, "nodo": pid})
+    q = urllib.parse.urlencode({"ip": nodos.clave(pid, ip), "nodo": pid})   # la identidad, no la IP sola
     link = f"{base}/cuarentena/ficha?{q}" if base else f"panel -> Cuarentena -> Ver evidencia ({ip})"
     txt = (f"\U0001f6a8 Cuarentena [{_hostname()} / {nodos.nombre(pid)}]: {cliente}\n"
            f"Accion: enviado a lista '{lista}' ({tipo})" + (f" | confianza {conf}" if conf else "") + "\n"
@@ -8314,11 +8346,11 @@ def _por_nodo(fn, pids, *args):
         # un punto dado de baja (o que ya no esta en estado.json) no se toca: sus tareas
         # volverian a crear nodos/<pid>/ despues de la purga (auditoria A-09). El cerrojo
         # (pid, "fondo") lo toma tambien purgar_punto: la baja espera a la tarea en curso.
-        if pid in _BAJAS or not nodos.existe(pid):
+        if pid in _BAJAS or pid in _PREBAJA or not nodos.existe(pid):
             continue
         try:
             with cerrojo_operacion(pid, "fondo", espera=GEN_TIMEOUT + 60):
-                if pid in _BAJAS or not nodos.existe(pid):
+                if pid in _BAJAS or pid in _PREBAJA or not nodos.existe(pid):
                     continue
                 with nodos.contexto(pid):
                     fn(pid, *args)
@@ -9191,9 +9223,114 @@ def espejo_retirar(pid, usuario=None):
 _BAJAS = set()
 _AUSENTES = {}          # pid -> desde cuando falta de estado.json con restos en el panel
 
+# Puntos cuya baja esta limpiando el router (baja_limpiar_router): el fondo no les manda
+# nada nuevo mientras tanto. Aparte de _BAJAS porque barrer_bajas purga lo que hay en
+# _BAJAS, y si la limpieza falla el punto sigue vivo.
+_PREBAJA = set()
+
 def pids_activos():
     """Los puntos con los que trabaja el fondo: los de estado.json menos las bajas."""
-    return [p for p in nodos.pids() if p not in _BAJAS]
+    return [p for p in nodos.pids() if p not in _BAJAS and p not in _PREBAJA]
+
+def _quitar_de_router(s_, pid, m, quien):
+    """Quita del router del punto (conexion `s_` abierta) lo que el panel le puso en sus
+    address-lists: CPEs en cuarentena (normal, DNS y graduada) y destinos bloqueados. Cada IP
+    sale del registro solo si el router lo confirma. Devuelve (quitadas, [(ip, error)])."""
+    pref = pid + "|"
+    quitadas, fallos = 0, []
+    for path, campo, defecto in ((MK_SENT, "LIST", "suricata-cuarentena"),
+                                 (MK_SENT_DNS, "LIST_DNS", "suricata-dns-sospechoso"),
+                                 (MK_SENT_GRAD, "LIST_GRAD", "suricata-graduada")):
+        for k, v in sorted(cargar_enviados(path).items()):
+            if not k.startswith(pref):
+                continue
+            ip = ip_de(k)
+            lst = (v or {}).get("lista") or m.get(campo) or defecto
+            ok, err = _mk_quitar_en(s_, ip, lst)
+            if ok:
+                quitar_enviados([k], path)
+                quitadas += 1
+            else:
+                fallos.append((ip, err))
+            mk_log("QUITADO" if ok else "ERROR-QUITAR", ip, quien,
+                   "lista=%s (baja del punto) %s" % (lst, err) + _suf_nodo(k))
+    lst = m.get("LIST_DST") or "suricata-destinos-malos"
+    for ip, v in sorted(cargar_enviados(MK_SENT_DST).items()):
+        if pid not in ((v or {}).get("puntos") or []):
+            continue
+        ok, err = _mk_quitar_en(s_, ip, lst)
+        if not ok:
+            fallos.append((ip, err))
+            continue
+        quitadas += 1
+        with _ENV_LOCK:                          # releido dentro del cerrojo (auditoria A-03)
+            env = cargar_enviados(MK_SENT_DST)
+            rec = env.get(ip)
+            if rec is not None:
+                en = [x for x in (rec.get("puntos") or []) if x != pid]
+                if en:
+                    rec["puntos"], rec["nodos"] = en, len(en)
+                else:
+                    env.pop(ip, None)
+                guardar_enviados(env, MK_SENT_DST)
+        mk_log("DESTINO-QUITADO", ip, quien, "(baja del punto) nodo=%s" % pid)
+    return quitadas, fallos
+
+def baja_limpiar_router(pid, usuario=None):
+    """Antes de dar de baja un punto (auditoria A-21(5)): retira el espejo de su MikroTik y
+    quita de sus address-lists lo que puso el panel. Hay que hacerlo ANTES, porque la baja
+    destruye el tunel por el que se llega al router; si no, los abonados en cuarentena
+    quedaban cortados para siempre en un router que el panel ya no ve.
+
+    Sin usuario/clave de la API el panel nunca le hablo a ese router: no hay nada suyo que
+    quitar y sale ok. Mientras dura, el fondo no le manda nada nuevo a ese punto (_PREBAJA);
+    si falla, el punto sigue como estaba. {"ok", "api", "mensaje", "espejo", "quitadas",
+    "fallos": [(ip, error)]}"""
+    pid = nodos.exigir_pid(pid)
+    quien = usuario or "?"
+    res = {"ok": False, "api": False, "mensaje": "", "espejo": None, "quitadas": 0, "fallos": []}
+    m = cargar_mk_de(router_por_id(pid))
+    if not (m.get("USER") and m.get("PASS")):
+        res.update(ok=True, mensaje="sin API configurada: el panel no puso nada en ese router")
+        return res
+    res["api"] = True
+    _PREBAJA.add(pid)
+    try:
+        esp = espejo_retirar(pid, usuario=quien)
+        res["espejo"] = esp
+        if not esp.get("ok"):
+            res["mensaje"] = "no se pudo retirar el espejo: %s" % (esp.get("mensaje") or "sin detalle")
+            return res
+        try:
+            s_ = mk_conectar(m, timeout=15)
+        except Exception as ex:
+            res["mensaje"] = "espejo retirado, pero no se pudo conectar para quitar las IPs: %s" % str(ex)[:160]
+            return res
+        try:
+            with cerrojo_operacion(pid, "fondo", espera=GEN_TIMEOUT + 60):
+                res["quitadas"], res["fallos"] = _quitar_de_router(s_, pid, m, quien)
+        except OperacionEnCurso as ex:
+            res["mensaje"] = "espejo retirado; las IPs no: %s" % ex
+            return res
+        finally:
+            try: s_.close()
+            except Exception: pass
+        if res["fallos"]:
+            res["mensaje"] = ("espejo retirado y %d IP(s) quitadas, pero %d no se pudieron quitar (la "
+                              "primera: %s: %s)" % (res["quitadas"], len(res["fallos"]),
+                                                    res["fallos"][0][0], res["fallos"][0][1][:120]))
+            return res
+        res.update(ok=True, mensaje="espejo retirado y %d IP(s) quitadas del router" % res["quitadas"])
+        return res
+    finally:
+        if not res["ok"]:
+            _PREBAJA.discard(pid)
+        bitacora("BAJA-ROUTER", "punto=%s %s: %s" % (pid, "ok" if res["ok"] else "fallo",
+                                                     res["mensaje"][:200]), quien=quien)
+
+def baja_cancelada(pid):
+    """El orquestador no acepto la baja tras limpiar el router: el fondo vuelve a ese punto."""
+    _PREBAJA.discard(pid)
 
 def purgar_punto(pid, quien=None):
     """Baja de un punto en el PANEL (la del orquestador la pide el apartado Puntos): borra
@@ -9270,6 +9407,18 @@ def purgar_punto(pid, quien=None):
                 os.replace(tmp, EXCL_FILE)
             hecho["exclusiones"] = len(excl) - len(quedan)
         hecho["routers"] = 1 if olvidar_router(pid) else 0
+        with _ACC_LOCK:                          # su cuenta del Historico (el total se queda)
+            acc = _leer_acciones()
+            if pid in (acc.get("nodos") or {}):
+                acc["nodos"].pop(pid, None)
+                try:
+                    tmp = "%s.%d.tmp" % (ACCIONES_FILE, os.getpid())
+                    with open(tmp, "w", encoding="utf-8") as f:
+                        json.dump(acc, f)
+                    os.replace(tmp, ACCIONES_FILE)
+                    hecho["acciones"] = 1
+                except OSError:
+                    pass
         import shutil
         for d, nom in ((os.path.join(nodos.NODOS, pid), "nodos"),
                        (os.path.join(ESPEJO_RESPALDOS, pid), "respaldos-espejo")):
@@ -11337,8 +11486,11 @@ la baja, ya esta hecho).</p>
 todavia.</li>
 <li><b>El espejo va por el tunel</b> y por UDP: con perdida el IDS ve trafico incompleto. La salud por
 etapas lo enseña (descartes, TZSP).</li>
-<li><b>Dar de baja un punto no libera sus CPEs en el router</b> si no se quitaron antes: siguen en la
-address-list de ese MikroTik.</li>
+<li><b>Dar de baja un punto limpia antes su MikroTik</b>: retira el espejo (el fasttrack vuelve a como
+estaba) y saca de sus address-lists los CPEs en cuarentena y los destinos bloqueados. Si el router no
+responde, la baja no sigue; si ese router ya no existe, se desmarca la casilla y lo del router se quita a
+mano. Las reglas de accion por categoria (comentario <code>Suricata:</code>) se quedan: sin nadie en las
+listas no cortan nada.</li>
 </ul>
 
 <h2>Ataques entrantes desde internet (y por que van aparte)</h2>
@@ -14482,13 +14634,55 @@ def agrupar_pruebas(pruebas):
     # seguidas no barajan las filas
     return sorted((gr[k] for k in orden), key=lambda g: -g["n"])
 
+def claves_de_ip(ip):
+    """Las identidades `pid|ip` de los puntos existentes que tienen esa IP: en un registro de
+    enviados, entre los candidatos de su punto o en el mapa de abonados. Ordenadas."""
+    hall = set()
+    for path in (MK_SENT, MK_SENT_DNS, MK_SENT_GRAD):
+        hall.update(k for k in cargar_enviados(path) if ip_de(k) == ip)
+    for pid in nodos.pids():
+        cq = _cargar_cuarentena(pid) or {}
+        for key in ("candidatos", "dns_candidatos"):
+            for x in cq.get(key, []):
+                if x.get("ip") == ip:
+                    hall.add(nodos.clave(x.get("router") or pid, ip) if nodos.pid_valido(x.get("router") or pid) else "")
+    hall.update(k for k in (cargar_abonados().get("mapa") or {}) if ip_de(k) == ip)
+    vivos = set(nodos.pids())
+    return sorted(k for k in hall if k and rid_de(k) in vivos)
+
+def _ficha_elegir_nodo(ip, claves, embed=False):
+    """La misma IP en varios puntos (vista «Todos»): no se elige uno al azar, se pregunta."""
+    esc = html.escape
+    _e = "&embed=1" if embed else ""
+    filas = "".join(
+        "<li><a href='/cuarentena/ficha?ip=%s%s&nodo=%s'>%s</a> <span class=rowmeta>en %s</span></li>"
+        % (_up.quote(k, safe=""), _e, _up.quote(nodos.TODOS, safe=""), esc(ip_de(k)), esc(nodos.nombre(rid_de(k))))
+        for k in claves)
+    cuerpo = ("<p class=sub2>La IP <b>" + esc(ip) + "</b> esta en " + str(len(claves))
+              + " nodos y en cada uno es un abonado distinto. Elige cual quieres ver:</p><ul>" + filas + "</ul>")
+    return ("<!doctype html><html lang=es><head><meta charset=utf-8><link rel=icon type=image/png href=/favicon.ico>"
+            "<meta name=viewport content='width=device-width,initial-scale=1'><title>Suricata</title>"
+            "<style>" + BASE_CSS + "</style></head><body>" + ("" if embed else nav("/cuarentena"))
+            + "<main><h1>Ficha de evidencia</h1>" + cuerpo + "</main></body></html>")
+
 def ficha_page(ip, embed=False):
     """Ficha de EVIDENCIA por CPE: por que tiene ese riesgo (alertas, coincidencias de
     reputacion con su fuente/CIDR/vigencia, corroboracion independiente y decision)."""
     esc = html.escape
     ip = (ip or "").strip()
     # ip es la identidad del CPE (nodo|IP): la evidencia se lee del nodo de ESE CPE, no del que
-    # se mira en el selector. Con la IP sola (sin nodo) se busca en lo que se esta mirando.
+    # se mira en el selector. Con la IP sola (un enlace viejo) vale el punto que se mira; en
+    # «Todos», el unico punto que tiene esa IP, y si la tienen varios se pregunta cual
+    # (auditoria A-18: una IP privada se repite entre puntos y son abonados distintos).
+    if ip and "|" not in ip:
+        if nodos.hay_nodo() and not nodos.es_todos():
+            ip = clave_cpe(ip, nodos.nodo_actual())
+        else:
+            _cl = claves_de_ip(ip)
+            if len(_cl) == 1:
+                ip = _cl[0]
+            elif _cl:
+                return _ficha_elegir_nodo(ip, _cl, embed)
     _pid = rid_de(ip)
     try:
         _dir = nodos.dir_salida(nodos.exigir_pid(_pid) if _pid else None)
@@ -14639,7 +14833,7 @@ def ficha_page(ip, embed=False):
         if not ev_ts and en_lista:
             try: ev_ts = int((ent or {}).get("cuando", 0) or 0)
             except (TypeError, ValueError): ev_ts = 0
-        _hist = historial_abonado(ip_de(ip), ev_ts) if ev_ts else {}
+        _hist = historial_abonado(ip, ev_ts, _pid) if ev_ts else {}     # del punto de ESTE CPE (A-18)
         pit = ""
         if _hist:
             _et = time.strftime("%d/%m %H:%M", time.localtime(ev_ts))

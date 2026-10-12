@@ -62,7 +62,7 @@ def entorno(tablas, listas=None):
           # sin nadie enviado, no hay listas de categoria que vigilar: aqui se prueba
           # el diagnostico base, y que con listas en uso tambien las mire va en
           # tests/test_listas_categoria.py
-          "listas_en_uso": lambda: [],
+          "listas_en_uso": lambda *a: [],      # auditoria A-18: recibe los puntos del router
           # la accion por clase: por defecto ninguna configurada (se prueba aparte abajo)
           "_mk_globales": lambda: {},
           "accion_de_clase": lambda cat, m=None: "nada",

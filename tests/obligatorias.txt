@@ -34,3 +34,4 @@ test_f3_orq_validacion.*                todas   # A-13/A-22/A-23/A-28
 test_f3_hrep_identidad.*                todas   # A-14: identidades por punto en el generador
 test_f3_informe.*                       linux   # A-25/A-26 (FIFO y symlink solo en POSIX)
 test_f3_lab.*                           linux   # B-02/B-05/B-06: lab-actualizar exige CI verde; su tar sin master.key y con el panel
+test_f4_nodos_separados.*               todas   # apartado 2: cada nodo ve lo suyo (A-18) y la baja limpia el MikroTik (A-21(5))

@@ -108,8 +108,22 @@ listadas en `inv_C.md` §5.1), pintada con `wrap()`/`nav()` del dashboard y sus 
 | `POST /puntos/<pid>/{borrar,regenerar,arrancar,parar,reiniciar,ajustar,api,espejo}` | órdenes del orquestador o configuración del router del punto; `borrar` exige escribir el nombre |
 
 - Los contenedores los crea el orquestador; el panel no toca Docker.
-- La baja borra todo el punto en el orquestador **y** en el panel: `nodos/<pid>/`, su entrada de `routers.json`
-  y las claves `pid|…` de los registros globales. Queda una línea en la bitácora.
+- La baja borra todo el punto en el orquestador **y** en el panel: `nodos/<pid>/`, su entrada de `routers.json`,
+  las claves `pid|…` de los registros globales y su cuenta de acciones del Histórico. Queda una línea en la bitácora.
+- **Antes** de pedir `punto.borrar` (apartado 2, auditoría A-21(5)), con la casilla «Limpiar antes el MikroTik»
+  marcada por defecto, el panel usa el túnel que la baja va a destruir para retirar el espejo (`espejo_retirar`:
+  fasttrack como estaba) y sacar de las address-lists del router lo que puso: CPEs en cuarentena (normal, DNS,
+  graduada, cada uno de su lista guardada) y su parte de los destinos bloqueados. Cada IP sale del registro solo si
+  el router lo confirma. Si algo falla, **no se pide la baja** y se dice qué falta; desmarcar la casilla (router que
+  ya no existe) da de baja sin hablar con el router. Sin usuario/clave de API no hay nada que limpiar. Mientras
+  limpia, el fondo no manda nada nuevo a ese punto; si el orquestador rechaza la baja, el punto vuelve al fondo.
+  Las reglas de acción por categoría (`Suricata:<cat>:`) se quedan: con las listas vacías no cortan nada.
+- **Cada nodo ve solo lo suyo** (apartado 2, auditoría A-18): el Histórico cuenta las acciones del punto mirado
+  (`acciones.json` con total y `nodos.<pid>`); «listas en uso» y el diagnóstico cuentan los CPEs del punto; la
+  ficha abierta con la IP sola (enlace de Telegram) usa el punto mirado, y en «Todos» el único punto con esa IP o,
+  si son varios, pregunta cuál; el historial de asignaciones es el del punto del CPE; «IPs únicas» del informe
+  cuenta `pid|ip` para las IPs de abonado. La lista «nunca bloquear» admite `pNNN|IP` (solo ese punto) y la IP sola
+  vale en todos (A-12).
 
 ## 6. Orquestador
 

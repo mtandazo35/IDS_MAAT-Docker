@@ -112,7 +112,7 @@ def main():
     tmp = tempfile.mkdtemp()
     nod, sec = _comun.panel(tmp, nodo="p001")      # CONTRATO-F2 §3: se mira el punto p001
     nod.asegurar_dirs()                            # lo que hace el panel al arrancar
-    d = piezas(DASH, ("ACCIONES_FILE", "ACCIONES_DIAS", "_ACC_LOCK", "cargar_acciones",
+    d = piezas(DASH, ("ACCIONES_FILE", "ACCIONES_DIAS", "_ACC_LOCK", "_leer_acciones", "cargar_acciones",
                       "contar_accion", "METRICAS_FILE", "cargar_metricas", "_serie",
                       "_media", "tendencia_txt", "_DIAS_SEM", "_grafico", "historico_page",
                       "GRUPOS_SALIDA", "_CPES_CACHE", "_cpes_de_reporte", "analisis_salida",
@@ -148,9 +148,12 @@ def main():
     ENT = nod.salida(d["ENTRANTES_FILE"], "p001")
     CUAR = d["cuarentena_json"]("p001")
 
-    d["contar_accion"]("ENVIADO"); d["contar_accion"]("ENVIADO"); d["contar_accion"]("QUITADO")
+    # auditoria A-18: cada punto lleva su cuenta (y la empresa el total); se mira p001
+    d["contar_accion"]("ENVIADO", "p001"); d["contar_accion"]("ENVIADO", "p001"); d["contar_accion"]("QUITADO", "p001")
     acc = d["cargar_acciones"]()
     check("las acciones se cuentan por dia", acc[hoy] == {"ENVIADO": 2, "QUITADO": 1}, acc)
+    check("y el total de la empresa tambien",
+          d["cargar_acciones"](nod.TODOS)[hoy] == {"ENVIADO": 2, "QUITADO": 1}, d["cargar_acciones"](nod.TODOS))
 
     # serie con un dia flojo y otro fuerte para que la tendencia se note
     dias = {}
@@ -445,7 +448,7 @@ def main():
 
 class Legado(unittest.TestCase):
     def test_legado(self):
-        """Tipo: conservacion, adaptada a salidas por punto y router por punto (CONTRATO-F2 §1, §3: nodos/<pid>/metricas.json, cuarentena.json, entrantes.json; clave pid|ip) y sin /tool fetch (§4). La tendencia del abuso saliente: el numero que hay que poder enseñar."""
+        """Tipo: conservacion, adaptada a salidas por punto y router por punto (CONTRATO-F2 §1, §3: nodos/<pid>/metricas.json, cuarentena.json, entrantes.json; clave pid|ip) y sin /tool fetch (§4); acciones por punto (auditoria A-18). La tendencia del abuso saliente: el numero que hay que poder enseñar."""
         _comun.correr_main(self, main)
 
 
