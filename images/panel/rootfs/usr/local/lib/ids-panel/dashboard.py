@@ -15770,13 +15770,16 @@ class H(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "text/html; charset=utf-8")
         # paginas con datos de la red y, alguna, claves de un solo uso: ni cache, ni dentro
         # de un marco ajeno, ni adivinar el tipo (auditoria B-11)
-        self.send_header("Cache-Control", "no-store")
-        self.send_header("X-Frame-Options", "SAMEORIGIN")
-        self.send_header("X-Content-Type-Options", "nosniff")
-        self.send_header("Referrer-Policy", "same-origin")
-        for k, v in (cabeceras or {}).items():
-            if k.lower() not in ("content-length", "content-type"):
-                self.send_header(k, v)
+        cab = {"Cache-Control": "no-store", "X-Frame-Options": "SAMEORIGIN",
+               "X-Content-Type-Options": "nosniff", "Referrer-Policy": "same-origin"}
+        # las de la pagina (dict o pares) SUSTITUYEN a las de por defecto: nunca dos valores
+        for k, v in (cabeceras.items() if hasattr(cabeceras, "items") else (cabeceras or ())):
+            if k.lower() in ("content-length", "content-type"):
+                continue
+            cab = {x: y for x, y in cab.items() if x.lower() != k.lower()}
+            cab[k] = v
+        for k, v in cab.items():
+            self.send_header(k, v)
         self.send_header("Content-Length", str(len(b)))
         self.end_headers()
         self.wfile.write(b)
