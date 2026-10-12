@@ -33,7 +33,7 @@ RUN = os.environ.get("IDS_RUN", "/srv/ids/run")
 SHARE = os.environ.get("IDS_SHARE", "/usr/local/share/ids-panel")
 
 TODOS = "_todos"
-RE_PID = re.compile(r"^p\d{3}$")
+RE_PID = re.compile(r"\Ap[0-9]{3}\Z")   # ni "p001" con salto de linea final ni digitos no ASCII
 TZSP_PUERTO = 37008
 
 
@@ -246,7 +246,9 @@ def dir_salida(nodo=None, crear=True):
     if nodo != TODOS and not pid_valido(nodo):     # nunca una ruta con un id sin validar
         raise NodoInvalido(nodo)
     d = os.path.join(NODOS, nodo)
-    if crear:
+    # solo se crea para la vista acumulada o un punto que existe: una tarea de fondo tardia no
+    # resucita nodos/<pid> de un punto dado de baja (auditoria A-09)
+    if crear and (nodo == TODOS or nodo in pids()):
         try:
             os.makedirs(d, mode=0o700, exist_ok=True)
         except OSError:

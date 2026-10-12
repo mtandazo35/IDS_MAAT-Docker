@@ -46,6 +46,11 @@ class Operaciones:
             if self._ops.pop(op_id, None) is not None:
                 self._guardar()
 
+    def listar(self):
+        """Copia de todas las operaciones guardadas {op_id: dict} (lectura con el cerrojo)."""
+        with self._lock:
+            return {k: dict(v) for k, v in self._ops.items()}
+
     def obtener(self, op_id):
         with self._lock:
             o = self._ops.get(op_id)

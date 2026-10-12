@@ -44,7 +44,7 @@ class Nodos(unittest.TestCase):
         self.tmp.cleanup()
 
     def test_mal_formado_se_rechaza_y_no_amplia(self):
-        for malo in ("", "todos", "p1", "p0001", "../p001", "p001 ", None, 5):
+        for malo in ("", "todos", "p1", "p0001", "../p001", "p001 ", "p001\n", "p\u0661\u0662\u0663", None, 5):
             with self.assertRaises(self.n.NodoInvalido, msg=repr(malo)):
                 self.n.poner_nodo(malo)
             self.assertFalse(self.n.hay_nodo())
@@ -112,6 +112,13 @@ class Nodos(unittest.TestCase):
         with self.assertRaises(self.n.NodoInvalido):
             self.n.dir_salida("../x")
         self.assertTrue(self.n.dir_salida(self.n.TODOS).endswith(os.path.join("nodos", "_todos")))
+
+    def test_no_resucita_el_directorio_de_un_punto_dado_de_baja(self):
+        """Correccion de defecto (auditoria A-09): dir_salida no crea nodos/<pid> de un punto que no existe."""
+        d = self.n.dir_salida("p007")
+        self.assertFalse(os.path.exists(d))
+        self.assertTrue(os.path.isdir(self.n.dir_salida("p001")))
+        self.assertTrue(os.path.isdir(self.n.dir_salida(self.n.TODOS)))
 
     def test_ficheros_eventos_del_nodo(self):
         self.assertEqual([p for p, _ in self.n.ficheros_eventos("p002")], ["p002"])
