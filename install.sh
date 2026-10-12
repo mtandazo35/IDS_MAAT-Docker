@@ -238,6 +238,21 @@ comprobar_sistema() {
   os_ver=$(. "${R}/etc/os-release" && echo "${VERSION_ID:-}")
   [ "$os_id" = debian ] && [ "$os_ver" = 13 ] || fallar "solo Debian 13 (trixie); este es $os_id $os_ver"
   [ "$(dpkg --print-architecture)" = amd64 ] || fallar "solo amd64"
+  comprobar_memoria
+}
+
+# Admisión del orquestador (INSTANCIA §10.3): host 1024 + panel 1536 (CONTRATO-F2 §6) + un punto
+# «reducido» (900 + 192 + 32) + la reserva del suricata -T (900) = 4584 MiB. Por debajo se instala,
+# pero no cabe ningún punto: se avisa antes de empezar.
+MEM_MIN_UN_PUNTO_MB=4584
+comprobar_memoria() {
+  local kb
+  kb=$(sed -n 's/^MemTotal:[[:space:]]*\([0-9]*\) kB$/\1/p' "${R}/proc/meminfo" 2>/dev/null || true)
+  [ -n "$kb" ] || return 0
+  if [ $((kb / 1024)) -lt "$MEM_MIN_UN_PUNTO_MB" ]; then
+    aviso "memoria: $((kb / 1024)) MiB; con menos de $MEM_MIN_UN_PUNTO_MB MiB no cabe ningún punto (el panel reserva 1536 MiB)"
+  fi
+  return 0
 }
 
 claves_ssh_presentes() {
@@ -488,7 +503,9 @@ secretos() {
   if [ ! -s "$d/master.key" ]; then
     (umask 077; hex32 > "$d/master.key")
   fi
-  chmod 0400 "$d/master.key"; chown root:0 "$d/master.key"
+  # CONTRATO-F2 §10.3: se monta en el panel (/run/secrets/master_key, ro), que corre como 10500
+  # sin capacidades y la lee por grupo. Fuera de los respaldos tar: se guarda aparte (OPERACION §3).
+  chmod 0440 "$d/master.key"; chown "root:$GID_PANEL" "$d/master.key"
   if [ ! -s "$d/orq_token" ]; then
     (umask 077; hex32 > "$d/orq_token")
   fi
@@ -830,9 +847,9 @@ panel() {
   log "panel: núcleo ids-core ($PANEL_IP, $PUERTO_PANEL/tcp publicado solo para --proxy)"
   "${R}/usr/local/bin/ids-orq" panel aplicar >/dev/null \
     || fallar "el panel no quedó sano (docker logs ids-core-panel; ids-orq panel aplicar)"
-  if [ -e "${R}/srv/ids/panel/usuarios.json" ]; then
+  if [ -e "${R}/srv/ids/panel/conf/usuarios.json" ]; then
     PANEL_ESTADO=existente
-    log "panel: ya hay usuarios (/srv/ids/panel/usuarios.json): se conserva la clave existente"
+    log "panel: ya hay usuarios (/srv/ids/panel/conf/usuarios.json): se conserva la clave existente"
     return 0
   fi
   salida=$("${R}/usr/local/bin/ids-orq" panel crear-admin --usuario "$USUARIO_PANEL") || rc=$?

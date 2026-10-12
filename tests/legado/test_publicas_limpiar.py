@@ -1,0 +1,252 @@
+# -*- coding: utf-8 -*-
+"""Vaciar de una vez las publicas declaradas de un nodo.
+
+"Detectar del MikroTik" puede dejar veinte entradas de golpe, y quitarlas con la x de cada
+chip son veinte recargas de pagina.
+
+Lo que se protege:
+  - que solo vacie el nodo que se pide, no los demas;
+  - que NO borre el historial de listas negras ya medido: eso no se puede reconstruir, y
+    si se vuelve a declarar la misma red tiene que seguir ahi;
+  - que quede constancia en la bitacora de cuantas se quitaron;
+  - y que sea de administrador, porque deja al panel sin nada que vigilar.
+"""
+import ast
+import json
+import os
+import sys
+import unittest
+import tempfile
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import _comun  # noqa: E402  (pone tests/legado en sys.path)
+import extraer  # noqa: E402
+RAIZ = extraer.RAIZ
+
+DASH = extraer.fuente("DASH")
+ARBOL = ast.parse(DASH)
+
+PIEZAS = ("PUBLICAS_CONF", "cargar_publicas", "origen_publicas", "guardar_publicas",
+          "cubrir_publicas", "guardar_publicas_de", "publicas_texto")
+
+fallos = 0
+
+
+def check(d, c, e=""):
+    global fallos
+    print(("  OK   " if c else " FALLA ") + d + ("" if c else "  -> " + str(e)))
+    if not c:
+        fallos += 1
+
+
+def entorno(tmp):
+    ns = {"os": os, "json": json, "re": __import__("re"),
+          "ipaddress": __import__("ipaddress"),
+          # la validacion de IP/red tiene su propia prueba; aqui solo estorba
+          "aidb_ip_valida": lambda x: (True, ""),
+          "aidb_red_valida": lambda x: (x, "")}
+    for n in ARBOL.body:
+        nom = getattr(n, "name", None) or (
+            getattr(n.targets[0], "id", "") if isinstance(n, ast.Assign) and n.targets else "")
+        if nom in PIEZAS:
+            exec(ast.get_source_segment(DASH, n) or "", ns)
+    ns["PUBLICAS_CONF"] = os.path.join(tmp, "publicas.json")
+    json.dump({"nodos": {"r1": ["203.0.113.0/28", "203.0.113.5", "203.0.113.6"],
+                         "r2": ["198.51.100.0/24"]}},
+              open(ns["PUBLICAS_CONF"], "w", encoding="utf-8"))
+    return ns
+
+
+def ruta_limpiar():
+    """El cuerpo de la ruta, tal cual esta en el manejador POST."""
+    for n in ast.walk(ARBOL):
+        if not isinstance(n, ast.If):
+            continue
+        seg = ast.get_source_segment(DASH, n) or ""
+        if seg.startswith('if ruta == "/publicas/limpiar"'):
+            return seg
+    return ""
+
+
+def main():
+    tmp = tempfile.mkdtemp()
+    ns = entorno(tmp)
+
+    # --- vaciar uno no toca el otro ------------------------------------------------------
+    ns["guardar_publicas_de"]("r1", "")
+    d = ns["cargar_publicas"]()
+    check("el nodo pedido queda vacio", d.get("r1", []) == [], d.get("r1"))
+    check("y el otro nodo no se toca", d.get("r2") == ["198.51.100.0/24"], d.get("r2"))
+
+    # --- se puede volver a declarar --------------------------------------------------------
+    ns["guardar_publicas_de"]("r1", "203.0.113.0/28")
+    check("y se puede volver a declarar despues",
+          ns["cargar_publicas"]().get("r1") == ["203.0.113.0/28"], "")
+
+    # --- "Limpiar todas" se quito ------------------------------------------------------
+    # Lo puse como atajo para quitar entradas redundantes y resulto una trampa: borraba
+    # TODAS, incluida la unica que importaba y que ademas tenia historial detras. El
+    # usuario cayo dos veces. Con la seleccion y el enlace "todas" se hace lo mismo, pero
+    # a proposito.
+    check("ya no existe el boton de limpiar todas",
+          "Limpiar todas" not in DASH, "")
+    check("ni su ruta", '/publicas/limpiar"' not in DASH, "")
+
+    # --- lo que ya queda cubierto sobra ------------------------------------------------
+    # Cada entrada declarada gasta UNA consulta de AbuseIPDB en cada revision, y
+    # "Detectar del MikroTik" saca a la vez la direccion de la interfaz y su red: un /28
+    # acababa acompanado de sus hosts y de media docena de subredes. Veinte consultas para
+    # ver lo que una de red ya trae. Consultar la red no pierde nada: la respuesta incluye
+    # cada direccion denunciada de dentro, que es justo lo que se pinta desplegado.
+    cubrir = ns["cubrir_publicas"]
+
+    quedan, sobran = cubrir(["203.0.113.0/28", "203.0.113.5", "203.0.113.6/31"])
+    check("un host dentro de un rango declarado sobra",
+          quedan == ["203.0.113.0/28"], (quedan, sobran))
+    check("y se dice cuales se quitaron, no se tiran en silencio",
+          sorted(sobran) == ["203.0.113.5", "203.0.113.6/31"], sobran)
+
+    quedan, _s = cubrir(["203.0.113.0/24", "203.0.113.0/28"])
+    check("entre dos redes se queda la que cubre", quedan == ["203.0.113.0/24"], quedan)
+
+    quedan, sobran = cubrir(["203.0.113.0/28", "198.51.100.0/24"])
+    check("dos rangos que no se tocan se quedan los dos", len(quedan) == 2, quedan)
+    check("y no sobra ninguno", sobran == [], sobran)
+
+    check("una sola entrada no se quita a si misma",
+          cubrir(["203.0.113.0/28"])[0] == ["203.0.113.0/28"], "")
+    check("dos iguales dejan una",
+          len(cubrir(["203.0.113.7", "203.0.113.7"])[0]) == 1, "")
+
+    # Lo que no se sabe leer no se toca: tirarlo en silencio seria perder una entrada que
+    # alguien escribio a proposito.
+    quedan, _s = cubrir(["203.0.113.0/28", "esto-no-es-una-ip"])
+    check("lo que no se puede interpretar se conserva",
+          "esto-no-es-una-ip" in quedan, quedan)
+
+    # --- y al guardar, lo mismo -----------------------------------------------------------
+    ok, mal, tap = ns["guardar_publicas_de"]("r3", "203.0.113.0/28 203.0.113.5")
+    check("guardar tambien descarta lo cubierto", ok == ["203.0.113.0/28"], ok)
+    check("y lo devuelve aparte de lo rechazado, que es otra cosa",
+          tap == ["203.0.113.5"] and mal == [], (tap, mal))
+
+
+    # --- quitar las marcadas, no todas -------------------------------------------------
+    # "Limpiar todas" resulto demasiado romo: una deteccion mala metio trece entradas
+    # basura y al limpiarlas se llevo por delante la unica buena, que era la que tenia
+    # historial de listas negras detras.
+    def ruta(nombre):
+        for n in ast.walk(ARBOL):
+            if isinstance(n, ast.If):
+                seg = ast.get_source_segment(DASH, n) or ""
+                if seg.startswith('if ruta == "%s"' % nombre):
+                    return seg
+        return ""
+
+    rv = ruta("/publicas/quitar-varias")
+    check("existe la ruta de quitar varias", bool(rv), "")
+    check("es de administrador", "self._admin()" in rv, "")
+    check("quita SOLO las marcadas, no la lista entera",
+          "e not in fuera" in rv, rv[:300])
+    check("si no marcas nada, no borra nada", "No marcaste ninguna" in rv, "")
+    check("y avisa de que el historial se conserva",
+          "historial de listas negras se conserva" in rv, "")
+
+    # La x de un chip manda 'solo'. Va aparte de 'entrada' porque los chips son casillas
+    # con ESE nombre: al pulsar la x el navegador envia tambien todas las marcadas, y sin
+    # distinguirlo quitar una se llevaria las demas por delante.
+    ru = ruta("/publicas/quitar")
+    check("la x de un chip usa su propio campo", '"solo"' in ru, ru[:200])
+    check("y se lee antes que las marcadas", ru.index('"solo"') < ru.index('"entrada"'), "")
+
+
+    # --- el boton de quitar marcadas se habilitaba solo en el sitio equivocado ----------
+    # querySelector('button[type=submit]') devuelve el PRIMERO del formulario, y las x de
+    # los chips tambien son submit (van por formaction). Asi que se habilitaba la x del
+    # primer chip y "Quitar marcadas" se quedaba muerto para siempre.
+    check("el boton se busca por su clase, no por ser el primer submit",
+          "querySelector('button.delbtn')" in DASH, "")
+    check("y las x de los chips son submit, por eso importaba",
+          "formaction='/publicas/quitar'" in DASH and "type=submit" in DASH, "")
+    check("hay atajos para marcar, ya que no hay boton de limpiar",
+          "function pmarcarorg(" in DASH and "class=ptodas" in DASH, "")
+    check("y el primero es el de las detectadas, que es lo que se deshace",
+          DASH.index("'mikrotik')") < DASH.index("pmarcarorg(this,'')"), "")
+
+    # --- el separador salia como texto ----------------------------------------------------
+    # Se metia "&middot;" ANTES de escapar, asi que esc() lo convertia en "&amp;middot;" y
+    # en pantalla se leia "Bot web abusivo &middot; Ataque DDoS".
+    check("el separador de categorias no se escapa",
+          'sep=" &middot; "' not in DASH, "")
+    check("se junta despues de escapar cada nombre",
+          '" &middot; ".join(' in DASH, "")
+    # Un byte NUL como separador interno convierte el instalador en binario para grep y
+    # para cualquier herramienta de texto.
+    # Un byte NUL real convierte el instalador en binario para grep y para cualquier
+    # herramienta de texto. El cliente de la API de RouterOS SI usa la secuencia de
+    # escape como literal, y eso es legitimo: lo que no puede haber es el byte suelto.
+    # (adaptada: el instalador ya no existe; se mira cada fichero del panel)
+    for _f in ("DASH", "HREP", "FEEDS", "MKINIT", "REP"):
+        _t = extraer.fuente(_f)
+        check("no queda ningun byte NUL en %s" % extraer.FICHEROS[_f], chr(0) not in _t, _t.count(chr(0)))
+
+
+    # --- de donde salio cada entrada ------------------------------------------------------
+    # "Detectar del MikroTik" mete de golpe entradas que no son publicas de salida, y
+    # quitarlas se llevaba por delante las declaradas a mano, que son las que importan y
+    # las que tienen historial detras. Para poder deshacer SOLO la deteccion hay que saber
+    # de donde vino cada una.
+    ns2 = entorno(tmp)
+    ns2["guardar_publicas_de"]("r9", "203.0.113.0/24", origen_nuevas="manual")
+    ns2["guardar_publicas_de"]("r9", "203.0.113.0/24 198.51.100.7",
+                               origen_nuevas="mikrotik")
+    org = ns2["origen_publicas"]().get("r9", {})
+    check("lo declarado a mano queda marcado como manual",
+          org.get("203.0.113.0/24") == "manual", org)
+    check("y lo que trajo el router, como detectado",
+          org.get("198.51.100.7") == "mikrotik", org)
+
+    # Una entrada que ya estaba NO cambia de origen porque una deteccion la vuelva a
+    # nombrar: si no, detectar dos veces convertiria en "detectadas" las que pusiste tu.
+    ns2["guardar_publicas_de"]("r9", "203.0.113.0/24 198.51.100.7 198.51.100.8",
+                               origen_nuevas="mikrotik")
+    org = ns2["origen_publicas"]().get("r9", {})
+    check("volver a detectar no reetiqueta lo que ya estaba",
+          org.get("203.0.113.0/24") == "manual", org)
+
+    # Lo declarado antes de que esto existiera no se sabe de donde vino. Adivinarlo seria
+    # la forma de borrar algo bueno, asi que se queda sin etiqueta y nunca entra en un
+    # borrado en bloque.
+    ns2["guardar_publicas_de"]("r8", "192.0.2.0/24")
+    check("sin saber el origen, no se inventa una etiqueta",
+          ns2["origen_publicas"]().get("r8", {}) == {},
+          ns2["origen_publicas"]().get("r8"))
+
+    # Y al quitar una entrada, su etiqueta se va con ella: si no, el archivo acumularia
+    # origenes de cosas que ya no existen.
+    ns2["guardar_publicas_de"]("r9", "203.0.113.0/24")
+    check("la etiqueta se poda con la entrada",
+          "198.51.100.7" not in ns2["origen_publicas"]().get("r9", {}),
+          ns2["origen_publicas"]().get("r9"))
+
+    # --- y en pantalla ----------------------------------------------------------------------
+    check("el chip dice de donde vino", "detectada del MikroTik" in DASH
+          and "declarada a mano" in DASH and "origen desconocido" in DASH, "")
+    check("las detectadas se distinguen a la vista", ".pchip.det" in DASH, "")
+    check("marcar por origen avisa si no hay ninguna",
+          "No hay ninguna entrada con ese origen" in DASH, "")
+
+
+    print("\n" + ("TODO OK" if not fallos else "%d fallo(s)" % fallos))
+    return 1 if fallos else 0
+
+
+
+class Legado(unittest.TestCase):
+    def test_legado(self):
+        """Tipo: conservacion (prueba heredada de suricata-ids-lab). Vaciar de una vez las publicas declaradas de un nodo."""
+        _comun.correr_main(self, main)
+
+
+if __name__ == "__main__":
+    unittest.main()

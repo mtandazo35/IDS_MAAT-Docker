@@ -78,6 +78,10 @@ Reglas del contrato:
 | 16 | §5.13: tres `failregex` (TLS Auth Error, TLS Error, ovpn-auth) y «las cuatro primeras casan» | solo `ovpn-auth: rechazado` (con el prefijo opcional de journald) e `ignoreregex` para `motivo=freno-global`; de las 6 lineas del fixture casan la 3.a y la 4.a | un intento fallido escribia 2 lineas que casaban y baneaba al 3.er intento con maxretry 5; el freno global no es culpa de la IP que lo encuentra |
 | 17 | §4.3 de este contrato (e INSTANCIA §3): sysctls `ipfrag_high_thresh` 64 MB **y** `ipfrag_low_thresh` 48 MB | solo `ipfrag_high_thresh` (y `ipfrag_time`); sin `ipfrag_low_thresh` | runc escribe los sysctls en orden aleatorio y el kernel exige `low <= high`: `low` antes que `high` (4 MB por defecto) daba `EINVAL` y el `vpn` no arrancaba (CI, 2026-10-11); `low_thresh` está obsoleto desde Linux 4.17 |
 | 18 | §4.3 de este contrato (e INSTANCIA §3): sysctl `net.ipv4.conf.default.arp_ignore: "8"`; §5.1: `ip link set` del veth sin más | sin `arp_ignore` en el compose; el veth lleva `arp off` (`ip link set ids-in up mtu 65535 arp off`, `ip link set ids-mon up mtu 65535 promisc on arp off`) | Docker mete `eth0` en el netns después de aplicar los sysctls, así que `eth0` heredaba `arp_ignore=8`: el host no resolvía la IP del contenedor (`10.210.0.18 dev ids-p001 FAILED`) y la conexión a `:1194` daba «No route to host» (CI e2e, 2026-10-11). `arp off` deja sin ARP solo al veth |
+| 19 | §5.14 (e INSTANCIA §10.5): logrotate con `maxage 3`, `rotate 4`, `compress`, `delaycompress`; unos 5 GB por punto | **F2:** `rotate -1`, `dateext` con `dateformat -%Y%m%d-%H%M%S`, `nocompress`, sin `maxage`. El orquestador comprime los rotados (con 2 min sin escribirse) conservando su mtime, poda **por fecha** lo que tiene más de 30 días y, con `/srv/ids` por debajo del 15 % libre, borra antes de tiempo los rotados más viejos de cualquier punto (cada borrado en `orq.jsonl`); `estado.json` publica la retención efectiva por punto (§5.10) | CONTRATO-F2 §9: el objetivo son 30 días; `rotate`/`maxage` cuentan ficheros y no garantizan días, y logrotate/gzip ponían al `.gz` la hora de compresión (Eventos salta ficheros por mtime) |
+| 20 | §0.1: `punto.threshold` fuera de F1a (reservada) | **F2:** orden de cola `punto.threshold {pid, contenido}` (§5.11) | CONTRATO-F2 §6: las exclusiones del panel llegan a Suricata |
+| 21 | §2.1: `master.key` `root:root 0400`; el panel sin clave maestra | **F2:** `root:10500 0440`, montada en el panel en `/run/secrets/master_key:ro` (`IDS_MASTER_KEY`); `ids-orq panel aplicar` se niega si no existe (Docker crearía un directorio) | CONTRATO-F2 §10.3: el panel corre como 10500 sin capacidades y descifra sus secretos con ella |
+| 22 | §5.11: reserva del panel 1024 MiB | **F2:** `RESERVA_PANEL_MB = 1536` (compose `mem_limit` y admisión) | CONTRATO-F2 §6: el dashboard heredado y el generador por nodo (`RLIMIT_AS` 1 GiB, de uno en uno) |
 
 ---
 
@@ -158,7 +162,7 @@ IDS_MAAT-Docker/
 | `/etc/ids-maat/` | root:root | 0750 | config del VPS |
 | `/etc/ids-maat/ids.conf` | root:root | 0644 | §4.9; `install.sh` |
 | `/etc/ids-maat/imagenes.json` | root:root | 0644 | §4.10; `install.sh` |
-| `/etc/ids-maat/master.key` | root:root | 0400 | 32 bytes aleatorios en hex; F1a solo lo crea |
+| `/etc/ids-maat/master.key` | root:10500 | 0440 | 32 bytes aleatorios en hex; F2: montada ro en el panel (§0.2 fila 21) |
 | `/etc/ids-maat/orq_token` | root:10500 | 0640 | 32 bytes aleatorios en hex |
 | `/etc/ids-maat/avisos.conf` | root:root | 0600 | vacío en F1a (F3) |
 | `/etc/ids-maat/logrotate.conf` | root:root | 0644 | copia de `host/logrotate/ids-maat.conf` |
@@ -651,12 +655,17 @@ proceso, `ventana` = desde la escritura anterior):
 
 ```json
 {"v": 1, "punto": "p003", "ts": 1760090000, "inicio": 1760080000,
- "rx": 1200, "tx": 1180, "descartados": 0, "muy_grandes": 0, "rechazados": 20,
+ "rx": 1200, "tx": 1180, "rx_bytes": 1530000, "tx_bytes": 1490000,
+ "descartados": 0, "muy_grandes": 0, "rechazados": 20,
  "recortados": 0, "recorte_bytes": 10000,
  "ventana": {"segundos": 30, "aceptados": {"100.64.3.2": 40}, "rechazados": {"192.0.2.9": 2}},
  "ultimo_visto": {"100.64.3.2": 1760089990},
  "esperados": ["100.64.3.2/32"]}
 ```
+
+F2: `rx_bytes` (bytes de los datagramas TZSP recibidos, también los rechazados) y `tx_bytes` (bytes
+de las tramas reenviadas a `ids-in`), acumulados como `rx`/`tx`: el panel calcula los Mbps del espejo
+con la diferencia entre dos lecturas.
 
 ### 5.5 Relé del API-SSL (A)
 
@@ -802,7 +811,9 @@ Cada 15 s, atómico. Esquema v1 (decidido en el contrato):
       "tzsp": {"edad_s": 12, "rx": 1200, "tx": 1180, "rechazados": 20},
       "suricata": {"stats_edad_s": 14, "reglas_cargadas": 18234, "reglas_fallidas": 0,
                    "kernel_packets": 98765, "kernel_drops": 0},
-      "avisos": []
+      "avisos": [],
+      "retencion": {"objetivo_dias": 30, "desde": 1757500000, "dias": 30.1,
+                    "anticipado": false, "ultimo_anticipado": null}
     }
   }
 }
@@ -812,7 +823,15 @@ Cada 15 s, atómico. Esquema v1 (decidido en el contrato):
 - `vpn_cliente` sale de `/srv/ids/run/<pid>/openvpn-status.log` (`CLIENT_LIST`); `suricata.*` del
   último `stats` del eve (`detect.engines[].rules_loaded/rules_failed`, `capture.kernel_*`).
 - `avisos`: códigos `SIN-ESPEJO` (activo y sin `tx` en 10 min), `ESPEJO-NO-LLEGA` (`tzsp.tx` sube y
-  `kernel_packets` no), `NETNS-DISTINTO`, `REINICIOS` (≥ 3 en 1 h), `DISCO` (< 15 % libre).
+  `kernel_packets` no), `NETNS-DISTINTO`, `REINICIOS` (≥ 3 en 1 h), `DISCO` (< 15 % libre),
+  F2: `RETENCION-REDUCIDA` (hubo borrado anticipado por disco en los últimos 30 días) y
+  `THRESHOLD-FALLIDO` (el último `punto.threshold` se revirtió; se quita con el siguiente que vaya bien).
+- F2 (CONTRATO-F2 §9): `retencion.desde` = marca de tiempo (epoch) del primer evento del fichero más
+  viejo que queda en `datos/<pid>/` (eve y dns, vivos y rotados; si no se puede leer, la fecha del
+  fichero, que nunca es anterior a sus eventos); `dias` = días desde entonces; `anticipado` =
+  hubo poda por disco en los últimos 30 días (entonces no se promete el objetivo) y
+  `ultimo_anticipado` su epoch (o `null`). Los rotados `.gz` conservan como mtime el de su
+  última escritura (su último evento).
 
 ### 5.11 Orquestador: socket, órdenes y supervisión (C)
 
@@ -825,7 +844,9 @@ Cada 15 s, atómico. Esquema v1 (decidido en el contrato):
 - `IDS_RAIZ` (entorno, por defecto `/`) antepone un prefijo a **todas** las rutas del host, para las
   pruebas y la integración en CI (decidido en el contrato).
 
-Órdenes de F1a (las demás de ORQUESTADOR §5 responden `INVALIDO "no disponible en F1a"`):
+Órdenes de F1a y F2 (las demás de ORQUESTADOR §5 responden `INVALIDO "no disponible en F1a"`). Una
+baja cancela las órdenes de ese punto que esperaban en la cola: `op.estado` las da `terminada` con
+código `CANCELADA` y quedan en `orq.jsonl`; nunca se ejecutan (los `pid` no se reutilizan).
 
 | Orden | Parámetros | Encola | Devuelve en `datos` |
 |---|---|---|---|
@@ -834,6 +855,7 @@ Cada 15 s, atómico. Esquema v1 (decidido en el contrato):
 | `punto.arrancar` / `punto.parar` / `punto.reiniciar` | `pid`, `parte` ∈ vpn/suricata/todo | sí | `observado` |
 | `punto.ajustar` | `pid`, `perfil?`, `hilos?`, `redes_abonados?`, `compat_v6?`, `ros_version?`, `origen_ip?` | sí | lo recreado |
 | `punto.vpn.regenerar` | `pid` | sí | `usuario`, `clave`, `comandos` |
+| `punto.threshold` (F2) | `pid`, `contenido` (≤ 256 KiB; solo `suppress`/`threshold`/`event_filter` y comentarios, validados línea a línea) | sí (rechaza al encolar un punto inexistente o en baja) | `aplicado`, `recarga` (`reload-rules`, `reinicio` o `al arrancar`), `sha256`; si otra posterior del mismo punto espera en la cola, `aplicado: false` y `sustituida_por`. Escritura atómica; `reload-rules` por el socket de control; si falla, reinicio de `suricata`; si tampoco queda sano, vuelve al anterior y acaba `REVERTIDA` con `THRESHOLD-FALLIDO`. Un punto parado no se levanta |
 | `punto.estado` | `pid` o `*` | no | la entrada de `estado.json` |
 | `punto.logs` | `pid`, `parte`, `lineas` ≤ 500 | no | líneas (sin `password`/`key`) |
 | `punto.comandos` | `pid` | no | `comandos` sin la clave |
@@ -846,7 +868,7 @@ Cada 15 s, atómico. Esquema v1 (decidido en el contrato):
 | `op.estado` | `op_id` | no | `{estado, paso, avance, log_tail}` |
 
 Pasos de `punto.crear` (en este orden; un fallo **deshace** todo lo hecho): validar → asignar `pid`
-y `N` y guardar en `orq.db` → admisión de RAM (INSTANCIA §10.3, reserva `host 1024 + panel 1024`
+y `N` y guardar en `orq.db` → admisión de RAM (INSTANCIA §10.3, reserva `host 1024 + panel 1536` (F2)
 aunque no haya panel) → directorios → certificado de servidor → usuario y hash → `ccd` →
 `server.conf` → `suricata.yaml` → `suricata -T` efímero (§5.9) → `threshold.config` →
 `compose.yml` → puerto en `@puertos_vpn` y `ids_host.nft` → `docker compose up -d` → espera a
@@ -999,10 +1021,10 @@ canario con líneas reales (medición 13).
 ```
 /srv/ids/datos/*/eve.json /srv/ids/datos/*/dns.json {
     maxsize 1G
-    maxage 3
-    rotate 4
-    compress
-    delaycompress
+    rotate -1
+    dateext
+    dateformat -%Y%m%d-%H%M%S
+    nocompress
     missingok
     notifempty
     nocreate
@@ -1022,7 +1044,9 @@ canario con líneas reales (medición 13).
 ```
 
 Sin `copytruncate`. El orquestador abre `orq.jsonl` en modo append en cada escritura, así que no
-necesita reapertura.
+necesita reapertura. **F2 (§0.2 fila 19):** los eve/dns rotan con nombre fechado y sin tope de número;
+la compresión (conservando el mtime) y la poda por fecha (30 días) y por disco (< 15 % libre) son del
+orquestador.
 
 ### 5.15 Unidades systemd (C)
 

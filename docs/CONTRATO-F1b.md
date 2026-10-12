@@ -1,5 +1,12 @@
 # Contrato de construcción — F1b (panel)
 
+> **Sustituido en lo que toca al panel por [CONTRATO-F2-panel.md](CONTRATO-F2-panel.md).** El panel
+> mínimo de F1b (`idspanel/app.py`, `vistas.py`, `sesiones.py`, `usuarios.py`, `red.py`, `eve.py`,
+> `bitacora.py`, `static/`) y sus pruebas `tests/test_panel_*` se retiraron en F2: el panel es el
+> dashboard heredado de suricata-ids-lab con el apartado Puntos. Siguen vigentes la integración con el
+> orquestador (núcleo `ids-core`, `ids-orq panel aplicar|crear-admin|restablecer`) y la interfaz de
+> la CLI `ids-panel`; los usuarios pasan a `/srv/ids/panel/conf/usuarios.json` (F2 §7).
+
 Anexo de [ARQUITECTURA.md](ARQUITECTURA.md) y continuación de [CONTRATO-F1a.md](CONTRATO-F1a.md),
 que sigue vigente salvo lo que cambia aquí. Dos constructores trabajan a la vez:
 

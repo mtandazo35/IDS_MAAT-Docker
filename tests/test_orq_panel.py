@@ -6,6 +6,7 @@ import contextlib
 import io
 import ipaddress
 import json
+import os
 import re
 import sys
 import unittest
@@ -20,7 +21,7 @@ except ImportError:  # pragma: no cover
     yaml = None
 
 ENTORNO_INTERFAZ = {"IDS_PROXY", "IDS_EMPRESA", "IDS_PUERTO", "IDS_TZ", "IDS_ORQ_SOCK", "IDS_ORQ_TOKEN",
-                    "IDS_PANEL_DIR", "IDS_DATOS", "IDS_RUN"}
+                    "IDS_PANEL_DIR", "IDS_DATOS", "IDS_RUN", "IDS_MASTER_KEY"}
 
 
 class Base(unittest.TestCase):
@@ -73,7 +74,7 @@ class ComposeCore(Base):
         mem = "%dm" % self.mod.RESERVA_PANEL_MB
         self.assertIn("    mem_limit: %s\n" % mem, txt)
         self.assertIn("    memswap_limit: %s\n" % mem, txt)
-        self.assertEqual(self.mod.RESERVA_PANEL_MB, 1024)
+        self.assertEqual(self.mod.RESERVA_PANEL_MB, 1536)           # CONTRATO-F2 §6
         # la admisión de un punto ya descuenta esa reserva aunque no haya panel
         self.assertEqual(self.mod.memoria_comprometida([]), self.mod.RESERVA_HOST_MB + self.mod.RESERVA_PANEL_MB)
 
@@ -81,7 +82,8 @@ class ComposeCore(Base):
         vols = re.findall(r"(?m)^      - (\S+)$", self.render())
         self.assertEqual(vols, ["/srv/ids/panel:/srv/ids/panel", "/srv/ids/datos:/srv/ids/datos:ro",
                                 "/srv/ids/run:/srv/ids/run:ro", "/run/ids-orq:/run/ids-orq:ro",
-                                "/etc/ids-maat/orq_token:/run/secrets/orq_token:ro"])
+                                "/etc/ids-maat/orq_token:/run/secrets/orq_token:ro",
+                                "/etc/ids-maat/master.key:/run/secrets/master_key:ro"])
 
     def test_raiz_de_pruebas_en_los_montajes(self):
         txt = self.mod.render_core(self.mod.config(), A.IMG_PANEL, "0.1.0", raiz_host="/tmp/raiz")
@@ -99,6 +101,7 @@ class ComposeCore(Base):
         self.assertEqual(env["IDS_ORQ_TOKEN"], "/run/secrets/orq_token")
         self.assertEqual((env["IDS_PANEL_DIR"], env["IDS_DATOS"], env["IDS_RUN"]),
                          ("/srv/ids/panel", "/srv/ids/datos", "/srv/ids/run"))
+        self.assertEqual(env["IDS_MASTER_KEY"], "/run/secrets/master_key")     # CONTRATO-F2 §10.3
 
     def test_proxy_varios_y_zona(self):
         cfg = self.conf(IPS_PROXY="203.0.113.48/28,198.51.100.70", ZONA_HORARIA="America/Guayaquil")
@@ -165,6 +168,26 @@ class Aplicar(Base):
             self.assertEqual(oct(self.e.ruta("/srv/ids/panel").stat().st_mode & 0o7777), "0o2770")
             self.assertEqual(oct(self.e.ruta("/srv/ids/core").stat().st_mode & 0o7777), "0o700")
 
+    def test_sin_master_key_no_levanta(self):
+        """Corrección de defecto: sin /etc/ids-maat/master.key, Docker crearía un DIRECTORIO con
+        ese nombre en el host al montarla; aplicar se niega antes de tocar Docker."""
+        self.e.ruta("/etc/ids-maat/master.key").unlink()
+        rc, _, err = self.cli("aplicar")
+        self.assertEqual(rc, 1)
+        self.assertIn("master.key", err)
+        self.assertFalse(self.s.ordenes("docker compose -p ids-core"))
+        self.assertFalse(self.e.ruta("/etc/ids-maat/master.key").exists())
+
+    @unittest.skipUnless(sys.platform.startswith("linux") and hasattr(os, "geteuid") and os.geteuid() == 0,
+                         "permisos de dueño: solo como root en Linux")
+    def test_master_key_legible_por_el_grupo_del_panel(self):
+        """Capacidad nueva: el panel (10500, sin capacidades) lee la clave maestra por grupo."""
+        k = self.e.ruta("/etc/ids-maat/master.key")
+        os.chmod(k, 0o400)
+        self.assertEqual(self.cli("aplicar")[0], 0)
+        st = k.stat()
+        self.assertEqual((oct(st.st_mode & 0o7777), st.st_uid, st.st_gid), ("0o440", 0, 10500))
+
     def test_no_sano_falla(self):
         self.s.salud_inicial = "starting"
         rc, out, err = self.cli("aplicar")
@@ -215,7 +238,7 @@ class Admin(Base):
         self.assertEqual(rc, 0, err)
         self.assertEqual(out, "CLAVE=%s\n" % self.s.claves_panel[-1])
         self.assertNotIn(self.s.claves_panel[-1], err)
-        self.assertIn("admin", json.loads(self.e.ruta("/srv/ids/panel/usuarios.json").read_text(encoding="utf-8")))
+        self.assertIn("admin", json.loads(self.e.ruta("/srv/ids/panel/conf/usuarios.json").read_text(encoding="utf-8")))
 
     def test_contenedor_de_un_solo_uso_encerrado(self):
         self.cli("crear-admin", "--usuario", "admin")
@@ -234,12 +257,12 @@ class Admin(Base):
     def test_reinstalacion_no_regenera(self):
         rc, out, _ = self.cli("crear-admin")
         self.assertEqual(rc, 0)
-        antes = self.e.ruta("/srv/ids/panel/usuarios.json").read_text(encoding="utf-8")
+        antes = self.e.ruta("/srv/ids/panel/conf/usuarios.json").read_text(encoding="utf-8")
         rc, out, err = self.cli("crear-admin")
         self.assertEqual(rc, 3)
         self.assertEqual(out, "")
         self.assertIn("se conserva", err)
-        self.assertEqual(self.e.ruta("/srv/ids/panel/usuarios.json").read_text(encoding="utf-8"), antes)
+        self.assertEqual(self.e.ruta("/srv/ids/panel/conf/usuarios.json").read_text(encoding="utf-8"), antes)
         self.assertEqual(len(self.s.claves_panel), 1)
 
     def test_restablecer(self):

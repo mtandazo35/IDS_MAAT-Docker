@@ -147,6 +147,9 @@ EOF
   secretos || return 12
   [ "$(cat "$IDS_RAIZ/etc/ids-maat/orq_token")" = "$antes" ] || { echo "el token cambió al repetir"; return 13; }
   grep -q "chown root:10500 $IDS_RAIZ/etc/ids-maat/orq_token" "$LLAMADAS" || return 14
+  # CONTRATO-F2 §10.3: la clave maestra la lee el panel (10500) por grupo, nadie más
+  grep -q "chown root:10500 $IDS_RAIZ/etc/ids-maat/master.key" "$LLAMADAS" || return 16
+  if [ "$WINDOWS" = 0 ]; then [ "$(stat -c %a "$IDS_RAIZ/etc/ids-maat/master.key")" = 440 ] || return 17; fi
   [ -f "$IDS_RAIZ/etc/ids-maat/avisos.conf" ] || return 15
   return 0
 }
@@ -601,7 +604,8 @@ case "\$*" in
   "panel crear-admin --usuario admin")
     rc=\${ORQ_CREAR_RC:-0}
     [ "\$rc" = 0 ] || exit "\$rc"
-    echo '{"admin": "pbkdf2_sha256\$600000\$x\$y"}' > "$IDS_RAIZ/srv/ids/panel/usuarios.json"
+    mkdir -p "$IDS_RAIZ/srv/ids/panel/conf"
+    echo '{"admin": "pbkdf2_sha256\$600000\$x\$y"}' > "$IDS_RAIZ/srv/ids/panel/conf/usuarios.json"
     echo "CLAVE=$CLAVE_PRUEBA"
     echo "clave del usuario admin del panel: se muestra UNA sola vez" >&2
     exit 0 ;;
@@ -649,10 +653,11 @@ p_panel_nuevo_resumen_y_log_enmascarado() {
 
 p_panel_reinstalacion_conserva_la_clave() {
   preparar_resumen || return 1
-  echo '{"admin": "hash"}' > "$IDS_RAIZ/srv/ids/panel/usuarios.json"
+  mkdir -p "$IDS_RAIZ/srv/ids/panel/conf"
+  echo '{"admin": "hash"}' > "$IDS_RAIZ/srv/ids/panel/conf/usuarios.json"
   panel > "$T/panel" 2>&1 || { cat "$T/panel"; return 2; }
   [ "$(cat "$T/orq")" = "panel aplicar" ] || { cat "$T/orq"; return 3; }   # sin crear-admin
-  [ "$(cat "$IDS_RAIZ/srv/ids/panel/usuarios.json")" = '{"admin": "hash"}' ] || return 4
+  [ "$(cat "$IDS_RAIZ/srv/ids/panel/conf/usuarios.json")" = '{"admin": "hash"}' ] || return 4
   resumen > "$T/resumen" 2>&1 || return 5
   grep -qF "clave             se conserva la existente" "$T/resumen" || { cat "$T/resumen"; return 6; }
   grep -qF "ids-orq panel restablecer admin" "$T/resumen" || return 7

@@ -200,16 +200,16 @@ class CpusetYCapacidad(unittest.TestCase):
     def test_admision_y_caben(self):
         m = self.mod
         mem = {"total": 7962, "disponible": 3100}
-        # 3 reducidos: 3*(900+192+32) + 900 + 2048 = 6320
+        # 3 reducidos: 3*(900+192+32) + 900 + 1024 (host) + 1536 (panel, CONTRATO-F2 §6) = 6832
         tres = [("reducido", 1)] * 3
-        self.assertEqual(m.memoria_comprometida(tres), 6320)
-        self.assertTrue(m.cabe(tres, ("reducido", 1), mem))        # 4 -> 7444 <= 7962
-        self.assertFalse(m.cabe(tres + [("reducido", 1)], ("reducido", 1), mem))   # 5 -> 8568 > 7962
+        self.assertEqual(m.memoria_comprometida(tres), 6832)
+        self.assertTrue(m.cabe(tres, ("reducido", 1), mem))        # 4 -> 7956 <= 7962
+        self.assertFalse(m.cabe(tres + [("reducido", 1)], ("reducido", 1), mem))   # 5 -> 9080 > 7962
         self.assertFalse(m.cabe(tres, ("completo", 1), mem))       # la reserva del -T sube a 1700
         self.assertFalse(m.cabe([], ("completo", 1), {"total": 7962, "disponible": 1000}))   # MemAvailable
         self.assertEqual(m.caben([], mem), {"reducido": 2, "completo-low": 1, "completo": 1})
         self.assertEqual(m.caben([], {"total": 16000, "disponible": 16000}),
-                         {"reducido": 11, "completo-low": 8, "completo": 6})
+                         {"reducido": 11, "completo-low": 7, "completo": 6})
 
 
 class ServerConf(unittest.TestCase):

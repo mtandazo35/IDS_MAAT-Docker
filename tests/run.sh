@@ -1,7 +1,7 @@
 #!/bin/bash
 # ids-maat — runner de pruebas (CONTRATO-F1a §8.1). Sin lista que mantener: descubre todo.
 #   tests/run.sh [--imagenes] [--integracion]
-#   1. python -m unittest discover -s tests -p "test_*.py"   (python3, python o "py -3")
+#   1. python tests/correr.py (unittest de tests/ y tests/legado/; python3, python o "py -3")
 #   2. cada tests/test_*.sh con bash
 #   3. --imagenes:    cada tests/imagen/test_*.sh       (Docker Linux, IDS_IMG_VPN, IDS_IMG_SURICATA)
 #   4. --integracion: cada tests/integracion/test_*.sh  (root y Docker)
@@ -39,29 +39,51 @@ FALLOS=0
 OMITIDAS=0
 PASADAS=0
 
-echo "== unittest ($PY)"
+echo "== unittest ($PY): tests/test_*.py y tests/legado/test_*.py, con las omisiones y su motivo"
+# IDS_OBLIGATORIAS=linux|windows: las de tests/obligatorias.txt no pueden omitirse (CI).
+# IDS_RESUMEN=<fichero>: resumen en Markdown (en GitHub Actions, $GITHUB_STEP_SUMMARY).
+ARGS_PY=()
+[ -n "${IDS_OBLIGATORIAS:-}" ] && ARGS_PY+=(--obligatorias "$IDS_OBLIGATORIAS")
+[ -n "${IDS_RESUMEN:-}" ] && ARGS_PY+=(--resumen "$IDS_RESUMEN")
 # shellcheck disable=SC2086
-if $PY -m unittest discover -s tests -p "test_*.py"; then
+if $PY tests/correr.py "${ARGS_PY[@]}"; then
   PASADAS=$((PASADAS + 1))
 else
   FALLOS=$((FALLOS + 1))
 fi
 
+# Un .sh omitido (77) dice su motivo en la última línea de su salida. Con
+# IDS_SH_OBLIGATORIAS=1 (CI), un .sh omitido no cuenta como verificado: es un fallo.
+resumen_sh() {   # resumen_sh <línea markdown>
+  [ -n "${IDS_RESUMEN:-}" ] && printf '%s\n' "$1" >> "$IDS_RESUMEN"
+  return 0
+}
 correr_sh() {
-  local f rc
+  local f rc salida motivo
   for f in "$@"; do
     [ -f "$f" ] || continue
     echo "== $f"
-    bash "$f"
-    rc=$?
+    salida=$(mktemp)
+    bash "$f" 2>&1 | tee "$salida"
+    rc=${PIPESTATUS[0]}
+    motivo=$(grep -v '^[[:space:]]*$' "$salida" | tail -n 1)
+    rm -f "$salida"
     case "$rc" in
-      0) PASADAS=$((PASADAS + 1)) ;;
-      77) OMITIDAS=$((OMITIDAS + 1)); echo "   OMITIDA: $f" ;;
-      *) FALLOS=$((FALLOS + 1)); echo "   FALLO ($rc): $f" ;;
+      0) PASADAS=$((PASADAS + 1)); resumen_sh "- \`$f\`: bien" ;;
+      77)
+        if [ "${IDS_SH_OBLIGATORIAS:-0}" = 1 ]; then
+          FALLOS=$((FALLOS + 1)); echo "   OMITIDA y obligatoria (NO verificada): $f: $motivo"
+          resumen_sh "- \`$f\`: **omitida y obligatoria (no verificada)**: $motivo"
+        else
+          OMITIDAS=$((OMITIDAS + 1)); echo "   OMITIDA: $f: $motivo"
+          resumen_sh "- \`$f\`: omitida: $motivo"
+        fi ;;
+      *) FALLOS=$((FALLOS + 1)); echo "   FALLO ($rc): $f"; resumen_sh "- \`$f\`: **fallo ($rc)**" ;;
     esac
   done
 }
 
+resumen_sh "### Pruebas de shell"
 correr_sh tests/test_*.sh
 [ "$IMAGENES" = 1 ] && correr_sh tests/imagen/test_*.sh
 [ "$INTEGRACION" = 1 ] && correr_sh tests/integracion/test_*.sh

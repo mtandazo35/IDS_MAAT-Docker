@@ -21,7 +21,8 @@ class Protocolo(unittest.TestCase):
     def test_ordenes_desconocidas_reservadas_y_token(self):
         r = self.orq.atender(A.peticion("ejecutar", {"cmd": "id"}))
         self.assertEqual((r["codigo"], r["ok"]), ("INVALIDO", False))
-        for orden in ("punto.threshold", "acceso.aplicar", "sistema.actualizar", "bitacora.anclar"):
+        # punto.threshold dejó de estar reservada en F2 (test_orq_threshold.py)
+        for orden in ("acceso.aplicar", "sistema.actualizar", "bitacora.anclar"):
             r = self.orq.atender(A.peticion(orden, {}))
             self.assertEqual((r["codigo"], r["mensaje"]), ("INVALIDO", "no disponible en F1a"), orden)
         r = self.orq.atender(A.peticion("sistema.estado", {}, token="0" * 64))

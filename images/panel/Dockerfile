@@ -1,7 +1,15 @@
-# ids-maat-panel — panel web (F1b). Contexto de build: images/panel.
-# Se construye con la base fijada por digest en images/base.env (BASE_IMAGE). Sin BASE_IMAGE el
-# build falla a propósito. Solo python3 de Debian, sin dependencias externas (stdlib).
-# Pensada para correr con read_only, tmpfs en /tmp, cap_drop ALL y no-new-privileges, como 10500.
+# ids-maat-panel — panel web (F2: dashboard heredado de suricata-ids-lab + Puntos). Contexto de build:
+# images/panel. Se construye con la base fijada por digest en images/base.env (BASE_IMAGE). Sin
+# BASE_IMAGE el build falla a propósito. Pensada para correr con read_only, tmpfs en /tmp,
+# cap_drop ALL y no-new-privileges, como 10500.
+#
+# Dependencias: python3 de Debian (stdlib), tzdata (IDS_TZ con zoneinfo) y python3-cryptography
+# (AES-GCM de secretos.py, CONTRATO-F2 §10.3). cryptography sale del paquete de Debian y no de pip:
+# - integridad equivalente a `pip --require-hashes`: apt solo instala lo que casa con el SHA256 del
+#   índice Packages, firmado por el InRelease de Debian, sobre una base fijada por digest;
+# - no hace falta pip, ni compilador, ni un wheel con su propio OpenSSL dentro de la imagen: usa
+#   el libssl de la base, que recibe los avisos de seguridad de Debian con la imagen nueva;
+# - la versión exacta instalada queda en /usr/share/ids-maat/cryptography-version (y en dpkg).
 ARG BASE_IMAGE
 FROM ${BASE_IMAGE}
 
@@ -16,27 +24,37 @@ ENV LANG=C.UTF-8 \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     IDS_MAAT_VERSION=${VERSION} \
-    IDS_PUERTO=5637
+    IDS_PUERTO=5637 \
+    IDS_SHARE=/usr/local/share/ids-panel
 
-# tzdata: IDS_TZ (zona para mostrar fechas) con zoneinfo
 RUN set -eux; \
     apt-get update; \
-    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends python3 tzdata; \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends python3 python3-cryptography tzdata; \
     rm -rf /var/lib/apt/lists/*; \
+    mkdir -p /usr/share/ids-maat; \
+    dpkg-query -W -f='${Version}\n' python3-cryptography > /usr/share/ids-maat/cryptography-version; \
     groupadd -g 10500 ids-panel; \
     useradd -u 10500 -g 10500 -M -d /nonexistent -s /usr/sbin/nologin ids-panel
 
 COPY rootfs/ /
 
 # git en Windows no guarda el bit +x de forma fiable: modos explícitos. El código se precompila
-# (la raíz es de solo lectura en ejecución) y se comprueba que arranca.
+# (la raíz es de solo lectura en ejecución) y se comprueba que arranca: CLI, módulos del panel
+# heredado (dashboard, generador, feeds, informe, espejo) y AES-GCM de cryptography.
 RUN set -eux; \
     chmod 0755 /usr/local/bin/ids-panel; \
-    find /usr/local/lib/ids-panel -type d -exec chmod 0755 {} +; \
-    find /usr/local/lib/ids-panel -type f -exec chmod 0644 {} +; \
+    find /usr/local/lib/ids-panel /usr/local/share/ids-panel -type d -exec chmod 0755 {} +; \
+    find /usr/local/lib/ids-panel /usr/local/share/ids-panel -type f -exec chmod 0644 {} +; \
     python3 -m compileall -q /usr/local/lib/ids-panel; \
     find /usr/local/lib/ids-panel -type f -name '*.pyc' -exec chmod 0644 {} +; \
-    mkdir -p /srv/ids/panel /srv/ids/datos /srv/ids/run /run/ids-orq; \
+    test -s /usr/local/share/ids-panel/mapa/countries-110m.json; \
+    test -s /usr/local/share/ids-panel/mapa/topojson-client.min.js; \
+    cd /usr/local/lib/ids-panel; \
+    python3 -c 'import nodos, secretos, mikrotik_init, informe_diario; from cryptography.hazmat.primitives.ciphers.aead import AESGCM; AESGCM(bytes(32))'; \
+    python3 html_report.py --help >/dev/null; \
+    python3 informe_diario.py --help >/dev/null; \
+    cd /; \
+    mkdir -p /srv/ids/panel /srv/ids/datos /srv/ids/run /run/ids-orq /run/secrets; \
     chown 10500:10500 /srv/ids/panel; \
     chmod 0700 /srv/ids/panel; \
     /usr/local/bin/ids-panel --help >/dev/null

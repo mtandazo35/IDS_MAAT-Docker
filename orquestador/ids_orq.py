@@ -64,7 +64,7 @@ PERFILES = {
 PERFIL_DEFECTO = "reducido"
 MEM_VPN_MB = 192
 RESERVA_HOST_MB = 1024
-RESERVA_PANEL_MB = 1024
+RESERVA_PANEL_MB = 1536            # CONTRATO-F2 §6: panel heredado + generador por nodo (RLIMIT_AS 1 GiB)
 MARGEN_DISPONIBLE_MB = 512
 ANILLO_MB_POR_HILO = 32          # 1024 frames x 32 KiB (INSTANCIA §10.1)
 TZSP_PUERTO = 37008
@@ -83,6 +83,11 @@ MAX_MENSAJE = 64 * 1024
 MAX_PETICIONES_MIN = 240
 RELEASES_A_CONSERVAR = 3
 MAX_RESPALDOS_FW = 20
+RETENCION_DIAS = 30                  # CONTRATO-F2 §9: objetivo de días de eve.json/dns.json por punto
+DISCO_MIN_LIBRE_PCT = 15             # por debajo, se borran antes de tiempo los rotados más viejos
+INTERVALO_PODA_S = 86400             # poda por fecha: una vez al día (y al arrancar)
+MAX_THRESHOLD = 256 * 1024
+MAX_LINEAS_THRESHOLD = 5000
 
 # Núcleo (F1b, CONTRATO-F1b «Integración»): el panel en la red ids-core reservada en F1a
 CORE_PROYECTO = "ids-core"
@@ -93,7 +98,8 @@ PANEL_PUERTA = "10.210.255.1"
 PANEL_IP = "10.210.255.2"
 PANEL_PUERTO = 5637                  # el del contenedor; el publicado es PUERTO_PANEL de ids.conf
 PANEL_DIR = "/srv/ids/panel"
-PANEL_USUARIOS = PANEL_DIR + "/usuarios.json"
+PANEL_USUARIOS = PANEL_DIR + "/conf/usuarios.json"     # CONTRATO-F2 §7 (lo escribe ids-panel)
+MASTER_KEY = "/etc/ids-maat/master.key"               # en el panel: /run/secrets/master_key (ro)
 ESPERA_PANEL_S = 120
 RE_USUARIO_PANEL = re.compile(r"^[a-z0-9][a-z0-9._-]{0,31}$")     # el mismo que ids-panel
 RE_ZONA = re.compile(r"^(UTC|[A-Za-z]+(/[A-Za-z0-9_+-]+){1,2})$")
@@ -104,17 +110,17 @@ PASOS_CREAR = ["validar", "asignar", "admisión de RAM", "directorios", "certifi
                "compose.yml", "firewall", "compose up", "esperar salud"]
 
 ORDENES_COLA = {"punto.crear", "punto.borrar", "punto.arrancar", "punto.parar",
-                "punto.reiniciar", "punto.ajustar", "punto.vpn.regenerar", "reglas.actualizar",
-                "sistema.reconciliar"}
+                "punto.reiniciar", "punto.ajustar", "punto.vpn.regenerar", "punto.threshold",
+                "reglas.actualizar", "sistema.reconciliar"}
 ORDENES_LECTURA = {"punto.estado", "punto.logs", "punto.comandos", "punto.api.huella",
                    "punto.medir", "logs.reabrir", "sistema.estado", "sistema.capacidad",
                    "op.estado"}
-ORDENES_RESERVADAS = {"punto.threshold", "acceso.aplicar", "acceso.confirmar",
+ORDENES_RESERVADAS = {"acceso.aplicar", "acceso.confirmar",
                       "sistema.buscar_actualizacion", "sistema.actualizar", "sistema.revertir",
                       "sistema.respaldar", "bitacora.anclar"}
 
 CODIGOS_SALIDA = {"OK": 0, "ACEPTADA": 0, "FALLO": 1, "REVERTIDA": 1, "INVALIDO": 2,
-                  "CONFLICTO": 3, "CONFLICTO_PUERTO": 3, "NO_EXISTE": 4}
+                  "CONFLICTO": 3, "CONFLICTO_PUERTO": 3, "NO_EXISTE": 4, "CANCELADA": 1}
 SALIDA_SIN_SERVICIO = 5
 
 
@@ -595,6 +601,8 @@ def entorno_panel(cfg):
         "IDS_PANEL_DIR": PANEL_DIR,
         "IDS_DATOS": "/srv/ids/datos",
         "IDS_RUN": "/srv/ids/run",
+        # CONTRATO-F2 §10.3: secretos del panel cifrados con la clave maestra (montada ro)
+        "IDS_MASTER_KEY": "/run/secrets/master_key",
     }
 
 
@@ -911,6 +919,256 @@ def disco_libre_pct():
         return None
 
 
+
+# --------------------------------------------------------------------------------------------
+# threshold.config (punto.threshold, CONTRATO-F2 §6)
+# --------------------------------------------------------------------------------------------
+
+# Solo `suppress`, `threshold` y `event_filter` con pares «clave valor» de la sintaxis de
+# Suricata, y comentarios. Nada de `rate_filter`, `include` ni caracteres fuera de la lista.
+RE_TH_LINEA = re.compile(r"^(suppress|threshold|event_filter)\s+(.+)$")
+RE_TH_PAR = re.compile(r"^(gen_id|sig_id|track|ip|type|count|seconds)\s+([A-Za-z0-9_.:/,\[\]!$ -]{1,512})$")
+TH_TRACK = {"by_src", "by_dst", "by_rule", "by_both", "by_either"}
+TH_TIPO = {"limit", "threshold", "both", "backoff"}
+
+
+def _partir_pares(txt):
+    """Separa por comas que no están dentro de corchetes (ip [10.0.0.0/8,192.0.2.1])."""
+    trozos, actual, nivel = [], "", 0
+    for c in txt:
+        if c == "[":
+            nivel += 1
+        elif c == "]":
+            nivel -= 1
+        if c == "," and nivel == 0:
+            trozos.append(actual)
+            actual = ""
+        else:
+            actual += c
+    trozos.append(actual)
+    return trozos
+
+
+def validar_threshold(contenido):
+    """Comprueba línea a línea el threshold.config que manda el panel. Devuelve el texto
+    normalizado (LF y terminado en salto de línea) o lanza ErrorOrden INVALIDO con la línea."""
+    if not isinstance(contenido, str):
+        raise _inv("contenido debe ser texto")
+    if len(contenido.encode("utf-8")) > MAX_THRESHOLD:
+        raise _inv("threshold demasiado grande (máx. %d KiB)" % (MAX_THRESHOLD // 1024))
+    lineas = contenido.replace("\r\n", "\n").split("\n")
+    if len(lineas) > MAX_LINEAS_THRESHOLD:
+        raise _inv("threshold con demasiadas líneas (máx. %d)" % MAX_LINEAS_THRESHOLD)
+    for i, linea in enumerate(lineas, 1):
+        if any(ord(c) < 32 and c != "\t" for c in linea):
+            raise _inv("línea %d: caracteres de control" % i)
+        x = linea.strip()
+        if not x or x.startswith("#"):
+            continue
+        m = RE_TH_LINEA.match(x)
+        if not m:
+            raise _inv("línea %d: solo se admiten suppress, threshold, event_filter y comentarios" % i)
+        pares = {}
+        for trozo in _partir_pares(m.group(2)):
+            pm = RE_TH_PAR.match(trozo.strip())
+            if not pm or pm.group(1) in pares:
+                raise _inv("línea %d: parámetro no válido: %s" % (i, trozo.strip()[:60]))
+            pares[pm.group(1)] = pm.group(2).strip()
+        if not pares.get("gen_id", "").isdigit() or not pares.get("sig_id", "").isdigit():
+            raise _inv("línea %d: gen_id y sig_id numéricos son obligatorios" % i)
+        if "track" in pares and pares["track"] not in TH_TRACK:
+            raise _inv("línea %d: track no válido" % i)
+        if m.group(1) == "suppress":
+            if set(pares) - {"gen_id", "sig_id", "track", "ip"}:
+                raise _inv("línea %d: suppress solo admite gen_id, sig_id, track e ip" % i)
+            if "ip" in pares and "track" not in pares:
+                raise _inv("línea %d: suppress con ip necesita track" % i)
+        else:
+            if set(pares) - {"gen_id", "sig_id", "track", "type", "count", "seconds"}:
+                raise _inv("línea %d: %s solo admite gen_id, sig_id, type, track, count y seconds"
+                           % (i, m.group(1)))
+            if (pares.get("type") not in TH_TIPO or not pares.get("count", "").isdigit()
+                    or not pares.get("seconds", "").isdigit() or "track" not in pares):
+                raise _inv("línea %d: %s necesita type, track, count y seconds" % (i, m.group(1)))
+    texto = "\n".join(lineas).rstrip("\n")
+    return texto + "\n" if texto else ""
+
+
+# --------------------------------------------------------------------------------------------
+# Retención de los eventos por fecha (CONTRATO-F2 §9)
+# --------------------------------------------------------------------------------------------
+# logrotate rota por tamaño con nombre fechado (eve.json-AAAAMMDD-HHMMSS[.gz]) y sin tope de
+# número; la poda es del orquestador: por fecha (más de RETENCION_DIAS) y, si el disco baja de
+# DISCO_MIN_LIBRE_PCT, antes de tiempo, empezando por los rotados más viejos de cualquier punto.
+
+RE_ROTADO = re.compile(r"^(eve|dns)\.json[-.].+$")
+RE_FECHA_ROTADO = re.compile(r"^(?:eve|dns)\.json-(\d{8})-(\d{6})(?:\.gz)?$")
+
+
+def fecha_rotado(path):
+    """Cota superior de la marca de tiempo de los eventos de un rotado: la más tardía entre la
+    fecha de rotación del nombre (hora local del host, la de logrotate) y el mtime. Un rotado
+    no recibe eventos posteriores a esa fecha, así que podar por ella nunca borra un evento más
+    reciente que el límite."""
+    p = Path(path)
+    try:
+        mtime = int(p.stat().st_mtime)
+    except OSError:
+        return None
+    m = RE_FECHA_ROTADO.match(p.name)
+    if not m:
+        return mtime
+    try:
+        nombre = int(time.mktime(time.strptime(m.group(1) + m.group(2), "%Y%m%d%H%M%S")))
+    except (ValueError, OverflowError):
+        return mtime
+    return max(nombre, mtime)
+
+
+def rotados(pid):
+    """[(cota, path)] de los eve/dns rotados de un punto (nunca los vivos), el más viejo primero."""
+    d = ruta("/srv/ids/datos/%s" % pid)
+    salida = []
+    try:
+        hijos = list(d.iterdir())
+    except OSError:
+        return salida
+    for f in hijos:
+        if (not RE_ROTADO.match(f.name) or f.name.endswith(".tmp") or f.is_symlink()
+                or not f.is_file()):
+            continue
+        cota = fecha_rotado(f)
+        if cota is not None:
+            salida.append((cota, f))
+    salida.sort(key=lambda x: (x[0], x[1].name))
+    return salida
+
+
+RE_ROTADO_SIN_COMPRIMIR = re.compile(r"^(?:eve|dns)\.json-\d{8}-\d{6}$")
+ESPERA_COMPRIMIR_S = 120             # Suricata ya reabrió (postrotate) y no escribe más en el rotado
+INTERVALO_COMPRIMIR_S = 60
+
+
+def comprimir_rotado(f):
+    """gzip de un rotado conservando su mtime (= su último evento), dueño y modo: Eventos del
+    panel salta ficheros por mtime y logrotate/gzip no lo conservan. Atómico (.tmp + rename);
+    el original solo se borra cuando el .gz está completo. Devuelve la ruta del .gz o None."""
+    import gzip
+    f = Path(f)
+    try:
+        st = f.stat()
+    except OSError:
+        return None
+    destino = f.with_name(f.name + ".gz")
+    # con punto delante: el glob `eve.json*` del panel (Eventos, generador) no lo ve a medias
+    tmp = f.with_name("." + f.name + ".gz.tmp")
+    try:
+        with open(f, "rb") as src, open(tmp, "wb") as raw:
+            with gzip.GzipFile(filename=f.name, mode="wb", fileobj=raw, compresslevel=6,
+                               mtime=int(st.st_mtime)) as gz:
+                shutil.copyfileobj(src, gz, 1024 * 1024)
+            raw.flush()
+            os.fsync(raw.fileno())
+        os.chmod(tmp, st.st_mode & 0o777)
+        if es_root():
+            os.chown(tmp, st.st_uid, st.st_gid)
+        os.utime(tmp, ns=(st.st_atime_ns, st.st_mtime_ns))
+        os.replace(tmp, destino)
+        f.unlink()
+        return destino
+    except OSError as e:
+        log("comprimir %s: %s" % (f, e))
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+        return None
+
+
+def comprimir_rotados(pids, t, espera=ESPERA_COMPRIMIR_S):
+    """Comprime los rotados fechados sin comprimir con más de `espera` s sin escribirse."""
+    hechos = []
+    for pid in pids:
+        d = ruta("/srv/ids/datos/%s" % pid)
+        try:
+            hijos = sorted(d.iterdir())
+        except OSError:
+            continue
+        for f in hijos:
+            if f.name.startswith(".") and f.name.endswith(".gz.tmp") and not f.is_symlink():
+                try:
+                    if t - f.stat().st_mtime > 3600:     # resto de una compresión interrumpida
+                        f.unlink()
+                except OSError:
+                    pass
+                continue
+            if not RE_ROTADO_SIN_COMPRIMIR.match(f.name) or f.is_symlink() or not f.is_file():
+                continue
+            try:
+                if t - f.stat().st_mtime < espera:
+                    continue
+            except OSError:
+                continue
+            g = comprimir_rotado(f)
+            if g is not None:
+                hechos.append(g)
+    return hechos
+
+
+_PRIMER_TS = {}
+
+
+def primer_ts(path):
+    """Marca de tiempo del primer evento de un fichero (vivo o .gz), con caché por tamaño y
+    mtime. Solo lee el principio: como mucho 64 KiB descomprimidos."""
+    import gzip
+    import zlib
+    p = Path(path)
+    try:
+        st = p.stat()
+    except OSError:
+        return None
+    clave = (str(p), st.st_size, st.st_mtime_ns)
+    if clave in _PRIMER_TS:
+        return _PRIMER_TS[clave]
+    ts = None
+    try:
+        abrir = gzip.open if p.name.endswith(".gz") else open
+        with abrir(p, "rb") as f:
+            bloque = f.read(64 * 1024)
+        for linea in bloque.decode("utf-8", errors="replace").splitlines()[:50]:
+            m = re.search(r'"timestamp"\s*:\s*"([^"]+)"', linea)
+            if m:
+                ts = _ts_suricata(m.group(1))
+                if ts:
+                    break
+    except (OSError, EOFError, ValueError, zlib.error):
+        ts = None
+    if len(_PRIMER_TS) > 4096:
+        _PRIMER_TS.clear()
+    _PRIMER_TS[clave] = ts
+    return ts
+
+
+def datos_mas_viejos(pid):
+    """Fecha del dato más viejo disponible del punto (primer evento del fichero más viejo). Si no
+    se puede leer, la cota del fichero: así nunca se anuncia más retención de la que hay."""
+    candidatos = rotados(pid)
+    for nombre in ("eve.json", "dns.json"):
+        f = ruta("/srv/ids/datos/%s/%s" % (pid, nombre))
+        try:
+            candidatos.append((int(f.stat().st_mtime), f))
+        except OSError:
+            pass
+    mejor = None
+    for cota, f in candidatos:
+        ts = primer_ts(f)
+        valor = ts if ts is not None else cota
+        if valor is not None and (mejor is None or valor < mejor):
+            mejor = valor
+    return mejor
+
+
 # --------------------------------------------------------------------------------------------
 # PKI (CA común por VPS, certificado de servidor por punto)
 # --------------------------------------------------------------------------------------------
@@ -1191,6 +1449,9 @@ def validar_params(orden, params, cfg_fn):
         return {"pid": _pid(params["pid"]), "parte": _parte(params.get("parte", "todo"))}
     if orden == "punto.ajustar":
         return validar_ajustar(params, cfg_fn())
+    if orden == "punto.threshold":
+        _solo(params, {"pid", "contenido"}, ("pid", "contenido"))
+        return {"pid": _pid(params["pid"]), "contenido": validar_threshold(params["contenido"])}
     if orden in ("punto.vpn.regenerar", "punto.comandos", "punto.api.huella", "punto.medir"):
         _solo(params, {"pid"}, ("pid",))
         return {"pid": _pid(params["pid"])}
@@ -1319,6 +1580,8 @@ class Orquestador:
         self._parar = threading.Event()
         self._ultimo_netns = 0.0
         self._en_curso = None
+        self._ultima_poda = 0.0
+        self._threshold_fallido = {}     # pid -> {"ts", "mensaje"} hasta el siguiente que vaya bien
 
     # ---- base de datos -----------------------------------------------------------------------
     def q(self, sql, args=()):
@@ -1388,6 +1651,13 @@ class Orquestador:
             params = validar_params(orden, pet.get("params"), config)
         except ErrorOrden as e:
             return resp(e.codigo, e.mensaje, e.datos)
+        if orden == "punto.threshold":
+            # se rechaza ya al encolar: un punto inexistente o dándose de baja no recibe nada
+            p = self.punto(params["pid"])
+            if p is None:
+                return resp("NO_EXISTE", "no existe %s" % params["pid"])
+            if p["estado"] == "borrando":
+                return resp("CONFLICTO", "%s se está dando de baja" % params["pid"])
         if orden in ORDENES_COLA:
             try:
                 return self.encolar(op_id, orden, params, quien)
@@ -1501,6 +1771,9 @@ class Orquestador:
                  "pasos": ["%s:%s" % (p["nombre"], p["estado"]) for p in ctx.pasos],
                  "codigo": codigo,
                  "mensaje": "ok" if codigo == "OK" else "%s en «%s»" % (codigo, ctx.paso_actual or "-")}
+        self._diario_linea(linea)
+
+    def _diario_linea(self, linea):
         try:
             with open(ruta("/srv/ids/estado/orq.jsonl"), "a", encoding="utf-8") as fh:
                 fh.write(json.dumps(linea, ensure_ascii=False) + "\n")
@@ -1523,7 +1796,8 @@ class Orquestador:
             "punto.crear": self.o_crear, "punto.borrar": self.o_borrar,
             "punto.arrancar": self.o_arrancar, "punto.parar": self.o_parar,
             "punto.reiniciar": self.o_reiniciar, "punto.ajustar": self.o_ajustar,
-            "punto.vpn.regenerar": self.o_regenerar, "reglas.actualizar": self.o_reglas,
+            "punto.vpn.regenerar": self.o_regenerar, "punto.threshold": self.o_threshold,
+            "reglas.actualizar": self.o_reglas,
             "sistema.reconciliar": self.o_reconciliar,
         }
         r = manejadores[orden](ctx, params)
@@ -1691,8 +1965,13 @@ class Orquestador:
             avisos.append("NETNS-DISTINTO")
         if any(c["reinicios_1h"] >= MAX_REINICIOS_HORA for c in cont.values()):
             avisos.append("REINICIOS")
-        if libre is not None and libre < 15:
+        if libre is not None and libre < DISCO_MIN_LIBRE_PCT:
             avisos.append("DISCO")
+        retencion = self.retencion_punto(pid, t)
+        if retencion["anticipado"]:
+            avisos.append("RETENCION-REDUCIDA")
+        if pid in self._threshold_fallido:
+            avisos.append("THRESHOLD-FALLIDO")
         return {
             "nombre": p["nombre"], "n": p["n"], "puerto": p["puerto"], "tun_net": p["tun_net"],
             "perfil": p["perfil"], "hilos": p["hilos"], "ros_version": p["ros_version"],
@@ -1703,6 +1982,8 @@ class Orquestador:
             "contenedores": cont, "netns": ns,
             "vpn_cliente": leer_status_openvpn(ruta("/srv/ids/run/%s/openvpn-status.log" % pid)),
             "tzsp": tz, "suricata": su, "avisos": avisos,
+            # CONTRATO-F2 §9: desde qué fecha hay eventos y si hubo borrado antes de tiempo
+            "retencion": retencion,
         }
 
     def _avisos_espejo(self, p, tz, su, t):
@@ -1739,6 +2020,91 @@ class Orquestador:
         escribir_atomico(d / "estado.json", json.dumps(est, ensure_ascii=False, indent=1) + "\n",
                          modo=0o640, uid=0, gid=GID_PANEL)
         return est
+
+    # ---- retención de eventos (CONTRATO-F2 §9) ------------------------------------------------
+    def _retencion(self):
+        """{pid: {"ultimo_anticipado": ts, "cota": ts}} en /srv/ids/estado/retencion.json."""
+        if getattr(self, "_ret_cache", None) is None:
+            try:
+                d = json.loads(ruta("/srv/ids/estado/retencion.json").read_text(encoding="utf-8"))
+                self._ret_cache = d if isinstance(d, dict) else {}
+            except (OSError, ValueError):
+                self._ret_cache = {}
+        return self._ret_cache
+
+    def _retencion_guardar(self):
+        asegurar_dir(ruta("/srv/ids/estado"), 0o700)
+        escribir_atomico(ruta("/srv/ids/estado/retencion.json"),
+                         json.dumps(self._retencion(), ensure_ascii=False, sort_keys=True) + "\n", modo=0o600)
+
+    def retencion_punto(self, pid, t):
+        """Retención efectiva publicada en estado.json: fecha del dato más viejo que queda y si
+        hubo borrado anticipado por disco en los últimos RETENCION_DIAS (mientras tanto no se
+        puede prometer el objetivo)."""
+        desde = datos_mas_viejos(pid)
+        ult = (self._retencion().get(pid) or {}).get("ultimo_anticipado")
+        anticipado = bool(ult and t - ult < RETENCION_DIAS * 86400)
+        return {"objetivo_dias": RETENCION_DIAS, "desde": desde,
+                "dias": round(max(0, t - desde) / 86400.0, 1) if desde else None,
+                "anticipado": anticipado,
+                "ultimo_anticipado": ult if anticipado else None}
+
+    def _pids_datos(self):
+        d = ruta("/srv/ids/datos")
+        try:
+            return sorted(x.name for x in d.iterdir() if x.is_dir() and RE_PID.match(x.name))
+        except OSError:
+            return []
+
+    def podar_por_fecha(self, t):
+        """Borra los rotados cuyo último evento posible tiene más de RETENCION_DIAS."""
+        limite = int(t) - RETENCION_DIAS * 86400
+        total = 0
+        for pid in self._pids_datos():
+            borrados = 0
+            for cota, f in rotados(pid):
+                if cota >= limite:
+                    break
+                try:
+                    f.unlink()
+                    borrados += 1
+                except OSError as e:
+                    log("poda por fecha: %s: %s" % (f, e))
+            if borrados:
+                total += borrados
+                self._diario_linea({"ts": int(t), "evento": "poda.fecha", "pid": pid,
+                                    "ficheros": borrados, "limite": limite})
+        return total
+
+    def podar_por_disco(self, t, libre_fn=None):
+        """Con /srv/ids por debajo de DISCO_MIN_LIBRE_PCT, borra los rotados más viejos (de
+        cualquier punto) hasta recuperar el umbral. Cada borrado anticipado queda en orq.jsonl y
+        marca el punto (retención efectiva menor que el objetivo). Nunca toca los vivos."""
+        libre_fn = libre_fn or disco_libre_pct
+        libre = libre_fn()
+        if libre is None or libre >= DISCO_MIN_LIBRE_PCT:
+            return []
+        candidatos = sorted((cota, pid, f) for pid in self._pids_datos() for cota, f in rotados(pid))
+        borrados = []
+        for cota, pid, f in candidatos:
+            if libre is not None and libre >= DISCO_MIN_LIBRE_PCT:
+                break
+            try:
+                f.unlink()
+            except OSError as e:
+                log("poda por disco: %s: %s" % (f, e))
+                continue
+            borrados.append((pid, f.name, cota))
+            self._diario_linea({"ts": int(t), "evento": "poda.disco", "pid": pid, "fichero": f.name,
+                                "cota": cota, "libre_pct": libre})
+            self._retencion()[pid] = {"ultimo_anticipado": int(t), "cota": cota}
+            libre = libre_fn()
+        if borrados:
+            self._retencion_guardar()
+            log("disco: %d rotado(s) borrado(s) antes de tiempo (libre %s %%)" % (len(borrados), libre))
+        if libre is not None and libre < DISCO_MIN_LIBRE_PCT:
+            log("disco: sigue por debajo del %d %% libre y no quedan rotados que borrar" % DISCO_MIN_LIBRE_PCT)
+        return borrados
 
     # ---- supervisión --------------------------------------------------------------------------
     def comprobar_netns(self, pid):
@@ -1810,6 +2176,13 @@ class Orquestador:
             for p in self.puntos():
                 if p["deseado"] == "activo" and p["estado"] in ("activo", "error"):
                     self.comprobar_netns(p["pid"])
+        try:
+            if t - self._ultima_poda >= INTERVALO_PODA_S:
+                self._ultima_poda = t
+                self.podar_por_fecha(t)
+            self.podar_por_disco(t)
+        except Exception as e:  # noqa: BLE001 - la poda nunca para la supervisión
+            log("poda: %r" % e)
         est = self.escribir_estado()
         for pid, e in est["puntos"].items():
             for parte, c in e["contenedores"].items():
@@ -1824,6 +2197,15 @@ class Orquestador:
             except Exception as e:  # noqa: BLE001
                 log("supervisión: %r" % e)
             self._parar.wait(INTERVALO_ESTADO_S)
+
+    def bucle_compresion(self):
+        """Hilo aparte: comprimir un rotado de 1 GB tarda y no puede retrasar estado.json."""
+        while not self._parar.is_set():
+            try:
+                comprimir_rotados(self._pids_datos(), time.time())
+            except Exception as e:  # noqa: BLE001
+                log("compresión: %r" % e)
+            self._parar.wait(INTERVALO_COMPRIMIR_S)
 
     def bucle_eventos(self):
         espera = 1
@@ -1958,10 +2340,26 @@ class Orquestador:
         with self.tx() as db:
             db.execute("DELETE FROM punto WHERE pid=?", (pid,))
             db.execute("DELETE FROM reinicio WHERE pid=?", (pid,))
+            cancelar = []
             if enfriar:
                 db.execute("INSERT OR REPLACE INTO enfriamiento (n, hasta) VALUES (?,?)",
                            (p["n"], ahora() + ENFRIAMIENTO_S))
-                db.execute("DELETE FROM op WHERE pid=? AND op_id IS NOT ?", (pid, op_actual))
+                # órdenes de este punto que esperaban en la cola: se cancelan (op.estado lo dice)
+                # y no se ejecutan nunca; los pid no se reutilizan, así que no alcanzan a otro
+                cancelar = db.execute("SELECT * FROM op WHERE pid=? AND estado='pendiente' AND op_id IS NOT ?",
+                                      (pid, op_actual)).fetchall()
+                for f in cancelar:
+                    db.execute("UPDATE op SET estado='terminada', codigo='CANCELADA', mensaje=?, params=NULL, "
+                               "fin=? WHERE op_id=?", ("cancelada: %s se dio de baja" % pid, ahora(), f["op_id"]))
+                db.execute("DELETE FROM op WHERE pid=? AND op_id IS NOT ? AND estado='terminada' "
+                           "AND codigo IS NOT 'CANCELADA'", (pid, op_actual))
+        for f in cancelar:
+            self._diario_linea({"ts": ahora(), "op_id": f["op_id"], "quien": f["quien"], "orden": f["orden"],
+                                "pid": pid, "params_sha256": f["params_sha256"], "pasos": [],
+                                "codigo": "CANCELADA", "mensaje": "cancelada por la baja del punto"})
+        if self._retencion().pop(pid, None) is not None:
+            self._retencion_guardar()
+        self._threshold_fallido.pop(pid, None)
         self._netns.pop(pid, None)
         self._espejo.pop(pid, None)
         for k in [k for k in self._programados if k[0] == pid]:
@@ -2336,6 +2734,69 @@ class Orquestador:
         ctx.mensaje = "credencial regenerada"
         return self._datos_punto(p, clave=clave)
 
+    def o_threshold(self, ctx, prm):
+        """punto.threshold (CONTRATO-F2 §6): escribe el threshold.config del punto (ya validado
+        línea a línea) y recarga Suricata sin cortar el espejo (`reload-rules` por el socket de
+        control); si la recarga falla, reinicia el contenedor `suricata`. Si tampoco queda sano,
+        se vuelve al threshold anterior (que estaba en marcha), se reinicia otra vez y la orden
+        acaba REVERTIDA con el aviso THRESHOLD-FALLIDO en estado.json."""
+        p = self._p_o_noexiste(prm["pid"])
+        pid = p["pid"]
+        if p["estado"] == "borrando":
+            raise ErrorOrden("CONFLICTO", "%s se está dando de baja" % pid)
+        # varias exclusiones seguidas: solo cuenta la última (las anteriores no recargan nada)
+        siguiente = self.q1("SELECT op_id FROM op WHERE estado='pendiente' AND orden='punto.threshold' "
+                            "AND pid=? ORDER BY seq LIMIT 1", (pid,))
+        if siguiente is not None:
+            ctx.mensaje = "sustituida por una orden posterior (%s)" % siguiente["op_id"]
+            return {"aplicado": False, "sustituida_por": siguiente["op_id"]}
+        dest = ruta("/srv/ids/puntos/%s/suricata/threshold.config" % pid)
+        guardado = ruta("/srv/ids/puntos/%s/threshold.anterior" % pid)
+        contenido = prm["contenido"]
+        ctx.total = 3
+        with ctx.paso("escribir threshold.config"):
+            try:
+                previo = dest.read_text(encoding="utf-8")
+            except OSError:
+                previo = render_threshold(pid)
+            if previo == contenido:
+                ctx.mensaje = "sin cambios"
+                return {"aplicado": False, "sha256": sha256_txt(contenido)}
+            escribir_atomico(guardado, previo, modo=0o600)
+            escribir_atomico(dest, contenido, modo=0o644)
+        sur = nombres_contenedores(pid)["suricata"]
+        if p["deseado"] != "activo" or (docker_inspect([sur]).get(sur) or {}).get("estado") != "running":
+            # parado o pausado: no se levanta por esto; Suricata lo leerá al arrancar
+            ctx.mensaje = "escrito; se aplicará cuando arranque suricata"
+            self._threshold_fallido.pop(pid, None)
+            return {"aplicado": True, "recarga": "al arrancar", "sha256": sha256_txt(contenido)}
+
+        def deshacer():
+            escribir_atomico(dest, previo, modo=0o644)
+            self._threshold_fallido[pid] = {"ts": ahora(), "mensaje": "threshold rechazado: sigue el anterior"}
+            self._reiniciar_suricata(pid)
+            self.esperar_salud([sur])
+            if p["deseado"] == "activo":
+                self.x("UPDATE punto SET estado='activo', paso_error=NULL, actualizado=? WHERE pid=?",
+                       (ahora(), pid))
+        ctx.deshacer = deshacer
+        recarga = "reload-rules"
+        with ctx.paso("recargar reglas"):
+            try:
+                suricata_comando(pid, "reload-rules")
+            except Exception as e:  # noqa: BLE001 - socket ausente, NOK o timeout: se reinicia
+                ctx.registrar("reload-rules falló: %s; se reinicia suricata" % getattr(e, "mensaje", e))
+                recarga = "reinicio"
+        if recarga == "reinicio":
+            with ctx.paso("reiniciar suricata"):
+                self._reiniciar_suricata(pid)
+            with ctx.paso("esperar salud"):
+                self._salud_o_error(ctx, pid, [sur])
+        ctx.deshacer = None
+        self._threshold_fallido.pop(pid, None)
+        ctx.mensaje = "threshold aplicado (%s)" % recarga
+        return {"aplicado": True, "recarga": recarga, "sha256": sha256_txt(contenido)}
+
     def o_reglas(self, ctx, prm):
         imgs = imagenes()
         imagen = imgs["suricata"]
@@ -2596,7 +3057,7 @@ def servicio():
         orq.parar()
     signal.signal(signal.SIGTERM, _fin)
     signal.signal(signal.SIGINT, _fin)
-    for fn in (orq.trabajador, orq.bucle_supervision, orq.bucle_eventos):
+    for fn in (orq.trabajador, orq.bucle_supervision, orq.bucle_eventos, orq.bucle_compresion):
         threading.Thread(target=fn, daemon=True).start()
     log("servicio %s listo" % ORQ_VERSION)
     servir(orq)
@@ -2964,6 +3425,19 @@ def dirs_panel():
     asegurar_dir(ruta(PANEL_DIR), 0o2770, 0, GID_PANEL)
 
 
+def asegurar_master_key():
+    """La clave maestra se monta en el panel (/run/secrets/master_key, ro). Si faltara, Docker
+    crearía un DIRECTORIO con ese nombre en el host: se exige que exista como fichero. El panel
+    corre como 10500 sin capacidades, así que la lee por grupo: 0440 root:ids-panel."""
+    k = ruta(MASTER_KEY)
+    if not k.is_file():
+        raise ErrorOrden("FALLO", "falta %s (la crea install.sh; sin ella el panel no puede descifrar "
+                                  "sus secretos)" % MASTER_KEY)
+    _chown(k, 0, GID_PANEL)
+    _chmod(k, 0o440)
+    return k
+
+
 def panel_aplicar(esperar=True):
     """Renderiza /srv/ids/core/compose.yml, `compose up -d` y espera a `healthy`. Idempotente:
     con la misma imagen y el mismo ids.conf, compose no recrea el contenedor."""
@@ -2972,6 +3446,7 @@ def panel_aplicar(esperar=True):
     dirs_panel()
     for d in ("/srv/ids/datos", "/srv/ids/run", "/run/ids-orq"):
         asegurar_dir(ruta(d), 0o750, 0, GID_PANEL)
+    asegurar_master_key()
     texto = render_core(cfg, imgs["panel"], cfg.version, raiz_host=raiz())
     escribir_atomico(ruta(CORE_COMPOSE), texto, modo=0o600)
     ejecutar_ok(core_compose_args("up", "-d", "--pull", "never", "--remove-orphans"), timeout=300)

@@ -4,13 +4,22 @@ Cada fuente se guarda por separado en src/<fuente>.lst (indicador por linea); si
 descarga falla o no es valida, se CONSERVA la ultima version valida de esa fuente y se
 marca su estado (valido/vacio/error/sin-clave). reputation.lst/domains.lst se rearman
 uniendo solo las fuentes NO caducadas, con la fuente en cada linea (indicador<TAB>fuente).
-Auth-Key de abuse.ch (URLhaus/ThreatFox) opcional en /etc/suricata-feeds.conf."""
+Auth-Key de abuse.ch (URLhaus/ThreatFox) opcional en conf/feeds.conf del panel.
+
+En el contenedor del panel (CONTRATO-F2 §8): escribe en nodos.FEEDS y lee nodos.CONF/feeds.conf;
+las claves van cifradas con la clave maestra (secretos.py). Solo baja las listas que usan la
+pantalla y el generador: el dataset de dominios de Suricata lo genera el orquestador
+(reglas.actualizar), asi que aqui no hay dataset, ni `suricata -T`, ni recarga."""
 import ipaddress, json, os, sys, time, urllib.request, urllib.error
 
-DIR = "/var/lib/suricata-feeds"
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import nodos  # noqa: E402
+import secretos  # noqa: E402
+
+DIR = nodos.FEEDS
 SRCDIR = os.path.join(DIR, "src")
-CONF = "/etc/suricata-feeds.conf"
-os.makedirs(SRCDIR, exist_ok=True)
+CONF = os.path.join(nodos.CONF, "feeds.conf")
+os.makedirs(SRCDIR, mode=0o700, exist_ok=True)
 
 def _conf(k, d=""):
     try:
@@ -22,8 +31,17 @@ def _conf(k, d=""):
         pass
     return d
 
-AUTH_KEY = _conf("ABUSE_CH_AUTH_KEY", "")
-AIDB_KEY = _conf("ABUSEIPDB_KEY", "")
+def _secreto(k):
+    """Clave de una fuente: en feeds.conf va cifrada (enc1:...). Sin clave maestra o con el valor
+    manipulado no se usa (la fuente queda sin-clave) y se dice por stderr, nunca el valor."""
+    try:
+        return secretos.descifrar(_conf(k, ""), "feeds:" + k)
+    except secretos.SecretoNoDisponible as e:
+        sys.stderr.write("%s: no se puede descifrar (%s): la fuente queda sin clave\n" % (k, e))
+        return ""
+
+AUTH_KEY = _secreto("ABUSE_CH_AUTH_KEY")
+AIDB_KEY = _secreto("ABUSEIPDB_KEY")
 # Cada fuente dice COMO se autentica, porque no todas lo hacen igual: abuse.ch manda la
 # clave en la cabecera Auth-Key y AbuseIPDB en la cabecera Key. "" = fuente abierta.
 CLAVES = {"abusech": AUTH_KEY, "aidb": AIDB_KEY}
@@ -245,46 +263,10 @@ if dom_lines:
     open(tmp, "w", encoding="utf-8").write("\n".join(dom_lines) + "\n")
     os.replace(tmp, os.path.join(DIR, "domains.lst"))
 
-# El mismo listado como DATASET de Suricata, para que la consulta a un dominio fichado sea
-# una alerta en el momento y no un cruce posterior. Un dataset de tipo string va en
-# BASE64 por linea: en claro no casa nunca y no da error. Solo dominios bien formados; un
-# dato raro de un feed no puede romper la carga de reglas.
-import base64, subprocess
-ds_lines = []
-for l in dom_lines:
-    d = l.split("\t", 1)[0].strip().lower().rstrip(".")
-    if d and len(d) <= 253 and all(p and len(p) <= 63 for p in d.split(".")) and " " not in d:
-        ds_lines.append(base64.b64encode(d.encode("utf-8")).decode("ascii"))
-ds_path = os.path.join(DIR, "domains.dataset")
-try:
-    viejo = open(ds_path, encoding="utf-8").read()
-except OSError:
-    viejo = ""
-nuevo = "\n".join(sorted(set(ds_lines))) + ("\n" if ds_lines else "")
-# sin dominios (p.ej. sin clave de abuse.ch) el archivo tiene que EXISTIR igual, vacio:
-# la regla que lo carga tumba todas las demas si no esta
-if nuevo != viejo or not os.path.exists(ds_path):
-    tmp = ds_path + ".tmp"
-    open(tmp, "w", encoding="utf-8").write(nuevo)
-    os.replace(tmp, ds_path)
-    # recargar solo si valida: un dataset que no carga deja el sensor sin reglas
-    try:
-        t = subprocess.run(["suricata", "-T", "-c", "/etc/suricata/suricata.yaml"],
-                           capture_output=True, text=True, timeout=120)
-        if t.returncode == 0:
-            for cmd in (["suricatasc", "-c", "reload-rules"], ["systemctl", "reload", "suricata"]):
-                try:
-                    if subprocess.run(cmd, capture_output=True, timeout=60).returncode == 0:
-                        break
-                except (OSError, subprocess.TimeoutExpired):
-                    continue
-        else:
-            print("dataset: suricata -T fallo, no se recarga: " + (t.stderr or "")[-200:])
-    except (OSError, subprocess.TimeoutExpired) as e:
-        print("dataset: no se pudo validar/recargar: %s" % e)
-
 meta = {"generated": now, "total": n_ip, "total_dominios": n_dom, "sources": sources}
-open(os.path.join(DIR, "reputation.meta"), "w", encoding="utf-8").write(json.dumps(meta, indent=2))
+tmp = os.path.join(DIR, "reputation.meta.tmp")
+open(tmp, "w", encoding="utf-8").write(json.dumps(meta, indent=2))
+os.replace(tmp, os.path.join(DIR, "reputation.meta"))
 vig = sum(1 for s in sources.values() if s["vigente"])
 print(f"reputation.lst: {n_ip} IPs; domains.lst: {n_dom} dominios; {vig}/{len(sources)} fuentes vigentes")
 for name, s in sources.items():

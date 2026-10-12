@@ -1,19 +1,31 @@
 #!/usr/bin/env python3
-"""Informe diario de Suricata en lenguaje claro: quien esta infectado y que hacer."""
-import glob, gzip, io, json, os, socket, time, urllib.request, urllib.parse, urllib.error
+"""Informe diario de Suricata en lenguaje claro: quien esta infectado y que hacer.
+
+En el contenedor del panel (CONTRATO-F2 §8) el informe va POR NODO: cada punto se lee de sus
+propios eventos (nodos.ficheros_eventos), su texto se guarda en su directorio de salida
+(nodos/<pid>/report-AAAAMMDD.txt) y el mensaje de Telegram es uno solo, con una seccion por
+nodo y el nombre de la empresa (IDS_EMPRESA) en vez del hostname del contenedor.
+
+  informe_diario.py [--nodo pNNN | --todos] [--sin-enviar]
+
+Sin argumentos (como lo lanza el panel, en un subproceso, a las 07:30 en IDS_TZ): todos los
+puntos, un mensaje de Telegram (si esta configurado) y el texto por stdout. Al ser subproceso, el
+tope de memoria (RLIMIT_AS 1 GiB) es del informe y no del servidor. --sin-enviar: solo imprime.
+El token de Telegram va cifrado en conf/report.conf (secretos.py, asociado "report:TELEGRAM_TOKEN").
+"""
+import argparse, gzip, io, json, os, sys, time, urllib.request, urllib.parse, urllib.error
 from collections import Counter, defaultdict
 
-CONF = "/etc/suricata-report.conf"
-LOGDIR = "/var/log/suricata"
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import nodos  # noqa: E402
+import secretos  # noqa: E402
+
+CONF = os.path.join(nodos.CONF, "report.conf")
+EXCL_FILE = os.path.join(nodos.CONF, "exclusiones.json")
 HOURS = 24
-cutoff = time.time() - HOURS * 3600
 MAX_LINES = 20_000_000
-try:
-    import resource
-    _cap = 1024 * 1024 * 1024
-    resource.setrlimit(resource.RLIMIT_AS, (_cap, _cap))
-except Exception:
-    pass
+TELEGRAM_MAX = 4000
+ASOC_TOKEN = "report:TELEGRAM_TOKEN"
 
 def conf():
     d = {}
@@ -27,7 +39,9 @@ def conf():
     return d
 
 def opener(p):
-    return io.TextIOWrapper(gzip.open(p, "rb")) if p.endswith(".gz") else open(p, encoding="utf-8", errors="replace")
+    if p.endswith(".gz"):
+        return io.TextIOWrapper(gzip.open(p, "rb"), encoding="utf-8", errors="replace")
+    return open(p, encoding="utf-8", errors="replace")
 
 # Clasificacion: (claves, nivel, explicacion, accion). nivel 1=infectado, 2=atacando, 3=sospechoso.
 # Gana la primera regla cuya palabra clave aparece en la firma.
@@ -56,31 +70,35 @@ def clasifica(sig):
             return nivel, expl, accion
     return 3, "actividad sospechosa", "vigilar"
 
-# Exclusiones (apartado Exclusiones del panel + lineas IGNORAR_* legacy)
+# Exclusiones (apartado Exclusiones del panel + lineas IGNORAR_* legacy). Cada regla puede
+# llevar `nodo`: vacio (o _todos) = todos los nodos; con pid, solo los eventos de ese nodo.
 def cargar_exclusiones():
     reglas = []; ahora = time.time()
     try:
-        data = json.load(open("/etc/suricata-exclusiones.json", encoding="utf-8"))
+        data = json.load(open(EXCL_FILE, encoding="utf-8"))
         if isinstance(data, list):
             for r in data:
-                if not r.get("ip"):
+                if not isinstance(r, dict) or not r.get("ip"):
                     continue
                 try: hasta = float(r.get("hasta") or 0)
                 except (TypeError, ValueError): hasta = 0
                 if hasta and ahora > hasta:
                     continue                             # exclusion temporal vencida
+                nodo = str(r.get("nodo") or "")
                 reglas.append((r.get("tipo", "dst"), r["ip"],
                                [int(p) for p in (r.get("puertos") or []) if str(p).isdigit()],
-                               str(r.get("sid") or "")))
+                               str(r.get("sid") or ""), "" if nodo == nodos.TODOS else nodo))
     except Exception:
         pass
     _c = conf()
-    reglas += [("dst", x.strip(), [], "") for x in _c.get("IGNORAR_DESTINOS", "").split(",") if x.strip()]
-    reglas += [("src", x.strip(), [], "") for x in _c.get("IGNORAR_ORIGENES", "").split(",") if x.strip()]
+    reglas += [("dst", x.strip(), [], "", "") for x in _c.get("IGNORAR_DESTINOS", "").split(",") if x.strip()]
+    reglas += [("src", x.strip(), [], "", "") for x in _c.get("IGNORAR_ORIGENES", "").split(",") if x.strip()]
     return reglas
-EXCL = cargar_exclusiones()
-def excluido(src, dst, dport, sid=None):
-    for tipo, ip, pts, rsid in EXCL:
+
+def excluido(excl, pid, src, dst, dport, sid=None):
+    for tipo, ip, pts, rsid, nodo in excl:
+        if nodo and nodo != pid:                         # regla de otro nodo
+            continue
         quien = dst if tipo == "dst" else src
         if quien != ip:
             continue
@@ -91,126 +109,207 @@ def excluido(src, dst, dport, sid=None):
         return True
     return False
 
-# Confianza para marcar INFECTADO (nivel 1): no basta el texto de UNA firma. Se exige
-# REPETICION (>= UMBRAL_INFECTADO alertas de nivel 1) o >=2 firmas CnC distintas (SIDs).
-# Una sola alerta de CnC aislada se degrada a nivel 2 "posible, sin confirmar".
-try:
-    UMBRAL_INFECTADO = max(1, int(conf().get("UMBRAL_INFECTADO", "3") or "3"))
-except Exception:
-    UMBRAL_INFECTADO = 3
-
-by_src_nivel = {}
-by_src_expl = {}
-by_src_accion = {}
-by_src_total = Counter()
-n1_hits = Counter()            # alertas de nivel 1 (CnC/botnet) por IP -> repeticion
-n1_sids = defaultdict(set)     # firmas CnC distintas por IP (SID o texto) -> contexto
-pair = defaultdict(Counter)
-total = 0
-seen = 0
-
-files = sorted(glob.glob(f"{LOGDIR}/eve.json*"), key=lambda p: os.path.getmtime(p) if os.path.exists(p) else 0)
-for p in files:
-    try:
-        if os.path.getmtime(p) < cutoff - 3600:
-            continue
-    except OSError:
-        continue
-    try:
-        for line in opener(p):
-            seen += 1
-            if seen > MAX_LINES:
-                break
-            if '"event_type":"alert"' not in line:
-                continue
-            try:
-                e = json.loads(line)
-            except Exception:
-                continue
-            if e.get("event_type") != "alert":
-                continue
-            a = e.get("alert", {})
-            sig = a.get("signature", "")
-            cat = a.get("category") or ""
-            if sig.startswith("ET INFO") or "Not Suspicious" in cat or "Misc activity" in cat:
-                continue
-            src = e.get("src_ip", "?"); dst = e.get("dest_ip", "?")
-            if excluido(src, dst, e.get("dest_port"), a.get("signature_id")):   # exclusiones configuradas
-                continue
-            nivel, expl, accion = clasifica(sig)
-            by_src_total[src] += 1
-            pair[src][sig] += 1
-            if nivel == 1:
-                n1_hits[src] += 1
-                n1_sids[src].add(a.get("signature_id") or sig)
-            if src not in by_src_nivel or nivel < by_src_nivel[src]:
-                by_src_nivel[src] = nivel; by_src_expl[src] = expl; by_src_accion[src] = accion
-            total += 1
-    except OSError:
-        continue
-
-host = socket.gethostname()
 NOMBRE = {1: "INFECTADOS (actuar ya)", 2: "ATACANDO / ESCANEANDO (revisar)", 3: "SOSPECHOSOS (vigilar)"}
 
-# Confirmacion de INFECTADO: solo se queda en nivel 1 si hubo repeticion (>= UMBRAL_INFECTADO
-# alertas de nivel 1) o >=2 firmas CnC distintas. Una alerta de CnC aislada baja a nivel 2
-# como "posible, sin confirmar" (evita marcar infectado por el texto de UNA sola firma).
-for ip in list(by_src_nivel):
-    if by_src_nivel[ip] == 1 and not (n1_hits[ip] >= UMBRAL_INFECTADO or len(n1_sids[ip]) >= 2):
-        by_src_nivel[ip] = 2
-        by_src_expl[ip] = (f"posible infeccion SIN confirmar: solo {n1_hits[ip]} alerta(s) de "
-                           f"CnC aislada(s) (se piden {UMBRAL_INFECTADO} o 2 firmas distintas)")
-        by_src_accion[ip] = "confirmar primero: ver si se repite o hay mas indicadores antes de aislar"
-
-grupos = defaultdict(list)
-for ip in by_src_total:
-    grupos[by_src_nivel[ip]].append(ip)
-
-L = []
-L.append(f"IDS {host} - resumen de {HOURS}h")
-n1 = len(grupos.get(1, [])); n2 = len(grupos.get(2, [])); n3 = len(grupos.get(3, []))
-L.append(f"Infectados: {n1}   Atacando: {n2}   Sospechosos: {n3}   (alertas graves: {total})")
-if not total:
-    L.append("")
-    L.append("Sin alertas graves. Revisa que este llegando trafico del espejo.")
-for nivel in (1, 2, 3):
-    ips = grupos.get(nivel, [])
-    if not ips:
-        continue
-    ips.sort(key=lambda ip: by_src_total[ip], reverse=True)
-    L.append("")
-    L.append(f"== {NOMBRE[nivel]} ==")
-    for ip in ips[:15]:
-        veces = by_src_total[ip]
-        L.append(f"  {ip:16s}  {by_src_expl[ip]}")
-        L.append(f"  {'':16s}  -> {by_src_accion[ip]}  ({veces} alertas)")
-    if len(ips) > 15:
-        L.append(f"  ... y {len(ips)-15} equipos mas en este grupo")
-report = "\n".join(L)
-
-out = os.path.join(LOGDIR, "report-" + time.strftime("%Y%m%d") + ".txt")
-try:
-    open(out, "w", encoding="utf-8").write(report + "\n")
-except OSError:
-    pass
-# conservar solo los 20 informes de texto mas recientes
-try:
-    import glob as _g
-    ts = sorted(_g.glob(os.path.join(LOGDIR, "report-*.txt")), key=os.path.getmtime, reverse=True)
-    for _v in ts[20:]:
+def analizar(pid, excl, cutoff, umbral):
+    """Alertas de las ultimas HOURS h de UN nodo. Las IPs son de ese nodo: dos nodos con la
+    misma IP privada salen en secciones distintas, nunca sumadas."""
+    by_src_nivel = {}
+    by_src_expl = {}
+    by_src_accion = {}
+    by_src_total = Counter()
+    n1_hits = Counter()            # alertas de nivel 1 (CnC/botnet) por IP -> repeticion
+    n1_sids = defaultdict(set)     # firmas CnC distintas por IP (SID o texto) -> contexto
+    total = 0
+    seen = 0
+    files = [f for _pid, f in nodos.ficheros_eventos(pid, ("eve.json*",))
+             if not os.path.islink(f)]
+    files.sort(key=lambda p: os.path.getmtime(p) if os.path.exists(p) else 0)
+    for p in files:
         try:
-            os.remove(_v)
+            if os.path.getmtime(p) < cutoff - 3600:
+                continue
         except OSError:
-            pass
-except OSError:
-    pass
+            continue
+        try:
+            for line in opener(p):
+                seen += 1
+                if seen > MAX_LINES:
+                    break
+                if '"event_type":"alert"' not in line:
+                    continue
+                try:
+                    e = json.loads(line)
+                except Exception:
+                    continue
+                if not isinstance(e, dict) or e.get("event_type") != "alert":
+                    continue
+                a = e.get("alert") or {}
+                sig = str(a.get("signature", ""))
+                cat = a.get("category") or ""
+                if sig.startswith("ET INFO") or "Not Suspicious" in cat or "Misc activity" in cat:
+                    continue
+                src = str(e.get("src_ip", "?")); dst = str(e.get("dest_ip", "?"))
+                if excluido(excl, pid, src, dst, e.get("dest_port"), a.get("signature_id")):
+                    continue
+                nivel, expl, accion = clasifica(sig)
+                by_src_total[src] += 1
+                if nivel == 1:
+                    n1_hits[src] += 1
+                    n1_sids[src].add(a.get("signature_id") or sig)
+                if src not in by_src_nivel or nivel < by_src_nivel[src]:
+                    by_src_nivel[src] = nivel; by_src_expl[src] = expl; by_src_accion[src] = accion
+                total += 1
+        except (OSError, EOFError, ValueError):
+            continue
+    # Confirmacion de INFECTADO: solo se queda en nivel 1 si hubo repeticion (>= umbral
+    # alertas de nivel 1) o >=2 firmas CnC distintas. Una alerta de CnC aislada baja a nivel 2
+    # como "posible, sin confirmar" (evita marcar infectado por el texto de UNA sola firma).
+    for ip in list(by_src_nivel):
+        if by_src_nivel[ip] == 1 and not (n1_hits[ip] >= umbral or len(n1_sids[ip]) >= 2):
+            by_src_nivel[ip] = 2
+            by_src_expl[ip] = (f"posible infeccion SIN confirmar: solo {n1_hits[ip]} alerta(s) de "
+                               f"CnC aislada(s) (se piden {umbral} o 2 firmas distintas)")
+            by_src_accion[ip] = "confirmar primero: ver si se repite o hay mas indicadores antes de aislar"
+    grupos = defaultdict(list)
+    for ip in by_src_total:
+        grupos[by_src_nivel[ip]].append(ip)
+    return {"grupos": grupos, "total": total, "por_ip": by_src_total, "expl": by_src_expl,
+            "accion": by_src_accion}
 
-c = conf()
-tok, chat = c.get("TELEGRAM_TOKEN"), c.get("TELEGRAM_CHAT_ID")
-if tok and chat:
+def seccion(pid, r):
+    L = []
+    grupos = r["grupos"]
+    n1 = len(grupos.get(1, [])); n2 = len(grupos.get(2, [])); n3 = len(grupos.get(3, []))
+    L.append(f"== Nodo {nodos.nombre(pid)} ({pid}) ==")
+    L.append(f"Infectados: {n1}   Atacando: {n2}   Sospechosos: {n3}   (alertas graves: {r['total']})")
+    if not r["total"]:
+        L.append("Sin alertas graves. Revisa que este llegando trafico del espejo.")
+    for nivel in (1, 2, 3):
+        ips = grupos.get(nivel, [])
+        if not ips:
+            continue
+        ips.sort(key=lambda ip: r["por_ip"][ip], reverse=True)
+        L.append("")
+        L.append(f"-- {NOMBRE[nivel]} --")
+        for ip in ips[:15]:
+            veces = r["por_ip"][ip]
+            L.append(f"  {ip:16s}  {r['expl'][ip]}")
+            L.append(f"  {'':16s}  -> {r['accion'][ip]}  ({veces} alertas)")
+        if len(ips) > 15:
+            L.append(f"  ... y {len(ips)-15} equipos mas en este grupo")
+    return "\n".join(L)
+
+def guardar(pid, texto, ahora):
+    """report-AAAAMMDD.txt en la salida del nodo; se conservan los 20 mas recientes."""
+    d = nodos.dir_salida(pid)
+    out = os.path.join(d, "report-" + time.strftime("%Y%m%d", time.localtime(ahora)) + ".txt")
     try:
-        data = urllib.parse.urlencode({"chat_id": chat, "text": report[:4000]}).encode()
-        urllib.request.urlopen(f"https://api.telegram.org/bot{tok}/sendMessage", data=data, timeout=20)
-    except Exception as ex:
-        print("Telegram fallo:", ex)
-print(report)
+        tmp = out + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            f.write(texto + "\n")
+        os.replace(tmp, out)
+    except OSError:
+        pass
+    try:
+        ts = sorted((os.path.join(d, x) for x in os.listdir(d)
+                     if x.startswith("report-") and x.endswith(".txt")), key=os.path.getmtime, reverse=True)
+        for _v in ts[20:]:
+            try:
+                os.remove(_v)
+            except OSError:
+                pass
+    except OSError:
+        pass
+
+def informe(nodo=nodos.TODOS, ahora=None):
+    """Texto del informe del nodo (o de todos, una seccion por nodo). Guarda el de cada nodo."""
+    ahora = time.time() if ahora is None else ahora
+    cutoff = ahora - HOURS * 3600
+    try:
+        umbral = max(1, int(conf().get("UMBRAL_INFECTADO", "3") or "3"))
+    except Exception:
+        umbral = 3
+    excl = cargar_exclusiones()
+    secciones = []
+    for pid in nodos.nodos_de(nodos.validar_nodo(nodo)):
+        texto = seccion(pid, analizar(pid, excl, cutoff, umbral))
+        guardar(pid, texto, ahora)
+        secciones.append(texto)
+    empresa = os.environ.get("IDS_EMPRESA") or "IDS"
+    cab = f"IDS {empresa} - resumen de {HOURS}h"
+    if not secciones:
+        secciones = ["Sin nodos dados de alta."]
+    return cab, secciones
+
+def mensajes(cab, secciones, maximo=TELEGRAM_MAX):
+    """Un mensaje con todas las secciones; si no cabe en el limite de Telegram, se parte por
+    secciones (nunca a mitad de un nodo, salvo que uno solo no quepa) con (k/n) en la cabecera."""
+    trozos = [[]]
+    for s in secciones:
+        s = s[:maximo - len(cab) - 20]
+        actual = "\n\n".join(trozos[-1] + [s])
+        if trozos[-1] and len(cab) + 2 + len(actual) + 8 > maximo:
+            trozos.append([s])
+        else:
+            trozos[-1].append(s)
+    n = len(trozos)
+    salida = []
+    for k, t in enumerate(trozos, 1):
+        titulo = cab if n == 1 else f"{cab} ({k}/{n})"
+        salida.append(titulo + "\n\n" + "\n\n".join(t))
+    return salida
+
+def token_telegram(c):
+    """Token de Telegram descifrado (va cifrado con la clave maestra); "" si no se puede."""
+    try:
+        return secretos.descifrar(c.get("TELEGRAM_TOKEN", ""), ASOC_TOKEN)
+    except secretos.SecretoNoDisponible as e:
+        print("Telegram: el token no se puede descifrar (%s): no se envia" % e, file=sys.stderr)
+        return ""
+
+def enviar(textos):
+    c = conf()
+    tok, chat = token_telegram(c), c.get("TELEGRAM_CHAT_ID")
+    if not (tok and chat):
+        return False
+    ok = True
+    for texto in textos:
+        try:
+            data = urllib.parse.urlencode({"chat_id": chat, "text": texto[:TELEGRAM_MAX]}).encode()
+            urllib.request.urlopen(f"https://api.telegram.org/bot{tok}/sendMessage", data=data, timeout=20)
+        except Exception as ex:
+            # el error de urllib puede llevar la URL (con el token): solo el tipo
+            print("Telegram fallo: %s" % type(ex).__name__, file=sys.stderr)
+            ok = False
+    return ok
+
+def main(argv=None):
+    p = argparse.ArgumentParser(description="Informe diario por nodo (Telegram).")
+    g = p.add_mutually_exclusive_group()
+    g.add_argument("--nodo", help="pNNN: solo ese nodo")
+    g.add_argument("--todos", action="store_true", help="todos los nodos (por defecto)")
+    p.add_argument("--sin-enviar", action="store_true", help="solo imprimir, sin Telegram")
+    a = p.parse_args(argv)
+    try:
+        import resource
+        _cap = 1024 * 1024 * 1024
+        resource.setrlimit(resource.RLIMIT_AS, (_cap, _cap))
+    except Exception:
+        pass
+    try:
+        cab, secciones = informe(a.nodo if a.nodo else nodos.TODOS)
+    except nodos.NodoInvalido:
+        print("nodo mal formado: %r" % a.nodo, file=sys.stderr)
+        return 2
+    except nodos.NodoInexistente:
+        print("punto inexistente: %s" % a.nodo, file=sys.stderr)
+        return 3
+    textos = mensajes(cab, secciones)
+    if not a.sin_enviar:
+        enviar(textos)
+    print("\n\n".join(textos))
+    return 0
+
+if __name__ == "__main__":
+    sys.exit(main())

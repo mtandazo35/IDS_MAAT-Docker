@@ -6,15 +6,52 @@ Muestra: puertos de destino atacados, IPs origen (atacantes), IPs destino
 IP:puerto con firma, protocolo, primera/ultima hora y duracion. Autocontenido
 (sin dependencias externas): se abre en el navegador o se imprime a PDF.
 
-Uso: suricata-html-report [horas]   (default 24)
-Salida: /var/log/suricata/report-AAAAMMDD-HHMM.html
+Uso: html_report.py [ventana_min] (--nodo pNNN | --todos)   (ventana por defecto 1440)
+Lee los eventos de cada punto (nodos.ficheros_eventos: DATOS/<pid>/eve.json*, dns.json*).
+Salida: nodos.dir_salida(nodo)/report-AAAAMMDD-HHMM.html (PANEL/nodos/<pid>/ o nodos/_todos/)
 """
 import glob, gzip, io, json, os, re, sys, html, time, socket, urllib.request, urllib.error
-import array, struct, bisect
+import array, struct, bisect, argparse
 from collections import Counter, defaultdict
 from datetime import datetime, timezone, timedelta
 
-TZ_EC = timezone(timedelta(hours=-5))   # hora de Ecuador (America/Guayaquil, sin horario de verano)
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import nodos
+
+# Zona horaria del panel (el contenedor corre con TZ=UTC): los dias de las metricas y las
+# horas del informe van en IDS_TZ. Windows no tiene tzset (solo pruebas): ahi se deja.
+IDS_TZ = os.environ.get("IDS_TZ", "America/Guayaquil")
+if hasattr(time, "tzset"):
+    os.environ["TZ"] = IDS_TZ
+    time.tzset()
+try:
+    from zoneinfo import ZoneInfo
+    TZ_EC = ZoneInfo(IDS_TZ)
+except Exception:                       # sin tzdata: offset fijo (Ecuador no tiene horario de verano)
+    TZ_EC = (timezone(timedelta(hours=-5)) if IDS_TZ == "America/Guayaquil"
+             else timezone(timedelta(seconds=time.localtime().tm_gmtoff)))
+
+# --- Que nodo se genera: exactamente uno de --nodo pNNN o --todos. Se valida ANTES de
+# escribir nada: un id mal formado o que no existe sale con error, nunca se amplia a todos.
+_ap = argparse.ArgumentParser(prog="html_report.py")
+_ap.add_argument("ventana_min", nargs="?", type=int, default=1440)
+_g = _ap.add_mutually_exclusive_group(required=True)
+_g.add_argument("--nodo")
+_g.add_argument("--todos", action="store_true")
+_args = _ap.parse_args()
+try:
+    if _args.todos:
+        NODO = nodos.TODOS
+    elif _args.nodo == nodos.TODOS:
+        raise nodos.NodoInvalido(_args.nodo)        # --nodo pide un punto; lo acumulado es --todos
+    else:
+        NODO = nodos.validar_nodo(_args.nodo)
+except nodos.NodoInvalido:
+    print("html_report: nodo mal formado: %r (se espera pNNN o --todos)" % _args.nodo, file=sys.stderr)
+    sys.exit(2)
+except nodos.NodoInexistente:
+    print("html_report: punto inexistente: %s" % _args.nodo, file=sys.stderr)
+    sys.exit(3)
 
 # Extraccion por regex (mucho mas rapida que json.loads por linea sobre cientos de MB).
 _RE = {k: re.compile(p) for k, p in {
@@ -31,10 +68,8 @@ _RE = {k: re.compile(p) for k, p in {
     "rev": r'"rev":(\d+)',
     "flow_id": r'"flow_id":(\d+)',
     "rrname": r'"rrname":"([^"]+)"',
-    # por que interfaz entro la alerta: con varios MikroTik, cada uno espeja por la
-    # suya, asi que esto dice de QUE NODO es el CPE. Sin el, dos nodos que usan el
-    # mismo rango privado (10.0.0.x en los dos) serian el mismo cliente.
-    "iface": r'"in_iface":"([^"]+)"',
+    # El nodo del CPE NO sale de in_iface (dentro de DATOS/<pid>/ es la interfaz interna del
+    # contenedor suricata): sale del fichero de donde se lee el evento (ficheros_eventos).
 }.items()}
 
 # Firmas de "infeccion" (CnC/botnet/troyano): mismas claves que el informe. Para marcar
@@ -59,7 +94,7 @@ def es_dns_sospechoso(sig, cat):
 # --- Allowlist "nunca bloquear": IPs/CIDR que JAMAS entran a cuarentena (infra, clientes
 # criticos). El panel las gestiona; aqui solo se excluyen de las listas de candidatos. ---
 import ipaddress as _ipm
-NUNCA_FILE = "/etc/suricata-nunca-bloquear.lst"
+NUNCA_FILE = os.path.join(nodos.CONF, "nunca-bloquear.lst")
 _NUNCA_IPS = set(); _NUNCA_NETS = []
 try:
     for _l in open(NUNCA_FILE, encoding="utf-8"):
@@ -86,9 +121,11 @@ def nunca_bloquear(ip):
             pass
     return False
 
+DASH_CONF = os.path.join(nodos.CONF, "panel.conf")
+
 def _conf_key(k, default):
     try:
-        for _l in open("/etc/suricata-dashboard.conf", encoding="utf-8"):
+        for _l in open(DASH_CONF, encoding="utf-8"):
             if _l.strip().startswith(k + "="):
                 return _l.split("=", 1)[1].strip()
     except OSError:
@@ -96,7 +133,7 @@ def _conf_key(k, default):
     return default
 # Doble senal: para CONFIRMAR infeccion se exigen >=2 senales independientes (repeticion,
 # variedad de firmas, fan-out, volumen), o una senal abrumadora. Menos falsos positivos.
-# Se apaga con DOBLE_SENAL=0 en /etc/suricata-dashboard.conf.
+# Se apaga con DOBLE_SENAL=0 en conf/panel.conf.
 DOBLE_SENAL = _conf_key("DOBLE_SENAL", "1") == "1"
 
 # --- Que origenes son CPEs TUYOS ---
@@ -106,10 +143,15 @@ DOBLE_SENAL = _conf_key("DOBLE_SENAL", "1") == "1"
 # riesgo y, con politicas automaticas, podia acabar en la address-list de cuarentena:
 # no bloquea nada util y ensucia la lista. Los ataques de fuera se siguen viendo, pero
 # en su propio apartado.
-# Configurable con MIS_REDES=CIDR,CIDR en /etc/suricata-dashboard.conf (util si das IP
-# publica a tus clientes). Por defecto: privadas RFC1918 + CGNAT.
+# Configurable con MIS_REDES=CIDR,CIDR en conf/panel.conf (util si das IP
+# publica a tus clientes). Sin MIS_REDES: las `redes` de abonados del punto (en --todos, la
+# union de las de todos). Si tampoco hay: privadas RFC1918 + CGNAT.
 _MIS_NETS = []
-for _t in (_conf_key("MIS_REDES", "").replace(";", ",").split(",")
+_mis_txt = _conf_key("MIS_REDES", "")
+if not _mis_txt.strip():
+    _mis_txt = ",".join(r for _p in nodos.nodos_de(NODO)
+                        for r in ((nodos.punto(_p) or {}).get("redes") or []) if isinstance(r, str))
+for _t in (_mis_txt.replace(";", ",").split(",")
            or []):
     _t = _t.strip()
     if not _t:
@@ -145,7 +187,7 @@ def es_mi_cpe(ip):
 
 # Destinos CONFIABLES (falsos positivos): p.ej. un DNS que dispara alertas en muchos CPEs.
 # Las alertas HACIA estas IPs no cuentan -> los clientes dejan de ser candidatos por su culpa.
-DEST_OK_FILE = "/etc/suricata-destinos-confianza.lst"
+DEST_OK_FILE = os.path.join(nodos.CONF, "destinos-confianza.lst")
 DEST_OK = set()
 try:
     for _l in open(DEST_OK_FILE, encoding="utf-8"):
@@ -160,7 +202,7 @@ except OSError:
 # resolutor subia al "Top destinos mas atacados" como victima (y 1.1.1.2 es el DNS de
 # Cloudflare que bloquea malware). Los publicos vienen de serie porque no son de nadie
 # tuyo y nunca son victima de una consulta; los del ISP se anaden en Ajustes -> DNS.
-RESOLUTORES_FILE = "/etc/suricata-resolutores.lst"
+RESOLUTORES_FILE = os.path.join(nodos.CONF, "resolutores.lst")
 RESOLUTORES_DEFECTO = ("1.1.1.1", "1.1.1.2", "1.1.1.3", "1.0.0.1", "8.8.8.8", "8.8.4.4",
                        "9.9.9.9", "149.112.112.112", "208.67.222.222", "208.67.220.220",
                        "208.67.222.123", "208.67.220.123")   # OpenDNS FamilyShield
@@ -197,45 +239,28 @@ def campos(line):
         return m.group(1) if m else ""
     return g
 
-LOGDIR = "/var/log/suricata"
+# Salidas de este nodo (o de la vista acumulada): PANEL/nodos/<pid>/ o PANEL/nodos/_todos/.
+# Los eventos se leen de DATOS/<pid>/ (solo lectura) con nodos.ficheros_eventos.
+# Se crea despues de tomar el candado.
+OUTDIR = nodos.dir_salida(NODO, crear=False)
 
 # --- De que MikroTik es cada alerta ---
-# El panel publica aqui un mapa SIN claves (solo id, nombre e interfaz de espejo) para
-# que el generador no tenga que leer el archivo de routers, que lleva las contrasenas
-# de la API. Si no existe, se asume un solo nodo y todo se comporta como siempre.
-ROUTERS_MAP = "/var/log/suricata-routers-map.json"
-_IFACE_ROUTER = {}      # interfaz -> {"id","nombre"}
-_ROUTER_NOMBRE = {}     # id -> nombre
-try:
-    for _r in (json.load(open(ROUTERS_MAP, encoding="utf-8")) or []):
-        _rid = (_r.get("id") or "").strip()
-        if _rid:
-            _IFACE_ROUTER[(_r.get("iface") or "").strip()] = {"id": _rid, "nombre": _r.get("nombre") or _rid}
-            _ROUTER_NOMBRE[_rid] = _r.get("nombre") or _rid
-except Exception:
-    pass
-MULTI_ROUTER = len(_ROUTER_NOMBRE) > 1
-
-def router_de(iface):
-    """Id del router por cuya interfaz entro la alerta. Con un solo nodo devuelve ''
-    y todo sigue indexado por IP, como hasta ahora."""
-    if not MULTI_ROUTER:
-        return ""
-    r = _IFACE_ROUTER.get(iface or "")
-    return r["id"] if r else ""
+# Del fichero de donde sale: DATOS/<pid>/ es el espejo de UN punto. Un punto = un router
+# del multi-nodo viejo (id = pid). En --todos se ven varios: van los chips de nodo.
+MULTI_ROUTER = NODO == nodos.TODOS
 
 def nombre_router(rid):
-    return _ROUTER_NOMBRE.get(rid, rid or "")
+    return nodos.nombre(rid) if rid else ""
 
 def clave_cpe(ip, rid):
-    """Identidad de un CPE. Con varios nodos es (router, IP): la IP sola no identifica
-    a nadie cuando dos routers usan el mismo rango privado."""
-    return (rid + "|" + ip) if rid else ip
+    """Identidad de un CPE: SIEMPRE (punto, IP), tambien con un solo punto. La IP sola no
+    identifica a nadie cuando dos routers usan el mismo rango privado."""
+    return nodos.clave(rid, ip)
 
 def _chip_nodo(clave):
-    """Etiqueta del nodo. Con un solo MikroTik no se muestra nada (seria ruido)."""
+    """Etiqueta del nodo. Con un solo nodo (informe de un punto) no se muestra (seria ruido)."""
     r = rid_de(clave)
-    if not r:
+    if not r or not MULTI_ROUTER:
         return ""
     return f"<span class='nodochip' title='Espejo de este MikroTik'>{esc(nombre_router(r))}</span>"
 
@@ -244,8 +269,17 @@ def ip_de(clave):
     return clave.split("|", 1)[1] if "|" in clave else clave
 
 def rid_de(clave):
-    """El router de una identidad de CPE ("" si la instalacion tiene un solo nodo)."""
+    """El router (pid) de una identidad de CPE ("" si no lo trae)."""
     return clave.split("|", 1)[0] if "|" in clave else ""
+
+def _etq_cpe(clave):
+    """Texto de un CPE para el mapa: la IP, y en --todos tambien el nombre de su nodo."""
+    r = rid_de(clave)
+    return ip_de(clave) + ((" (" + nombre_router(r) + ")") if (MULTI_ROUTER and r) else "")
+
+def _json_js(x):
+    """JSON para meter dentro de <script>: un "</script>" en un dato no cierra el bloque."""
+    return json.dumps(x).replace("<", "\\u003c").replace(">", "\\u003e").replace("&", "\\u0026")
 
 # IPs ya enviadas a la cuarentena del MikroTik (lo escribe el panel): para que el boton
 # del Top muestre "En cuarentena" en vez de "Cuarentena" cuando ya se envio.
@@ -254,21 +288,22 @@ def rid_de(clave):
 # El panel publica aqui lo que el reporte necesita saber de el. Va aparte del .conf de
 # feeds a proposito: ese lleva las CLAVES y aqui no hace falta ninguna.
 try:
-    _FLAGS = json.load(open("/var/log/suricata-panel-flags.json", encoding="utf-8"))
+    _FLAGS = json.load(open(os.path.join(nodos.ESTADO, "panel-flags.json"), encoding="utf-8"))
 except (OSError, ValueError):
     _FLAGS = {}
 _AIDB_REPORTAR = bool(_FLAGS.get("aidb_reportar"))
 
-_MK_ENVIADOS = set()
-for _pe in ("/var/log/suricata-cuarentena-enviados.json", "/var/log/suricata-dns-enviados.json"):
+_MK_ENVIADOS = set()      # claves pid|ip (las mismas que usa este generador)
+for _pe in (os.path.join(nodos.ESTADO, "cuarentena-enviados.json"),
+            os.path.join(nodos.ESTADO, "dns-enviados.json")):
     try:
         _MK_ENVIADOS |= set(json.load(open(_pe, encoding="utf-8")).keys())
     except Exception:
         pass
-# Ventana del resumen en MINUTOS (argv[1]); por defecto 24h. Con una ventana corta
+# Ventana del resumen en MINUTOS (primer argumento); por defecto 24h. Con una ventana corta
 # (p.ej. 30 min) los cuadros muestran solo la actividad reciente: una IP atendida hace
 # rato se cae sola del top al no tener alertas nuevas.
-VENTANA_MIN = int(sys.argv[1]) if len(sys.argv) > 1 else 1440
+VENTANA_MIN = _args.ventana_min
 if VENTANA_MIN < 5:
     VENTANA_MIN = 5
 cutoff = time.time() - VENTANA_MIN * 60
@@ -280,21 +315,37 @@ MAX_FLUJOS = 200_000     # tope de flujos unicos guardados (evita agotar la RAM 
 
 # Red de seguridad: limitar la memoria del proceso. Si se pasa, muere con MemoryError
 # en vez de tumbar el servidor (paso en un espejo real: millones de flujos unicos).
+# 1 GiB: el contenedor del panel tiene mas memoria y el generador corre de un nodo en uno.
 try:
     import resource
-    _cap = 1536 * 1024 * 1024
+    _cap = 1024 * 1024 * 1024
     resource.setrlimit(resource.RLIMIT_AS, (_cap, _cap))
 except Exception:
     pass
 
-# Candado: si ya hay una generacion en curso, salir (evita dos generadores a la vez).
+# Candado: si ya hay una generacion en curso, salir (evita dos generadores a la vez, de
+# cualquier nodo). Va en /tmp (tmpfs del contenedor): /run es de solo lectura y abrir ahi
+# fallaba SIEMPRE, y el generador salia con 0 sin generar nada ni decirlo.
+LOCK_FILE = os.environ.get("IDS_HREP_LOCK", "/tmp/ids-hrep.lock")
 try:
     import fcntl
-    _lock = open("/run/suricata-html-report.lock", "w")
-    fcntl.flock(_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+except ImportError:                     # Windows (solo pruebas): sin candado
+    fcntl = None
+try:
+    _lock = os.open(LOCK_FILE, os.O_WRONLY | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0), 0o600)
+except OSError as _e:
+    print("html_report: no se puede abrir el candado %s: %s" % (LOCK_FILE, _e), file=sys.stderr)
+    sys.exit(1)
+if fcntl is not None:
+    try:
+        fcntl.flock(_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        print("html_report: ya hay una generacion en curso (%s); no se genera" % LOCK_FILE,
+              file=sys.stderr)
+        sys.exit(75)
+try:
+    os.makedirs(OUTDIR, mode=0o700, exist_ok=True)
 except OSError:
-    sys.exit(0)
-except Exception:
     pass
 
 def opener(p):
@@ -355,11 +406,12 @@ def abrir_desde(p, corte, margen=4 * 1024 * 1024):
     return f
 
 def cargar_exclusiones():
-    """Reglas de exclusion: {tipo:'dst'|'src', ip, puertos:[int]}. Desde
-    /etc/suricata-exclusiones.json (apartado Exclusiones) + lineas IGNORAR_* legacy."""
+    """Reglas de exclusion: {tipo:'dst'|'src', ip, puertos:[int], nodo}. Desde
+    conf/exclusiones.json (apartado Exclusiones) + lineas IGNORAR_* legacy de conf/report.conf.
+    `nodo` vacio = todos los nodos; con nodo, la regla solo aplica a los eventos de ese punto."""
     reglas = []; ahora = time.time()
     try:
-        data = json.load(open("/etc/suricata-exclusiones.json", encoding="utf-8"))
+        data = json.load(open(os.path.join(nodos.CONF, "exclusiones.json"), encoding="utf-8"))
         if isinstance(data, list):
             for r in data:
                 if not r.get("ip"):
@@ -368,18 +420,20 @@ def cargar_exclusiones():
                 except (TypeError, ValueError): hasta = 0
                 if hasta and ahora > hasta:
                     continue                             # exclusion temporal vencida
+                _rn = str(r.get("nodo") or "")
                 reglas.append((r.get("tipo", "dst"), r["ip"],
                                [int(p) for p in (r.get("puertos") or []) if str(p).isdigit()],
-                               str(r.get("sid") or "")))
+                               str(r.get("sid") or ""),
+                               "" if _rn == nodos.TODOS else _rn))
     except Exception:
         pass
     try:
-        for l in open("/etc/suricata-report.conf", encoding="utf-8"):
+        for l in open(os.path.join(nodos.CONF, "report.conf"), encoding="utf-8"):
             l = l.strip()
             if l.startswith("IGNORAR_DESTINOS="):
-                reglas += [("dst", x.strip(), [], "") for x in l.split("=", 1)[1].split(",") if x.strip()]
+                reglas += [("dst", x.strip(), [], "", "") for x in l.split("=", 1)[1].split(",") if x.strip()]
             elif l.startswith("IGNORAR_ORIGENES="):
-                reglas += [("src", x.strip(), [], "") for x in l.split("=", 1)[1].split(",") if x.strip()]
+                reglas += [("src", x.strip(), [], "", "") for x in l.split("=", 1)[1].split(",") if x.strip()]
     except OSError:
         pass
     return reglas
@@ -387,8 +441,12 @@ def cargar_exclusiones():
 EXCL = cargar_exclusiones()
 
 def excluido(src, dst, dport, sid=None):
-    for tipo, ip, pts, rsid in EXCL:
-        quien = dst if tipo == "dst" else src
+    """`src` es la identidad del CPE (pid|ip): se compara su IP, y el nodo de la regla
+    (si lo tiene) con el punto del evento."""
+    for tipo, ip, pts, rsid, rnodo in EXCL:
+        if rnodo and rnodo != rid_de(src):
+            continue                                     # regla de otro nodo
+        quien = dst if tipo == "dst" else ip_de(src)
         if quien != ip:
             continue
         if pts and not (dport is not None and dport in pts):
@@ -503,6 +561,7 @@ def parse_ts(s):
 
 by_dport = Counter()
 by_src = Counter()
+ultima_by_src = {}                 # clave pid|ip -> epoch de su ultima alerta (evidencia reciente)
 by_dst = Counter()
 by_hour = Counter()
 pais_dst = Counter()   # alertas por PAIS del destino (para el mapa "a donde atacan")
@@ -530,7 +589,7 @@ CATS_NO_ABUSO = {
     "User-Agent raro", "User-Agent falso", "DNS dinamico", "Acceso denegado (403)",
 }
 
-METRICAS_FILE = "/var/log/suricata-metricas.json"
+METRICAS_FILE = os.path.join(OUTDIR, "metricas.json")
 METRICAS_DIAS = 400          # algo mas de un año de tendencia; el archivo sigue siendo pequeño
 METRICAS_MAX_CPES = 5000     # tope del conjunto de CPEs por dia (por encima, el conteo es un minimo)
 dias_m = defaultdict(lambda: {"sal": 0, "ent": 0, "ruido": 0, "cpes": set(),
@@ -547,10 +606,10 @@ def _cuenta_acotada(contador, clave):
         contador[clave] += 1
 
 # --- GeoIP IP->pais (offline, base DB-IP lite via ip-location-db, CC-BY-4.0) ---
-# Formato compacto en /var/lib/suricata-geoip/ipv4.bin: [uint32 N][N x start u32]
+# Formato compacto en geo/ipv4.bin: [uint32 N][N x start u32]
 # [N x end u32][N x 2 bytes cc]. Lo genera el instalador; aqui solo se consulta con
 # busqueda binaria (Python puro, sin dependencias). Si falta, pais() devuelve "".
-GEOIP_BIN = "/var/lib/suricata-geoip/ipv4.bin"
+GEOIP_BIN = os.path.join(nodos.GEO, "ipv4.bin")
 _G_S = _G_E = _G_C = None
 _G_loaded = False
 _G_ok = False
@@ -646,7 +705,7 @@ seen = 0
 ts_min = None          # timestamp del evento mas antiguo dentro de la ventana (cobertura real)
 ts_max = 0             # el mas nuevo: la marca desde la que contara la proxima corrida
 try:                   # hasta donde se conto ya (para no contar dos veces ni perderse nada)
-    _mprev = json.load(open("/var/log/suricata-metricas.json", encoding="utf-8"))
+    _mprev = json.load(open(METRICAS_FILE, encoding="utf-8"))
     METR_DESDE = float(_mprev.get("ultimo_ts") or 0)
 except (OSError, ValueError, TypeError):
     _mprev = {}
@@ -654,7 +713,7 @@ except (OSError, ValueError, TypeError):
 
 # --- Camino B: dominios malos (feeds URLhaus/ThreatFox) para cruzar con las consultas DNS.
 # DEBE definirse ANTES del bucle: el parseo de dns.json usa DOM_OK/dominio_malo. ---
-FEEDS_DIR = "/var/lib/suricata-feeds"
+FEEDS_DIR = nodos.FEEDS
 DOM_MAL = {}          # dominio -> fuente (procedencia)
 DOM_OK = False
 try:
@@ -685,8 +744,9 @@ def dominio_malo(dom):
             return s
     return ""
 
-def logs_de_la_ventana(logdir, corte):
-    """Los logs que tocan la ventana, del MAS NUEVO al mas viejo.
+def logs_de_la_ventana(nodo, corte):
+    """[(pid, ruta)] de los logs del nodo (o de todos) que tocan la ventana, del MAS NUEVO
+    al mas viejo. El pid es el del punto de donde sale el fichero: el nodo de sus eventos.
 
     El orden no es un detalle. MAX_LINES es un presupuesto GLOBAL y los rotados `.gz` no
     se pueden posicionar (`abrir_desde` solo bisecciona los vivos), asi que se leen
@@ -702,19 +762,21 @@ def logs_de_la_ventana(logdir, corte):
     fuera y no hay nada que leer. El margen de una hora solo hace falta para los vivos,
     cuyo mtime es "ahora" y no dice nada de donde empiezan."""
     fs = []
-    for p in glob.glob(f"{logdir}/eve.json*") + glob.glob(f"{logdir}/dns.json*"):
+    for pid, p in nodos.ficheros_eventos(nodo, ("eve.json*", "dns.json*")):
+        if os.path.islink(p):
+            continue                      # Suricata no rota con enlaces: no se siguen
         try:
             m = os.path.getmtime(p)
         except OSError:
             continue
         if corte and m < (corte if p.endswith(".gz") else corte - 3600):
             continue
-        fs.append((m, p))
+        fs.append((m, pid, p))
     fs.sort(reverse=True)
-    return [p for _, p in fs]
+    return [(pid, p) for _, pid, p in fs]
 
-files = logs_de_la_ventana(LOGDIR, cutoff)
-for p in files:
+files = logs_de_la_ventana(NODO, cutoff)
+for _pid, p in files:
     try:
         for line in abrir_desde(p, cutoff):
             seen += 1
@@ -739,8 +801,12 @@ for p in files:
                         _mt = _RE["ts"].search(line)
                         _tv = parse_ts(_mt.group(1)) if _mt else None
                         if _tv is None or _tv >= cutoff:
-                            _s = _sm.group(1)
+                            # la MISMA identidad que las alertas (pid|ip): si no, los
+                            # contadores DNS de este camino no casan con el CPE
+                            _s = clave_cpe(_sm.group(1), _pid)
                             dns_hits[_s] += 1
+                            if _tv and _tv > ultima_by_src.get(_s, 0):
+                                ultima_by_src[_s] = _tv
                             _mdd = _RE["dest_ip"].search(line)
                             _apuntar_dominio(_dom, _s, _mdd.group(1) if _mdd else "",
                                              "feed: " + dominio_malo(_dom))
@@ -763,9 +829,9 @@ for p in files:
             if ts and ts < cutoff:
                 continue
             # La identidad del CPE se compone AQUI, una sola vez: a partir de este punto
-            # todos los acumuladores quedan indexados por (router, IP) cuando hay varios
-            # nodos, y por la IP a secas cuando hay uno solo (igual que siempre).
-            src = clave_cpe(g("src_ip") or "?", router_de(g("iface")))
+            # todos los acumuladores quedan indexados por (punto, IP), con uno o con varios
+            # nodos. El punto es el del fichero, nunca in_iface.
+            src = clave_cpe(g("src_ip") or "?", _pid)
             dst = g("dest_ip") or "?"
             sport = g("src_port"); dport = g("dest_port")
             proto = g("proto")
@@ -807,6 +873,8 @@ for p in files:
             else:
                 by_dst[dst] += 1
             by_src[src] += 1
+            if ts and ts > ultima_by_src.get(src, 0):
+                ultima_by_src[src] = ts
             _cc = pais(dst)                    # pais del destino (mapa "a donde atacan")
             if _cc:
                 pais_dst[_cc] += 1
@@ -1017,7 +1085,7 @@ def dur(a, b):
     if s < 3600: return f"{s//60}m"
     return f"{s//3600}h{(s%3600)//60:02d}m"
 
-host = os.uname().nodename if hasattr(os, "uname") else "suricata"
+host = nodos.nombre(NODO)               # el nombre del punto (o "Todos los nodos"), no el del contenedor
 gen = datetime.now(TZ_EC).strftime("%Y-%m-%d %H:%M")
 
 # La ventana del reporte SIEMPRE es de HOURS (24 por defecto): la linea de tiempo
@@ -1051,7 +1119,7 @@ for (src, sport, dst, dport, proto, sig), (cnt, first, last) in top_flujos:
     dursec = int((last - first)) if (first and last) else 0
     sig_es = traducir(sig)
     filas.append(
-        f"<tr><td class='mono' data-s='{ipnum(ip_de(src))}'>{esc(ip_de(src))}</td>"
+        f"<tr><td class='mono' data-s='{ipnum(ip_de(src))}'>{esc(ip_de(src))}{_chip_nodo(src)}</td>"
         f"<td class='mono num' data-s='{int(sport) if str(sport).isdigit() else -1}'>{esc(sport)}</td>"
         f"<td class='mono dst' data-s='{ipnum(dst)}'>{esc(dst)}</td>"
         f"<td class='mono num' data-s='{int(dport) if str(dport).isdigit() else -1}'>{esc(dport)}</td>"
@@ -1070,9 +1138,10 @@ for _k, _v in flujos.items():
 firmas_top = [(s[:60], n) for s, n in by_sig.most_common(10)]
 
 # ---- Dueno de cada IP destino (DNS inverso PTR -> marca conocida), cacheado ----
-_IPINFO_CACHE = os.path.join(LOGDIR, "ipinfo-cache.json")
+_IPINFO_CACHE = os.path.join(nodos.CACHE, "ipinfo-cache.json")
 _IPINFO_TTL = 7 * 24 * 3600          # 7 dias: pasado eso se vuelve a resolver
 _IPINFO_MAX_NUEVOS = 60              # tope de PTR nuevos por corrida (no colgar la generacion)
+_SIN_RED = os.environ.get("IDS_HREP_SIN_RED") == "1"   # sin PTR ni RDAP (pruebas; no se cachea nada)
 # dominio PTR conocido -> nombre humano de la empresa (trafico casi siempre legitimo)
 _ORG_DOM = {
     "fbcdn.net": "Facebook", "facebook.com": "Facebook", "tfbnw.net": "Facebook",
@@ -1145,7 +1214,7 @@ def duenio(ip):
     now = time.time()
     if ent and now - ent.get("ts", 0) < _IPINFO_TTL:
         return (ent.get("org", "-"), ent.get("legit", False))
-    if _ipinfo_nuevos >= _IPINFO_MAX_NUEVOS:
+    if _ipinfo_nuevos >= _IPINFO_MAX_NUEVOS or _SIN_RED:
         return ("-", False)          # se resolvera en la proxima corrida
     _ipinfo_nuevos += 1
     org, legit, via = "sin PTR", False, ""
@@ -1173,6 +1242,7 @@ def _guardar_ipinfo():
     try:
         lim = time.time() - _IPINFO_TTL
         data = {k: v for k, v in _ipinfo.items() if v.get("ts", 0) >= lim}
+        os.makedirs(os.path.dirname(_IPINFO_CACHE), mode=0o700, exist_ok=True)
         tmp = _IPINFO_CACHE + ".tmp"
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump(data, f)
@@ -1183,7 +1253,7 @@ def _guardar_ipinfo():
 # AbuseIPDB: lo que el PANEL ya consulto. Aqui solo se LEE la cache: el panel es el
 # unico que llama a la API, porque la cuota es diaria y con dos procesos gastandola no
 # la controlaria nadie. Si el archivo no existe, todo sigue como siempre.
-_AIDB_CACHE_F = "/var/lib/suricata-feeds/abuseipdb.json"
+_AIDB_CACHE_F = os.path.join(nodos.FEEDS, "abuseipdb.json")
 try:
     _AIDB = json.load(open(_AIDB_CACHE_F, encoding="utf-8"))
 except (OSError, ValueError):
@@ -1231,7 +1301,7 @@ def _org_celda(dst):
 
 
 # --- Reputacion: feeds de IPs/CIDR malos (suricata-feeds-update), con caducidad ---
-FEEDS_DIR = "/var/lib/suricata-feeds"
+FEEDS_DIR = nodos.FEEDS
 REP_IPS = {}                    # ip -> fuente (procedencia)
 REP_CIDR = defaultdict(list)    # primer octeto -> [(net_int, mask_int, fuente)]
 REP_WIDE = []                   # CIDRs con prefijo <8 -> [(net, mask, fuente)]
@@ -1542,7 +1612,7 @@ def mapa_ataques_section():
         det[cc] = {
             "ips": [[ip, n] for ip, n in pais_ips[cc].most_common(6)],
             "ports": [[p, n] for p, n in pais_ports[cc].most_common(6)],
-            "srcs": [[s, n] for s, n in pais_srcs[cc].most_common(4)],
+            "srcs": [[_etq_cpe(s), n] for s, n in pais_srcs[cc].most_common(4)],
             "nip": len(pais_ips[cc]), "npt": len(pais_ports[cc]), "nsr": len(pais_srcs[cc]),
         }
     intro = ("Los paises <b>destino</b> de las alertas (a donde va el trafico sospechoso de tus "
@@ -1610,8 +1680,8 @@ def mapa_ataques_section():
         "<p class=maphint>Clic en un pais para acercarlo y ver su detalle &middot; arrastra para mover "
         "&middot; <b>Ctrl + rueda</b> para zoom &middot; <b>Vista completa</b> para volver.</p>"
         "<div class=maptop id=attacktop></div></div>"
-        "<script>window.__ATTACK_GEO=" + json.dumps(datos) + ";window.__ATTACK_TOTAL=" + str(total) +
-        ";window.__ATTACK_DET=" + json.dumps(det) +
+        "<script>window.__ATTACK_GEO=" + _json_js(datos) + ";window.__ATTACK_TOTAL=" + str(total) +
+        ";window.__ATTACK_DET=" + _json_js(det) +
         ";window.__ATTACK_HOME=" + json.dumps(_mapa_origen()) + ";</script>"
         "<script src=\"/vendor/mapa/topojson-client.min.js\"></script>"
         "<script>(function(){"
@@ -1803,7 +1873,7 @@ def top_destinos_section(n_dst=5, n_sub=8):
             srcs.add(s)
         sub = sorted(agg.items(), key=lambda kv: kv[1], reverse=True)[:n_sub]
         rows = "".join(
-            f"<tr><td class='mono' style='color:#184f95'>{esc(s or '-')}</td>"
+            f"<tr><td class='mono' style='color:#184f95'>{esc(ip_de(s) or '-')}{_chip_nodo(s)}</td>"
             f"<td class='mono'>{esc(sp or '-')}</td>"
             f"<td class='mono'>{esc(dp or '-')}</td>"
             f"<td class='mono'>{esc((pr or '-').upper())}</td>"
@@ -1847,7 +1917,7 @@ def top_destinos_section(n_dst=5, n_sub=8):
         "varios CPEs a la vez). El chip muestra el dueño/reputacion del destino.</p>"
         f"<div class=\"topwrap\">{''.join(cards)}</div></section>")
 
-DOMINIOS_FILE = "/var/log/suricata-dominios-malos.json"
+DOMINIOS_FILE = os.path.join(OUTDIR, "dominios-malos.json")
 
 def dominios_section(n=15, n_ips=4):
     """Dominios maliciosos consultados y desde que IP de la red. Es la lista que se
@@ -1983,7 +2053,7 @@ top_sec = top_origenes_section()
 # Distinto de los atacantes entrantes: estos son destinos a los que sale trafico desde tu
 # red y que estan fichados en los feeds. Bloquearlos corta el canal de control de las
 # botnets, que es lo que mantiene vivo al equipo infectado.
-DESTINOS_FILE = "/var/log/suricata-destinos-malos.json"
+DESTINOS_FILE = os.path.join(OUTDIR, "destinos-malos.json")
 try:
     _dm = {}
     for (_s, _sp, _d, _dp, _pr, _sig), _v in flujos.items():
@@ -2029,7 +2099,7 @@ except Exception:
 # Se guarda aparte porque el panel lo necesita para armar la lista de bloqueo del borde.
 # La cadena es: el atacante de fuera infecta al CPE, el CPE infectado ensucia tu IP
 # publica. Cortar la entrada es lo que corta infecciones NUEVAS.
-ENTRANTES_FILE = "/var/log/suricata-entrantes.json"
+ENTRANTES_FILE = os.path.join(OUTDIR, "entrantes.json")
 try:
     _ent = {}
     for (_s, _sp, _d, _dp, _pr, _sig), _v in flujos.items():
@@ -2114,6 +2184,12 @@ try:
             ev.append("consulto dominio malicioso (DNS)")
         return len(ev), ev
 
+    def _ultima(clave):
+        """Epoch de la ultima alerta (o consulta DNS mala) de esa clave pid|ip: con ella el panel
+        comprueba que la evidencia es reciente antes de una cuarentena (CONTRATO-F2 §10.4)."""
+        t = ultima_by_src.get(clave)
+        return int(t) if t else None
+
     cand = []
     for src in inf_hits:
         if not es_mi_cpe(ip_de(src)):
@@ -2130,7 +2206,7 @@ try:
         confianza = "alta" if n_ev >= 2 else "sospechoso"
         sc, band, _c, _d = riesgo(src)
         cand.append({
-            "ip": ip_de(src), "router": rid_de(src),
+            "ip": ip_de(src), "router": rid_de(src), "ultima": _ultima(src),
             "puertos_top": dict(dport_cnt_by_src.get(src, Counter()).most_common(8)),
             "cats_top": dict(cat_cnt_by_src.get(src, Counter()).most_common(6)),
             "riesgo": sc,
@@ -2175,7 +2251,7 @@ try:
             confianza = "alta" if n_ev >= 2 else "sospechoso"
             sc, band, _c, _d = riesgo(src)
             cand_dns.append({
-                "ip": ip_de(src), "router": rid_de(src),
+                "ip": ip_de(src), "router": rid_de(src), "ultima": _ultima(src),
                 "riesgo": sc,
                 "banda": band,
                 "confianza": confianza,
@@ -2203,7 +2279,7 @@ try:
         # Se guarda tambien POR QUE puntua asi: las politicas envian a cuarentena desde
         # esta lista (no desde 'candidatos'), y sin estos datos el bloqueo quedaba sin
         # motivo que mostrar y el panel lo rotulaba como "manual / sin motivo".
-        top_r.append({"ip": ip_de(_s), "router": rid_de(_s),
+        top_r.append({"ip": ip_de(_s), "router": rid_de(_s), "ultima": _ultima(_s),
                       # con que puertos y que tipo de trafico: es lo que permite cruzar
                       # la reputacion de la IP publica con el abonado que la ensucia
                       "puertos_top": dict(dport_cnt_by_src.get(_s, Counter()).most_common(8)),
@@ -2213,10 +2289,10 @@ try:
     _cq = {"generado": int(time.time()), "ventana_min": VENTANA_MIN,
            "umbral": UMBRAL_INFECTADO, "umbral_dns": UMBRAL_DNS,
            "candidatos": cand, "dns_candidatos": cand_dns, "top_riesgo": top_r}
-    _tmpq = os.path.join(LOGDIR, "cuarentena.json.tmp")
+    _tmpq = os.path.join(OUTDIR, "cuarentena.json.tmp")
     with open(_tmpq, "w", encoding="utf-8") as _f:
         json.dump(_cq, _f)
-    os.replace(_tmpq, os.path.join(LOGDIR, "cuarentena.json"))
+    os.replace(_tmpq, os.path.join(OUTDIR, "cuarentena.json"))
 except Exception:
     pass
 
@@ -2411,7 +2487,7 @@ td.num{{text-align:right;font-variant-numeric:tabular-nums}}
   </section>
 {_ASK}</main></body></html>"""
 
-out = os.path.join(LOGDIR, "report-" + datetime.now(TZ_EC).strftime("%Y%m%d-%H%M") + ".html")
+out = os.path.join(OUTDIR, "report-" + datetime.now(TZ_EC).strftime("%Y%m%d-%H%M") + ".html")
 # Escritura atomica (.tmp + replace), como el resto del script. Si no, el archivo existe
 # con mtime nuevo desde el primer byte: el panel lo elige por mtime, no encuentra el
 # <main> y sirve "En vivo" en blanco mientras se escribe; y si el generador muere a
@@ -2427,7 +2503,7 @@ os.replace(_tmp_out, out)
 try:
     RET_DIAS = 3
     ahora = time.time()
-    hs = glob.glob(f"{LOGDIR}/report-*.html")
+    hs = glob.glob(os.path.join(OUTDIR, "report-*.html"))
     nuevo = max(hs, key=os.path.getmtime) if hs else None
     vistos = set()
     if nuevo:

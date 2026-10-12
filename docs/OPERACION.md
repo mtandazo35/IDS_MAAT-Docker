@@ -144,13 +144,17 @@ que deciden qué conexiones se aceleran y nunca qué tráfico pasa:
 Sirve para una baja sin API, o para terminar una baja con API (`ovpn-client` y usuario). El
 certificado `ids-promax` no se borra.
 
+La expresión `ids-maat:p003(:|\$)` casa `IDS ids-maat:p003` y las cuarentenas `ids-maat:p003:<id>`,
+pero no `ids-maat:p0031` ni otro punto (con `comment~"ids-maat:p003"` a secas se borrarían también
+las de `p0031`). El panel no usa expresiones: borra solo lo que lleva exactamente el comentario.
+
 ```
-/ip firewall mangle remove [find comment~"ids-maat:p003"]
-/ip firewall filter remove [find comment~"ids-maat:p003"]
+/ip firewall mangle remove [find comment~"ids-maat:p003(:|\$)"]
+/ip firewall filter remove [find comment~"ids-maat:p003(:|\$)"]
 # y devolver a la regla fasttrack sus valores originales (los da el respaldo del panel), p. ej.:
 /ip firewall filter set <id-ft> !src-address-list !dst-address-list
-/ip firewall address-list remove [find comment~"ids-maat:p003"]
-/ip route remove [find comment~"ids-maat:p003"]
+/ip firewall address-list remove [find comment~"ids-maat:p003(:|\$)"]
+/ip route remove [find comment~"ids-maat:p003(:|\$)"]
 /interface ovpn-client remove [find name=ids-vpn]
 /user remove [find name=ids-api]
 /user group remove [find name=ids-api]
@@ -168,7 +172,8 @@ certificado `ids-promax` no se borra.
 | Firewall del router | antes de aplicar o quitar el espejo | `/export` de `ip firewall`, `ip route` e `interface ovpn-client` | `/srv/ids/panel/respaldos/<pid>/` |
 | `eventos.db` | opcional | alertas y agregados | aparte, porque es grande y se puede reconstruir |
 
-**La clave maestra (`/etc/ids-maat/master.key`) nunca va dentro de esos tar.** Se guarda aparte en
+**La clave maestra (`/etc/ids-maat/master.key`, 0440 `root:ids-panel`, montada ro en el panel) nunca
+va dentro de esos tar.** Se guarda aparte en
 el gestor de secretos del dueño. Sin ella, las claves API cifradas no sirven. Con ella y el
 respaldo, sí.
 
@@ -187,7 +192,7 @@ rsync -a --chmod=F600 root@ids.empresa.example:/root/backups/ids-maat-diario-*.t
 
 1. Instalar Debian 13 y ejecutar `instalar.sh` **con la misma versión** que figura en el respaldo
    (`release.json`).
-2. Copiar `master.key` a `/etc/ids-maat/master.key` (0400).
+2. Copiar `master.key` a `/etc/ids-maat/master.key` (0440 `root:ids-panel`; el panel la lee por grupo).
 3. Restaurar el tar en `/srv/ids` y comprobar el sha256.
 4. Ejecutar `ids-orq reconstruir`: recrea las instancias desde `orq.db` y `/srv/ids/puntos`, con
    los mismos puertos y las mismas credenciales VPN, porque la PKI y los usuarios están en el

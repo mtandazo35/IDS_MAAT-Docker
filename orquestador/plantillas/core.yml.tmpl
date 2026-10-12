@@ -23,6 +23,7 @@ services:
       - @@RAIZ@@/srv/ids/run:/srv/ids/run:ro
       - @@RAIZ@@/run/ids-orq:/run/ids-orq:ro
       - @@RAIZ@@/etc/ids-maat/orq_token:/run/secrets/orq_token:ro
+      - @@RAIZ@@/etc/ids-maat/master.key:/run/secrets/master_key:ro
     logging: { driver: journald, options: { tag: ids-panel } }
     mem_limit: @@MEM_PANEL@@
     memswap_limit: @@MEM_PANEL@@

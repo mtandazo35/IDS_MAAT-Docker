@@ -142,7 +142,7 @@ trate un CPE recibe `CpeRef(punto_id, ip)`:
 
 | Dato | Retención | Mecanismo |
 |---|---|---|
-| `eve.json`, `dns.json` | 3 días y ~5 GB por punto | logrotate del host ([INSTANCIA.md](INSTANCIA.md) §10.5) |
+| `eve.json`, `dns.json` | **30 días por fecha** (CONTRATO-F2 §9); antes si `/srv/ids` baja del 15 % libre, empezando por los rotados más viejos de cualquier punto, con cada borrado registrado y la retención efectiva publicada por punto | logrotate del host (rotación por tamaño, fechada y sin tope de número) + poda del orquestador ([ORQUESTADOR.md](ORQUESTADOR.md) §8.1) |
 | `alerta` | 90 días | borrado por lotes de 5 000 |
 | `resumen_hora` | 180 días | igual |
 | `detalle_dia`, `espejo_hora` | 30 días | igual |
@@ -160,12 +160,20 @@ retención posterior (§8).
 ## 6. Secretos cifrados
 
 - **Qué se cifra:** las claves API de los MikroTik y los tokens de Telegram, AbuseIPDB y Groq.
-- **Cómo:** AES-256-GCM con el paquete `cryptography`, instalado en la imagen con `pip
-  --require-hashes`. Nonce de 96 bits por cifrado.
+- **Cómo:** AES-256-GCM con el paquete `cryptography`. Nonce de 96 bits por cifrado. En la imagen
+  del panel va el paquete de Debian `python3-cryptography`, no pip: apt solo instala lo que casa con
+  el SHA256 del índice firmado por Debian (la garantía que daría `pip --require-hashes`), sobre la base
+  fijada por digest, sin pip ni compilador en la imagen y con el libssl de la base, que recibe los
+  avisos de seguridad de Debian. La versión instalada queda en `/usr/share/ids-maat/cryptography-version`.
+  Formato y AAD: `secretos.py` del panel (`enc1:<base64>`; AAD `router:<pid>:PASS`,
+  `feeds:<CLAVE>`, `report:TELEGRAM_TOKEN`).
 - **AAD:** `"mikrotik:" + punto_id` o `"ajuste:" + clave`. Copiar el cifrado de un punto a otro no
   descifra.
-- **Clave maestra:** 32 bytes en `/etc/ids-maat/master.key` (0400 root). Se monta **solo en el
-  panel**, fuera de `/data`. Una copia del volumen o un respaldo de las bases no basta para
+- **Clave maestra:** 32 bytes en `/etc/ids-maat/master.key` (0440 `root:ids-panel`: el panel corre
+  como 10500 sin capacidades y la lee por grupo). Se monta **solo en el panel**, en
+  `/run/secrets/master_key:ro` (`IDS_MASTER_KEY`), fuera de `/srv/ids/panel`. `ids-orq panel aplicar`
+  se niega si no existe (Docker crearía un directorio con ese nombre). Sin ella el panel arranca y
+  avisa de que no puede usar esos secretos; no los borra. Una copia del volumen o un respaldo de las bases no basta para
   descifrar. La clave maestra se respalda aparte ([OPERACION.md](OPERACION.md) §3).
 - **Rotación:** `clave_kid` lo permite. Una tarea descifra con la vieja y cifra con la nueva en una
   sola transacción.

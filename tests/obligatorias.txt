@@ -1,0 +1,13 @@
+# Pruebas que NO pueden omitirse en el CI (tests/correr.py --obligatorias <plataforma>).
+# Una obligatoria omitida no cuenta como verificada: la corrida falla y dice cuál y por qué.
+# Formato: <patrón fnmatch del id de la prueba> [todas|linux|windows][,...]  # motivo
+test_secretos.*                         todas   # secretos cifrados del panel (CONTRATO-F2 §10.3): exige cryptography
+test_feeds_panel.*                      todas   # claves de feeds cifradas: exige cryptography
+test_informe_diario.*                   todas   # token de Telegram cifrado: exige cryptography
+test_mkinit_*                           todas   # espejo sin accept (OPERACION §2)
+test_hrep_*                             linux   # generador por nodo; el candado flock solo existe en POSIX
+test_orq_threshold.*                    todas   # punto.threshold (CONTRATO-F2 §6)
+test_orq_retencion.*                    todas   # retención por fecha y por disco (CONTRATO-F2 §9)
+test_host_ficheros.LogrotateReal.*      linux   # logrotate real: rotación fechada sin tope de número
+test_orq_pki.*                          linux   # openssl real
+legado.*                                linux   # pruebas heredadas de suricata-ids-lab (docs/PRUEBAS-HEREDADAS.md)

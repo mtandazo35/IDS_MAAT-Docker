@@ -1,12 +1,14 @@
 #!/usr/bin/python3
-"""ids-panel: panel web de IDS_MAAT-Docker.
+"""ids-panel: panel web de IDS_MAAT-Docker (dashboard heredado de suricata-ids-lab + Puntos).
 
   ids-panel [servir]                     HTTP en 0.0.0.0:${IDS_PUERTO:-5637}
-  ids-panel crear-admin --usuario admin  imprime CLAVE=<clave> (exit 3 si ya existe)
+  ids-panel crear-admin --usuario admin  imprime CLAVE=<clave> (exit 3 si ya hay usuarios)
   ids-panel restablecer --usuario X      imprime CLAVE=<clave> (exit 4 si no existe)
-  ids-panel salud                        exit 0 si /salud responde 200
+  ids-panel salud                        exit 0 si el servidor responde a HEAD /
 
-El código vive en /usr/local/lib/ids-panel/idspanel (solo stdlib).
+El código vive en /usr/local/lib/ids-panel: la CLI en idspanel/cli.py, el servidor en
+dashboard.py y sus piezas (nodos, secretos, html_report, feeds_update, informe_diario,
+mikrotik_init, puntos_web, eventos_web). Stdlib de Python más python3-cryptography de Debian.
 """
 
 import os

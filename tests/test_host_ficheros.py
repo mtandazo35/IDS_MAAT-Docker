@@ -18,10 +18,10 @@ H = REPO / "host"
 
 LOGROTATE_CONTRATO = """/srv/ids/datos/*/eve.json /srv/ids/datos/*/dns.json {
     maxsize 1G
-    maxage 3
-    rotate 4
-    compress
-    delaycompress
+    rotate -1
+    dateext
+    dateformat -%Y%m%d-%H%M%S
+    nocompress
     missingok
     notifempty
     nocreate
@@ -84,7 +84,10 @@ class LogrotateReal(unittest.TestCase):
             r = subprocess.run(["logrotate", "-f", "-s", str(d / "estado"), str(d / "lr.conf")],
                                capture_output=True, text=True)
             self.assertEqual(r.returncode, 0, r.stderr)
-            self.assertTrue((d / "srv/ids/datos/p001/eve.json.1").exists())
+            # CONTRATO-F2 §9: rotado con fecha y hora (la poda por fecha es del orquestador)
+            rotados = [f.name for f in (d / "srv/ids/datos/p001").iterdir()]
+            self.assertEqual(len(rotados), 1, rotados)
+            self.assertRegex(rotados[0], r"^eve\.json-\d{8}-\d{6}$")
             self.assertFalse(eve.exists())                          # nocreate: lo reabre Suricata
             self.assertEqual(marca.read_text().strip(), "reabrir-logs")
         finally:

@@ -97,6 +97,7 @@ class Entorno:
             img["imagenes"]["panel"] = IMG_PANEL
         (etc / "imagenes.json").write_text(json.dumps(img), encoding="utf-8")
         (etc / "orq_token").write_text(TOKEN + "\n", encoding="utf-8")
+        (etc / "master.key").write_text("0123456789abcdef" * 4 + "\n", encoding="utf-8")
         (self.kdir / "proc").mkdir(parents=True)
         shutil.copyfile(meminfo or (FIX / "meminfo"), self.kdir / "proc" / "meminfo")
         reglas = self.dir / "srv" / "ids" / "reglas"
@@ -280,10 +281,12 @@ class SistemaFalso:
         return 0, "", ""
 
     def _panel_un_uso(self, a):
-        """ids-panel crear-admin|restablecer --usuario X: usuarios.json en el /srv/ids/panel montado."""
+        """ids-panel crear-admin|restablecer --usuario X: conf/usuarios.json (CONTRATO-F2 §7) en el
+        /srv/ids/panel montado."""
         montaje = a[a.index("-v") + 1]
         origen = montaje.rsplit(":", 1)[0]
-        usuarios = Path(origen) / "usuarios.json"
+        usuarios = Path(origen) / "conf" / "usuarios.json"
+        usuarios.parent.mkdir(parents=True, exist_ok=True)
         usuario = a[a.index("--usuario") + 1]
         datos = json.loads(usuarios.read_text(encoding="utf-8")) if usuarios.exists() else {}
         if "crear-admin" in a and datos:

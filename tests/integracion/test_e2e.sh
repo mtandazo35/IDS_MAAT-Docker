@@ -10,10 +10,12 @@
 #  4. docker restart ids-p001-vpn -> el orquestador ve netns distintos y reinicia suricata
 #  5. reglas actualizar --sin-descarga reinicia los suricata de uno en uno
 #  6. punto borrar no deja nada en {puntos,datos,run,ctl}/p001
-#  7. (con IDS_IMG_PANEL) panel: ids-orq panel aplicar -> healthy; crear-admin imprime CLAVE=;
-#     login HTTP por el puerto publicado con esa clave; la lista de puntos; alta de un punto desde
-#     la web (POST con Origin y token CSRF) que el orquestador crea; crear-admin otra vez no toca
-#     la clave; sin el contenedor, reconciliar lo levanta. Rutas: docs/CONTRATO-F1b.md «Panel (P)».
+#  7. (con IDS_IMG_PANEL) panel (dashboard heredado + Puntos, CONTRATO-F2): ids-orq panel aplicar
+#     -> healthy, con la clave maestra montada ro; crear-admin imprime CLAVE=; formulario POST /login
+#     (usuario, clave): mala -> sin sesión, buena -> 303 con cookie sid; /puntos; /puntos/nuevo ->
+#     303 /operaciones/<uuid>; Origin ajeno -> 403; orq.jsonl con quien = panel:admin; la clave
+#     fuera de los logs; y la cadena completa cliente VPN -> TZSP -> Suricata -> EVE -> consulta en
+#     el panel (Eventos) del nodo correcto, y solo en él; sin el contenedor, reconciliar lo levanta.
 #
 # El firewall del runner no se toca: un nft simulado en el PATH solo hace «nft -c» (si hay nft).
 set -uo pipefail
@@ -86,6 +88,8 @@ else
 fi
 od -An -tx1 -N32 /dev/urandom | tr -d ' \n' > "$R/etc/ids-maat/orq_token"
 chown root:10500 "$R/etc/ids-maat/orq_token" && chmod 0640 "$R/etc/ids-maat/orq_token"   # como install.sh
+od -An -tx1 -N32 /dev/urandom | tr -d ' \n' > "$R/etc/ids-maat/master.key"
+chown root:10500 "$R/etc/ids-maat/master.key" && chmod 0440 "$R/etc/ids-maat/master.key" # como install.sh
 cat > "$R/_bin/nft" <<'EOF'
 #!/bin/sh
 # e2e: no se aplica nada al firewall del runner; solo se comprueba la sintaxis con el nft real.
@@ -117,16 +121,18 @@ for c in ids-p001-vpn ids-p001-suricata; do
 done
 
 echo "== 2. cliente OpenVPN y espejo TZSP"
-mkdir -p "$R/cliente"
-cp "$R/srv/ids/pki/ca.crt" "$R/cliente/ca.crt"
-printf '%s\n%s\n' "$USUARIO" "$CLAVE" > "$R/cliente/up"
-chmod 0600 "$R/cliente/up"
 GW=$(docker network inspect bridge -f '{{(index .IPAM.Config 0).Gateway}}')
-cat > "$R/cliente/cliente.conf" <<EOF
+cliente_vpn() {   # cliente_vpn <usuario> <clave> <puerto>: el «MikroTik» del punto, en un contenedor
+  local d="$R/cliente-$3"
+  mkdir -p "$d"
+  cp "$R/srv/ids/pki/ca.crt" "$d/ca.crt"
+  printf '%s\n%s\n' "$1" "$2" > "$d/up"
+  chmod 0600 "$d/up"
+  cat > "$d/cliente.conf" <<EOF
 client
 dev tun
 proto tcp-client
-remote $GW 1194
+remote $GW $3
 nobind
 ca /c/ca.crt
 auth-user-pass /c/up
@@ -135,9 +141,12 @@ data-ciphers AES-256-GCM:AES-256-CBC
 remote-cert-tls server
 verb 3
 EOF
-docker run -d --name ids-e2e-cliente --cap-add NET_ADMIN --device /dev/net/tun \
-  -v "$R/cliente:/c:ro" -v "$CHECKOUT/tests:/t:ro" --entrypoint openvpn "$IDS_IMG_VPN" \
-  --config /c/cliente.conf >/dev/null
+  docker rm -f ids-e2e-cliente >/dev/null 2>&1
+  docker run -d --name ids-e2e-cliente --cap-add NET_ADMIN --device /dev/net/tun \
+    -v "$d:/c:ro" -v "$CHECKOUT/tests:/t:ro" --entrypoint openvpn "$IDS_IMG_VPN" \
+    --config /c/cliente.conf >/dev/null
+}
+cliente_vpn "$USUARIO" "$CLAVE" 1194
 conectado() { docker logs ids-e2e-cliente 2>&1 | grep -F "Initialization Sequence Completed" >/dev/null; }
 # Diagnóstico del paso 2: lo que dicen los dos extremos del túnel y el camino entre ellos.
 diag_vpn() {
@@ -161,8 +170,9 @@ diag_vpn() {
 if esperar 90 conectado; then ok "el cliente se autentica"; else mal "el cliente no conecta"; diag_vpn; fi
 docker exec ids-e2e-cliente python3 /t/integracion/tzsp_enviar.py /t/fixtures/suricata/alerta-2100498.pcap 100.64.1.1 37008 5 \
   && ok "pcap enviado por TZSP" || mal "no se pudo enviar el TZSP"
-alerta() {
-  grep '"signature_id":2100498' "$R/srv/ids/datos/p001/eve.json" 2>/dev/null | grep -F '"host":"p001"' >/dev/null
+alerta() {   # alerta [pid]: la 2100498 en el eve de ese punto y con host = pid
+  local p="${1:-p001}"
+  grep '"signature_id":2100498' "$R/srv/ids/datos/$p/eve.json" 2>/dev/null | grep -F "\"host\":\"$p\"" >/dev/null
 }
 if esperar 120 alerta; then
   ok "alerta 2100498 con host = p001"
@@ -198,6 +208,9 @@ if esperar 120 coherente; then ok "netns coherentes en estado.json"; else mal "n
 
 echo "== 5. reglas: reinicio en serie"
 if "${ORQ[@]}" punto crear --nombre sur --redes 10.1.0.0/24 > "$R/crear2.log" 2>&1; then ok "punto crear p002"; else mal "punto crear p002"; fi
+USUARIO2=$(sed -n 's/^  usuario VPN  \(vpn[0-9a-f]\{6\}\)$/\1/p' "$R/crear2.log")
+CLAVE2=$(sed -n 's/^  clave VPN    \([A-Za-z0-9]\{24\}\) .*/\1/p' "$R/crear2.log")
+PUERTO2=$(sed -n 's/^  puerto       \([0-9]\{1,5\}\)\/tcp$/\1/p' "$R/crear2.log")
 if "${ORQ[@]}" reglas actualizar --sin-descarga > "$R/reglas2.log" 2>&1; then ok "reglas actualizar --sin-descarga"; else mal "reglas --sin-descarga"; fi
 t1=$(date -d "$(docker inspect -f '{{.State.StartedAt}}' ids-p001-suricata)" +%s)
 t2=$(date -d "$(docker inspect -f '{{.State.StartedAt}}' ids-p002-suricata)" +%s)
@@ -211,14 +224,14 @@ for d in puntos datos run ctl; do
 done
 docker inspect ids-p001-vpn >/dev/null 2>&1 && mal "queda el contenedor ids-p001-vpn" || ok "sin contenedores de p001"
 
-echo "== 7. panel: núcleo, primer admin, login y alta desde la web"
+echo "== 7. panel: núcleo, primer admin, login, Puntos, alta desde la web y eventos por nodo"
 if [ "$PANEL" = 0 ]; then
   echo "  (omitido: falta IDS_IMG_PANEL, la imagen o curl)"
 else
-  # Rutas y campos del panel (los fija P en docs/CONTRATO-F1b.md «Panel (P)»): formulario
-  # POST /entrar (usuario, clave) -> 303 a /puntos con la cookie de sesión; GET /puntos; GET
-  # /puntos/nuevo trae el token CSRF en <input name="csrf">; POST /puntos/nuevo (csrf, nombre,
-  # redes, ros_version, perfil) -> 303 a /operaciones/<op_id>.
+  # Rutas y campos del panel (CONTRATO-F2 §5 y el formulario de login del dashboard heredado):
+  # POST /login (usuario, clave) -> 303 con la cookie sid; GET /puntos; GET /puntos/nuevo (si trae
+  # <input name="csrf">, se manda); POST /puntos/nuevo (nombre, redes, ros_version, perfil) ->
+  # 303 a /operaciones/<op_id>; GET /eventos?nodo=<pid> (Eventos, CONTRATO-F2 §9).
   URL="http://127.0.0.1:5637"
   J="$R/panel.cookies"
   web() {   # web <ruta> [datos de formulario]: imprime «código destino» y deja el cuerpo en $R/web.html
@@ -229,10 +242,20 @@ else
       curl -s -o "$R/web.html" -w '%{http_code} %{redirect_url}' -b "$J" -c "$J" "$URL$1"
     fi
   }
+  sesion() { grep -E $'\tsid\t[^[:space:]]+$' "$J" >/dev/null 2>&1; }
+  urlq() { python3 -c 'import sys, urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=""))' "$1"; }
   if "${ORQ[@]}" panel aplicar > "$R/panel.log" 2>&1; then ok "ids-orq panel aplicar: ids-core-panel healthy"; else mal "panel aplicar"; cat "$R/panel.log"; fi
   [ "$(docker inspect -f '{{(index .NetworkSettings.Networks "ids-core").IPAddress}}' ids-core-panel 2>/dev/null)" = 10.210.255.2 ] \
     && ok "panel en 10.210.255.2 (red ids-core)" || mal "el panel no está en 10.210.255.2"
   [ "$(docker inspect -f '{{.Config.User}}' ids-core-panel 2>/dev/null)" = "10500:10500" ] && ok "panel como 10500" || mal "panel no corre como 10500"
+  # CONTRATO-F2 §10.3: la clave maestra montada solo lectura y legible por el panel (sin capacidades)
+  if docker exec ids-core-panel python3 -c 'import sys; sys.path.insert(0, "/usr/local/lib/ids-panel"); import secretos; sys.exit(0 if secretos.disponible() and secretos.descifrar(secretos.cifrar("x", "e2e"), "e2e") == "x" else 1)' 2>/dev/null; then
+    ok "clave maestra disponible en el panel (cifra y descifra)"
+  else
+    mal "el panel no puede usar la clave maestra"
+  fi
+  docker exec ids-core-panel sh -c 'echo x > /run/secrets/master_key' 2>/dev/null && mal "la clave maestra es escribible en el panel" \
+    || ok "clave maestra de solo lectura"
   SAL=$("${ORQ[@]}" panel crear-admin --usuario admin 2>"$R/admin.err")
   CLAVE_PANEL=$(sed -n 's/^CLAVE=\([^[:space:]]\{1,\}\)$/\1/p' <<<"$SAL")
   [ -n "$CLAVE_PANEL" ] && [ "$(wc -l <<<"$SAL")" = 1 ] && ok "crear-admin imprime una sola línea CLAVE=" \
@@ -240,22 +263,33 @@ else
   "${ORQ[@]}" panel crear-admin --usuario admin > "$R/admin2.out" 2>&1
   rc=$?
   [ "$rc" = 3 ] && ! grep -q '^CLAVE=' "$R/admin2.out" && ok "crear-admin otra vez: 3 y no regenera" || mal "crear-admin repetido dio $rc"
-  # la clave no queda en ningún log de Docker (contenedor de un solo uso con --log-driver none)
-  docker logs ids-core-panel 2>&1 | grep -F -- "$CLAVE_PANEL" >/dev/null && mal "la clave sale en docker logs" || ok "la clave no está en los logs del panel"
-  r=$(web /entrar "usuario=admin&clave=mala-$RANDOM")
-  [ "${r%% *}" = 401 ] && ok "clave mala: 401" || mal "clave mala dio $r"
-  r=$(web /entrar "usuario=admin&clave=$(python3 -c 'import sys, urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=""))' "$CLAVE_PANEL")")
-  [ "$r" = "303 $URL/puntos" ] && ok "login con la clave impresa" || mal "login dio $r"
+  # el formulario de login del dashboard: <form method=post action="/login"> con usuario y clave
+  web /login >/dev/null
+  grep -F 'action="/login"' "$R/web.html" >/dev/null && grep -F 'name=clave' "$R/web.html" >/dev/null \
+    && ok "formulario /login" || mal "sin formulario de login en /login"
+  # clave mala: ni redirección ni sesión (el heredado contesta 200 con el aviso; 401 también vale)
+  r=$(web /login "usuario=admin&clave=mala-$RANDOM")
+  case "${r%% *}" in 200|401) ! sesion && ok "clave mala: ${r%% *} sin sesión" || mal "clave mala abrió sesión" ;;
+                     *) mal "clave mala dio $r" ;; esac
   r=$(web /puntos)
-  [ "${r%% *}" = 200 ] && grep -F "p002" "$R/web.html" >/dev/null && ok "lista de puntos (p002 sur)" || mal "lista de puntos: $r"
+  [[ "$r" =~ ^30[23]\ .*/login$ ]] && ok "sin sesión, /puntos manda a /login" || mal "sin sesión /puntos dio $r"
+  r=$(web /login "usuario=admin&clave=$(urlq "$CLAVE_PANEL")")
+  [ "${r%% *}" = 303 ] && sesion && ok "login con la clave impresa: 303 y cookie sid" || mal "login dio $r"
+  r=$(web /puntos)
+  [ "${r%% *}" = 200 ] && grep -F "p002" "$R/web.html" >/dev/null && ok "Puntos lista p002 (sur)" || mal "lista de puntos: $r"
   web /puntos/nuevo >/dev/null
-  CSRF=$(sed -n 's/.*name="csrf" value="\([^"]*\)".*/\1/p' "$R/web.html" | head -n1)
-  [ -n "$CSRF" ] && ok "token CSRF del formulario" || mal "sin token CSRF en /puntos/nuevo"
+  CSRF=$(sed -n 's/.*name="\{0,1\}csrf"\{0,1\} value="\([^"]*\)".*/\1/p' "$R/web.html" | head -n1)
+  grep -E 'name="?nombre"?' "$R/web.html" >/dev/null && ok "formulario de alta" || mal "sin formulario en /puntos/nuevo"
+  CAMPOS="nombre=web&redes=10.2.0.0/24&ros_version=7&perfil=reducido"
+  [ -n "$CSRF" ] && CAMPOS="csrf=$(urlq "$CSRF")&$CAMPOS"
   r=$(curl -s -o /dev/null -w '%{http_code}' -b "$J" -H "Origin: http://ajeno.example" \
-        --data "csrf=$CSRF&nombre=ajeno&redes=10.3.0.0/24&ros_version=7&perfil=reducido" "$URL/puntos/nuevo")
+        --data "${CAMPOS/nombre=web/nombre=ajeno}" "$URL/puntos/nuevo")
   [ "$r" = 403 ] && ok "POST con Origin ajeno: 403" || mal "POST con Origin ajeno dio $r"
-  r=$(web /puntos/nuevo "csrf=$CSRF&nombre=web&redes=10.2.0.0/24&ros_version=7&perfil=reducido")
+  r=$(web /puntos/nuevo "$CAMPOS")
   [[ "$r" =~ ^303\ $URL/operaciones/[0-9a-f-]{36}$ ]] && ok "alta desde la web aceptada (${r##*/})" || { mal "alta desde la web: $r"; head -c 2000 "$R/web.html"; }
+  OP=${r##*/}
+  r=$(web "/operaciones/$OP")
+  [ "${r%% *}" = 200 ] && ok "avance de la operación" || mal "/operaciones/$OP dio $r"
   punto_web() { web /puntos >/dev/null && grep -F ">web<" "$R/web.html" >/dev/null; }
   if esperar 60 punto_web; then ok "el punto «web» aparece en la lista"; else mal "el punto web no aparece en /puntos"; fi
   web_activo() { "${ORQ[@]}" punto estado p003 2>/dev/null | grep -x "estado: activo" >/dev/null; }
@@ -265,6 +299,36 @@ else
   else
     mal "orq.jsonl sin panel:admin"
   fi
+  # un lector sin sesión no puede dar de alta (la cookie no viaja): 303 a /login o 401/403
+  r=$(curl -s -o /dev/null -w '%{http_code}' -H "Origin: $URL" --data "$CAMPOS" "$URL/puntos/nuevo")
+  [[ "$r" =~ ^(303|401|403)$ ]] && ok "alta sin sesión rechazada ($r)" || mal "alta sin sesión dio $r"
+
+  # ---- la cadena entera hasta el panel, por el nodo correcto: cliente VPN de p002 -> TZSP ->
+  # Suricata de p002 -> datos/p002/eve.json -> Eventos del panel con nodo=p002 (y no en p003)
+  SENSOR2=$(sed -n 's/^  túnel .*(sensor \([0-9.]*\),.*/\1/p' "$R/crear2.log")
+  if [ -n "$USUARIO2" ] && [ -n "$CLAVE2" ] && [ -n "$PUERTO2" ] && [ -n "$SENSOR2" ]; then
+    cliente_vpn "$USUARIO2" "$CLAVE2" "$PUERTO2"
+    if esperar 90 conectado; then ok "el cliente de p002 se autentica"; else mal "el cliente de p002 no conecta"; diag_vpn; fi
+    docker exec ids-e2e-cliente python3 /t/integracion/tzsp_enviar.py /t/fixtures/suricata/alerta-2100498.pcap "$SENSOR2" 37008 5 \
+      && ok "pcap enviado por TZSP a $SENSOR2" || mal "no se pudo enviar el TZSP a p002"
+    if esperar 120 alerta p002; then ok "alerta 2100498 en datos/p002 con host = p002"; else mal "no apareció la alerta en p002"; fi
+    evento_en() { web "/eventos?nodo=$1" >/dev/null && grep -F "2100498" "$R/web.html" >/dev/null; }
+    if esperar 60 evento_en p002; then ok "Eventos del panel (nodo=p002) muestra la 2100498"; else mal "el panel no muestra la alerta en p002"; head -c 1500 "$R/web.html"; fi
+    r=$(web "/eventos?nodo=p003")
+    [ "${r%% *}" = 200 ] && ! grep -F "2100498" "$R/web.html" >/dev/null && ok "Eventos de p003: sin la alerta de p002" \
+      || mal "Eventos de p003 dio $r o mezcla la alerta de p002"
+    r=$(web "/eventos?nodo=p999")
+    [ "${r%% *}" = 404 ] && ok "nodo inexistente: 404" || mal "nodo inexistente dio $r"
+    r=$(web "/eventos?nodo=..%2Fp002")
+    [ "${r%% *}" = 400 ] && ok "nodo mal formado: 400" || mal "nodo mal formado dio $r"
+    docker rm -f ids-e2e-cliente >/dev/null 2>&1
+  else
+    mal "no se leyeron usuario, clave, puerto o sensor de p002 (crear2.log)"
+  fi
+  docker logs ids-core-panel 2>&1 | grep -F -- "$CLAVE_PANEL" >/dev/null && mal "la clave sale en docker logs" || ok "la clave no está en los logs del panel"
+  grep -rF -- "$CLAVE_PANEL" "$R/srv/ids/panel" >/dev/null 2>&1 && mal "la clave del panel quedó en claro en /srv/ids/panel" \
+    || ok "la clave no queda en claro en /srv/ids/panel"
+
   docker rm -f ids-core-panel >/dev/null
   "${ORQ[@]}" reconciliar > "$R/reconciliar.log" 2>&1
   panel_corre() { [ "$(docker inspect -f '{{.State.Running}}' ids-core-panel 2>/dev/null)" = true ]; }

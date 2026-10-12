@@ -281,7 +281,7 @@ class Latido(unittest.TestCase):
             r.procesar(d, "192.0.2.9", 1760089995.0, lambda f: None)
         r.escribir_estado(1760090000.0)
         e = self.leer()
-        self.assertEqual(set(e), {"v", "punto", "ts", "inicio", "rx", "tx", "descartados",
+        self.assertEqual(set(e), {"v", "punto", "ts", "inicio", "rx", "tx", "rx_bytes", "tx_bytes", "descartados",
                                   "muy_grandes", "rechazados", "recortados", "recorte_bytes",
                                   "ventana", "ultimo_visto", "esperados"})
         self.assertEqual(e["v"], 1)
@@ -296,6 +296,9 @@ class Latido(unittest.TestCase):
         self.assertEqual(e["ultimo_visto"], {MK: 1760089990})
         self.assertEqual(e["esperados"], [MK + "/32"])
         self.assertEqual(e["tx"] + e["recortados"] + e["descartados"] + e["muy_grandes"], 40)
+        # F2: bytes recibidos (datagramas TZSP, también los rechazados) y reenviados (tramas)
+        self.assertEqual(e["rx_bytes"], 42 * len(d))
+        self.assertEqual(e["tx_bytes"], e["tx"] * len(td.decap(d)))
         for k in ("ts", "inicio", "rx", "tx", "descartados", "muy_grandes", "rechazados",
                   "recortados", "recorte_bytes"):
             self.assertIsInstance(e[k], int, k)

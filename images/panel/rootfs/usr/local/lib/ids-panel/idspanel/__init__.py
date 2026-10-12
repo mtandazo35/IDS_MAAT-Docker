@@ -1,18 +1,16 @@
-"""ids-panel: panel web de IDS_MAAT-Docker (F1b). Solo stdlib de Python 3.11+.
+"""ids-panel: piezas del panel de IDS_MAAT-Docker que el dashboard heredado reutiliza (F2).
 
 Módulos:
-  config     entorno (IDS_*) -> Config
-  util       escritura atómica, JSON, fechas, escape
-  usuarios   usuarios.json: PBKDF2-SHA256, crear/restablecer/cambiar clave
-  sesiones   sesiones (sha256 del token), freno de login
-  red        IP real tras el proxy de confianza, comprobación de origen (CSRF)
-  orq        cliente del orquestador (socket JSON por líneas) y traducción de errores
-  estado     lectura de estado.json y tzsp.json
-  eve        últimas alertas de un punto y conteo de 24 h, leyendo el final del eve.json
-  bitacora   bitacora.jsonl (quién hizo qué)
-  vistas     HTML (todo dato pasa por esc())
-  app        servidor HTTP y rutas
-  cli        ids-panel servir | crear-admin | restablecer | salud
+  config       entorno (IDS_*) -> Config
+  util         escritura atómica, JSON, fechas, escape
+  orq          cliente del orquestador (socket JSON por líneas) y traducción de errores
+  estado       lectura de estado.json y tzsp.json
+  operaciones  operaciones en curso del orquestador (op_id), para /operaciones/<op_id>
+  cli          ids-panel servir | crear-admin | restablecer | salud
+
+El servidor y las pantallas son dashboard.py (y puntos_web.py, eventos_web.py) en el directorio
+padre. El panel mínimo de F1b (app, vistas, sesiones, usuarios, red, eve, bitacora, static) se
+retiró en F2 (CONTRATO-F2-panel.md).
 
 Importable en Windows: nada de AF_UNIX ni fcntl a nivel de módulo.
 """

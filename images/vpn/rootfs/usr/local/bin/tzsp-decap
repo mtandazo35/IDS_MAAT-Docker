@@ -120,6 +120,7 @@ class Receptor:
         ahora = time.time() if ahora is None else ahora
         self.inicio = int(ahora)
         self.rx = self.tx = self.descartados = self.muy_grandes = 0
+        self.rx_bytes = self.tx_bytes = 0   # F2: el panel muestra el espejo en Mbps
         self.rechazados = self.recortados = 0
         self.flujos = {}               # clave -> [bytes reenviados, visto por última vez]
         self.ultima_limpia = ahora
@@ -169,6 +170,7 @@ class Receptor:
     def procesar(self, d, origen, ahora, enviar):
         """Procesa un datagrama TZSP de `origen`. `enviar(trama)` inyecta en ids-in."""
         self.rx += 1
+        self.rx_bytes += len(d)
         self.ultimo_origen = origen
         if not self.permitido(origen):
             self.rechazados += 1
@@ -190,6 +192,7 @@ class Receptor:
             self.muy_grandes += 1
             return "muy_grande"
         self.tx += 1
+        self.tx_bytes += len(f)
         return "enviado"
 
     # --- estado y resumen ---------------------------------------------------------------
@@ -202,6 +205,8 @@ class Receptor:
             "inicio": self.inicio,
             "rx": self.rx,
             "tx": self.tx,
+            "rx_bytes": self.rx_bytes,
+            "tx_bytes": self.tx_bytes,
             "descartados": self.descartados,
             "muy_grandes": self.muy_grandes,
             "rechazados": self.rechazados,

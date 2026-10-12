@@ -96,7 +96,7 @@ No hay ninguna orden genérica de «ejecutar».
 | `punto.logs` | `pid`, `parte`, `lineas` ≤ 500 | líneas filtradas (`password`, `key`) |
 | `punto.vpn.regenerar` | `pid` | hash nuevo, desconexión por management y la clave una sola vez |
 | `punto.ajustar` | `pid`, `perfil?`, `hilos?`, `home_net?`, `tls_legacy?` | admisión, yaml completo nuevo, `-T` y recreación de lo afectado |
-| `punto.threshold` | `pid`, `contenido` | se agrupa (≤ 1 vez cada 15 min), se valida y se reinicia `suricata` ([INSTANCIA.md](INSTANCIA.md) §11.2) |
+| `punto.threshold` | `pid`, `contenido` | valida línea a línea (solo `suppress`, `threshold`, `event_filter` y comentarios; ≤ 256 KiB), escribe `/srv/ids/puntos/<pid>/suricata/threshold.config` de forma atómica (guarda el anterior en `threshold.anterior`) y recarga sin cortar el espejo (`reload-rules` por el socket de control); si la recarga falla, reinicia `suricata`; si tampoco queda sano, vuelve al anterior, reinicia y acaba `REVERTIDA` con el aviso `THRESHOLD-FALLIDO`. Varias seguidas del mismo punto: solo se aplica la última. Un punto parado no se levanta (se aplica al arrancar). Se rechaza al encolar si el punto no existe o se está dando de baja ([CONTRATO-F2](CONTRATO-F2-panel.md) §6) |
 | `reglas.actualizar` | — | descarga, validación y reinicio en serie ([INSTANCIA.md](INSTANCIA.md) §11.1) |
 | `acceso.aplicar` / `acceso.confirmar` | `redes_gestion[]` (SSH), `ips_proxy[]` (panel), `proxy_actual`, `puertos_vpn[{puerto, origen?}]`, `ventana_s` (por defecto 300) / `token` | modo seguro ([RED-Y-FIREWALL.md](RED-Y-FIREWALL.md) §10) |
 | `sistema.capacidad` | — | RAM, CPU, disco y cuántos puntos caben por perfil |
@@ -112,7 +112,10 @@ No hay ninguna orden genérica de «ejecutar».
   - el mismo `op_id` con otros parámetros devuelve `CONFLICTO`.
   - **El resultado se guarda sin secretos.** Repetir un `punto.crear` ya ejecutado devuelve los
     comandos sin la clave VPN («ya entregada»; para una nueva, `punto.vpn.regenerar`).
-  - Al borrar un punto se eliminan sus filas (§11.2).
+  - Al borrar un punto se eliminan sus filas (§11.2). Las órdenes de ese punto que esperaban en la
+    cola **se cancelan**: `op.estado` las da `terminada` con código `CANCELADA` (sin parámetros) y
+    quedan en `orq.jsonl`; nunca se ejecutan, y como los `pid` no se reutilizan, nada alcanza a un
+    punto creado después.
 - **Las órdenes son idempotentes por diseño:**
   - crear lo que ya existe igual devuelve `OK "ya existe"`; si existe distinto, `CONFLICTO`;
   - parar lo parado devuelve `OK`;
@@ -147,6 +150,25 @@ No hay ninguna orden genérica de «ejecutar».
 - **Lo deseado frente a lo observado:** un punto `pausado` no se levanta.
 - **Salud funcional:** espejo que no llega a Suricata, o punto activo sin espejo.
 
+### 8.1 Retención de los eventos (CONTRATO-F2 §9)
+
+- **Objetivo: 30 días** de `eve.json` y `dns.json` por punto. logrotate rota por tamaño (1 GB) con
+  nombre fechado (`eve.json-AAAAMMDD-HHMMSS`) y **sin tope de número** (`rotate -1`, sin `maxage`).
+- **Compresión:** la hace el orquestador (hilo aparte, cada minuto) con los rotados que llevan 2 min
+  sin escribirse: `.gz` atómico que **conserva el mtime** (= su último evento), el dueño y el modo.
+  Eventos y el generador del panel saltan ficheros por mtime.
+- **Poda por fecha** (al arrancar y cada 24 h): se borra un rotado cuando su última escritura posible
+  (la más tardía entre la fecha del nombre y el mtime) tiene más de 30 días. Una línea `poda.fecha`
+  por punto en `orq.jsonl`.
+- **Poda por disco** (cada 15 s, si `/srv/ids` baja del 15 % libre): se borran los rotados más viejos
+  de **cualquier** punto, de uno en uno, hasta recuperar el umbral; nunca los vivos. Cada borrado
+  queda en `orq.jsonl` (`poda.disco` con `pid`, `fichero`, `cota`, `libre_pct`) y marca el punto en
+  `/srv/ids/estado/retencion.json`; durante 30 días su `estado.json` lleva `retencion.anticipado`
+  y el aviso `RETENCION-REDUCIDA`. El aviso `DISCO` sigue mientras el disco esté bajo el umbral.
+- **Retención efectiva** publicada por punto en `estado.json` (`retencion`: `objetivo_dias`, `desde`,
+  `dias`, `anticipado`, `ultimo_anticipado`): `desde` es el primer evento del fichero más
+  viejo que queda. Nunca se promete el objetivo si hubo borrado anticipado.
+
 ## 9. Avisos aunque el panel esté caído
 
 El orquestador tiene su propio canal de avisos: Telegram directo, con el token en
@@ -164,7 +186,8 @@ El orquestador tiene su propio canal de avisos: Telegram directo, con el token e
 
 - **`orq.jsonl` solo crece.** Por cada orden guarda el `op_id`, quién la pidió, el `pid` si lo
   hay, el **`sha256` de los parámetros (nunca los parámetros en claro)**, los pasos y el resultado
-  sin secretos. También guarda los anclajes de la bitácora. Así, cuando se borra un punto, en este
+  sin secretos. También guarda los anclajes de la bitácora, las órdenes canceladas por una baja y las
+  podas de eventos (`poda.fecha`, `poda.disco`, §8.1). Así, cuando se borra un punto, en este
   diario no queda ningún dato suyo (redes, IP), solo las líneas técnicas ([DATOS.md](DATOS.md) §8).
 - **Rota con logrotate** ([INSTANCIA.md](INSTANCIA.md) §10.5), con una retención de 2 años, como la
   bitácora.

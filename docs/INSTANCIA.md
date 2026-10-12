@@ -386,11 +386,14 @@ y además  MemAvailable ≥ mem_limit(nuevo) + 512 MB
 
 - **logrotate del host**, lanzado por un timer cada 15–60 min, para `eve.json`, `dns.json` y
   `orq.jsonl`:
-  - `maxsize 1G`, `maxage 3`, `rotate 4`, `compress`, `delaycompress`;
+  - eve/dns: `maxsize 1G`, nombre fechado (`dateext`, `-%Y%m%d-%H%M%S`), `rotate -1` (sin tope de
+    número) y `nocompress` (F2, CONTRATO-F2 §9);
   - **sin `copytruncate`**;
   - `postrotate`: el orquestador pide `reopen-log-files` a cada instancia.
 
-  El tope es de unos 5 GB por punto.
+  **Retención por fecha (F2): 30 días.** El orquestador comprime los rotados conservando su mtime,
+  poda lo que tiene más de 30 días y, por debajo del 15 % libre, borra antes de tiempo los rotados
+  más viejos con registro y aviso ([ORQUESTADOR.md](ORQUESTADOR.md) §8.1).
 - **Logs de los contenedores:** el driver `local` con tope; en los `vpn`, journald con la retención
   del journal.
 - **Alarma global por `df`.** Con el disco lleno, las capturas salen vacías y nada da error.
@@ -428,8 +431,9 @@ No necesita reiniciar.
 
 ### 11.2 Cambios de threshold (exclusiones)
 
-- Los cambios de exclusiones se **agrupan**: se aplican, como mucho, una vez cada 15 min.
-- Cada aplicación regenera el `threshold.config` de los puntos afectados, lo valida y reinicia en
-  serie esos `suricata`.
-- El panel avisa: «se aplicará en el próximo ciclo (≤ 15 min), con 30–90 s sin captura en el
-  punto».
+- **F2 (CONTRATO-F2 §6):** el panel manda `punto.threshold {pid, contenido}` a cada punto afectado.
+  El orquestador valida las líneas, escribe el fichero de forma atómica y recarga con `reload-rules`
+  por el socket de control, **sin reiniciar** (el espejo no se corta); solo si la recarga falla
+  reinicia ese `suricata` (30–90 s sin captura) y, si no queda sano, vuelve al threshold anterior
+  y avisa (`THRESHOLD-FALLIDO`). Varias órdenes seguidas del mismo punto se agrupan: solo se aplica
+  la última ([ORQUESTADOR.md](ORQUESTADOR.md) §5).

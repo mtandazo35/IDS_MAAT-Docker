@@ -62,7 +62,12 @@ class Estado(unittest.TestCase):
         p = disco["puntos"]["p001"]
         self.assertEqual(set(p), {"nombre", "n", "puerto", "tun_net", "perfil", "hilos", "ros_version", "compat_v6",
                                   "deseado", "estado", "contenedores", "netns", "vpn_cliente", "tzsp", "suricata",
-                                  "avisos", "redes", "api_puerto", "sensor", "mk", "tzsp_puerto"})
+                                  "avisos", "redes", "api_puerto", "sensor", "mk", "tzsp_puerto", "retencion"})
+        # CONTRATO-F2 §9: retención efectiva (desde el primer evento que queda)
+        self.assertEqual(set(p["retencion"]), {"objetivo_dias", "desde", "dias", "anticipado",
+                                               "ultimo_anticipado"})
+        self.assertEqual((p["retencion"]["objetivo_dias"], p["retencion"]["anticipado"]), (30, False))
+        self.assertEqual(p["retencion"]["desde"], t - 14)
         self.assertEqual((p["nombre"], p["n"], p["puerto"], p["tun_net"], p["estado"], p["deseado"]),
                          ("norte", 1, 1194, "100.64.1.0/24", "activo", "activo"))
         # lo que usa el panel para hablar con el MikroTik y montar el espejo del punto
