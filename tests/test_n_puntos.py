@@ -42,9 +42,13 @@ class Espejo(Base):
         mi = types.ModuleType("mikrotik_init")
 
         def plan(con, pid, sensor, puerto, redes, lista):
+            # la forma REAL de mikrotik_init.plan(): `terminal` + `cambios` (no `lineas`: F1, A-01)
             self.llamadas.append(("plan", con.router_id, pid, sensor, puerto, tuple(redes), lista))
-            return {"lineas": ["/ip firewall mangle add action=sniff-tzsp sniff-target=%s" % sensor],
-                    "avisos": []}
+            return {"pid": pid, "sensor": sensor, "puerto": puerto, "lista": lista, "redes": list(redes),
+                    "terminal": ["/ip firewall mangle add action=sniff-tzsp sniff-target=%s" % sensor],
+                    "cambios": [{"que": "espejo", "orden": "/ip/firewall/mangle/add",
+                                 "args": ["=action=sniff-tzsp", "=sniff-target=%s" % sensor]}],
+                    "avisos": [], "bloqueos": [], "fasttrack": []}
 
         def aplicar(con, p, respaldo_dir):
             self.llamadas.append(("aplicar", con.router_id, os.path.isdir(respaldo_dir)))
@@ -65,7 +69,7 @@ class Espejo(Base):
         self.assertEqual((r["ok"], r["lineas"][0][-10:]), (True, "100.64.2.1"))
         self.assertEqual(self.llamadas[0], ("plan", "p002", "p002", "100.64.2.1", 37008,
                                             ("10.0.0.0/24",), "ids-vigilados"))
-        r = self.d.espejo_aplicar("p002", "admin")
+        r = self.d.espejo_aplicar("p002", "admin", huella=r["huella"])   # la del plan mostrado
         self.assertEqual((r["ok"], r["mensaje"]), (True, "aplicado"))
         self.assertEqual([c[:2] for c in self.llamadas[1:]], [("plan", "p002"), ("aplicar", "p002")])
         self.assertTrue(self.llamadas[-1][2])                    # hay directorio de respaldos

@@ -6,7 +6,8 @@ CLI escribe ESE formato, con rol `admin`, para que el instalador y `ids-orq pane
 igual (CONTRATO-F2 §7).
 
 Códigos de salida:
-  crear-admin   0 creado (stdout: UNA línea CLAVE=<clave>), 3 el usuario ya existe (no se toca nada)
+  crear-admin   0 creado (stdout: UNA línea CLAVE=<clave>), 3 si ya hay usuarios (no se toca nada:
+                el primer admin solo se crea una vez; los demás, desde Ajustes o con restablecer)
   restablecer   0 hecho (stdout: CLAVE=<clave>), 4 el usuario no existe. Expulsa sus sesiones
                 abiertas (la sesión guarda una marca del hash de la clave, que cambia).
   salud         0 si HEAD / al propio servidor da 200, 1 si no
@@ -64,14 +65,27 @@ def _puerto(env=None):
     return p
 
 
-def crear_admin(usuario, dash=None):
+def _cerrojo(d):
+    """Cerrojo de usuarios.json compartido con el panel, que corre en otro proceso (flock;
+    auditoría B-22). Con un módulo sin él (dobles de las pruebas), el del proceso."""
+    c = getattr(d, "usuarios_cerrojo", None)
+    return c() if c is not None else d._USR_LOCK
+
+
+def crear_admin(usuario, dash=None, solo_primero=False):
+    """Crea `usuario` con rol admin. Con `solo_primero` (lo que hace `ids-panel crear-admin`,
+    CONTRATO-F2 §7) sale con 3 si ya hay CUALQUIER usuario, no solo ese (auditoría B-20)."""
     if not isinstance(usuario, str) or not RE_USUARIO.match(usuario):
         _err("usuario inválido: minúsculas, números, . _ - (máx. 32)")
         return 2
     d = dash or _dash()
     d.nodos.asegurar_dirs()
-    with d._USR_LOCK:
+    with _cerrojo(d):
         lst = d.cargar_usuarios()
+        if solo_primero and lst:
+            _err("ya hay usuarios en el panel; no se ha tocado nada (para una clave nueva: "
+                 "ids-panel restablecer --usuario <usuario>)")
+            return 3
         if any(r.get("user") == usuario for r in lst):
             _err("el usuario %s ya existe; no se ha tocado nada (para una clave nueva: "
                  "ids-panel restablecer --usuario %s)" % (usuario, usuario))
@@ -90,7 +104,7 @@ def restablecer(usuario, dash=None):
         _err("usuario inválido: minúsculas, números, . _ - (máx. 32)")
         return 2
     d = dash or _dash()
-    with d._USR_LOCK:
+    with _cerrojo(d):
         lst = d.cargar_usuarios()
         r = next((x for x in lst if x.get("user") == usuario), None)
         if r is None:
@@ -139,7 +153,7 @@ def main(argv=None):
         return 2
     cmd = a.cmd or "servir"
     if cmd == "crear-admin":
-        return crear_admin(a.usuario)
+        return crear_admin(a.usuario, solo_primero=True)
     if cmd == "restablecer":
         return restablecer(a.usuario)
     if cmd == "salud":

@@ -46,7 +46,9 @@ ARBOL = ast.parse(DASH)
 PIEZAS = ("_mk_ips_listas_en", "_mk_ips_listas", "_rid_entrada", "mk_sync_enviados", "recargar_listas",
           "cargar_enviados", "_ttl_efectivo", "ACCIONES_POR_CAT",
           # panel portado: identidad pid|ip real y destino validado (CONTRATO-F2 §1, §10.1)
-          "clave_cpe", "_router_destino")
+          "clave_cpe", "_router_destino",
+          # F1 (auditoria A-15): mk_sync_enviados no resucita lo liberado despues de leer el router
+          "_QUITADAS_TS", "_marcar_quitada")
 
 fallos = 0
 
@@ -79,7 +81,7 @@ def entorno(cfg=None, nunca=()):
           "_mk_send": lambda s_, words: s_.enviar(words), "_mk_reply": lambda s_: s_.responder(),
           "lista_de_categoria": lambda c: "clientes-" + c,
           "rid_de": lambda k: k.split("|")[0] if "|" in k else "", "ip_de": lambda k: k.split("|")[-1],
-          "nunca_bloquear": lambda ip: ip in nunca, "bitacora": lambda a, d="", quien=None, ip=None: bit.append((a, d)),
+          "nunca_bloquear": lambda ip, pid=None: ip in nunca, "bitacora": lambda a, d="", quien=None, ip=None: bit.append((a, d)),
           "guardar_enviados": lambda d, path=None: guardar(d, path)}
     for n in ARBOL.body:
         nom = getattr(n, "name", None) or (getattr(n.targets[0], "id", "") if isinstance(n, ast.Assign) else "")

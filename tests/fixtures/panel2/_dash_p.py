@@ -168,7 +168,10 @@ class PanelP:
 
     @staticmethod
     def candidato(ip, pid, confianza="alta"):
+        # "ultima": la evidencia es reciente (CONTRATO-F2 §10.4); sin ella el envio pide
+        # confirmacion (F1, auditoria A-06; se prueba en tests/test_f1_evidencia.py)
         return {"ip": ip, "router": pid, "riesgo": 80, "banda": "ALTO", "confianza": confianza,
+                "ultima": int(time.time()) - 60,
                 "n_evidencias": 2, "firma": "ET MALWARE prueba", "alertas_cnc": 5, "firmas_cnc": 2,
                 "destinos": 1, "puertos": 1, "total_alertas": 5, "evidencias": ["prueba"]}
 

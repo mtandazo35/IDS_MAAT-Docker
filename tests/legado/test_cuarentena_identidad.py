@@ -52,7 +52,9 @@ PIEZAS = ("MK_CONF", "MK_SENT", "MK_SENT_DNS", "MK_LOG", "ROUTERS_CONF", "ROUTER
           "_router_de_pid", "_destino_ok", "cuarentena_json", "_cargar_cuarentena",
           "_motivo_bloqueo", "cargar_enviados", "guardar_enviados", "quitar_enviados",
           "_REP_AVISOS", "_REP_AVISOS_TTL", "rep_aviso_guardar", "rep_aviso_tomar",
-          "rep_aviso_url", "cuar_aviso_url")
+          "rep_aviso_url", "cuar_aviso_url",
+          # F1 (auditoria A-03): las rutas anotan el registro releyendolo bajo el cerrojo
+          "_registrar_enviados", "_marcar_quitada", "_QUITADAS_TS")
 
 # dos puntos: el «Nodo Sur» y el «Nodo Norte» del multi-nodo viejo (r1, r2)
 PUNTOS2 = {"p001": dict(_comun.PUNTOS["p001"], nombre="Nodo Sur"),
@@ -155,7 +157,10 @@ def llamar(ns, mk, ruta, campos, operador=True):
                 "categoria_cpe": lambda k: "botnet",
                 "lista_de_categoria": lambda c: "clientes-botnet",
                 "nombre_categoria": lambda c: "Botnet / CnC",
-                "nunca_bloquear": lambda ip: False})
+                "nunca_bloquear": lambda ip: False,
+                # la evidencia reciente (§10.4) tiene su prueba en tests/test_f1_*: aqui se
+                # mira el destino y la identidad, como antes
+                "evidencia_sin_confirmar": lambda clave, q: ""})
     exec(compile("def _f():\n" + textwrap.indent(cuerpo_ruta(ruta), "    "), "<r>", "exec"), ns2)
     ns2["_f"]()
     return visto

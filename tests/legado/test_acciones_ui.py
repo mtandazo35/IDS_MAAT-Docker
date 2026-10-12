@@ -149,7 +149,11 @@ def main():
             wfile = type("W", (), {"write": lambda self, b: visto.update({"texto": b.decode("utf-8")})})()
         # _router_de_pid REAL: el router es el del rid validado con nodos.exigir_pid, sin
         # router_defecto (CONTRATO-F2 §3, §10.1)
-        n2 = piezas(("ACCIONES", "ACCIONES_POR_CAT", "lineas_verificacion", "_router_de_pid"), {"nodos": nod})
+        # F1 (auditoria A-08): una reconciliacion de reglas a la vez por router (cerrojo REAL)
+        n2 = piezas(("ACCIONES", "ACCIONES_POR_CAT", "lineas_verificacion", "_router_de_pid",
+                     "_OPS_CERROJOS", "_OPS_CERROJOS_LOCK", "OperacionEnCurso", "cerrojo_operacion"),
+                    {"nodos": nod, "threading": __import__("threading"),
+                     "contextlib": __import__("contextlib")})
         n2.update({"self": Self(), "q": {k: [v] for k, v in campos.items()}, "ruta": ruta_,
                    "CTX": type("C", (), {"user": "admin"})(),
                    "cargar_routers": lambda: [{"id": "p001", "HOST": "unix:h", "USER": "u", "PASS": "p", "nombre": "Centro"},

@@ -27,7 +27,8 @@ DASH = extraer.fuente("DASH")
 ARBOL = ast.parse(DASH)
 
 PIEZAS = ("PUBLICAS_CONF", "cargar_publicas", "origen_publicas", "guardar_publicas",
-          "cubrir_publicas", "guardar_publicas_de", "publicas_texto")
+          "cubrir_publicas", "guardar_publicas_de", "publicas_texto",
+          "_PUB_LOCK")   # F1 (auditoria A-16): leer-modificar-guardar bajo el cerrojo
 
 fallos = 0
 
@@ -44,6 +45,7 @@ def entorno(tmp):
     # los nodos son puntos pNNN: r1/r2/r3/r8/r9 del multi-nodo viejo -> p001/p002/p003/p008/p009
     nod, sec = _comun.panel(os.path.join(tmp, "_panel"))
     ns = {"nodos": nod, "secretos": sec, "os": os, "json": json, "re": __import__("re"),
+          "threading": __import__("threading"),
           "ipaddress": __import__("ipaddress"),
           # la validacion de IP/red tiene su propia prueba; aqui solo estorba
           "aidb_ip_valida": lambda x: (True, ""),

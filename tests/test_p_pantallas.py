@@ -97,7 +97,9 @@ class Permisos(unittest.TestCase):
         self.assertEqual(self.p.espejo, [])
         self.assertEqual(self.p.orq.ordenes("punto.crear") + self.p.orq.ordenes("punto.borrar"), [])
         # el operador si opera la cuarentena
-        r = self.p.pedir("POST", "/cuarentena/enviar?nodo=p001", {"ip": "p001|" + IP}, cookie=olga)
+        # sin reporte de p001 no hay evidencia que fechar: el envio manual va confirmado (§10.4)
+        r = self.p.pedir("POST", "/cuarentena/enviar?nodo=p001", {"ip": "p001|" + IP, "confirmar_vieja": "1"},
+                         cookie=olga)
         self.assertEqual(r.status, 303)
         self.assertEqual(self.p.mk, [("add", IP, "p001")])
 
@@ -154,7 +156,8 @@ class Eventos(unittest.TestCase):
         luis = p.entrar("luis")
         r = p.pedir("GET", "/eventos?nodo=p001", cookie=luis)
         self.assertEqual(r.status, 200, r.texto[:300])
-        self.assertIn('href="/eventos" class="tab on"', r.texto)
+        # todo enlace lleva el nodo de la pagina (CONTRATO-F2 §10.1, auditoria A-11)
+        self.assertIn('href="/eventos?nodo=p001" class="tab on"', r.texto)
         self.assertIn("class=nodosel", r.texto)
         self.assertNotIn('http-equiv="refresh"', r.texto)
         self.assertEqual(p.pedir("GET", "/eventos?nodo=p009", cookie=luis).status, 404)

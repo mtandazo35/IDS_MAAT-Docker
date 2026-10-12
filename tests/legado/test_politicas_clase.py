@@ -130,7 +130,9 @@ def main():
              "notificar_cuarentena": lambda *a, **k: None,
              "mk_log": lambda accion, ip, quien, det="": logs.append((accion, ip, det))}
     ns2 = piezas(BASE + ("aplicar_politicas", "clave_cpe", "ip_de", "rid_de", "_suf_nodo", "mk_listo",
-                         "_registrar_enviados", "_ENV_LOCK", "cuarentena_json", "_cargar_cuarentena"),
+                         "_registrar_enviados", "_ENV_LOCK", "cuarentena_json", "_cargar_cuarentena",
+                         # F1 (auditoria A-15): las bajas del registro quedan fechadas
+                         "_marcar_quitada", "_QUITADAS_TS"),
                  extra)
     ns2["aplicar_politicas"]("p001")
     check("la botnet ALTA va a la lista de SU clase, no a la heredada",

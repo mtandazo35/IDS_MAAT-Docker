@@ -161,6 +161,7 @@ def main():
         "mk_log": lambda *a, **k: None,
         "ip_de": lambda k: k.split("|", 1)[1] if "|" in k else k,
         "rid_de": lambda k: k.split("|", 1)[0] if "|" in k else "",
+        "_suf_nodo": lambda k: "",
         "nodos": nod, "secretos": sec,
         "cargar_routers": lambda: [{"id": p} for p in nod.pids()],
     })

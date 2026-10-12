@@ -27,7 +27,8 @@ DASH = extraer.fuente("DASH")
 ARBOL = ast.parse(DASH)
 
 PIEZAS = ("RANGO_TOPE", "_RANGO_JS", "rango_detalle_html", "ficha_ip_html",
-          "AIDB_CATS", "AIDB_REMEDIO")
+          "AIDB_CATS", "AIDB_REMEDIO",
+          "js_attr")   # F1 (auditoria B-17): datos dentro de manejadores JS, escapados para JS
 
 fallos = 0
 
@@ -43,7 +44,7 @@ def entorno():
     import time as _t
     # el cruce con los CPEs tiene su propia prueba (test_culpables_ficha); aqui solo
     # estorbaria, porque esta ficha se mira por lo que trae de AbuseIPDB
-    ns = {"html": __import__("html"), "time": _t,
+    ns = {"html": __import__("html"), "time": _t, "json": __import__("json"),
           "culpables_ficha_html":
               lambda ip, cats, esc=None, tope=6, ejemplos=None: ""}
     for n in ARBOL.body:

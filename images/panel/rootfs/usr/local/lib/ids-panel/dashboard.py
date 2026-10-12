@@ -13,7 +13,7 @@ Config: /srv/ids/panel/conf/panel.conf + entorno (IDS_PUERTO, IDS_PROXY, IDS_TZ,
 """
 import base64, glob, hashlib, html, json, os, re, secrets, socket, subprocess, sys, threading, time
 from concurrent.futures import ThreadPoolExecutor
-import traceback
+import contextlib, traceback
 import urllib.request, urllib.parse, urllib.error, ipaddress
 from datetime import datetime, timezone, timedelta
 
@@ -244,7 +244,9 @@ def cargar_exclusiones(incluir_vencidas=False):
                                "puertos": [int(p) for p in (r.get("puertos") or []) if str(p).isdigit()],
                                "sid": str(r.get("sid") or ""), "hasta": hasta,
                                "autor": r.get("autor", ""), "creado": r.get("creado", 0),
-                               "nodo": r.get("nodo") or "",
+                               # «_todos» (importacion, edicion a mano) = todos los nodos,
+                               # igual que en el generador y el informe (auditoria A-26)
+                               "nodo": "" if r.get("nodo") == nodos.TODOS else (r.get("nodo") or ""),
                                "vencida": vencida})
                 if reglas[-1]["nodo"] and not nodos.pid_valido(reglas[-1]["nodo"]):
                     reglas.pop()      # nodo mal escrito: no vale en ninguno (nunca "en todos")
@@ -296,9 +298,13 @@ def threshold_desde_exclusiones(reglas, pid=None):
         except ValueError:
             continue
         via = "by_dst" if r.get("tipo") == "dst" else "by_src"
-        mot = re.sub(r"[\r\n]", " ", r.get("motivo") or "")[:60]
-        out.append("suppress gen_id 1, sig_id %s, track %s, ip %s%s"
-                   % (sid, via, r["ip"], ("   # " + mot) if mot else ""))
+        # el motivo va en una linea de comentario PROPIA, encima de la regla: al final de la
+        # linea `suppress` el orquestador lo rechaza (parametro no valido) y no bajaba ninguna
+        # exclusion de ese punto (auditoria A-13). Sin caracteres de control (tampoco los
+        # admite el orquestador) y recortado.
+        mot = re.sub(r"[\x00-\x1f\x7f]", " ", str(r.get("motivo") or "")).strip()[:60]
+        out.append(("# %s\n" % mot if mot else "")
+                   + "suppress gen_id 1, sig_id %s, track %s, ip %s" % (sid, via, r["ip"]))
     return out
 
 def threshold_contenido(reglas, pid):
@@ -365,6 +371,10 @@ def escribir_threshold(reglas=None, quien=None):
     except OSError:
         pass
     return avisos
+
+# Las exclusiones se editan desde peticiones y se purgan en la baja de un punto: quien las
+# lee, modifica y guarda lo hace entero dentro de este cerrojo (auditoria A-16).
+_EXCL_LOCK = threading.RLock()
 
 def guardar_exclusiones(reglas):
     """Guarda las exclusiones y las lleva al Suricata de cada punto afectado. Devuelve la
@@ -1714,19 +1724,42 @@ def mk_add(ip, comment="", lista=None, ttl=None, router=None):
         except Exception: pass
 
 def mk_remove(ip, lista=None, router=None):
-    """Quita TODAS las entradas de esa IP en la lista (busca .id y las borra)."""
+    """Quita TODAS las entradas de esa IP en la lista (busca .id y las borra).
+
+    Solo da exito si el router lo confirma (auditoria A-05): una consulta o un remove
+    rechazados (!trap) son fallo, y despues de borrar se RELEE la lista: si queda alguna
+    entrada, es fallo. Quien llama solo saca la IP del registro con exito."""
     d = cargar_mk_de(_router_destino(router))
     lst = lista or d.get("LIST", "suricata-cuarentena")
     s = mk_conectar(d)
-    try:
-        _mk_send(s, ["/ip/firewall/address-list/print", "=.proplist=.id",
-                     f"?list={lst}", f"?address={ip}"])
+    consulta = ["/ip/firewall/address-list/print", "=.proplist=.id", f"?list={lst}", f"?address={ip}"]
+
+    def _ids():
+        _mk_send(s, consulta)
         ok, frases, err = _mk_reply(s)
-        ids = [a[len("=.id="):] for f in frases if f and f[0] == "!re" for a in f if a.startswith("=.id=")]
+        if not ok:
+            raise ValueError("el router rechazo la consulta de %s en %s: %s" % (ip, lst, err or "?"))
+        return [a[len("=.id="):] for f in frases if f and f[0] == "!re" for a in f if a.startswith("=.id=")]
+    try:
+        try:
+            ids = _ids()
+        except ValueError as e:
+            return (False, str(e))
+        errores = []
         for _id in ids:
             _mk_send(s, ["/ip/firewall/address-list/remove", f"=.id={_id}"])
-            _mk_reply(s)
-        return (True, f"{len(ids)} entrada(s) quitada(s)")
+            ok_r, _fr, err_r = _mk_reply(s)
+            if not ok_r and "no such item" not in (err_r or "").lower():
+                errores.append(err_r or "rechazado")
+        if ids:
+            try:
+                quedan = _ids()
+            except ValueError as e:
+                return (False, "no se pudo comprobar que se quito: %s" % e)
+            if quedan:
+                return (False, "%d entrada(s) de %s siguen en %s%s" % (
+                    len(quedan), ip, lst, (" (%s)" % errores[0][:120]) if errores else ""))
+        return (True, f"{len(ids)} entrada(s) quitada(s) de {lst}")
     finally:
         try: s.close()
         except Exception: pass
@@ -2307,10 +2340,13 @@ def respaldar_firewall(router, s_=None):
     nombre = "mikrotik-%s-%s.json" % ((router or {}).get("id") or d.get("HOST", "router"),
                                       time.strftime("%Y%m%d-%H%M%S"))
     ruta = os.path.join(RESPALDOS_MK, nombre)
-    with open(ruta + ".tmp", "w", encoding="utf-8") as f:
+    # temporal unico (pid+hilo): dos respaldos del mismo router en el mismo segundo se
+    # pisaban el .tmp (auditoria A-08)
+    tmp = "%s.%d.%d.tmp" % (ruta, os.getpid(), threading.get_ident())
+    with open(tmp, "w", encoding="utf-8") as f:
         json.dump(datos, f)
-    os.chmod(ruta + ".tmp", 0o600)
-    os.replace(ruta + ".tmp", ruta)
+    os.chmod(tmp, 0o600)
+    os.replace(tmp, ruta)
     return ruta
 
 
@@ -2435,9 +2471,50 @@ def quitar_enviados(ips, path=MK_SENT):
         for ip in ips:
             if env.pop(ip, None) is not None:
                 quitadas.append(ip)
+                _marcar_quitada(path, ip)
         if quitadas:
             guardar_enviados(env, path)
     return quitadas
+
+# Cuando se saco cada clave del registro: mk_sync_enviados lee los routers FUERA del cerrojo
+# y no debe volver a apuntar como «manual» una entrada que alguien libero despues de su
+# lectura del router (auditoria A-15). Solo en memoria y con poda (una hora basta).
+_QUITADAS_TS = {}
+
+def _marcar_quitada(path, clave):
+    ahora = time.time()
+    _QUITADAS_TS[(path, clave)] = ahora
+    if len(_QUITADAS_TS) > 5000:
+        for k in [k for k, t in list(_QUITADAS_TS.items()) if ahora - t > 3600]:
+            _QUITADAS_TS.pop(k, None)
+
+# Operaciones que no pueden solaparse sobre el MISMO destino (doble clic, reintento, dos
+# pestanas): aplicar reglas o el espejo en un router, el envio masivo de un punto... Cada
+# (pid, operacion) tiene su cerrojo: la segunda espera a la primera y despues REPLANIFICA
+# contra el router, asi que no duplica nada (auditoria A-08, CONTRATO-F2 §10.5).
+_OPS_CERROJOS = {}
+_OPS_CERROJOS_LOCK = threading.Lock()
+
+class OperacionEnCurso(Exception):
+    """Ya hay una operacion igual sobre ese destino y no termino a tiempo."""
+
+class cerrojo_operacion:
+    """`with cerrojo_operacion(pid, op):` espera (hasta `espera` s) a que termine la misma
+    operacion sobre ese destino; si no termina, OperacionEnCurso."""
+    def __init__(self, pid, op, espera=120):
+        self.pid, self.op, self.espera = pid or "", op, espera
+        with _OPS_CERROJOS_LOCK:
+            self.lk = _OPS_CERROJOS.setdefault((self.pid, op), threading.Lock())
+
+    def __enter__(self):
+        if not self.lk.acquire(timeout=self.espera):
+            raise OperacionEnCurso("ya hay otra operacion '%s' en curso sobre %s: espera a que termine"
+                                   % (self.op, self.pid or "?"))
+        return self
+
+    def __exit__(self, *_a):
+        self.lk.release()
+        return False
 
 def guardar_enviados(d, path=MK_SENT):
     # El Top del resumen es una FOTO que se regenera cada 5 min y lee este archivo para
@@ -2556,13 +2633,17 @@ def reconciliar_cuarentena(pid=None):
                 continue                       # manual o por politica -> los gestiona otro, no el auto
             if k in activas:
                 continue                       # sigue atacando -> se queda (entrada permanente)
-            lst = m.get(list_key, "")
+            # de la lista donde se puso DE VERDAD (la de su categoria, guardada al mandarla), no
+            # la vieja unica; y solo se suelta si el router confirma (auditoria A-05)
+            lst = (env[k] or {}).get("lista") or m.get(list_key, "")
             if not lst:
                 continue
             try:
-                mk_remove(ip_de(k), lista=lst, router=r)   # dejo de atacar -> liberar
+                ok_r, _err = mk_remove(ip_de(k), lista=lst, router=r)   # dejo de atacar -> liberar
             except Exception:
                 continue                       # si el router no responde, reintenta el proximo ciclo
+            if not ok_r:
+                continue
             liberadas.append(k)
             mk_log("AUTO-LIBERADO", ip_de(k), "auto", f"lista={lst} (dejo de atacar)" + _suf_nodo(k))
         if liberadas:
@@ -3428,6 +3509,8 @@ def mk_abonados(router=None):
         try: s.close()
         except Exception: pass
 
+_ABON_LOCK = threading.RLock()
+
 def refrescar_abonados():
     """Refresca el mapa IP->abonado desde el MikroTik (solo si esta configurado). En 2do plano."""
     routers = [r for r in cargar_routers() if r.get("ENABLED") == "1" and r.get("USER") and r.get("PASS")]
@@ -3437,26 +3520,38 @@ def refrescar_abonados():
     # todos y guardar la asignacion con su nodo: si no, los CPEs de los demas saldrian
     # sin nombre, o peor, se les pondria el del cliente que tiene esa misma IP en otro.
     mapa = {}
+    fallidos = set()
     for r in routers:
         try:
             parcial = mk_abonados(router=r)
         except Exception:
-            continue                       # ese router no responde: se conserva lo demas
+            fallidos.add(r["id"])          # ese router no responde: se conserva LO SUYO
+            continue
         for ip, datos in (parcial or {}).items():
             datos = dict(datos)
             datos["router"] = r["id"]
             datos["router_nombre"] = r.get("nombre") or r["id"]
             mapa[clave_cpe(ip, r["id"])] = datos      # siempre pid|ip, tambien con un solo punto
-    if not mapa:
+    if not mapa and not fallidos:
         return
-    try:
-        tmp = "%s.%d.tmp" % (ABONADOS_FILE, os.getpid())
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump({"ts": int(time.time()), "mapa": mapa}, f)
-        os.replace(tmp, ABONADOS_FILE)
-    except OSError:
-        pass
-    _registrar_hist_abonados(mapa)
+    with _ABON_LOCK:
+        # las claves de un router que no respondio se conservan del fichero (auditoria A-17:
+        # se borraba el mapa de ese punto entero); releido dentro del cerrojo, que comparte
+        # con la baja de un punto (purgar_punto)
+        if fallidos:
+            for k, v in (cargar_abonados().get("mapa") or {}).items():
+                if rid_de(k) in fallidos and k not in mapa:
+                    mapa[k] = v
+        if not mapa:
+            return
+        try:
+            tmp = "%s.%d.%d.tmp" % (ABONADOS_FILE, os.getpid(), threading.get_ident())
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump({"ts": int(time.time()), "mapa": mapa}, f)
+            os.replace(tmp, ABONADOS_FILE)
+        except OSError:
+            pass
+    _registrar_hist_abonados({k: v for k, v in mapa.items() if rid_de(k) not in fallidos})
 
 ABON_HIST_FILE = nodos.ruta("estado", "abonados-hist.jsonl")
 _ABON_HIST_MAX = 40000                     # lineas a conservar tras rotar
@@ -3604,6 +3699,7 @@ def mk_sync_enviados():
         base = {}            # id de router -> lista por defecto (la vieja unica)
         cfg = {}
         fallo = set()
+        foto = {}           # id de router -> cuando se empezo a leer (auditoria A-15)
         for r in routers:
             d = cargar_mk_de(r); cfg[r["id"]] = d
             base[r["id"]] = d.get(list_key, "")
@@ -3616,6 +3712,7 @@ def mk_sync_enviados():
             if not listas:
                 continue
             try:
+                foto[r["id"]] = time.time()
                 reales[r["id"]] = _mk_ips_listas(r, listas)
             except Exception:
                 fallo.add(r["id"])         # ese router no responde -> no tocar lo suyo
@@ -3629,6 +3726,8 @@ def mk_sync_enviados():
                 for lst, ips in por_lista.items():
                     for ip in ips:
                         k = clave_cpe(ip, rid)
+                        if _QUITADAS_TS.get((sent_path, k), 0) >= foto.get(rid, 0) - 1:
+                            continue   # se libero DESPUES de leer el router: no resucitarla (A-15)
                         if k not in env:   # esta en el router pero no en el panel -> registrarlo
                             env[k] = {"cuando": nowt, "score": "", "por": "mikrotik", "manual": True,
                                       "router": rid, "lista": lst}
@@ -3641,6 +3740,12 @@ def mk_sync_enviados():
                 lst = v.get("lista") or base.get(rid, "")
                 if not lst:
                     continue
+                try:
+                    reciente = float(v.get("cuando") or 0) >= foto.get(rid, 0) - 1
+                except (TypeError, ValueError):
+                    reciente = False
+                if reciente:
+                    continue   # anotada DESPUES de leer el router: la foto no la conoce (A-15)
                 if ip_de(k) in reales[rid].get(lst, ()):
                     v["en_router"] = True; v["sync_ts"] = nowt
                     v.pop("falta_desde", None)
@@ -3685,7 +3790,7 @@ def recargar_listas(router, quien="?"):
             if ip in hay.get(lst, ()):
                 e["ya"] += 1
                 continue
-            if nunca_bloquear(ip):
+            if nunca_bloquear(ip, rid):
                 e["nunca"] += 1
                 continue
             words = ["/ip/firewall/address-list/add", "=list=" + lst, "=address=" + ip,
@@ -3740,8 +3845,24 @@ def cargar_nunca():
     except OSError:
         return ""
 
+def _nunca_entrada(s):
+    """(pid o "", IP o CIDR) de una linea de la allowlist, o None si no vale. Una IP privada
+    de abonado se repite entre puntos: `p001|10.0.0.5` o `p001|10.0.0.0/24` protege solo en
+    ese punto; sin `pid|`, en todos (DATOS.md: nunca_bloquear con punto, NULL = toda la empresa)."""
+    pid, sep, red = s.partition("|")
+    if not sep:
+        pid, red = "", s
+    elif not nodos.pid_valido(pid):
+        return None
+    try:
+        ipaddress.ip_network(red, strict=False) if "/" in red else ipaddress.ip_address(red)
+    except ValueError:
+        return None
+    return pid, red
+
 def guardar_nunca(texto):
-    """Guarda la allowlist; conserva solo lineas validas (IP o CIDR) o comentarios."""
+    """Guarda la allowlist; conserva solo lineas validas (IP o CIDR, con `pid|` delante si
+    vale solo en ese punto) o comentarios."""
     limpio = []
     for l in (texto or "").splitlines():
         s = l.split("#", 1)[0].strip()
@@ -3749,13 +3870,10 @@ def guardar_nunca(texto):
             if l.strip().startswith("#"):
                 limpio.append(l.strip()[:120])
             continue
-        try:
-            ipaddress.ip_network(s, strict=False) if "/" in s else ipaddress.ip_address(s)
+        if _nunca_entrada(s) is not None:
             limpio.append(s)
-        except ValueError:
-            pass
     try:
-        tmp = NUNCA_FILE + ".tmp"
+        tmp = "%s.%d.%d.tmp" % (NUNCA_FILE, os.getpid(), threading.get_ident())
         open(tmp, "w", encoding="utf-8").write("\n".join(limpio) + ("\n" if limpio else ""))
         os.replace(tmp, NUNCA_FILE)
     except OSError:
@@ -3854,11 +3972,17 @@ def _nunca_listas():
         t = l.split("#", 1)[0].strip()
         if not t:
             continue
+        pid, red = "", t
+        if "|" in t:                          # pNNN|IP o pNNN|CIDR: solo en ese punto
+            e = _nunca_entrada(t)
+            if e is None:
+                continue
+            pid, red = e
         try:
-            if "/" in t:
-                nets.append(ipaddress.ip_network(t, strict=False))
+            if "/" in red:
+                nets.append((pid, ipaddress.ip_network(red, strict=False)))
             else:
-                ips.add(t)
+                ips.add((pid, str(ipaddress.ip_address(red))))
         except ValueError:
             pass
     hecho = (frozenset(ips), tuple(nets))     # inmutables: se comparten entre llamadas
@@ -3866,15 +3990,22 @@ def _nunca_listas():
     _NUNCA_CACHE[clave] = hecho
     return hecho
 
-def nunca_bloquear(ip):
+def nunca_bloquear(ip, pid=None):
+    """¿Esta en 'nunca bloquear'? `ip` puede ser la identidad `pid|ip` o la IP con su `pid`.
+    Una entrada sin punto vale en todos; una `pNNN|...` solo para ese punto (auditoria A-12:
+    la IP pelada eximia tambien al abonado con la misma IP privada en OTRO punto). Sin punto
+    conocido solo cuentan las entradas globales."""
+    if pid is None and "|" in (ip or ""):
+        pid, ip = rid_de(ip), ip_de(ip)
+    pid = pid or ""
     ips, nets = _nunca_listas()
-    if ip in ips:
-        return True
     try:
         a = ipaddress.ip_address(ip)
-        return any(a in n for n in nets)
     except ValueError:
         return False
+    if ("", str(a)) in ips or (pid and (pid, str(a)) in ips):
+        return True
+    return any(a.version == n.version and a in n for p, n in nets if p == "" or (pid and p == pid))
 
 # --- destinos confiables (falsos positivos): un DNS u otro destino que dispara alertas en
 # muchos CPEs. Al marcarlo, el generador deja de contar sus alertas y se liberan los CPEs
@@ -3902,9 +4033,23 @@ def _dest_ok_set():
     # acabar dentro de la cache
     return set(hecho)
 
+_DEST_OK_LOCK = threading.RLock()
+
+def modificar_dest_ok(poner=None, quitar=None):
+    """Pone o quita un destino de confianza leyendo y guardando DENTRO del cerrojo: con la
+    foto de antes, dos operadores a la vez se pisaban (auditoria A-03)."""
+    with _DEST_OK_LOCK:
+        cur = set(x for x in (l.split("#", 1)[0].strip() for l in cargar_dest_ok().splitlines()) if x)
+        if poner:
+            cur.add(poner)
+        if quitar:
+            cur.discard(quitar)
+        guardar_dest_ok_set(cur)
+        return cur
+
 def guardar_dest_ok_set(conjunto):
     try:
-        tmp = DEST_OK_FILE + ".tmp"
+        tmp = "%s.%d.%d.tmp" % (DEST_OK_FILE, os.getpid(), threading.get_ident())
         open(tmp, "w", encoding="utf-8").write("\n".join(sorted(conjunto)) + ("\n" if conjunto else ""))
         os.replace(tmp, DEST_OK_FILE)
     except OSError:
@@ -3994,8 +4139,7 @@ def excluir_destino(d):
         ipaddress.ip_address(d)
     except ValueError:
         return 0, "IP de destino invalida"
-    cur = _dest_ok_set(); cur.add(d)
-    guardar_dest_ok_set(cur)                       # 1) destino a la lista de confiables
+    modificar_dest_ok(poner=d)                     # 1) destino a la lista de confiables
     liberados = 0
     cand_dst = {}                                  # destinos por CPE del reporte de CADA punto (respaldo)
     for pid in nodos.pids():                       # la exclusion de un destino publico vale en todos
@@ -4018,11 +4162,16 @@ def excluir_destino(d):
                 except (ValueError, LookupError):
                     continue                       # sin punto valido no hay a quien pedirselo
                 dr = cargar_mk_de(r); lst = env[k].get("lista") or dr.get(list_key, "")
+                # sin router listo (modo ensayo) o sin confirmacion del router NO se da por
+                # liberado: el CPE seguiria bloqueado y fuera del panel (auditoria A-05, A-20)
+                if not (lst and mk_listo(dr)):
+                    continue
                 try:
-                    if lst and dr.get("ENABLED") == "1":
-                        mk_remove(ip_de(k), lista=lst, router=r)
+                    ok_r, _err = mk_remove(ip_de(k), lista=lst, router=r)
                 except Exception:
                     continue                       # no se pudo: se queda registrada, como en el router
+                if not ok_r:
+                    continue
                 sueltas.append(k); liberados += 1
                 mk_log("LIBERADO-FALSO-POSITIVO", ip_de(k), getattr(CTX, "user", "?"),
                        f"destino={d} lista={lst}" + _suf_nodo(k))
@@ -4970,18 +5119,25 @@ def aplicar_politicas(pid=None):
             mk_log("POLITICA-LIBERADO", ip_de(k), "politica", f"lista={lst}" + _suf_nodo(k))
     _registrar_enviados(MK_SENT_DNS, {}, sueltas_d)
 
-def _registrar_enviados(path, nuevas, sueltas):
+def _registrar_enviados(path, nuevas, sueltas, pisar=False):
     """Anota altas y bajas en el registro RELEYENDOLO dentro del cerrojo: entre que se
     decide y se guarda pasan segundos hablando con el router, y otro hilo (una peticion,
-    el barrido rapido de otro punto) puede haber anotado algo mientras tanto."""
+    el barrido rapido de otro punto) puede haber anotado algo mientras tanto. Con
+    `pisar`, una entrada nueva sustituye a la que hubiera (un reenvio manual la renueva).
+    Es la UNICA via de escritura de los registros de enviados desde las peticiones
+    (auditoria A-03: guardar una foto vieja borraba o resucitaba entradas de otros)."""
     if not nuevas and not sueltas:
         return
     with _ENV_LOCK:
         env = cargar_enviados(path)
         for k in sueltas:
-            env.pop(k, None)
+            if env.pop(k, None) is not None:
+                _marcar_quitada(path, k)
         for k, v in nuevas.items():
-            env.setdefault(k, v)
+            if pisar:
+                env[k] = v
+            else:
+                env.setdefault(k, v)
         guardar_enviados(env, path)
 
 # --- Evidencia reciente antes de actuar (CONTRATO-F2 §10.4) ------------------------------
@@ -5044,17 +5200,23 @@ def evidencia_reciente(clave, cq=None, ahora=None):
     ahora = ahora or time.time()
     pid = nodos.exigir_pid(rid_de(clave or ""))
     ip = ip_de(clave)
+    # el reporte de SU punto y, si no lo trae, el de «Todos» (lo genera el mismo generador
+    # con las entradas de cada punto y su `router`)
     if cq is None:
-        cq = _cargar_cuarentena(pid)
-    lim = evidencia_max_s(cq)
+        cqs = [_cargar_cuarentena(pid), _cargar_cuarentena(nodos.TODOS)]
+    else:
+        cqs = list(cq) if isinstance(cq, (list, tuple)) else [cq]
+    lim = evidencia_max_s(cqs[0])
     ult = 0
-    for key in ("candidatos", "dns_candidatos", "top_riesgo"):
-        for c in (cq or {}).get(key, []):
-            if c.get("ip") == ip and (c.get("router") or pid) == pid:
-                try:
-                    ult = max(ult, float(c.get("ultima") or 0))
-                except (TypeError, ValueError):
-                    pass
+    for i, cq_ in enumerate(cqs):
+        for key in ("candidatos", "dns_candidatos", "top_riesgo"):
+            for c in (cq_ or {}).get(key, []):
+                # sin `router` solo vale en el reporte del propio punto (el primero)
+                if c.get("ip") == ip and (c.get("router") or (pid if i == 0 else "")) == pid:
+                    try:
+                        ult = max(ult, float(c.get("ultima") or 0))
+                    except (TypeError, ValueError):
+                        pass
     ult = max(ult, _ultimas_alertas(pid).get(ip, 0))
     if not ult:
         return {"ok": False, "edad_s": None, "limite_s": lim,
@@ -5064,6 +5226,18 @@ def evidencia_reciente(clave, cq=None, ahora=None):
     return {"ok": ok, "edad_s": edad, "limite_s": lim,
             "detalle": ("ultima alerta hace %s" % _dura_txt(edad)) + ("" if ok else
                        " (mas vieja que %s: la IP puede ser hoy de otro abonado)" % _dura_txt(lim))}
+
+def evidencia_sin_confirmar(clave, q):
+    """"" si la evidencia de `pid|ip` es reciente o el operador ya confirmo el envio con la
+    antiguedad a la vista (campo confirmar_vieja=1 del formulario); si no, el detalle de la
+    antiguedad (CONTRATO-F2 §10.4, auditoria A-06: la manual pide confirmacion explicita)."""
+    if (q.get("confirmar_vieja", [""])[0] or "") == "1":
+        return ""
+    try:
+        ev = evidencia_reciente(clave)
+    except Exception as ex:
+        return "no se pudo fechar la evidencia (%s)" % str(ex)[:80]
+    return "" if ev.get("ok") else (ev.get("detalle") or "evidencia vieja")
 
 def _dura_txt(s):
     s = int(s)
@@ -5131,7 +5305,7 @@ def barrido_alto_rapido(pid=None, maxbytes=4_000_000):
         _cat = "" if _es_cnc else (rep_categoria(dst) if dst else "")
         if not _es_cnc and (not _cat or _cat in _FAST_REP_CONTEXTO):
             continue                             # ni firma de infeccion ni destino fichado (Tor no cuenta)
-        if not src_ip or nunca_bloquear(src_ip) or dst in dest_ok:
+        if not src_ip or nunca_bloquear(src_ip, pid) or dst in dest_ok:
             continue
         if es_publica_declarada(src_ip):
             continue                             # es tu propia salida NAT, no un abonado
@@ -5466,6 +5640,23 @@ def telegram_set(token=None, chat=None):
     os.chmod(tmp, 0o600)
     os.replace(tmp, REPORT_CONF)
     return True
+
+def telegram_configurado():
+    """¿Hay token de Telegram guardado? (nunca se devuelve el valor, solo si existe)."""
+    try:
+        return any(ln.strip().startswith("TELEGRAM_TOKEN=") and ln.split("=", 1)[1].strip()
+                   for ln in open(REPORT_CONF, encoding="utf-8"))
+    except OSError:
+        return False
+
+def telegram_chat():
+    try:
+        for ln in open(REPORT_CONF, encoding="utf-8"):
+            if ln.strip().startswith("TELEGRAM_CHAT_ID="):
+                return ln.split("=", 1)[1].strip()
+    except OSError:
+        pass
+    return ""
 
 def migrar_secretos():
     """Al arrancar: cifra los secretos que sigan en claro (configuracion vieja o
@@ -6174,15 +6365,16 @@ def origen_publicas():
     return {}
 
 def guardar_publicas(d, origen=None):
-    if origen is None:
-        origen = origen_publicas()
-    # el origen se poda con las entradas: si una ya no esta declarada, sobra su etiqueta
-    origen = {k: {a: b for a, b in (v or {}).items() if a in (d.get(k) or [])}
-              for k, v in origen.items() if k in d}
-    tmp = PUBLICAS_CONF + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump({"nodos": d, "origen": origen}, f, ensure_ascii=False, indent=1)
-    os.replace(tmp, PUBLICAS_CONF)
+    with _PUB_LOCK:     # quien lee-modifica-guarda lo hace dentro del mismo cerrojo (A-16)
+        if origen is None:
+            origen = origen_publicas()
+        # el origen se poda con las entradas: si una ya no esta declarada, sobra su etiqueta
+        origen = {k: {a: b for a, b in (v or {}).items() if a in (d.get(k) or [])}
+                  for k, v in origen.items() if k in d}
+        tmp = "%s.%d.%d.tmp" % (PUBLICAS_CONF, os.getpid(), threading.get_ident())
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump({"nodos": d, "origen": origen}, f, ensure_ascii=False, indent=1)
+        os.replace(tmp, PUBLICAS_CONF)
     return d
 
 def es_publica_declarada(ip):
@@ -6264,24 +6456,25 @@ def guardar_publicas_de(rid, texto, origen_nuevas=""):
             v, porque = aidb_ip_valida(t)
             (ok.append(t) if v else mal.append(f"{t} ({porque})"))
     ok, tapadas = cubrir_publicas(sorted(set(ok)))
-    d = cargar_publicas()
-    antes = set(d.get(rid) or [])
-    org = origen_publicas()
-    prev = org.get(rid, {})
-    nuevo = {}
-    for e in ok:
-        if e in prev:
-            nuevo[e] = prev[e]                 # ya se sabia: no se reescribe
-        elif e not in antes and origen_nuevas:
-            nuevo[e] = origen_nuevas           # entra ahora y se sabe por donde
-        # si no, queda sin etiqueta: origen desconocido
-    if ok:
-        d[rid] = ok
-        org[rid] = nuevo
-    else:
-        d.pop(rid, None)
-        org.pop(rid, None)
-    guardar_publicas(d, org)
+    with _PUB_LOCK:     # releido y guardado dentro del cerrojo: no pisa lo de otro nodo (A-16)
+        d = cargar_publicas()
+        antes = set(d.get(rid) or [])
+        org = origen_publicas()
+        prev = org.get(rid, {})
+        nuevo = {}
+        for e in ok:
+            if e in prev:
+                nuevo[e] = prev[e]                 # ya se sabia: no se reescribe
+            elif e not in antes and origen_nuevas:
+                nuevo[e] = origen_nuevas           # entra ahora y se sabe por donde
+            # si no, queda sin etiqueta: origen desconocido
+        if ok:
+            d[rid] = ok
+            org[rid] = nuevo
+        else:
+            d.pop(rid, None)
+            org.pop(rid, None)
+        guardar_publicas(d, org)
     # las tapadas no son un error del usuario: se dicen aparte de las rechazadas
     return ok, mal, tapadas
 
@@ -6823,12 +7016,12 @@ def rango_detalle_html(dat, esc=None, scb=None, tope=RANGO_TOPE):
     filas = "".join(
         "<tr><td class=mono>%s</td><td class=num>%s</td><td class=num>%s</td>"
         "<td class=mono>%s</td><td>%s</td>"
-        "<td><a class=hint href='#' onclick=\"return verQueHace(this,'%s')\">"
+        "<td><a class=hint href='#' onclick=\"return verQueHace(this,%s)\">"
         "ver que hace</a></td></tr>"
         "<tr class=fichafila hidden><td colspan=6 class=fichacel></td></tr>"
         % (esc(str(a[0])), scb(int(a[1]), corto=True),
            "{:,}".format(int(a[2])).replace(",", "."), esc(str(a[3])), esc(str(a[4])),
-           esc(str(a[0])))
+           js_attr(a[0]))
         for a in den[:tope])
     peor = sum(1 for a in den if int(a[1]) >= 75)
     aviso = ("<p class=hint style='margin:8px 0 4px'>Se muestran las %d peores de %s. "
@@ -7807,6 +8000,35 @@ def aidb_cats_txt(cats, sep=", "):
     return sep.join(out)
 
 _USR_LOCK = threading.RLock()
+_USR_PROFUNDIDAD = [0]
+
+@contextlib.contextmanager
+def usuarios_cerrojo():
+    """Cerrojo para leer-modificar-guardar usuarios.json ENTRE PROCESOS: el panel y
+    `ids-panel crear-admin|restablecer`, que corre en otro contenedor sobre el mismo fichero
+    (auditoria B-22: un restablecer a la vez que un admin editaba devolvia el hash viejo).
+    flock sobre usuarios.json.lock (POSIX) mas el cerrojo del proceso; reentrante en el hilo."""
+    with _USR_LOCK:
+        _USR_PROFUNDIDAD[0] += 1
+        fd = None
+        try:
+            if _USR_PROFUNDIDAD[0] == 1:
+                try:
+                    import fcntl
+                except ImportError:          # Windows (pruebas): basta el cerrojo del proceso
+                    fcntl = None
+                if fcntl is not None:
+                    os.makedirs(os.path.dirname(USERS_FILE), mode=0o700, exist_ok=True)
+                    fd = os.open(USERS_FILE + ".lock", os.O_RDWR | os.O_CREAT, 0o600)
+                    fcntl.flock(fd, fcntl.LOCK_EX)
+            yield
+        finally:
+            if fd is not None:
+                try:
+                    os.close(fd)             # cerrar suelta el flock
+                except OSError:
+                    pass
+            _USR_PROFUNDIDAD[0] -= 1
 
 def guardar_usuarios(lst):
     """Lista de usuarios (formato del dashboard) en conf/usuarios.json, 600 y atomico. La
@@ -8014,6 +8236,45 @@ def _provisionar_geo():
 
 # --- tareas de fondo ----------------------------------------------------------------------
 _PARAR = threading.Event()          # SIGTERM: los hilos de fondo terminan su vuelta y salen
+LATIDO = {}                         # hilo -> ultima vuelta (epoch): la salud lo puede mirar
+_HILOS = {}                         # nombre -> (funcion, Thread) de los hilos supervisados
+SUPERVISAR_CADA = 30
+
+def lanzar_hilo(nombre, fn):
+    """Arranca un hilo de fondo supervisado (ver supervisar_hilos)."""
+    t = threading.Thread(target=fn, name=nombre, daemon=True)
+    _HILOS[nombre] = (fn, t)
+    t.start()
+    return t
+
+def supervisar_hilos():
+    """Una pasada del supervisor: un hilo de fondo que murio sin que se pidiera parar se
+    vuelve a lanzar y queda dicho en el log y en la bitacora (auditoria A-10: si moria el
+    refrescador se paraban las tareas de fondo de TODOS los puntos sin que nadie lo viera).
+    Devuelve los nombres relanzados."""
+    relanzados = []
+    if _PARAR.is_set():
+        return relanzados
+    for nombre, (fn, t) in list(_HILOS.items()):
+        if t.is_alive():
+            continue
+        sys.stderr.write("panel: AVISO: el hilo de fondo '%s' murio; se vuelve a lanzar\n" % nombre)
+        try:
+            bitacora("HILO-RELANZADO", "el hilo de fondo '%s' se habia parado y se relanzo" % nombre,
+                     quien="panel")
+        except Exception:
+            pass
+        lanzar_hilo(nombre, fn)
+        relanzados.append(nombre)
+    return relanzados
+
+def supervisor():
+    while not _PARAR.wait(SUPERVISAR_CADA):
+        try:
+            supervisar_hilos()
+        except Exception as _e:
+            sys.stderr.write("supervisor: %s\n" % _e)
+
 GEN_TIMEOUT = 600
 GEN_RLIMIT_AS = 1024 * 1024 * 1024  # el generador corre con 1 GiB de memoria como mucho (CONTRATO-F2 §6)
 _GEN_LOCK = threading.Lock()        # de un nodo en uno, nunca en paralelo
@@ -8050,9 +8311,17 @@ def _por_nodo(fn, pids, *args):
     for pid in pids:
         if _PARAR.is_set():
             return
+        # un punto dado de baja (o que ya no esta en estado.json) no se toca: sus tareas
+        # volverian a crear nodos/<pid>/ despues de la purga (auditoria A-09). El cerrojo
+        # (pid, "fondo") lo toma tambien purgar_punto: la baja espera a la tarea en curso.
+        if pid in _BAJAS or not nodos.existe(pid):
+            continue
         try:
-            with nodos.contexto(pid):
-                fn(pid, *args)
+            with cerrojo_operacion(pid, "fondo", espera=GEN_TIMEOUT + 60):
+                if pid in _BAJAS or not nodos.existe(pid):
+                    continue
+                with nodos.contexto(pid):
+                    fn(pid, *args)
         except Exception as _e:
             sys.stderr.write("%s(%s): %s\n" % (getattr(fn, "__name__", "?"), pid, _e))
 
@@ -8099,94 +8368,135 @@ def refrescador():
     ult_forzado = 0.0   # ultima regeneracion pedida a mano/por cambios (ver REGEN_MIN_SECS)
     ult_cond = 0.0      # ultimo reporte de conducta (varios dias)
     ult_hist = 0.0      # ultima ingesta al historial persistente
+    ult_bajas = 0.0     # ultimo barrido de restos de puntos dados de baja
+    estado = dict(ult_poda=ult_poda, ult_sensor=ult_sensor, ult_fast=ult_fast, ult_dur=ult_dur,
+                  ult_fin=ult_fin, ult_aidb=ult_aidb, ult_pub=ult_pub, ult_diag=ult_diag,
+                  ult_feeds=ult_feeds, ult_forzado=ult_forzado, ult_cond=ult_cond, ult_hist=ult_hist,
+                  ult_bajas=ult_bajas)
     while not _PARAR.is_set():
-        global FORCE_REGEN
-        pids = nodos.pids()
-        if time.time() - ult_fast > 60:        # cada ~60s: enviar YA los ALTO/infeccion confirmada
-            _por_nodo(barrido_alto_rapido, pids)
-            ult_fast = time.time()
-        if time.time() - ult_poda > 86400:     # 1x/dia: podar logs (15d) y reportes guardados (3d)
-            try: podar_logs()
-            except Exception: pass
-            try: podar_reportes()
-            except Exception: pass
-            ult_poda = time.time()
-        if time.time() - ult_sensor > 60:      # cada ~60s: salud del sensor de cada punto
-            _por_nodo(medir_sensor, pids)
-            ult_sensor = time.time()
-        if time.time() - ult_feeds > FEEDS_CADA:   # cada 15 min: feeds de reputacion
-            try: actualizar_feeds_async()
-            except Exception as _e: sys.stderr.write("feeds: %s\n" % _e)
-            ult_feeds = time.time()
-        if time.time() - ult_aidb > 300:       # cada ~5 min: unos pocos destinos a AbuseIPDB
-            try: precargar_abuseipdb()
-            except Exception as _e: sys.stderr.write("precarga abuseipdb: %s\n" % _e)
-            ult_aidb = time.time()
-        if time.time() - ult_diag > 600:       # cada ~10 min: que le falta a cada router
-            try: guardar_diagnostico()
-            except Exception as _e: sys.stderr.write("diagnostico mikrotik: %s\n" % _e)
-            ult_diag = time.time()
-        if time.time() - ult_pub > 6 * 3600:   # cada ~6 h: reputacion de TUS IPs publicas
-            try: vigilar_publicas()
-            except Exception as _e: sys.stderr.write("vigilancia de publicas: %s\n" % _e)
-            try: vigilar_dnsbl()     # y las listas negras, que son las que de verdad banean
-            except Exception as _e: sys.stderr.write("vigilancia dnsbl: %s\n" % _e)
-            ult_pub = time.time()
-        # historial: barato porque es incremental (solo lo nuevo desde la marca).
-        # Va ANTES del informe para que el informe lea una base ya al dia. Una base por punto.
-        if time.time() - ult_hist > HIST_CADA:
-            ult_hist = time.time()
-            _por_nodo(hist_ingerir, pids)
-        # reporte de varios dias: caro (recorre los rotados), asi que espaciado; el boton
-        # de la pestana lo adelanta poniendo FORCE_CONDUCTA
-        if FORCE_CONDUCTA or (time.time() - ult_cond > CONDUCTA_CADA):
-            globals()["FORCE_CONDUCTA"] = False
-            ult_cond = time.time()
-            _por_nodo(_conducta_nodo, pids)
-        # una regeneracion FORZADA se atiende como mucho cada REGEN_MIN_SECS; la marca no
-        # se pierde, solo se agrupa (un lote de cambios = una sola generacion)
-        forzado = FORCE_REGEN and (time.time() - ult_forzado >= REGEN_MIN_SECS)
-        stale = forzado
-        for nodo in pids + ([nodos.TODOS] if pids else []):
-            if stale:
-                break
-            nr = newest_report(nodo)
-            stale = (nr is None) or (time.time() - os.path.getmtime(nr) >= REFRESH_SECS)
-        # FRENO: si una corrida tardo mas que el propio ciclo, esperar al menos lo que
-        # tardo antes de lanzar la siguiente. Sin esto, en una caja donde generar lleva
-        # 9 minutos y el ciclo son 5, se encadenan una tras otra y queda un nucleo al
-        # 100 % de forma permanente; el reporte no sale antes por eso, y la maquina que
-        # tiene que analizar el trafico se queda sin CPU. Como mucho, medio nucleo.
-        if stale and ult_dur > REFRESH_SECS and (time.time() - ult_fin) < ult_dur:
-            stale = False
-        if stale and pids:
-            if forzado:
-                ult_forzado = time.time()
+        LATIDO["refrescador"] = time.time()
+        try:
+            _vuelta_refrescador(estado)
+        except Exception:
+            # una vuelta que revienta NO mata el hilo: antes se paraban las tareas de fondo
+            # de TODOS los puntos hasta reiniciar el panel (auditoria A-10)
+            det = traceback.format_exc()
+            sys.stderr.write("refrescador: vuelta fallida\n%s" % det)
             try:
-                mk_sync_enviados()   # el registro del panel refleja la lista real de cada MikroTik
+                bitacora("FONDO-ERROR", "refrescador: %s" % det.strip().splitlines()[-1][:200], quien="panel")
             except Exception:
                 pass
-            # se limpia DESPUES del sync: lo que cambie el sync ya entra en esta misma
-            # generacion, asi no queda pidiendo otra identica para el ciclo siguiente
-            FORCE_REGEN = False
-            try:
-                refrescar_abonados()  # mapa pid|IP->abonado (PPPoE/DHCP) para la ficha de evidencia
-            except Exception:
-                pass
-            # ventana del resumen en minutos (config VENTANA_MIN; por defecto 24h)
-            vmin = ventana_actual()
-            _t_gen = time.time()
-            _por_nodo(_ciclo_nodo, pids, vmin)
-            if not _PARAR.is_set():
-                generar_reporte(nodos.TODOS, vmin)   # la vista acumulada, al final y sola
-            ult_dur = time.time() - _t_gen
-            ult_fin = time.time()
-            if ult_dur > REFRESH_SECS:
-                # que quede dicho: si tarda mas que el ciclo, el operador tiene que
-                # saberlo (suele ser un eve.json/dns.json enorme)
-                sys.stderr.write("generar los reportes tardo %d s (ciclo %d s): se espaciaran las corridas\n"
-                                 % (ult_dur, REFRESH_SECS))
         _PARAR.wait(10)   # poll corto para atender un cambio de ventana casi al instante
+
+def _vuelta_refrescador(estado):
+    """Una vuelta del refrescador; `estado` guarda las marcas de tiempo entre vueltas."""
+    global FORCE_REGEN
+    (ult_poda, ult_sensor, ult_fast, ult_dur, ult_fin, ult_aidb, ult_pub, ult_diag, ult_feeds,
+     ult_forzado, ult_cond, ult_hist, ult_bajas) = (
+        estado[k] for k in ("ult_poda", "ult_sensor", "ult_fast", "ult_dur", "ult_fin", "ult_aidb",
+                            "ult_pub", "ult_diag", "ult_feeds", "ult_forzado", "ult_cond", "ult_hist",
+                            "ult_bajas"))
+    # bajas terminadas que nadie abrio en Puntos: las limpia puntos_web (F2) en cada vuelta
+    _barrer_pw = getattr(puntos_web, "barrer_bajas", None)
+    if _barrer_pw is not None:
+        try: _barrer_pw(sys.modules[__name__])
+        except Exception as _e: sys.stderr.write("puntos_web.barrer_bajas: %s\n" % _e)
+    if time.time() - ult_bajas > 300:      # cada ~5 min: restos de puntos que ya no estan (CLI, reinicio)
+        ult_bajas = time.time()
+        try: barrer_bajas()
+        except Exception as _e: sys.stderr.write("barrer_bajas: %s\n" % _e)
+    pids = pids_activos()
+    if time.time() - ult_fast > 60:        # cada ~60s: enviar YA los ALTO/infeccion confirmada
+        _por_nodo(barrido_alto_rapido, pids)
+        ult_fast = time.time()
+    if time.time() - ult_poda > 86400:     # 1x/dia: podar logs (15d) y reportes guardados (3d)
+        try: podar_logs()
+        except Exception: pass
+        try: podar_reportes()
+        except Exception: pass
+        ult_poda = time.time()
+    if time.time() - ult_sensor > 60:      # cada ~60s: salud del sensor de cada punto
+        _por_nodo(medir_sensor, pids)
+        ult_sensor = time.time()
+    if time.time() - ult_feeds > FEEDS_CADA:   # cada 15 min: feeds de reputacion
+        try: actualizar_feeds_async()
+        except Exception as _e: sys.stderr.write("feeds: %s\n" % _e)
+        ult_feeds = time.time()
+    if time.time() - ult_aidb > 300:       # cada ~5 min: unos pocos destinos a AbuseIPDB
+        try: precargar_abuseipdb()
+        except Exception as _e: sys.stderr.write("precarga abuseipdb: %s\n" % _e)
+        ult_aidb = time.time()
+    if time.time() - ult_diag > 600:       # cada ~10 min: que le falta a cada router
+        try: guardar_diagnostico()
+        except Exception as _e: sys.stderr.write("diagnostico mikrotik: %s\n" % _e)
+        ult_diag = time.time()
+    if time.time() - ult_pub > 6 * 3600:   # cada ~6 h: reputacion de TUS IPs publicas
+        try: vigilar_publicas()
+        except Exception as _e: sys.stderr.write("vigilancia de publicas: %s\n" % _e)
+        try: vigilar_dnsbl()     # y las listas negras, que son las que de verdad banean
+        except Exception as _e: sys.stderr.write("vigilancia dnsbl: %s\n" % _e)
+        ult_pub = time.time()
+    # historial: barato porque es incremental (solo lo nuevo desde la marca).
+    # Va ANTES del informe para que el informe lea una base ya al dia. Una base por punto.
+    if time.time() - ult_hist > HIST_CADA:
+        ult_hist = time.time()
+        _por_nodo(hist_ingerir, pids)
+    # reporte de varios dias: caro (recorre los rotados), asi que espaciado; el boton
+    # de la pestana lo adelanta poniendo FORCE_CONDUCTA
+    if FORCE_CONDUCTA or (time.time() - ult_cond > CONDUCTA_CADA):
+        globals()["FORCE_CONDUCTA"] = False
+        ult_cond = time.time()
+        _por_nodo(_conducta_nodo, pids)
+    # una regeneracion FORZADA se atiende como mucho cada REGEN_MIN_SECS; la marca no
+    # se pierde, solo se agrupa (un lote de cambios = una sola generacion)
+    forzado = FORCE_REGEN and (time.time() - ult_forzado >= REGEN_MIN_SECS)
+    stale = forzado
+    for nodo in pids + ([nodos.TODOS] if pids else []):
+        if stale:
+            break
+        nr = newest_report(nodo)
+        try:
+            stale = (nr is None) or (time.time() - os.path.getmtime(nr) >= REFRESH_SECS)
+        except OSError:
+            stale = True       # se borro entre medias (baja de un punto): toca regenerar (A-10)
+    # FRENO: si una corrida tardo mas que el propio ciclo, esperar al menos lo que
+    # tardo antes de lanzar la siguiente. Sin esto, en una caja donde generar lleva
+    # 9 minutos y el ciclo son 5, se encadenan una tras otra y queda un nucleo al
+    # 100 % de forma permanente; el reporte no sale antes por eso, y la maquina que
+    # tiene que analizar el trafico se queda sin CPU. Como mucho, medio nucleo.
+    if stale and ult_dur > REFRESH_SECS and (time.time() - ult_fin) < ult_dur:
+        stale = False
+    if stale and pids:
+        if forzado:
+            ult_forzado = time.time()
+        try:
+            mk_sync_enviados()   # el registro del panel refleja la lista real de cada MikroTik
+        except Exception:
+            pass
+        # se limpia DESPUES del sync: lo que cambie el sync ya entra en esta misma
+        # generacion, asi no queda pidiendo otra identica para el ciclo siguiente
+        FORCE_REGEN = False
+        try:
+            refrescar_abonados()  # mapa pid|IP->abonado (PPPoE/DHCP) para la ficha de evidencia
+        except Exception:
+            pass
+        # ventana del resumen en minutos (config VENTANA_MIN; por defecto 24h)
+        vmin = ventana_actual()
+        _t_gen = time.time()
+        _por_nodo(_ciclo_nodo, pids, vmin)
+        if not _PARAR.is_set():
+            generar_reporte(nodos.TODOS, vmin)   # la vista acumulada, al final y sola
+        ult_dur = time.time() - _t_gen
+        ult_fin = time.time()
+        if ult_dur > REFRESH_SECS:
+            # que quede dicho: si tarda mas que el ciclo, el operador tiene que
+            # saberlo (suele ser un eve.json/dns.json enorme)
+            sys.stderr.write("generar los reportes tardo %d s (ciclo %d s): se espaciaran las corridas\n"
+                             % (ult_dur, REFRESH_SECS))
+    estado.update(ult_poda=ult_poda, ult_sensor=ult_sensor, ult_fast=ult_fast, ult_dur=ult_dur,
+                  ult_fin=ult_fin, ult_aidb=ult_aidb, ult_pub=ult_pub, ult_diag=ult_diag,
+                  ult_feeds=ult_feeds, ult_forzado=ult_forzado, ult_cond=ult_cond, ult_hist=ult_hist,
+                  ult_bajas=ult_bajas)
 
 # --- Informe diario por Telegram (07:30 en IDS_TZ) ----------------------------------------
 INFORME_BIN = os.path.join(_AQUI, "informe_diario.py")
@@ -8694,9 +9004,50 @@ def _espejo_conexion(pid):
         raise ValueError("el punto %s no tiene usuario/clave de la API: configuralos en Puntos -> API" % pid)
     return pid, r, mk_conectar(d, timeout=15)
 
+def espejo_huella(lineas):
+    """Huella de un plan del espejo: sha256 de sus ordenes (las de la vista previa, una por
+    linea), recortada a 32. La misma cuenta que hace el apartado Puntos con lo que ensena."""
+    return hashlib.sha256("\n".join(str(x) for x in (lineas or [])).encode("utf-8")).hexdigest()[:32]
+
+HUELLA_VACIA = espejo_huella([])
+
+_RE_ACCEPT = re.compile(r"\baction\s*=\s*accept\b")
+
+def _espejo_tiene_accept(plan):
+    """El espejo NUNCA puede autorizar trafico (OPERACION §2): ninguna orden con action=accept,
+    ni en lo que se ensena (`terminal`) ni en lo que se manda (`cambios`)."""
+    if any(_RE_ACCEPT.search(str(x)) for x in (plan.get("terminal") or [])):
+        return True
+    return any(str(a).strip() == "=action=accept"
+               for c in (plan.get("cambios") or []) for a in (c.get("args") or []))
+
+def _espejo_vista(plan, mensaje=""):
+    """El plan REAL de mikrotik_init.plan() en la forma del apartado Puntos (auditoria A-01):
+    {"ok", "mensaje", "lineas" (= `terminal`, una orden por cambio), "avisos" (los
+    informativos y los bloqueos), "bloqueos", "huella", "aplicable", "cambios"}. Un plan con
+    bloqueos o con un `accept` sale con ok=False; uno vacio, ok y sin huella (no hay nada
+    que aplicar)."""
+    lineas = [str(x) for x in (plan.get("terminal") or [])]
+    bloqueos = [str(x) for x in (plan.get("bloqueos") or [])]
+    avisos = [str(x) for x in (plan.get("avisos") or [])] + ["NO SE PUEDE APLICAR: " + x for x in bloqueos]
+    ok, aplicable = True, bool(lineas) and bool(plan.get("cambios"))
+    if _espejo_tiene_accept(plan):
+        ok, aplicable = False, False
+        mensaje = ("el plan incluye una regla accept y el espejo nunca puede autorizar trafico: "
+                   "no se aplica. Avisa al soporte")
+    elif bloqueos:
+        ok, aplicable = False, False
+        mensaje = "no se puede aplicar: " + "; ".join(bloqueos)
+    elif not aplicable:
+        mensaje = "nada que cambiar: el router ya tiene el espejo como debe"
+    return {"ok": ok, "mensaje": mensaje, "lineas": lineas, "avisos": avisos, "bloqueos": bloqueos,
+            "huella": espejo_huella(lineas) if aplicable else "", "aplicable": aplicable,
+            "cambios": len(plan.get("cambios") or []), "fasttrack": list(plan.get("fasttrack") or [])}
+
 def _espejo_resultado(res, mensaje=""):
-    """Lo que devuelva mikrotik_init, en la forma que usa el apartado Puntos:
-    {"ok", "mensaje", "lineas": [str], "avisos": [str], "plan"?}."""
+    """Lo que devuelven aplicar/pausar/retirar de mikrotik_init, en la forma que usa el
+    apartado Puntos: {"ok", "mensaje", "lineas": [str], "avisos": [str]}. (La vista previa
+    es otra cosa: _espejo_vista.)"""
     if isinstance(res, dict):
         out = dict(res)
     elif isinstance(res, tuple) and len(res) >= 2:
@@ -8726,7 +9077,8 @@ def _espejo_datos(pid):
 
 def espejo_plan(pid):
     """Vista previa del espejo del punto, SIN tocar el router: mikrotik_init.plan(conexion,
-    pid, sensor, puerto, redes, lista). Devuelve {"ok", "mensaje", "lineas", "avisos", ...}
+    pid, sensor, puerto, redes, lista). Devuelve _espejo_vista(): las ordenes que se veran
+    (`lineas`), sus avisos y bloqueos y la `huella` que hay que devolver para aplicar
     (los fallos tambien, con ok=False: nunca lanza). Un pid invalido si lanza (400/404)."""
     pid = nodos.exigir_pid(pid)
     try:
@@ -8735,34 +9087,64 @@ def espejo_plan(pid):
         return _espejo_fallo(ex)
     try:
         sensor, puerto, redes = _espejo_datos(pid)
-        return _espejo_resultado(_mkinit().plan(s_, pid, sensor, puerto, redes, ESPEJO_LISTA),
-                                 "vista previa del espejo de %s" % pid)
+        return _espejo_vista(_mkinit().plan(s_, pid, sensor, puerto, redes, ESPEJO_LISTA),
+                             "vista previa del espejo de %s" % pid)
     except Exception as ex:
         return _espejo_fallo(ex)
     finally:
         try: s_.close()
         except Exception: pass
 
-def espejo_aplicar(pid, usuario=None):
-    """Aplica el espejo del punto: se rehace el plan CONTRA EL ROUTER en ese momento (el mismo
-    calculo que espejo_plan; quien llama compara que sea el que vio el usuario) y
-    mikrotik_init respalda y aplica. Con `usuario`, deja linea en la bitacora."""
+def _huella_pedida(huella):
+    """La huella del plan que vio el usuario: la que se pasa, o la del formulario de la
+    peticion en curso (campo `plan` del POST de la ficha del punto)."""
+    if huella is None:
+        huella = (getattr(CTX, "form", None) or {}).get("plan")
+    return str(huella or "").strip()
+
+def espejo_aplicar(pid, usuario=None, huella=None):
+    """Aplica el espejo del punto EXACTAMENTE como se vio (auditoria A-01, A-21): se rehace el
+    plan contra el router y solo se aplica si su huella es la del plan mostrado (`huella`, o
+    el campo `plan` del formulario de la peticion). Sin huella, con la de un plan vacio, con
+    un plan que cambio, con bloqueos o con un `accept`, NO se toca nada. Un solo aplicar a la
+    vez por punto: un doble clic espera al primero y despues ve que el plan ya cambio
+    (auditoria A-08). Con `usuario`, deja linea en la bitacora."""
     pid = nodos.exigir_pid(pid)
+    pedida = _huella_pedida(huella)
+    res = None
     try:
-        pid, _r, s_ = _espejo_conexion(pid)
-    except Exception as ex:
-        return _espejo_fallo(ex)
-    try:
-        sensor, puerto, redes = _espejo_datos(pid)
-        mi = _mkinit()
-        plan = mi.plan(s_, pid, sensor, puerto, redes, ESPEJO_LISTA)
-        os.makedirs(ESPEJO_RESPALDOS, mode=0o700, exist_ok=True)
-        res = _espejo_resultado(mi.aplicar(s_, plan, ESPEJO_RESPALDOS), "espejo aplicado en %s" % pid)
-    except Exception as ex:
+        with cerrojo_operacion(pid, "espejo"):
+            if not pedida or pedida == HUELLA_VACIA:
+                res = {"ok": False, "mensaje": "falta la huella del plan visto: pide la vista previa y "
+                                               "aplica desde ella", "lineas": [], "avisos": []}
+            else:
+                try:
+                    pid, _r, s_ = _espejo_conexion(pid)
+                except Exception as ex:
+                    res = _espejo_fallo(ex)
+                else:
+                    try:
+                        sensor, puerto, redes = _espejo_datos(pid)
+                        mi = _mkinit()
+                        plan = mi.plan(s_, pid, sensor, puerto, redes, ESPEJO_LISTA)
+                        vista = _espejo_vista(plan)
+                        if not vista["ok"] or not vista["aplicable"]:
+                            res = dict(vista, ok=False, mensaje="no se aplica: " + vista["mensaje"])
+                        elif vista["huella"] != pedida:
+                            res = dict(vista, ok=False, mensaje=(
+                                "el plan cambio desde la vista previa (el router o los prefijos se "
+                                "movieron): no se ha tocado nada. Revisa el plan nuevo antes de aplicarlo"))
+                        else:
+                            os.makedirs(ESPEJO_RESPALDOS, mode=0o700, exist_ok=True)
+                            res = _espejo_resultado(mi.aplicar(s_, plan, ESPEJO_RESPALDOS),
+                                                    "espejo aplicado en %s" % pid)
+                    except Exception as ex:
+                        res = _espejo_fallo(ex)
+                    finally:
+                        try: s_.close()
+                        except Exception: pass
+    except OperacionEnCurso as ex:
         res = _espejo_fallo(ex)
-    finally:
-        try: s_.close()
-        except Exception: pass
     if usuario:
         bitacora("ESPEJO-APLICAR", "punto=%s %s: %s" % (pid, "ok" if res["ok"] else "fallo",
                                                          res["mensaje"][:200]), quien=usuario)
@@ -8771,18 +9153,23 @@ def espejo_aplicar(pid, usuario=None):
 def _espejo_orden(pid, usuario, orden):
     pid = nodos.exigir_pid(pid)
     try:
-        pid, _r, s_ = _espejo_conexion(pid)
-    except Exception as ex:
-        return _espejo_fallo(ex)
-    try:
-        os.makedirs(ESPEJO_RESPALDOS, mode=0o700, exist_ok=True)
-        res = _espejo_resultado(getattr(_mkinit(), orden)(s_, pid, ESPEJO_RESPALDOS),
-                                "espejo de %s: %s hecho" % (pid, orden))
-    except Exception as ex:
+        with cerrojo_operacion(pid, "espejo"):       # una orden del espejo a la vez por punto (A-08)
+            try:
+                pid, _r, s_ = _espejo_conexion(pid)
+            except Exception as ex:
+                res = _espejo_fallo(ex)
+            else:
+                try:
+                    os.makedirs(ESPEJO_RESPALDOS, mode=0o700, exist_ok=True)
+                    res = _espejo_resultado(getattr(_mkinit(), orden)(s_, pid, ESPEJO_RESPALDOS),
+                                            "espejo de %s: %s hecho" % (pid, orden))
+                except Exception as ex:
+                    res = _espejo_fallo(ex)
+                finally:
+                    try: s_.close()
+                    except Exception: pass
+    except OperacionEnCurso as ex:
         res = _espejo_fallo(ex)
-    finally:
-        try: s_.close()
-        except Exception: pass
     if usuario:
         bitacora("ESPEJO-" + orden.upper(), "punto=%s %s: %s" % (
             pid, "ok" if res["ok"] else "fallo", res["mensaje"][:200]), quien=usuario)
@@ -8799,75 +9186,183 @@ def espejo_retirar(pid, usuario=None):
     mikrotik_init.retirar(conexion, pid, respaldo_dir)."""
     return _espejo_orden(pid, usuario, "retirar")
 
-def purgar_punto(pid):
+# Puntos dados de baja en ESTE proceso: el fondo deja de trabajar con ellos aunque el
+# estado.json del orquestador aun los liste unos segundos (si no, el refrescador volvia a
+# crear nodos/<pid>/ tras la purga: auditoria A-09). Los pid no se reutilizan.
+_BAJAS = set()
+_AUSENTES = {}          # pid -> desde cuando falta de estado.json con restos en el panel
+
+def pids_activos():
+    """Los puntos con los que trabaja el fondo: los de estado.json menos las bajas."""
+    return [p for p in nodos.pids() if p not in _BAJAS]
+
+def purgar_punto(pid, quien=None):
     """Baja de un punto en el PANEL (la del orquestador la pide el apartado Puntos): borra
-    sus claves `pid|...` de los registros globales (enviados, avisos, abonados, politicas),
-    sus publicas, sus exclusiones con nodo, su diagnostico, su entrada de routers.json y
-    nodos/<pid>/. El pid ya puede no estar en estado.json: solo se valida el formato.
+    sus claves `pid|...` de los registros globales (enviados, avisos, abonados y su
+    historial, politicas), sus publicas, sus exclusiones con nodo, su diagnostico, su
+    entrada de routers.json, sus respaldos del espejo y nodos/<pid>/. El pid ya puede no
+    estar en estado.json: solo se valida el formato. Idempotente: la repite el barrido de
+    fondo (barrer_bajas) si la baja se hizo por la CLI o nadie abrio la operacion.
     Devuelve {registro: cuantas entradas quito}. Deja linea en la bitacora."""
     if not nodos.pid_valido(pid):
         raise nodos.NodoInvalido(pid)
+    _BAJAS.add(pid)
     pref = pid + "|"
     hecho = {}
-    for path in (MK_SENT, MK_SENT_DNS, MK_SENT_GRAD):
-        with _ENV_LOCK:
-            env = cargar_enviados(path)
-            ks = [k for k in env if k.startswith(pref)]
+    # espera a que termine la tarea de fondo de ese punto (si la hay): asi no vuelve a
+    # escribir en nodos/<pid>/ despues de borrarlo. Si tarda, se purga igual y el barrido
+    # de fondo repasa luego lo que quede.
+    with _OPS_CERROJOS_LOCK:
+        lk = _OPS_CERROJOS.setdefault((pid, "fondo"), threading.Lock())
+    tengo = lk.acquire(timeout=20)
+    try:
+        for path in (MK_SENT, MK_SENT_DNS, MK_SENT_GRAD):
+            with _ENV_LOCK:
+                env = cargar_enviados(path)
+                ks = [k for k in env if k.startswith(pref)]
+                for k in ks:
+                    env.pop(k, None)
+                if ks:
+                    guardar_enviados(env, path)
+            hecho[os.path.basename(path)] = len(ks)
+        for path in (NOTIF_CUAR_FILE, POL_NOTIF, THRESHOLD_ENVIADO, DIAG_FILE):
+            try:
+                d = json.load(open(path, encoding="utf-8"))
+            except (OSError, ValueError):
+                continue
+            if not isinstance(d, dict):
+                continue
+            ks = [k for k in d if k == pid or k.startswith(pref)]
             for k in ks:
-                env.pop(k, None)
+                d.pop(k, None)
             if ks:
-                guardar_enviados(env, path)
-        hecho[os.path.basename(path)] = len(ks)
-    for path in (NOTIF_CUAR_FILE, POL_NOTIF, THRESHOLD_ENVIADO, DIAG_FILE):
-        try:
-            d = json.load(open(path, encoding="utf-8"))
-        except (OSError, ValueError):
-            continue
-        if not isinstance(d, dict):
-            continue
-        ks = [k for k in d if k == pid or k.startswith(pref)]
-        for k in ks:
-            d.pop(k, None)
-        if ks:
-            tmp = "%s.%d.tmp" % (path, os.getpid())
-            with open(tmp, "w", encoding="utf-8") as f:
-                json.dump(d, f)
-            os.replace(tmp, path)
-        hecho[os.path.basename(path)] = len(ks)
-    ab = cargar_abonados()
-    mapa = ab.get("mapa") or {}
-    ks = [k for k in mapa if k.startswith(pref)]
-    if ks:
-        for k in ks:
-            mapa.pop(k, None)
-        tmp = "%s.%d.tmp" % (ABONADOS_FILE, os.getpid())
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump({"ts": ab.get("ts", 0), "mapa": mapa}, f)
-        os.replace(tmp, ABONADOS_FILE)
-    hecho["abonados"] = len(ks)
-    with _PUB_LOCK:
-        pubs = cargar_publicas()
-        if pubs.pop(pid, None) is not None:
-            guardar_publicas(pubs)
-            hecho["publicas"] = 1
-    excl = [r for r in cargar_exclusiones(incluir_vencidas=True) if r.get("motivo") != "(conf)"]
-    quedan = [r for r in excl if (r.get("nodo") or "") != pid]
-    if len(quedan) != len(excl):
-        _keys = ("tipo", "ip", "motivo", "puertos", "sid", "hasta", "autor", "creado", "nodo")
-        tmp = "%s.%d.tmp" % (EXCL_FILE, os.getpid())
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump([{k: r[k] for k in _keys if k in r} for r in quedan], f, ensure_ascii=False, indent=1)
-        os.chmod(tmp, 0o600)
-        os.replace(tmp, EXCL_FILE)
-    hecho["exclusiones"] = len(excl) - len(quedan)
-    hecho["routers"] = 1 if olvidar_router(pid) else 0
-    import shutil
-    d = os.path.join(nodos.NODOS, pid)
-    if os.path.isdir(d) and not os.path.islink(d):
-        shutil.rmtree(d, ignore_errors=True)
-        hecho["nodos"] = 1
-    bitacora("PUNTO-PURGADO", "punto=%s %s" % (pid, " ".join("%s=%s" % kv for kv in sorted(hecho.items()) if kv[1])))
+                tmp = "%s.%d.%d.tmp" % (path, os.getpid(), threading.get_ident())
+                with open(tmp, "w", encoding="utf-8") as f:
+                    json.dump(d, f)
+                os.replace(tmp, path)
+            hecho[os.path.basename(path)] = len(ks)
+        with _ABON_LOCK:
+            ab = cargar_abonados()
+            mapa = ab.get("mapa") or {}
+            ks = [k for k in mapa if k.startswith(pref)]
+            if ks:
+                for k in ks:
+                    mapa.pop(k, None)
+                tmp = "%s.%d.%d.tmp" % (ABONADOS_FILE, os.getpid(), threading.get_ident())
+                with open(tmp, "w", encoding="utf-8") as f:
+                    json.dump({"ts": ab.get("ts", 0), "mapa": mapa}, f)
+                os.replace(tmp, ABONADOS_FILE)
+            hecho["abonados"] = len(ks)
+            hecho["abonados-hist"] = _purgar_hist_abonados(pref)
+        with _PUB_LOCK:
+            pubs = cargar_publicas()
+            if pubs.pop(pid, None) is not None:
+                guardar_publicas(pubs)
+                hecho["publicas"] = 1
+        with _EXCL_LOCK:
+            excl = [r for r in cargar_exclusiones(incluir_vencidas=True) if r.get("motivo") != "(conf)"]
+            quedan = [r for r in excl if (r.get("nodo") or "") != pid]
+            if len(quedan) != len(excl):
+                _keys = ("tipo", "ip", "motivo", "puertos", "sid", "hasta", "autor", "creado", "nodo")
+                tmp = "%s.%d.%d.tmp" % (EXCL_FILE, os.getpid(), threading.get_ident())
+                with open(tmp, "w", encoding="utf-8") as f:
+                    json.dump([{k: r[k] for k in _keys if k in r} for r in quedan], f, ensure_ascii=False, indent=1)
+                os.chmod(tmp, 0o600)
+                os.replace(tmp, EXCL_FILE)
+            hecho["exclusiones"] = len(excl) - len(quedan)
+        hecho["routers"] = 1 if olvidar_router(pid) else 0
+        import shutil
+        for d, nom in ((os.path.join(nodos.NODOS, pid), "nodos"),
+                       (os.path.join(ESPEJO_RESPALDOS, pid), "respaldos-espejo")):
+            if os.path.isdir(d) and not os.path.islink(d):
+                shutil.rmtree(d, ignore_errors=True)
+                hecho[nom] = 1
+    finally:
+        if tengo:
+            lk.release()
+    if quien != "panel" or any(hecho.values()):
+        bitacora("PUNTO-PURGADO", "punto=%s %s" % (pid, " ".join("%s=%s" % kv for kv in sorted(hecho.items()) if kv[1])),
+                 quien=quien)
     return hecho
+
+def _purgar_hist_abonados(pref):
+    """Quita del historial de asignaciones (abonados-hist.jsonl) las lineas de ese punto:
+    llevan nombres de abonado y la baja lo borra todo (DATOS §8)."""
+    try:
+        with open(ABON_HIST_FILE, encoding="utf-8") as f:
+            lineas = f.readlines()
+    except OSError:
+        return 0
+    quedan = []
+    for ln in lineas:
+        try:
+            r = json.loads(ln)
+        except ValueError:
+            quedan.append(ln)
+            continue
+        if isinstance(r, dict) and str(r.get("ip") or "").startswith(pref):
+            continue
+        quedan.append(ln)
+    n = len(lineas) - len(quedan)
+    if n:
+        tmp = "%s.%d.%d.tmp" % (ABON_HIST_FILE, os.getpid(), threading.get_ident())
+        with open(tmp, "w", encoding="utf-8") as f:
+            f.writelines(quedan)
+        os.replace(tmp, ABON_HIST_FILE)
+    return n
+
+def _pids_con_restos():
+    """Pids que tienen algo en el panel: nodos/<pid>/, routers.json, registros de enviados,
+    respaldos del espejo."""
+    vistos = set()
+    for base in (nodos.NODOS, ESPEJO_RESPALDOS):
+        try:
+            vistos |= {x for x in os.listdir(base) if nodos.pid_valido(x)}
+        except OSError:
+            pass
+    try:
+        vistos |= {x for x in _routers_guardados() if nodos.pid_valido(x)}
+    except Exception:
+        pass
+    for path in (MK_SENT, MK_SENT_DNS, MK_SENT_GRAD):
+        vistos |= {rid_de(k) for k in cargar_enviados(path) if nodos.pid_valido(rid_de(k))}
+    return vistos
+
+AUSENTE_CONFIRMAR_S = 600    # cuanto tiene que faltar un punto de estado.json antes de purgarlo
+ESTADO_FRESCO_S = 300        # estado.json mas viejo que esto no sirve para decidir una baja
+
+def barrer_bajas(ahora=None):
+    """Purga en el panel lo que quede de puntos que ya no existen, sin depender de quien
+    abra la operacion de baja (auditoria A-09): los dados de baja aqui (_BAJAS) y los que
+    faltan de un estado.json FRESCO durante AUSENTE_CONFIRMAR_S (baja por la CLI, reinicio
+    del panel...). Con un estado.json viejo o ilegible no se decide nada. Devuelve los pids
+    purgados."""
+    ahora = ahora or time.time()
+    est = nodos.leer_estado()
+    try:
+        fresco = (isinstance(est.get("puntos"), dict)
+                  and time.time() - float(est.get("ts") or 0) <= ESTADO_FRESCO_S)
+    except (TypeError, ValueError):
+        fresco = False
+    vivos = set(nodos.pids())
+    hechos = []
+    for pid in sorted(_pids_con_restos()):
+        if pid in vivos and pid not in _BAJAS:
+            _AUSENTES.pop(pid, None)
+            continue
+        if pid not in _BAJAS:
+            if not fresco:
+                continue
+            desde = _AUSENTES.setdefault(pid, ahora)
+            if ahora - desde < AUSENTE_CONFIRMAR_S:
+                continue
+        try:
+            purgar_punto(pid, quien="panel")
+            hechos.append(pid)
+        except Exception as ex:
+            sys.stderr.write("barrer_bajas(%s): %s\n" % (pid, ex))
+    return hechos
+
 def _card_listas(m):
     """Las address-lists, separadas por tipo de abuso.
 
@@ -9261,6 +9756,22 @@ def perfil_page(msg="", ok=False, edit_user=None):
             + _groq_modelo_campo()
             + "<div class=actions><button class=primary type=submit>Guardar clave de Groq"
             "</button></div></form>"
+            # --- Telegram: el token se cifra al guardarlo (auditoria B-20) ----------------
+            "<hr style='border:0;border-top:1px solid #f0efec;margin:16px 0'>"
+            "<form method=post action='/telegram'>"
+            "<div class=field><label>Token del bot de Telegram (avisos e informe diario) "
+            + ("<span style='color:#3a9d5d'>(configurado)</span>" if telegram_configurado()
+               else "<span style='color:#b06a00'>(sin configurar)</span>")
+            + "</label>"
+            "<input type=password name=tgtoken autocomplete=new-password placeholder='"
+            + ("dejar vacio para conservar" if telegram_configurado() else "pega el token de @BotFather") + "'>"
+            "</div><div class=field><label>Chat ID</label>"
+            f"<input type=text name=tgchat value=\"{esc(telegram_chat())}\" autocomplete=off "
+            "placeholder='-1001234567890'>"
+            "<div class=hint>El token se guarda <b>cifrado</b> con la clave maestra del servidor en el "
+            "momento de guardarlo y <b>no se vuelve a mostrar</b>. Para <b>quitarlo</b>, escribe "
+            "<code>BORRAR</code>.</div></div>"
+            "<div class=actions><button class=primary type=submit>Guardar Telegram</button></div></form>"
             "<form method=post action='/feeds/reportar'>"
             "<label class=chk><input type=checkbox name=reportar"
             + (" checked" if aidb_reportar_activo() else "")
@@ -9359,10 +9870,10 @@ def perfil_page(msg="", ok=False, edit_user=None):
             "Doble senal para confirmar infeccion</label>"
             "<div class=hint>Exige <b>2 indicios independientes</b> (repeticion, varias firmas, fan-out, volumen) "
             "o una senal abrumadora antes de marcar un CPE como infectado. Menos falsos positivos.</div></div>"
-            "<div class=field><label>Nunca bloquear (una IP o CIDR por linea)</label>"
+            "<div class=field><label>Nunca bloquear (una IP o CIDR por linea; con <code>p001|</code> delante, solo en ese punto)</label>"
             "<textarea name=nunca rows=3 style='width:100%;box-sizing:border-box;font:12px ui-monospace,Consolas,monospace;"
             "padding:8px;border:1px solid #d7d6d2;border-radius:8px' "
-            f"placeholder='192.0.2.10&#10;198.51.100.0/24'>{esc(cargar_nunca())}</textarea>"
+            f"placeholder='192.0.2.10&#10;198.51.100.0/24&#10;p001|10.0.0.5'>{esc(cargar_nunca())}</textarea>"
             "<div class=hint>Estas IPs/redes <b>jamas</b> entran a cuarentena (infra, DNS, clientes criticos), "
             "ni por politica ni a mano.</div></div>"
             + _card_politicas(m) +
@@ -9425,8 +9936,8 @@ def perfil_page(msg="", ok=False, edit_user=None):
                 f"data-user='{un}' data-nombre=\"{esc(nombre)}\" data-correo=\"{esc(correo)}\" "
                 f"data-role='{rl}'>{_IC_EDIT}</button>"
                 "<form method=post action='/perfil' class=inl "
-                f"onsubmit=\"return ask(this,'Eliminar usuario','{un} dejara de poder "
-                f"entrar al panel. No se borra nada de lo que haya hecho.',"
+                f"onsubmit=\"return ask(this,'Eliminar usuario',"
+                f"{js_attr(uraw + ' dejara de poder entrar al panel. No se borra nada de lo que haya hecho.')},"
                 f"'Eliminar','danger')\">"
                 f"<input type=hidden name=accion value=del_user><input type=hidden name=user value='{un}'>"
                 f"<button class='ic danger' title=Eliminar type=submit>{_IC_DEL}</button></form>"
@@ -9986,6 +10497,7 @@ font-size:13px;margin-bottom:8px}}
 
 RULES_FILE = ""   # ya no hay reglas locales: las publica el orquestador (estado.json -> reglas.current)
 UPDATE = {"running": False, "started": 0.0, "msg": "", "op_id": ""}   # estado del boton "actualizar reglas"
+_UPDATE_LOCK = threading.Lock()     # mirar y poner "running" de una vez: dos clics, una orden (A-27)
 
 def ultima_actualizacion_reglas():
     """Cuando se publico la version de reglas en uso (reglas.current de estado.json, AAAAMMDDTHHMMSSZ)."""
@@ -10621,12 +11133,14 @@ o <code>ids-orq estado</code></td></tr>
 <p>El espejo ya no se pega a mano: lo monta el panel desde la ficha del punto (<b>Puntos &rarr; ficha
 &rarr; Espejo</b>), por la API y el tunel del punto, siempre con <b>vista previa</b> y <b>respaldo</b>
 (export en el router y copia en el panel). Es equivalente a esto (con los prefijos del punto, la IP del
-sensor dentro de su tunel y el comentario de su punto):</p>
-<pre><code>/ip firewall address-list add list=ids-vigilados address=10.0.0.0/24 comment="IDS ids-maat:p003"
+sensor dentro de su tunel y el comentario del espejo de su punto, <code>IDS ids-maat:&lt;punto&gt;:espejo</code>,
+distinto del de la regla de acceso a la API que se pego en el alta, <code>IDS ids-maat:&lt;punto&gt;</code>: montar,
+pausar o retirar el espejo nunca toca esa regla):</p>
+<pre><code>/ip firewall address-list add list=ids-vigilados address=10.0.0.0/24 comment="IDS ids-maat:p003:espejo"
 /ip firewall mangle add chain=forward src-address-list=ids-vigilados connection-bytes=0-10000 \
-    action=sniff-tzsp sniff-target=&lt;sensor del punto&gt; sniff-target-port=37008 comment="IDS ids-maat:p003"
+    action=sniff-tzsp sniff-target=&lt;sensor del punto&gt; sniff-target-port=37008 comment="IDS ids-maat:p003:espejo"
 /ip firewall mangle add chain=forward dst-address-list=ids-vigilados connection-bytes=0-10000 \
-    action=sniff-tzsp sniff-target=&lt;sensor del punto&gt; sniff-target-port=37008 comment="IDS ids-maat:p003"</code></pre>
+    action=sniff-tzsp sniff-target=&lt;sensor del punto&gt; sniff-target-port=37008 comment="IDS ids-maat:p003:espejo"</code></pre>
 <p><b>Nunca se anade una regla <code>accept</code></b>: en RouterOS un accept termina la cadena y los
 paquetes se saltarian los <code>drop</code> de detras (incluida la cuarentena). Montar, pausar o retirar
 el espejo no autoriza nada que tu firewall rechazaba; si el plan trajera un accept, el panel no lo aplica.</p>
@@ -10807,7 +11321,8 @@ eventos de verdad) y nunca prometen 30 dias si hubo borrado anticipado.</p>
 <p>En la ficha, escribiendo el nombre del punto. Se borra todo el punto en el servidor (VPN, Suricata y
 eventos) y en el panel (sus reportes, su conexion y sus registros); queda una linea en la bitacora. Los
 identificadores no se reutilizan. En el MikroTik quedan lo que lleva el comentario
-<code>IDS ids-maat:&lt;punto&gt;</code>, la interfaz <code>ids-vpn</code> y el usuario <code>ids-api</code>:</p>
+<code>IDS ids-maat:&lt;punto&gt;</code> (el alta) o <code>IDS ids-maat:&lt;punto&gt;:espejo</code> (el espejo), la
+interfaz <code>ids-vpn</code> y el usuario <code>ids-api</code> (el <code>comment~</code> de abajo encuentra los dos):</p>
 <pre><code>/ip firewall mangle remove [find comment~"ids-maat:p003"]
 /ip firewall filter remove [find comment~"ids-maat:p003"]
 /ip firewall address-list remove [find comment~"ids-maat:p003"]
@@ -11675,6 +12190,7 @@ def ficha_ip_html(d, ip="", esc=None, scb=None):
 
 
 def reputacion_page(res=None, texto="", msg="", ok=False, es_admin=False, volver="", modal=False,
+                    es_operador=True,
                     marcar=None):
     """Consultar en AbuseIPDB que ataques se le denuncian a una IP publica.
 
@@ -11932,7 +12448,7 @@ def reputacion_page(res=None, texto="", msg="", ok=False, es_admin=False, volver
                             "<button class=cancelbtn type=submit title='Pregunta al MikroTik "
                             "por las direcciones de sus interfaces WAN y el to-addresses de "
                             "sus reglas de src-nat'>Detectar del MikroTik</button></form>")
-        if entradas:
+        if entradas and es_admin:          # revisar es de admin: sin permiso, ni el boton (B-18)
             acciones.append("<form method=post action='/publicas/revisar'>"
                             f"<input type=hidden name=rid value='{esc(rid)}'>"
                             "<button class=cancelbtn type=submit>Revisar ahora</button></form>")
@@ -12041,14 +12557,17 @@ def reputacion_page(res=None, texto="", msg="", ok=False, es_admin=False, volver
             # El buscador vive en la cabecera. Antes era una seccion entera con su titulo,
             # su tarjeta y tres lineas de ayuda, justo debajo del bloque que hace lo mismo
             # con TUS publicas: dos sitios para lo mismo y el doble de pagina para nada.
-            "<form method=get action='/reputacion' class=busca>"
-            f"<input name=ips size=22 value='{esc(texto)}' autocomplete=off "
-            "placeholder='Buscar IP o red (CIDR)' "
-            "title='Una red en CIDR se revisa con una sola peticion; hasta "
-            + str(AIDB_MAX_LOTE) + " separadas por comas. Las privadas nunca se envian'>"
-            "<label class=chk title='Ignora la cache y vuelve a preguntar'>"
-            "<input type=checkbox name=refrescar> sin cache</label>"
-            "<button class=primary type=submit>Buscar</button></form></div>"
+            # consultar gasta cuota de AbuseIPDB: es de operador; lectura no ve el buscador (B-18)
+            + ("<form method=get action='/reputacion' class=busca>"
+               f"<input name=ips size=22 value='{esc(texto)}' autocomplete=off "
+               "placeholder='Buscar IP o red (CIDR)' "
+               "title='Una red en CIDR se revisa con una sola peticion; hasta "
+               + str(AIDB_MAX_LOTE) + " separadas por comas. Las privadas nunca se envian'>"
+               "<label class=chk title='Ignora la cache y vuelve a preguntar'>"
+               "<input type=checkbox name=refrescar> sin cache</label>"
+               "<button class=primary type=submit>Buscar</button></form>"
+               if es_operador else "")
+            + "</div>"
             "<p class=sub2>Que ataques se le denuncian a una IP publica, en que listas de bloqueo "
             "esta, y &mdash;si es tuya&mdash; que abonado la esta ensuciando. "
             f"Hoy quedan <b>{quedan:,}</b> consultas por IP y <b>{quedan_red:,}</b> por red.</p>"
@@ -13372,7 +13891,7 @@ def ruidosas_html(filas, esc=None, tope=8):
             "<th class=num>Abonados</th><th class=num>Del total</th>"
             "</tr></thead><tbody>%s</tbody></table></div></div>" % cuerpo)
 
-def conducta_page(q="", msg="", pag=1, por=None):
+def conducta_page(q="", msg="", pag=1, por=None, es_operador=True):
     """Informe por categoria de abuso: primero lo que hay que cortar, al final el ruido."""
     esc = html.escape
     rep_ = cargar_conducta()
@@ -13381,9 +13900,11 @@ def conducta_page(q="", msg="", pag=1, por=None):
                   "<p class=sub2>Todavia no se ha generado. Se arma solo cada %d horas; "
                   "<b>Generar ahora</b> lo adelanta. Recorre los logs de los ultimos %d "
                   "dias, incluidos los rotados, asi que puede tardar unos minutos.</p>"
-                  "<form method=post action='/conducta/refrescar'>"
-                  "<button class=b>Generar ahora</button></form></div>"
-                  % (CONDUCTA_DIAS, CONDUCTA_CADA // 3600, CONDUCTA_DIAS))
+                  "%s</div>"
+                  % (CONDUCTA_DIAS, CONDUCTA_CADA // 3600, CONDUCTA_DIAS,
+                     # lanza trabajo de fondo: es de operador; lectura no ve el boton (B-18)
+                     "<form method=post action='/conducta/refrescar'>"
+                     "<button class=b>Generar ahora</button></form>" if es_operador else ""))
         return _cd_doc(cuerpo)
 
     filas = rep_.get("filas", [])
@@ -14817,7 +15338,7 @@ def cuarentena_page(msg="", es_admin=False):
             "try{sessionStorage.setItem('pos:'+location.pathname,String(window.scrollY||0));"
             "sessionStorage.setItem('posact:'+location.pathname,'1');}catch(e){}"
             # dos numeros, no texto: el panel no pinta texto libre de la URL (phishing)
-            "setTimeout(function(){location.href='/cuarentena?quitadas='+ok+'&errores='+mal;},900);}"
+            "setTimeout(function(){location.href=(typeof idsNodo==='function'?idsNodo:String)('/cuarentena?quitadas='+ok+'&errores='+mal);},900);}"
             "function paso(){if(i>=filas.length)return fin();var fila=filas[i];"
             "fila.li.classList.add('yendo');fila.est.textContent='\\u2026';"
             # la que se esta quitando, siempre a la vista (con 40 la lista no cabe)
@@ -14859,10 +15380,18 @@ def _destino_ok(clave):
 def _enviar_confirmados(nodo_form, tipo):
     """Envio masivo de los CONFIRMADOS (2+ pruebas) de la lista que se vio (un nodo o «Todos»),
     repartido por nodo: cada CPE va al router de SU nodo (pid|ip) y un router que no responde
-    solo corta los envios de su nodo. Devuelve (enviados, resultado por nodo en texto)."""
+    solo corta los envios de su nodo. Devuelve (enviados, resultado por nodo en texto).
+
+    El nodo de la lista lo trae el formulario (campo oculto `nodo`): nunca sale de la sesion,
+    que comparten las pestanas (auditoria A-11). Un candidato sin `router` solo vale en la
+    vista de un punto. Antes de enviar se mira que la evidencia sea reciente (§10.4): los de
+    evidencia vieja se omiten y se listan (auditoria A-06). El registro se anota releyendolo
+    dentro del cerrojo, por punto, nunca con una foto de antes (auditoria A-03)."""
     dns = tipo == "dns"
+    if not (nodo_form or "").strip():
+        return 0, "Falta el nodo de la lista: no se envio nada (recarga la pagina)."
     try:
-        vista = nodos.validar_nodo(nodo_form or nodos.nodo_actual())
+        vista = nodos.validar_nodo(nodo_form.strip())
     except (nodos.NodoInvalido, nodos.NodoInexistente):
         return 0, "Nodo no valido: no se envio nada."
     try:
@@ -14874,7 +15403,13 @@ def _enviar_confirmados(nodo_form, tipo):
     env = cargar_enviados(reg)
     por_nodo = {}
     for c in cq:
-        clave = clave_cpe(c.get("ip", ""), c.get("router", ""))
+        rid_c = c.get("router", "") or ("" if nodos.es_todos(vista) else vista)
+        if not rid_c:
+            continue                     # en «Todos» un candidato sin nodo no tiene destino
+        try:
+            clave = nodos.clave(rid_c, c.get("ip", ""))
+        except nodos.NodoInvalido:
+            continue
         if clave in env or c.get("confianza") != "alta" or not _destino_ok(clave):
             continue
         try:
@@ -14885,6 +15420,7 @@ def _enviar_confirmados(nodo_form, tipo):
     quien = getattr(CTX, "user", "?")
     total = 0
     partes = []
+    viejas = []
     for pid in sorted(por_nodo):
         r = _router_de_pid(pid)
         dr = cargar_mk_de(r)
@@ -14892,38 +15428,59 @@ def _enviar_confirmados(nodo_form, tipo):
         if not mk_listo(dr):
             partes.append("%s: nada (MikroTik sin habilitar)" % nom)    # ese nodo esta en dry-run
             continue
+        cq_pid = [_cargar_cuarentena(pid), _cargar_cuarentena(nodos.TODOS)]
         ok_n = err_n = 0; ult_err = ""
-        for clave, c in por_nodo[pid][:50]:
-            ip = ip_de(clave)
-            if dns:
-                _cat = ""
-                _lst = dr.get("LIST_DNS", "suricata-dns-sospechoso"); _ttl = _ttl_efectivo(dr, "TTL_DNS")
-                _com = "suricata DNS-sospechoso riesgo %s %s"
-            else:
-                _cat = categoria_cpe(clave)
-                _lst = lista_de_categoria(_cat); _ttl = _ttl_efectivo(dr, "TTL")
-                _com = "suricata " + _cat + " riesgo %s %s"
-            try:
-                ok, err = mk_add(ip, comment=_com % (c.get("riesgo", 0), time.strftime("%Y-%m-%d %H:%M")),
-                                 lista=_lst, ttl=_ttl, router=r)
-            except Exception as ex:
-                ok, err = False, str(ex)
-            if ok:
-                rec = {"cuando": int(time.time()), "score": c.get("riesgo", 0), "por": quien,
-                       "router": r.get("id", ""), "motivo": _motivo_bloqueo(clave)}
-                if not dns:
-                    rec.update({"categoria": _cat, "lista": _lst})
-                env[clave] = rec
-                mk_log("ENVIADO", ip, quien, f"lista={_lst} ({'dns ' if dns else ''}masivo)" + _suf_nodo(clave))
-                ok_n += 1
-            else:
-                mk_log("ERROR-ENVIO", ip, quien, f"lista={_lst} {err}"); err_n += 1; ult_err = err
-                if "conexion" in (err or "").lower() or "login" in (err or "").lower():
-                    break   # ese router no responde: no seguir con el, si con los demas nodos
+        nuevas = {}
+        try:
+            with cerrojo_operacion(pid, "envio-" + tipo):
+                ya = cargar_enviados(reg)            # releido: otro envio pudo terminar mientras
+                for clave, c in por_nodo[pid][:50]:
+                    if clave in ya:
+                        continue
+                    ip = ip_de(clave)
+                    try:
+                        ev = evidencia_reciente(clave, cq_pid)
+                    except Exception as ex:
+                        ev = {"ok": False, "detalle": str(ex)[:80]}
+                    if not ev.get("ok"):
+                        viejas.append("%s (%s)" % (ip, ev.get("detalle", "sin evidencia")))
+                        mk_log("OMITIDO-EVIDENCIA-VIEJA", ip, quien, ev.get("detalle", "") + _suf_nodo(clave))
+                        continue
+                    if dns:
+                        _cat = ""
+                        _lst = dr.get("LIST_DNS", "suricata-dns-sospechoso"); _ttl = _ttl_efectivo(dr, "TTL_DNS")
+                        _com = "suricata DNS-sospechoso riesgo %s %s"
+                    else:
+                        _cat = categoria_cpe(clave)
+                        _lst = lista_de_categoria(_cat); _ttl = _ttl_efectivo(dr, "TTL")
+                        _com = "suricata " + _cat + " riesgo %s %s"
+                    try:
+                        ok, err = mk_add(ip, comment=_com % (c.get("riesgo", 0), time.strftime("%Y-%m-%d %H:%M")),
+                                         lista=_lst, ttl=_ttl, router=r)
+                    except Exception as ex:
+                        ok, err = False, str(ex)
+                    if ok:
+                        rec = {"cuando": int(time.time()), "score": c.get("riesgo", 0), "por": quien,
+                               "router": r.get("id", ""), "motivo": _motivo_bloqueo(clave)}
+                        if not dns:
+                            rec.update({"categoria": _cat, "lista": _lst})
+                        nuevas[clave] = rec
+                        mk_log("ENVIADO", ip, quien, f"lista={_lst} ({'dns ' if dns else ''}masivo)" + _suf_nodo(clave))
+                        ok_n += 1
+                    else:
+                        mk_log("ERROR-ENVIO", ip, quien, f"lista={_lst} {err}" + _suf_nodo(clave)); err_n += 1; ult_err = err
+                        if "conexion" in (err or "").lower() or "login" in (err or "").lower():
+                            break   # ese router no responde: no seguir con el, si con los demas nodos
+                _registrar_enviados(reg, nuevas, [])
+        except OperacionEnCurso as ex:
+            partes.append("%s: nada (%s)" % (nom, ex))
+            continue
         total += ok_n
         partes.append("%s: %d enviado(s)%s" % (nom, ok_n, (", %d con error (%s)" % (err_n, ult_err))
                                                if err_n else ""))
-    guardar_enviados(env, reg)
+    if viejas:
+        partes.append("%d omitido(s) por evidencia vieja, la IP puede ser hoy de otro abonado: %s%s" % (
+            len(viejas), ", ".join(viejas[:5]), " y %d mas" % (len(viejas) - 5) if len(viejas) > 5 else ""))
     if not partes:
         return 0, "No habia confirmados pendientes de enviar."
     return total, "Envio masivo " + "; ".join(partes)
@@ -14956,9 +15513,9 @@ def _forwarded_host(valor):
 def origen_ajeno(headers, panel_url="", proxy_confiable=True):
     """"" si un POST viene de este mismo panel; si no, el motivo para rechazarlo (CSRF).
 
-    La cookie va con SameSite=Strict, pero sin usuarios (modo sin-auth, tras VPN o proxy)
-    no hay cookie que proteger: cualquier pagina abierta en el navegador del operador podia
-    mandar un formulario a /vpn/sensor-aplicar. El navegador pone Origin (o Referer) en
+    La cookie va con SameSite=Strict, pero es la unica defensa si un navegador viejo no la
+    respeta: cualquier pagina abierta en el navegador del operador podria mandar un
+    formulario a una accion del panel. El navegador pone Origin (o Referer) en
     esos POST y una pagina ajena no puede falsearlos: si vienen y su host:puerto no es el
     de la cabecera Host (o el X-Forwarded-Host / Forwarded host= que pone un proxy que
     reescribe Host, o el PANEL_URL de la configuracion), se rechaza. Sin Origin ni Referer
@@ -15019,8 +15576,69 @@ def origen_ajeno(headers, panel_url="", proxy_confiable=True):
             pass
     return "origen %s://%s:%s distinto del panel (Host %s)" % (u.scheme, h, p, (headers.get("Host") or "?")[:80])
 
+def js_attr(texto):
+    """Un texto como literal de cadena JS para meterlo en un manejador on...="..." (auditoria
+    B-17): json.dumps lo escapa para JS (comillas, barras, saltos, no ASCII) y html.escape
+    para el atributo; el navegador deshace lo segundo ANTES de ejecutar el JS, asi que escapar
+    solo para HTML (lo de antes) dejaba que una comilla simple cerrara la cadena."""
+    return html.escape(json.dumps(str(texto)), quote=True)
+
+RE_USUARIO = re.compile(r"^[a-z0-9][a-z0-9._-]{0,31}$")   # el mismo patron que la CLI
+
+# --- todo enlace y formulario lleva su nodo (CONTRATO-F2 §10.1, auditoria A-11) ------------
+# Una peticion sin ?nodo= usa el ultimo nodo elegido en la SESION, que comparten todas las
+# pestanas: la pestana A (p001) que enviaba un formulario volvia mirando p002 si la B lo
+# habia cambiado. Por eso cada enlace interno (href), cada formulario (action/formaction),
+# cada redireccion y cada fetch() de la pagina llevan el nodo de la pagina que se ve. El
+# destino de una ACCION sigue saliendo de la propia operacion (pid|ip o campo del form).
+_RE_URL_ATTR = re.compile(r"(?<![\w-])((?:href|action|formaction)\s*=\s*)([\"']?)(/(?!/)[^\"'\s>]*)", re.I)
+# lo que no depende del nodo (estaticos y las paginas sin selector: Puntos, operaciones,
+# Ajustes, logs, Documentacion) se deja como esta
+_SIN_NODO = ("/login", "/logout", "/logo.png", "/favicon.ico", "/mi-foto", "/mapa/",
+             "/puntos", "/operaciones", "/ajustes", "/log", "/bitacora", "/documentacion", "/perfil")
+
+def url_con_nodo(url, nodo=None, amp="&"):
+    """`url` (ruta interna) con `nodo=` del nodo que se mira, si no lo lleva ya."""
+    if nodo is None:
+        if not nodos.hay_nodo():
+            return url
+        nodo = nodos.nodo_actual()
+    if (not url.startswith("/") or url.startswith("//") or url.startswith(_SIN_NODO)
+            or re.search(r"[?&](?:amp;)?nodo=", url)):
+        return url
+    base, alm, frag = url.partition("#")
+    return base + ("%snodo=" % amp if "?" in base else "?nodo=") + urllib.parse.quote(nodo, safe="") + alm + frag
+
+_JS_NODO = ("<script>(function(){var N=%s;function f(u){if(typeof u!=='string'||u.charAt(0)!=='/'"
+            "||u.charAt(1)==='/'||/[?&]nodo=/.test(u))return u;var h='',i=u.indexOf('#');"
+            "if(i>=0){h=u.slice(i);u=u.slice(0,i);}return u+(u.indexOf('?')>=0?'&':'?')+'nodo='"
+            "+encodeURIComponent(N)+h;}window.idsNodo=f;var F=window.fetch;if(F){window.fetch="
+            "function(u,o){return F.call(this,f(u),o);};}})();</script>")
+
+def html_con_nodo(texto, nodo=None):
+    """La pagina con `nodo=` en cada enlace y formulario interno, y el fetch() de su JS
+    envuelto para que tambien lo lleve."""
+    if nodo is None:
+        if not nodos.hay_nodo():
+            return texto
+        nodo = nodos.nodo_actual()
+    def _sub(m):
+        if m.group(1).lower().startswith("action"):
+            tag = texto[texto.rfind("<", 0, m.start()):m.start()].lower()
+            if re.search(r"method\s*=\s*[\"']?get", tag):
+                return m.group(0)      # GET: el nodo va en sus campos (hidden name=nodo)
+        return m.group(1) + m.group(2) + url_con_nodo(m.group(3), nodo, "&amp;")
+    texto = _RE_URL_ATTR.sub(_sub, texto)
+    i = texto.find("<head>")
+    if i < 0:
+        i = texto.lower().find("<head>")
+    if i >= 0:
+        i += len("<head>")
+        texto = texto[:i] + _JS_NODO % json.dumps(nodo) + texto[i:]
+    return texto
+
 class H(BaseHTTPRequestHandler):
-    server_version = "suricata-dashboard"
+    server_version = "ids-panel"
     # HTTP/1.1 con keep-alive: reutiliza la conexion en vez de reabrirla en cada
     # respuesta. Detras de un proxy inverso quita mucha latencia (login, redirect, POST).
     # Todas las respuestas mandan Content-Length, asi que es seguro.
@@ -15125,7 +15743,7 @@ class H(BaseHTTPRequestHandler):
         return self._sesion_ok()
     def _redirect(self, location, cookie=None):
         self.send_response(303)
-        self.send_header("Location", location)
+        self.send_header("Location", url_con_nodo(location))
         if cookie:
             self.send_header("Set-Cookie", cookie)
         self.send_header("Content-Length", "0")
@@ -15146,10 +15764,19 @@ class H(BaseHTTPRequestHandler):
                               "<h1>Sin permiso</h1><p>Tu usuario no tiene el rol que pide esta operacion.</p>"
                               "<p><a href=/>Volver</a></p>", 403)
         self._redirect("/login")
-    def _html(self, s, code=200):
-        b = s.encode("utf-8")
+    def _html(self, s, code=200, cabeceras=None):
+        b = html_con_nodo(s).encode("utf-8")
         self.send_response(code)
         self.send_header("Content-Type", "text/html; charset=utf-8")
+        # paginas con datos de la red y, alguna, claves de un solo uso: ni cache, ni dentro
+        # de un marco ajeno, ni adivinar el tipo (auditoria B-11)
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Frame-Options", "SAMEORIGIN")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Referrer-Policy", "same-origin")
+        for k, v in (cabeceras or {}).items():
+            if k.lower() not in ("content-length", "content-type"):
+                self.send_header(k, v)
         self.send_header("Content-Length", str(len(b)))
         self.end_headers()
         self.wfile.write(b)
@@ -15162,7 +15789,7 @@ class H(BaseHTTPRequestHandler):
     def _limpiar_ctx(self):
         # El hilo se reutiliza entre peticiones de la misma conexion (keep-alive): nada del
         # usuario ni del nodo de la peticion anterior puede quedar puesto.
-        for k in ("user", "role", "ip", "peer", "exp", "nodo"):
+        for k in ("user", "role", "ip", "peer", "exp", "nodo", "form"):
             setattr(CTX, k, None)
         nodos.quitar_nodo()
         self.__dict__.pop("_ses_cache", None)
@@ -15287,6 +15914,27 @@ class H(BaseHTTPRequestHandler):
             pass
         return self._html(_pagina_error("Sin permiso", "Tu rol no permite esta accion. Si la necesitas, "
                                         "pidesela a un administrador."), 403)
+
+    def _confirmar_evidencia_vieja(self, ruta, q, ip, detalle):
+        """Pagina de confirmacion: repite el mismo formulario con confirmar_vieja=1. No se ha
+        tocado nada todavia."""
+        esc = html.escape
+        campos = "".join("<input type=hidden name=\"%s\" value=\"%s\">" % (esc(k), esc(v[0] if v else ""))
+                         for k, v in sorted(q.items()) if k not in ("ajax", "confirmar_vieja"))
+        volver = "/cuarentena"
+        if nodos.hay_nodo():
+            volver += "?nodo=" + urllib.parse.quote(nodos.nodo_actual(), safe="")
+        return self._html(
+            "<!doctype html><html lang=es><head><meta charset=utf-8><title>Confirmar el envio</title>"
+            "<style>body{margin:0;padding:40px 24px;font:15px/1.6 system-ui,Segoe UI,sans-serif;"
+            "color:#33322f;background:#fcfcfb}div{max-width:620px;margin:0 auto}h1{font-size:20px}"
+            "button{font:inherit;padding:8px 16px;border-radius:8px;border:1px solid #b52a2a;background:#b52a2a;"
+            "color:#fff;cursor:pointer}a{margin-left:14px}</style></head><body><div>"
+            "<h1>La evidencia de %s es vieja</h1><p>%s.</p><p>Una IP privada de abonado cambia de manos "
+            "(DHCP, PPPoE): si la mandas a cuarentena puedes cortar a quien la tiene hoy. No se ha enviado "
+            "nada.</p><form method=post action=\"%s\">%s<input type=hidden name=confirmar_vieja value=1>"
+            "<button type=submit>Enviar igual</button><a href=\"%s\">Cancelar</a></form></div></body></html>"
+            % (esc(ip), esc(detalle), esc(ruta), campos, esc(volver)))
 
     def _get(self):
         path = self.path.split("?", 1)[0]
@@ -15454,7 +16102,8 @@ class H(BaseHTTPRequestHandler):
             return self._html(conducta_page(q=_qc.get("q", [""])[0],
                                             msg=rep_aviso_tomar(_qc.get("msg", [""])[0])[0],
                                             pag=_pg,
-                                            por=_qc.get("n", [""])[0]))
+                                            por=_qc.get("n", [""])[0],
+                                            es_operador=self._operador()))
         if path == "/historico":
             _qh = _up.parse_qs(self.path.split("?", 1)[1]) if "?" in self.path else {}
             try:
@@ -15479,8 +16128,10 @@ class H(BaseHTTPRequestHandler):
                     _cmsg = ""
             return self._html(cuarentena_page(msg=_cmsg, es_admin=self._operador()))
         if path == "/cuarentena/ficha":
-            if not self._operador():
-                return self._prohibido()
+            # la ficha de evidencia es parte de «ver Cuarentena»: tambien lectura (CONTRATO-F2
+            # §10.2, precision B-18). No tiene botones de accion.
+            if not self._sesion_ok():
+                return self._deny()
             _qs = _up.parse_qs(self.path.split("?", 1)[1]) if "?" in self.path else {}
             return self._html(ficha_page(_qs.get("ip", [""])[0],
                                          embed=("embed=1" in (self.path.split("?", 1)[1] if "?" in self.path else ""))))
@@ -15564,7 +16215,7 @@ class H(BaseHTTPRequestHandler):
             # a mano no se pinta en el modal del panel
             _av = rep_aviso_tomar(_qr.get("msg", [""])[0])     # (texto, marcar)
             return self._html(reputacion_page(es_admin=self._admin(), modal=True,
-                                              msg=_av[0], marcar=_av[1]))
+                                              msg=_av[0], marcar=_av[1], es_operador=self._operador()))
         if path == "/documentacion":
             _qd = _up.parse_qs(self.path.split("?", 1)[1]) if "?" in self.path else {}
             return self._html(documentacion_page(embed=("1" in _qd.get("embed", [])),
@@ -15581,14 +16232,32 @@ class H(BaseHTTPRequestHandler):
         return self._html("<h1>No encontrado</h1>", 404)
     def _post(self):
         ruta = self.path.split("?", 1)[0]
+        # Antes de leer el cuerpo: IP de confianza, sesion (salvo el login) y tope de tamano.
+        # Se leia entero, sin tope, antes de comprobar nada (auditoria B-15). El cuerpo no
+        # leido deja la conexion inservible: se cierra.
+        if not ip_confiable(self._client_ip()):
+            self.close_connection = True
+            return self._html("<h1>Acceso restringido</h1>", 403)
+        if ruta != "/login" and not self._auth_ok():
+            self.close_connection = True
+            return self._deny()
         try:
-            n = int(self.headers.get("Content-Length", "0"))
+            n = int(self.headers.get("Content-Length", "0") or 0)
+        except ValueError:
+            n = -1
+        # 1 MiB: el formulario mas grande (logo o foto en data:) ronda 600 KB; el login, 16 KiB
+        if n < 0 or n > (16 * 1024 if ruta == "/login" else 1024 * 1024):
+            self.close_connection = True
+            return self._html(_pagina_error("Peticion demasiado grande", "El formulario pesa mas de lo "
+                                            "que admite el panel."), 413)
+        try:
             body = self.rfile.read(n).decode("utf-8", "replace") if n else ""
         except Exception:
             body = ""
         q = urllib.parse.parse_qs(body)
-        if not ip_confiable(self._client_ip()):
-            return self._html("<h1>Acceso restringido</h1>", 403)
+        # el formulario de la peticion en curso (un valor por campo), para las funciones que
+        # necesitan lo que vio el usuario (la huella del plan del espejo)
+        CTX.form = {k: v[0] for k, v in q.items()}
         if ruta == "/login":
             ip = self._client_ip()
             u = q.get("usuario", [""])[0]; p = q.get("clave", [""])[0]
@@ -15622,8 +16291,11 @@ class H(BaseHTTPRequestHandler):
         if ruta == "/update-reglas":
             if not self._admin():
                 return self._prohibido()   # accion de admin
-            if not UPDATE["running"]:
-                UPDATE["running"] = True; UPDATE["started"] = time.time(); UPDATE["msg"] = ""
+            with _UPDATE_LOCK:
+                _lanzar = not UPDATE["running"]
+                if _lanzar:
+                    UPDATE["running"] = True; UPDATE["started"] = time.time(); UPDATE["msg"] = ""
+            if _lanzar:
                 # orden reglas.actualizar del orquestador (las reglas son de todos los puntos)
                 threading.Thread(target=_run_rules_update,
                                  args=(getattr(CTX, "user", "?") or "?", getattr(CTX, "ip", "") or ""),
@@ -15650,9 +16322,12 @@ class H(BaseHTTPRequestHandler):
         if ruta == "/exclusiones":
             if not self._admin():
                 return self._prohibido()   # lectura no gestiona exclusiones
-            return self._post_exclusiones(q)
+            with _EXCL_LOCK:      # leer-modificar-guardar entero bajo el cerrojo (A-16)
+                return self._post_exclusiones(q)
         if ruta == "/perfil":
-            return self._post_perfil(q)
+            # leer-modificar-guardar usuarios.json entero bajo el cerrojo entre procesos (B-22)
+            with usuarios_cerrojo():
+                return self._post_perfil(q)
         if ruta == "/empresa":
             if not self._admin():
                 return self._prohibido()
@@ -15732,6 +16407,11 @@ class H(BaseHTTPRequestHandler):
                 if _v in POL_CLASE_VALORES:
                     m["POL_" + _cat.upper()] = _v
             m["POL_AUTO"] = "1" if q.get("pol_auto") else "0"
+            if _rid and q.get("pass", [""])[0] and not secretos.disponible():
+                # la clave de la API va cifrada: sin clave maestra no se guarda NADA (antes se
+                # escribia la configuracion global y despues reventaba con un 500: B-04)
+                bitacora("CONFIG-MIKROTIK", "punto=%s no guardada (sin clave maestra)" % _rid)
+                return self._html(perfil_page("No se guardo: falta la clave maestra del panel (/run/secrets/master_key), y una clave nunca se guarda en claro. Revisa el montaje de la clave maestra y vuelve a intentarlo.", ok=False))
             try:
                 guardar_mk(m)
                 if _rid:
@@ -15748,6 +16428,9 @@ class H(BaseHTTPRequestHandler):
                             if m.get(_k):
                                 _r[_k] = m[_k]
                     guardar_routers(_rs)
+            except secretos.SecretoNoDisponible:
+                bitacora("CONFIG-MIKROTIK", "punto=%s no guardada (sin clave maestra)" % (_rid or "-"))
+                return self._html(perfil_page("No se guardo: falta la clave maestra del panel (/run/secrets/master_key), y una clave nunca se guarda en claro. Revisa el montaje de la clave maestra y vuelve a intentarlo.", ok=False))
             except OSError as ex:
                 return self._html(perfil_page(f"No se pudo guardar: {ex}", ok=False))
             conf_dash_set("DOBLE_SENAL", "1" if q.get("doble") else "0")   # doble senal (lo lee el generador)
@@ -15873,10 +16556,14 @@ class H(BaseHTTPRequestHandler):
                         cab += " \u00b7 el verificador encontro errores: no se puede aplicar"
                     _lin = lineas_verificacion(p.get("verificacion", [])) + p["rsc"]
                     return _txt(True, cab + (("\n" + "\n".join(_lin)) if _lin else ""))
-                if ruta.endswith("/aplicar"):
-                    okr, msg, _p = aplicar_reglas(r, cat, quien=quien)
-                else:
-                    okr, msg, _p = quitar_reglas(r, cat, quien=quien)
+                # una reconciliacion de reglas a la vez por router: con un doble clic las dos
+                # planificaban sobre el router sin cambios y las reglas salian duplicadas
+                # (auditoria A-08). La segunda espera y planifica sobre lo que dejo la primera.
+                with cerrojo_operacion(r.get("id", ""), "reglas"):
+                    if ruta.endswith("/aplicar"):
+                        okr, msg, _p = aplicar_reglas(r, cat, quien=quien)
+                    else:
+                        okr, msg, _p = quitar_reglas(r, cat, quien=quien)
                 bitacora("REGLAS-ROUTER", "%s %s router=%s: %s" % (ruta.rsplit("/", 1)[1], cat, r.get("id", ""), msg[:160]))
                 return _txt(okr, msg)
             except Exception as ex:
@@ -15897,10 +16584,16 @@ class H(BaseHTTPRequestHandler):
                     _r["PASS"] = q.get("pass", [""])[0]
                 try:
                     guardar_routers(_rs)
+                    ok = None
+                except secretos.SecretoNoDisponible:
+                    ok, msg = False, ("No se guardo la clave ni se probo: falta la clave maestra del panel "
+                                      "(/run/secrets/master_key) y la clave de la API nunca se guarda en claro.")
+                    bitacora("PROBAR-API", "punto=%s no guardada (sin clave maestra)" % _rid)
                 except OSError:
-                    pass
-                ok, msg = puntos_web.probar_api(sys.modules[__name__], _rid)
-                bitacora("PROBAR-API", "punto=%s resultado=%s" % (_rid, "ok" if ok else "fallo"))
+                    ok = None
+                if ok is None:
+                    ok, msg = puntos_web.probar_api(sys.modules[__name__], _rid)
+                    bitacora("PROBAR-API", "punto=%s resultado=%s" % (_rid, "ok" if ok else "fallo"))
             if not ok:
                 msg += (" — Revisa el usuario y la clave de la API, que el punto tenga la VPN conectada "
                         "y que el router tenga la API-SSL (8729) con el certificado ids-promax "
@@ -15925,7 +16618,10 @@ class H(BaseHTTPRequestHandler):
             if estado is False:
                 bitacora("CONFIG-FEEDS-AUTHKEY", f"rechazada ({det})")
                 return self._html(perfil_page(f"No se guardo: la Auth-Key no es valida — {det}.", ok=False))
-            feeds_auth_set(ak); actualizar_feeds_async()
+            if feeds_auth_set(ak) is False:      # sin clave maestra no se guarda (B-04)
+                bitacora("CONFIG-FEEDS-AUTHKEY", "no guardada (sin clave maestra)")
+                return self._html(perfil_page("No se guardo: falta la clave maestra del panel (/run/secrets/master_key), y una clave nunca se guarda en claro. Revisa el montaje de la clave maestra y vuelve a intentarlo.", ok=False))
+            actualizar_feeds_async()
             if estado is True:
                 bitacora("CONFIG-FEEDS-AUTHKEY", "validada y guardada")
                 return self._html(perfil_page("Auth-Key VALIDA y guardada (solo en este servidor). Actualizando feeds.", ok=True))
@@ -16078,7 +16774,7 @@ class H(BaseHTTPRequestHandler):
                  else "El MikroTik no tiene ninguna publica que no estuviera ya") + "."
                 + nota_viejas, marcar))
         if ruta == "/publicas/revisar":
-            if not self._operador():
+            if not self._admin():           # revisar publicas (DNSBL) es de admin (§10.2, B-18)
                 return self._prohibido()
             # en segundo plano: revisar un /24 en 6 listas son ~1.500 consultas DNS y la
             # peticion se quedaria colgada
@@ -16098,7 +16794,10 @@ class H(BaseHTTPRequestHandler):
             if estado is False:
                 bitacora("CONFIG-ABUSEIPDB", f"rechazada ({det})")
                 return self._html(perfil_page(f"No se guardo: la clave no es valida — {det}.", ok=False))
-            aidb_set(k); actualizar_feeds_async()
+            if aidb_set(k) is False:             # sin clave maestra no se guarda (B-04)
+                bitacora("CONFIG-ABUSEIPDB", "no guardada (sin clave maestra)")
+                return self._html(perfil_page("No se guardo: falta la clave maestra del panel (/run/secrets/master_key), y una clave nunca se guarda en claro. Revisa el montaje de la clave maestra y vuelve a intentarlo.", ok=False))
+            actualizar_feeds_async()
             if estado is True:
                 bitacora("CONFIG-ABUSEIPDB", "validada y guardada")
                 return self._html(perfil_page("Clave de AbuseIPDB VALIDA y guardada (solo en este servidor).", ok=True))
@@ -16134,7 +16833,9 @@ class H(BaseHTTPRequestHandler):
                 bitacora("CONFIG-GROQ", "rechazada (%s)" % det)
                 return self._html(perfil_page(
                     "No se guardo: la clave no es valida — %s." % det, ok=False))
-            groq_set(k)
+            if groq_set(k) is False:             # sin clave maestra no se guarda (B-04)
+                bitacora("CONFIG-GROQ", "no guardada (sin clave maestra)")
+                return self._html(perfil_page("No se guardo: falta la clave maestra del panel (/run/secrets/master_key), y una clave nunca se guarda en claro. Revisa el montaje de la clave maestra y vuelve a intentarlo.", ok=False))
             # si el modelo elegido ya no existe, no se deja puesto: fallaria en la primera
             # consulta y el error saldria lejos de aqui
             if mod and (not modelos or mod in modelos):
@@ -16149,6 +16850,33 @@ class H(BaseHTTPRequestHandler):
                        "Modelo: " + groq_modelo()), ok=True))
             bitacora("CONFIG-GROQ", "guardada sin validar (%s)" % det)
             return self._html(perfil_page("Clave guardada, pero %s." % det, ok=True))
+        if ruta == "/telegram":
+            # token y chat del bot: el token se cifra AL GUARDAR (antes habia que escribirlo a
+            # mano en report.conf y quedaba en claro hasta el siguiente arranque: B-20)
+            if not self._admin():
+                return self._prohibido()
+            tok = (q.get("tgtoken", [""])[0] or "").strip()
+            chat = (q.get("tgchat", [""])[0] or "").strip()[:40]
+            if chat and not re.match(r"^-?[0-9]{1,20}$|^@[A-Za-z0-9_]{5,32}$", chat):
+                return self._html(perfil_page("El chat ID no es valido (un numero, o @canal).", ok=False))
+            if tok == "BORRAR":
+                telegram_set(token="", chat=chat)
+                bitacora("CONFIG-TELEGRAM", "token borrado")
+                return self._html(perfil_page("Token de Telegram borrado.", ok=True))
+            if tok and not re.match(r"^[0-9]{3,15}:[A-Za-z0-9_-]{20,80}$", tok):
+                return self._html(perfil_page("No se guardo: eso no parece un token de bot de Telegram "
+                                              "(numero:clave).", ok=False))
+            try:
+                telegram_set(token=tok or None, chat=chat)
+            except secretos.SecretoNoDisponible:
+                bitacora("CONFIG-TELEGRAM", "no guardado (sin clave maestra)")
+                return self._html(perfil_page("No se guardo: falta la clave maestra del panel "
+                                              "(/run/secrets/master_key), y el token nunca se guarda en claro.",
+                                              ok=False))
+            except OSError as ex:
+                return self._html(perfil_page(f"No se pudo guardar: {ex}", ok=False))
+            bitacora("CONFIG-TELEGRAM", ("token cifrado y guardado; " if tok else "") + "chat=%s" % (chat or "-"))
+            return self._html(perfil_page("Telegram guardado" + (" (token cifrado)." if tok else "."), ok=True))
         if ruta == "/feeds/actualizar":
             if not self._admin():
                 return self._prohibido()
@@ -16192,7 +16920,7 @@ class H(BaseHTTPRequestHandler):
                 # una IP de internet no es un abonado: la cuarentena de CPEs no la frena
                 return _fin(False, f"{ip} no es de tus redes: es un atacante externo, "
                                    f"se corta en el firewall de borde, no en la cuarentena de CPEs")
-            if nunca_bloquear(ip):
+            if nunca_bloquear(clave):
                 return _fin(False, f"{ip} esta en la lista 'Nunca bloquear' (no se envia)")
             _pub = es_publica_declarada(ip)
             if _pub:
@@ -16203,6 +16931,11 @@ class H(BaseHTTPRequestHandler):
             if not mk_listo(m):
                 return _fin(False, f"Configura y HABILITA el MikroTik "
                                    f"{m.get('ROUTER_NOMBRE') or ''} en Ajustes primero".replace("  ", " "))
+            _vieja = evidencia_sin_confirmar(clave, q)
+            if _vieja:
+                if ajax:
+                    return _fin(False, f"{ip}: {_vieja}. No se envio: confirmalo desde la pestana Cuarentena")
+                return self._confirmar_evidencia_vieja(ruta, q, ip, _vieja)
             try:   # si la IP no es candidato actual, es un envio MANUAL (no lo libera el auto)
                 cand_ips = {clave_cpe(c.get("ip", ""), c.get("router", ""))
                             for c in json.load(open(nodos.salida("cuarentena.json", rid_de(clave)),
@@ -16219,13 +16952,13 @@ class H(BaseHTTPRequestHandler):
             except Exception as ex:
                 ok, err = False, str(ex)
             if ok:
-                env = cargar_enviados()
                 # se guarda la LISTA usada: si manana cambia la categoria del CPE o el
-                # nombre de la lista, hay que poder sacarlo de donde esta de verdad
-                env[clave] = {"cuando": int(time.time()), "score": score, "por": getattr(CTX, "user", "?"),
-                              "router": r.get("id", ""), "categoria": _cat, "lista": _lst,
-                              "manual": clave not in cand_ips, "motivo": _motivo_bloqueo(clave)}
-                guardar_enviados(env)
+                # nombre de la lista, hay que poder sacarlo de donde esta de verdad. Se anota
+                # releyendo el registro dentro del cerrojo (auditoria A-03)
+                _registrar_enviados(MK_SENT, {clave: {
+                    "cuando": int(time.time()), "score": score, "por": getattr(CTX, "user", "?"),
+                    "router": r.get("id", ""), "categoria": _cat, "lista": _lst,
+                    "manual": clave not in cand_ips, "motivo": _motivo_bloqueo(clave)}}, [], pisar=True)
                 mk_log("ENVIADO", ip, getattr(CTX, "user", "?"), f"lista={_lst} ttl={m.get('TTL')}"
                        + (" (manual)" if clave not in cand_ips else "") + _suf_nodo(clave))
                 # la lista a la que FUE de verdad (la de su categoria), no la heredada
@@ -16233,7 +16966,7 @@ class H(BaseHTTPRequestHandler):
                 globals()["FORCE_REGEN"] = True   # regenerar pronto para que el Top muestre 'En cuarentena'
                 nota = " (ya estaba en la lista)" if err else ""
                 return _fin(True, f"{ip} en {_lst} ({nombre_categoria(_cat)}){nota}")
-            mk_log("ERROR-ENVIO", ip, getattr(CTX, "user", "?"), err)
+            mk_log("ERROR-ENVIO", ip, getattr(CTX, "user", "?"), f"{err}" + _suf_nodo(clave))
             return _fin(False, f"No se pudo enviar {ip}: {err}")
         if ruta in ("/cuarentena/destino/bloquear", "/cuarentena/destino/quitar"):
             if not self._operador():
@@ -16243,40 +16976,56 @@ class H(BaseHTTPRequestHandler):
             if not ok_d:
                 return self._redirect(cuar_aviso_url(f"{ip}: {porque}"))
             quitar = ruta.endswith("/quitar")
-            hechos, errores = 0, []
-            # se manda a TODOS los nodos: el destino es malo para todos los abonados,
-            # no solo para los de un router
+            # Operacion MULTIPUNTO declarada: el destino es malo para todos los abonados, asi
+            # que va a cada punto, con resultado POR PUNTO y registro por punto (auditoria
+            # A-07): la marca de un punto solo se quita si SU router lo confirma, y un punto
+            # que falla no se da por hecho.
+            hechos, errores = [], []
             for r in cargar_routers():
                 d = cargar_mk_de(r)
                 if not mk_listo(d):
                     continue
                 lst = d.get("LIST_DST", "suricata-destinos-malos")
                 try:
-                    if quitar:
-                        ok, err = mk_remove(ip, lista=lst, router=r)
-                    else:
-                        ok, err = mk_add(ip, comment=f"suricata destino malo {time.strftime('%Y-%m-%d %H:%M')}",
-                                         lista=lst, ttl=_ttl_efectivo(d, "TTL_DST"), router=r)
+                    with cerrojo_operacion(r.get("id", ""), "destino:" + ip):
+                        if quitar:
+                            ok, err = mk_remove(ip, lista=lst, router=r)
+                        else:
+                            ok, err = mk_add(ip, comment=f"suricata destino malo {time.strftime('%Y-%m-%d %H:%M')}",
+                                             lista=lst, ttl=_ttl_efectivo(d, "TTL_DST"), router=r)
                 except Exception as ex:
                     ok, err = False, str(ex)
                 if ok:
-                    hechos += 1
+                    hechos.append(r.get("id", ""))
                 else:
                     errores.append(f"{r.get('nombre') or r.get('id')}: {err}")
+                    mk_log("ERROR-DESTINO", ip, getattr(CTX, "user", "?"), f"{err} nodo={r.get('id', '')}")
             if hechos:
-                env = cargar_enviados(MK_SENT_DST)
-                if quitar:
-                    env.pop(ip, None)
-                else:
-                    dd = (cargar_destinos_malos().get(ip) or {})
-                    env[ip] = {"cuando": int(time.time()), "por": getattr(CTX, "user", "?"),
-                               "fuente": dd.get("fuente", ""), "categoria": dd.get("categoria", ""),
-                               "nodos": hechos}
-                guardar_enviados(env, MK_SENT_DST)
-                mk_log("DESTINO-QUITADO" if quitar else "DESTINO-BLOQUEADO", ip,
-                       getattr(CTX, "user", "?"), f"nodos={hechos}")
-            msg = (f"{ip}: {'desbloqueado' if quitar else 'bloqueado'} en {hechos} nodo(s)"
-                   if hechos else f"No se pudo: {'; '.join(errores[:2]) or 'ningun MikroTik habilitado'}")
+                dd = (cargar_destinos_malos().get(ip) or {}) if not quitar else {}
+                with _ENV_LOCK:                 # releido dentro del cerrojo (auditoria A-03)
+                    env = cargar_enviados(MK_SENT_DST)
+                    prev = env.get(ip) or {}
+                    en = [x for x in (prev.get("puntos") or []) if nodos.pid_valido(str(x))]
+                    if quitar:
+                        en = [x for x in en if x not in hechos]
+                    else:
+                        en = sorted(set(en) | set(hechos))
+                    if en:
+                        rec = dict(prev) if quitar else {
+                            "cuando": int(time.time()), "por": getattr(CTX, "user", "?"),
+                            "fuente": dd.get("fuente", ""), "categoria": dd.get("categoria", "")}
+                        rec["puntos"] = en
+                        rec["nodos"] = len(en)
+                        env[ip] = rec
+                    else:
+                        env.pop(ip, None)
+                    guardar_enviados(env, MK_SENT_DST)
+                for pid in hechos:
+                    mk_log("DESTINO-QUITADO" if quitar else "DESTINO-BLOQUEADO", ip,
+                           getattr(CTX, "user", "?"), f"nodo={pid}")
+            msg = "; ".join(["%s: %s" % (nodos.nombre(x), "desbloqueado" if quitar else "bloqueado") for x in hechos]
+                            + ["%s: NO (%s)" % (e.split(":", 1)[0], e.split(":", 1)[1].strip()[:80]) for e in errores])
+            msg = (f"{ip}: " + msg) if msg else "No se pudo: ningun MikroTik habilitado"
             return self._redirect(cuar_aviso_url(msg))
         if ruta == "/cuarentena/graduada":
             # Corte PARCIAL: se le cortan los puertos de abuso y se le deja el resto. El
@@ -16304,7 +17053,7 @@ class H(BaseHTTPRequestHandler):
                 return _fin_g(False, "destino no valido: hace falta el nodo de la IP (nodo|IP) y que ese punto exista")
             if not es_mi_cpe(ip):
                 return _fin_g(False, f"{ip} no es de tus redes")
-            if nunca_bloquear(ip):
+            if nunca_bloquear(clave):
                 return _fin_g(False, f"{ip} esta en la lista 'Nunca bloquear'")
             _pub = es_publica_declarada(ip)
             if _pub:
@@ -16313,6 +17062,11 @@ class H(BaseHTTPRequestHandler):
             r = _router_de_pid(rid_de(clave)); m = cargar_mk_de(r)
             if not mk_listo(m):
                 return _fin_g(False, "Configura y HABILITA el MikroTik en Ajustes primero")
+            _vieja = evidencia_sin_confirmar(clave, q)
+            if _vieja:
+                if ajax_g:
+                    return _fin_g(False, f"{ip}: {_vieja}. No se envio: confirmalo desde la pestana Cuarentena")
+                return self._confirmar_evidencia_vieja(ruta, q, ip, _vieja)
             lst = m.get("LIST_GRAD", "suricata-graduada")
             try:
                 ok, err = mk_add(ip, comment=f"suricata graduada riesgo {score} {time.strftime('%Y-%m-%d %H:%M')}",
@@ -16320,13 +17074,12 @@ class H(BaseHTTPRequestHandler):
             except Exception as ex:
                 ok, err = False, str(ex)
             if not ok:
-                mk_log("ERROR-GRADUADA", ip, getattr(CTX, "user", "?"), err)
+                mk_log("ERROR-GRADUADA", ip, getattr(CTX, "user", "?"), f"{err}" + _suf_nodo(clave))
                 return _fin_g(False, f"No se pudo enviar {ip}: {err}")
-            env = cargar_enviados(MK_SENT_GRAD)
-            env[clave] = {"cuando": int(time.time()), "score": score,
-                          "por": getattr(CTX, "user", "?"), "router": r.get("id", ""),
-                          "grad": True, "motivo": _motivo_bloqueo(clave)}
-            guardar_enviados(env, MK_SENT_GRAD)
+            _registrar_enviados(MK_SENT_GRAD, {clave: {
+                "cuando": int(time.time()), "score": score, "por": getattr(CTX, "user", "?"),
+                "router": r.get("id", ""), "grad": True, "lista": lst,
+                "motivo": _motivo_bloqueo(clave)}}, [], pisar=True)
             mk_log("GRADUADA", ip, getattr(CTX, "user", "?"), f"lista={lst}" + _suf_nodo(clave))
             aviso = ""
             try:
@@ -16347,7 +17100,9 @@ class H(BaseHTTPRequestHandler):
                 return self._redirect(cuar_aviso_url("IP invalida"))
             if not _destino_ok(clave):
                 return self._redirect(cuar_aviso_url("destino no valido: hace falta el nodo de la IP (nodo|IP) y que ese punto exista"))
-            lst = cargar_mk_de(rt).get("LIST_GRAD", "suricata-graduada")
+            # de la lista donde se puso DE VERDAD (auditoria A-05), si el registro la guarda
+            lst = ((cargar_enviados(MK_SENT_GRAD).get(clave) or {}).get("lista")
+                   or cargar_mk_de(rt).get("LIST_GRAD", "suricata-graduada"))
             try:
                 ok, err = mk_remove(ip, lista=lst, router=rt)
             except Exception as ex:
@@ -16361,6 +17116,9 @@ class H(BaseHTTPRequestHandler):
         if ruta == "/cuarentena/enviar-todos":
             if not self._operador():
                 return self._prohibido()
+            if not (q.get("nodo", [""])[0] or "").strip():
+                return self._html(_pagina_error("Falta el nodo", "El formulario no dice de que nodo es la "
+                                                "lista: no se envio nada. Recarga la pagina."), 400)
             ok_n, resumen = _enviar_confirmados(q.get("nodo", [""])[0], "cuar")
             if ok_n:
                 enviar_telegram(f"\U0001f6a8 Cuarentena masiva [{_hostname()}]: {ok_n} CPE confirmados (2+ pruebas) "
@@ -16391,7 +17149,7 @@ class H(BaseHTTPRequestHandler):
             # sin forma de reintentarlo ni de liberarlo
             if ok:
                 quitar_enviados([clave])
-            mk_log("QUITADO" if ok else "ERROR-QUITAR", ip, getattr(CTX, "user", "?"), err)
+            mk_log("QUITADO" if ok else "ERROR-QUITAR", ip, getattr(CTX, "user", "?"), f"{err}" + _suf_nodo(clave))
             return self._redirect(cuar_aviso_url(f"{ip}: {err}" if ok else f"No se pudo quitar {ip}: {err}"))
         if ruta == "/cuarentena/quitar-uno":
             # Quita UNA IP y responde JSON enseguida. La usa el quitado masivo para ir
@@ -16416,12 +17174,16 @@ class H(BaseHTTPRequestHandler):
             # La IP debe estar en ESE registro. Si no, mk_remove consultaria la otra
             # address-list, no encontraria nada y devolveria "0 entradas quitadas" como
             # exito: saldria un visto bueno sin haber quitado nada del router.
-            if clave not in cargar_enviados(reg):
+            _reg = cargar_enviados(reg)
+            if clave not in _reg:
                 return self._json({"ok": False, "ip": ip,
                                    "err": "no esta en esa lista del panel"})
-            lst = cargar_mk_de(rt).get("LIST_DNS", "suricata-dns-sospechoso") if es_dns else ""
+            # de la lista donde esta DE VERDAD (la que se guardo al mandarla: la de su
+            # categoria), no la vieja unica: si no, quedaba bloqueado y fuera del panel (A-05)
+            _guardada = (_reg.get(clave) or {}).get("lista", "")
+            lst = _guardada or (cargar_mk_de(rt).get("LIST_DNS", "suricata-dns-sospechoso") if es_dns else "")
             try:
-                ok, err = (mk_remove(ip, lista=lst, router=rt) if es_dns
+                ok, err = (mk_remove(ip, lista=lst, router=rt) if lst
                            else mk_remove(ip, router=rt))
             except Exception as ex:
                 ok, err = False, str(ex)
@@ -16444,7 +17206,7 @@ class H(BaseHTTPRequestHandler):
             sobran = max(0, len(sels) - TOPE)
             en_reg = {MK_SENT: cargar_enviados(MK_SENT), MK_SENT_DNS: cargar_enviados(MK_SENT_DNS)}
             quitadas = {MK_SENT: [], MK_SENT_DNS: []}
-            errores = []; corte = ""
+            errores = []; corte = ""; caidos = []
             for s in sels[:TOPE]:
                 tipo, _, clave = (s or "").partition("|")
                 clave = clave.strip(); ip = ip_de(clave)
@@ -16458,9 +17220,13 @@ class H(BaseHTTPRequestHandler):
                 rt = _router_de_pid(rid_de(clave))
                 if clave not in en_reg[reg]:   # evita el falso exito de "0 entradas quitadas"
                     errores.append(f"{ip} (no esta en esa lista)"); continue
-                _ld = cargar_mk_de(rt).get("LIST_DNS", lst_dns)
+                if rid_de(clave) in caidos:     # su router ya no respondio: no esperar otro timeout
+                    errores.append(f"{ip} ({rid_de(clave)} no responde)"); continue
+                # de la lista donde esta DE VERDAD (la guardada al mandarla), no la vieja unica
+                _ld = (en_reg[reg].get(clave) or {}).get("lista", "") or (
+                    cargar_mk_de(rt).get("LIST_DNS", lst_dns) if reg == MK_SENT_DNS else "")
                 try:
-                    ok, err = (mk_remove(ip, lista=_ld, router=rt) if reg == MK_SENT_DNS
+                    ok, err = (mk_remove(ip, lista=_ld, router=rt) if _ld
                                else mk_remove(ip, router=rt))
                 except Exception as ex:
                     ok, err = False, str(ex)
@@ -16469,13 +17235,13 @@ class H(BaseHTTPRequestHandler):
                 else:
                     errores.append(f"{ip} ({err})")
                 mk_log("QUITADO" if ok else "ERROR-QUITAR", ip, quien,
-                       (f"lista={lst_dns} " if reg == MK_SENT_DNS else "") + f"masivo {err}")
+                       (f"lista={_ld} " if _ld else "") + f"masivo {err}" + _suf_nodo(clave))
                 if not ok and ("conexion" in (err or "") or "login" in (err or "")):
                     # el router no responde: seguir seria esperar el timeout por cada IP
                     # (500 x 6 s = mas de 45 min con el navegador esperando). Igual que
-                    # hace "Enviar todos".
-                    corte = " Se corto: el MikroTik no responde."
-                    break
+                    # hace "Enviar todos": se corta SOLO ese punto, los demas siguen (A-19)
+                    caidos.append(rid_de(clave))
+                    corte = " Se corto en %s: el MikroTik no responde." % ", ".join(caidos)
             # Se sacan del registro releyendo dentro del cerrojo: entre el primer mk_remove
             # y este punto pueden haber pasado minutos, y guardar la foto de antes borraria
             # lo que el hilo de fondo anoto mientras tanto.
@@ -16499,7 +17265,7 @@ class H(BaseHTTPRequestHandler):
             if not self._operador():
                 return self._prohibido()
             d = (q.get("destino", [""])[0]).strip()
-            cur = _dest_ok_set(); cur.discard(d); guardar_dest_ok_set(cur)
+            modificar_dest_ok(quitar=d)
             globals()["FORCE_REGEN"] = True
             bitacora("QUITAR-DESTINO-CONFIABLE", d)
             return self._redirect(cuar_aviso_url(f"'{d}' ya no es destino confiable"))
@@ -16514,12 +17280,13 @@ class H(BaseHTTPRequestHandler):
                 except Exception: return self._redirect(cuar_aviso_url("IP invalida"))
                 if not _destino_ok(clave):
                     return self._redirect(cuar_aviso_url("destino no valido: hace falta el nodo de la IP (nodo|IP) y que ese punto exista"))
-                lst = cargar_mk_de(rt).get("LIST_DNS", lst)
+                lst = ((cargar_enviados(MK_SENT_DNS).get(clave) or {}).get("lista")
+                       or cargar_mk_de(rt).get("LIST_DNS", lst))     # la guardada al mandarla (A-05)
                 try: ok, err = mk_remove(ip, lista=lst, router=rt)
                 except Exception as ex: ok, err = False, str(ex)
                 if ok:                      # igual que la de infectados: solo si el router confirmo
                     quitar_enviados([clave], MK_SENT_DNS)
-                mk_log("QUITADO" if ok else "ERROR-QUITAR", ip, getattr(CTX, "user", "?"), f"lista={lst} {err}")
+                mk_log("QUITADO" if ok else "ERROR-QUITAR", ip, getattr(CTX, "user", "?"), f"lista={lst} {err}" + _suf_nodo(clave))
                 return self._redirect(cuar_aviso_url(f"{ip}: {err}" if ok else f"No se pudo quitar {ip}: {err}"))
             if ruta == "/cuarentena/dns/enviar":
                 clave = (q.get("ip", [""])[0]).strip()
@@ -16529,7 +17296,7 @@ class H(BaseHTTPRequestHandler):
                 if not es_mi_cpe(ip):
                     return self._redirect(cuar_aviso_url(
                         f"{ip} no es de tus redes: se corta en el borde, no en la cuarentena de CPEs"))
-                if nunca_bloquear(ip):
+                if nunca_bloquear(clave):
                     return self._redirect(cuar_aviso_url(f"{ip} esta en la lista 'Nunca bloquear'"))
                 if not _destino_ok(clave):
                     return self._redirect(cuar_aviso_url("destino no valido: hace falta el nodo de la IP (nodo|IP) y que ese punto exista"))
@@ -16537,19 +17304,24 @@ class H(BaseHTTPRequestHandler):
                 if not mk_listo(dr):
                     return self._redirect(cuar_aviso_url("Ese MikroTik no esta habilitado para enviar"))
                 lst = dr.get("LIST_DNS", lst); ttl = _ttl_efectivo(dr, "TTL_DNS")
+                _vieja = evidencia_sin_confirmar(clave, q)
+                if _vieja:
+                    return self._confirmar_evidencia_vieja(ruta, q, ip, _vieja)
                 try: ok, err = mk_add(ip, comment=f"suricata DNS-sospechoso riesgo {score} {time.strftime('%Y-%m-%d %H:%M')}", lista=lst, ttl=ttl, router=rt)
                 except Exception as ex: ok, err = False, str(ex)
                 if ok:
-                    env = cargar_enviados(MK_SENT_DNS)
-                    env[clave] = {"cuando": int(time.time()), "score": score, "por": getattr(CTX, "user", "?"),
-                                  "router": rt.get("id", ""), "motivo": _motivo_bloqueo(clave)}
-                    guardar_enviados(env, MK_SENT_DNS)
+                    _registrar_enviados(MK_SENT_DNS, {clave: {
+                        "cuando": int(time.time()), "score": score, "por": getattr(CTX, "user", "?"),
+                        "router": rt.get("id", ""), "lista": lst, "motivo": _motivo_bloqueo(clave)}}, [], pisar=True)
                     mk_log("ENVIADO", ip, getattr(CTX, "user", "?"), f"lista={lst} (dns)" + _suf_nodo(clave))
                     notificar_cuarentena(clave, "DNS sospechoso", lst, quien=getattr(CTX, "user", "?"))
                     return self._redirect(cuar_aviso_url(f"{ip} enviado a la lista {lst}"))
-                mk_log("ERROR-ENVIO", ip, getattr(CTX, "user", "?"), f"lista={lst} {err}")
+                mk_log("ERROR-ENVIO", ip, getattr(CTX, "user", "?"), f"lista={lst} {err}" + _suf_nodo(clave))
                 return self._redirect(cuar_aviso_url(f"No se pudo enviar {ip}: {err}"))
             # enviar-todos DNS: repartido por nodo, con resultado por nodo
+            if not (q.get("nodo", [""])[0] or "").strip():
+                return self._html(_pagina_error("Falta el nodo", "El formulario no dice de que nodo es la "
+                                                "lista: no se envio nada. Recarga la pagina."), 400)
             ok_n, resumen = _enviar_confirmados(q.get("nodo", [""])[0], "dns")
             if ok_n:
                 enviar_telegram(f"\U0001f6a8 DNS sospechoso masivo [{_hostname()}]: {ok_n} CPE confirmados (2+ pruebas) "
@@ -16646,8 +17418,11 @@ class H(BaseHTTPRequestHandler):
             foto = q.get("avatar", [""])[0]
             if nrole not in ROLES:
                 nrole = "lectura"
-            if not nu or " " in nu or len(nu) > 40:
-                return self._html(perfil_page("Usuario invalido (sin espacios, max 40).", ok=False))
+            if not RE_USUARIO.match(nu):
+                # el mismo patron que `ids-panel crear-admin`: un nombre con comillas acababa
+                # dentro del JS de los modales (auditoria B-17)
+                return self._html(perfil_page("Usuario invalido: minusculas, numeros, punto, guion y "
+                                              "guion bajo (max 32, empieza por letra o numero).", ok=False))
             if len(npw) < 6:
                 return self._html(perfil_page("La clave del usuario debe tener al menos 6 caracteres.", ok=False))
             if foto and (not foto.startswith("data:image/") or len(foto) > 300_000):
@@ -16975,8 +17750,9 @@ def main():
         signal.signal(signal.SIGINT, _fin)
     except (ValueError, AttributeError, OSError):
         pass
-    threading.Thread(target=refrescador, name="refrescador", daemon=True).start()
-    threading.Thread(target=informe_diario_hilo, name="informe-diario", daemon=True).start()
+    lanzar_hilo("refrescador", refrescador)
+    lanzar_hilo("informe-diario", informe_diario_hilo)
+    threading.Thread(target=supervisor, name="supervisor", daemon=True).start()
     sys.stderr.write("panel: escuchando en %s:%s (proxies de confianza: %s)\n" % (
         httpd.server_address[0], httpd.server_address[1],
         ", ".join(str(p) for p in PROXIES_OK) or "ninguno"))
