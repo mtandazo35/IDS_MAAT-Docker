@@ -42,7 +42,13 @@ HAY_FIFO = hasattr(os, "mkfifo")
 
 
 def enlazar(destino, nombre):
-    """El enlace que plantaría el contenedor: symlink si se puede; si no, enlace duro."""
+    """El enlace que plantaría el contenedor: symlink si se puede; si no, enlace duro.
+    En Windows siempre enlace duro: el orquestador solo corre en Linux, y en Windows los symlinks
+    (cuando el runner deja crearlos) no tienen la semántica POSIX que estas pruebas comprueban
+    (`utime(follow_symlinks=False)` ni existe). La variante symlink corre en el CI de Linux."""
+    if os.name == "nt":
+        os.link(str(destino), str(nombre))
+        return "duro"
     try:
         os.symlink(str(destino), str(nombre))
         return "symlink"
