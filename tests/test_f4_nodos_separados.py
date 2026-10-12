@@ -146,13 +146,13 @@ class BajaLimpiaRouter(Base):
 
     def setUp(self):
         super().setUp()
-        self.hechas, self.espejo, self.fallan = [], [], set()
+        self.orden, self.fallan, self.revientan = [], set(), set()
         self.api = {"USER": "ids-api", "PASS": "x", "ROUTER_ID": "p001", "LIST": "suricata-cuarentena"}
         d = self.d
         d.cargar_mk_de = lambda r: dict(self.api)
         d.router_por_id = lambda pid: {"id": pid}
         self.espejo_ok = True
-        d.espejo_retirar = lambda pid, usuario=None: (self.espejo.append(pid) or
+        d.espejo_retirar = lambda pid, usuario=None: (self.orden.append(("espejo", pid)) or
                                                       {"ok": self.espejo_ok, "mensaje": "retirado" if self.espejo_ok
                                                        else "sin respuesta"})
 
@@ -163,7 +163,9 @@ class BajaLimpiaRouter(Base):
 
         def quitar(s_, ip, lst):
             self.activos_durante = list(d.pids_activos())
-            self.hechas.append((ip, lst))
+            self.orden.append((ip, lst))
+            if ip in self.revientan:
+                raise TimeoutError("timed out")
             return (False, "timeout") if ip in self.fallan else (True, "1 entrada(s) quitada(s) de " + lst)
         d._mk_quitar_en = quitar
         d.guardar_enviados({"p001|" + IP: {"cuando": 1, "router": "p001", "lista": "clientes-botnet"},
@@ -171,50 +173,152 @@ class BajaLimpiaRouter(Base):
         d.guardar_enviados({"p001|10.0.0.7": {"cuando": 1, "router": "p001"}}, d.MK_SENT_DNS)
         d.guardar_enviados({"192.0.2.66": {"cuando": 1, "puntos": ["p001", "p002"], "nodos": 2}}, d.MK_SENT_DST)
 
-    def test_sin_api_no_toca_nada(self):
-        """Conservacion: un punto sin usuario/clave de la API nunca recibio nada del panel: ok sin
-        hablar con el router."""
+    def quitadas(self):
+        return [x for x in self.orden if x[0] != "espejo"]
+
+    def test_sin_api_y_sin_nada_apuntado_no_toca_nada(self):
+        """Conservacion: un punto sin API y sin nada en el registro: ok sin hablar con el router."""
         self.api = {}
+        for path in (self.d.MK_SENT, self.d.MK_SENT_DNS, self.d.MK_SENT_DST):
+            self.d.guardar_enviados({k: v for k, v in self.d.cargar_enviados(path).items()
+                                     if "p001" not in k and "p001" not in (v.get("puntos") or [])}, path)
         res = self.d.baja_limpiar_router("p001", "ana")
         self.assertEqual((res["ok"], res["api"]), (True, False))
-        self.assertEqual((self.espejo, self.hechas), ([], []))
+        self.assertEqual(self.orden, [])
 
-    def test_retira_espejo_y_quita_solo_lo_del_punto(self):
-        """Capacidad nueva (A-21(5)): retira el espejo y saca del router los CPEs del punto (cada uno
-        de su lista) y su parte de los destinos bloqueados; lo de p002 queda intacto. Mientras dura,
-        el fondo no trabaja con ese punto."""
+    def test_sin_api_con_ips_apuntadas_no_dice_ok(self):
+        """Correccion de defecto (auditoria ap2 H5): sin API pero con IPs del punto en el registro, no
+        se da por limpio (quedarian cortadas): dice cuantas y que hacer."""
+        self.api = {}
+        res = self.d.baja_limpiar_router("p001", "ana")
+        self.assertFalse(res["ok"])
+        self.assertIn("3 IP(s)", res["mensaje"])
+
+    def test_quita_lo_del_punto_y_al_final_el_espejo(self):
+        """Capacidad nueva (A-21(5), H3, H10): saca del router los CPEs del punto (de su lista guardada y
+        de la configurada hoy) y su parte de los destinos, y retira el espejo AL FINAL; lo de p002 queda
+        intacto. Mientras dura, el fondo no trabaja con ese punto."""
         res = self.d.baja_limpiar_router("p001", "ana")
         self.assertTrue(res["ok"], res["mensaje"])
-        self.assertEqual(self.espejo, ["p001"])
-        self.assertEqual(sorted(self.hechas), sorted([(IP, "clientes-botnet"),
-                                                      ("10.0.0.7", "suricata-dns-sospechoso"),
-                                                      ("192.0.2.66", "suricata-destinos-malos")]))
+        self.assertEqual(self.orden[-1], ("espejo", "p001"))
+        self.assertEqual(sorted(self.quitadas()), sorted([(IP, "clientes-botnet"), (IP, "suricata-cuarentena"),
+                                                          ("10.0.0.7", "suricata-dns-sospechoso"),
+                                                          ("192.0.2.66", "suricata-destinos-malos")]))
         self.assertEqual(list(self.d.cargar_enviados(self.d.MK_SENT)), ["p002|" + IP])
         self.assertEqual(self.d.cargar_enviados(self.d.MK_SENT_DNS), {})
         self.assertEqual(self.d.cargar_enviados(self.d.MK_SENT_DST)["192.0.2.66"]["puntos"], ["p002"])
         self.assertNotIn("p001", self.activos_durante)
         self.assertIn("p002", self.activos_durante)
 
-    def test_espejo_que_falla_no_sigue(self):
-        """Capacidad nueva: si no se puede retirar el espejo, no se quita nada mas, sale ok=False y
+    def test_no_cuenta_como_liberados(self):
+        """Correccion de defecto (auditoria ap2 H6): lo que quita la baja no suma a «liberados» del
+        Historico (no son CPEs que se limpiaron)."""
+        self.d.baja_limpiar_router("p001", "ana")
+        hoy = self.d.cargar_acciones(self.n.TODOS)[time.strftime("%Y-%m-%d")]
+        self.assertNotIn("QUITADO", hoy)
+        self.assertEqual(hoy.get("QUITADO-BAJA"), 2)
+
+    def test_espejo_que_falla_deja_el_punto_vivo(self):
+        """Capacidad nueva: si no se puede retirar el espejo, ok=False, dice que las IPs ya se quitaron y
         el punto vuelve al fondo."""
         self.espejo_ok = False
         res = self.d.baja_limpiar_router("p001", "ana")
         self.assertFalse(res["ok"])
+        self.assertTrue(res["tocado"])
         self.assertIn("espejo", res["mensaje"])
-        self.assertEqual(self.hechas, [])
-        self.assertIn("p001|" + IP, self.d.cargar_enviados(self.d.MK_SENT))
         self.assertIn("p001", self.d.pids_activos())
 
-    def test_ip_que_no_sale_se_queda_registrada(self):
-        """Correccion de defecto evitado: una IP que el router no confirma sigue en el registro (si
-        no, quedaria cortada e invisible) y la baja no sigue."""
+    def test_ip_que_no_sale_se_queda_y_el_espejo_tambien(self):
+        """Correccion de defecto evitado: una IP que el router no confirma sigue en el registro (si no,
+        quedaria cortada e invisible), no se retira el espejo y la baja no sigue."""
         self.fallan = {IP}
         res = self.d.baja_limpiar_router("p001", "ana")
         self.assertFalse(res["ok"])
         self.assertIn("p001|" + IP, self.d.cargar_enviados(self.d.MK_SENT))
         self.assertEqual(self.d.cargar_enviados(self.d.MK_SENT_DNS), {})
+        self.assertNotIn(("espejo", "p001"), self.orden)
         self.assertIn("p001", self.d.pids_activos())
+
+    def test_timeout_del_router_no_revienta(self):
+        """Correccion de defecto (auditoria ap2 H2): un timeout a mitad sale como fallo explicado (no
+        500 ni respuesta vacia), lo que no se quito sigue registrado y el punto vuelve al fondo."""
+        self.revientan = {"10.0.0.7"}
+        res = self.d.baja_limpiar_router("p001", "ana")
+        self.assertFalse(res["ok"])
+        self.assertIn("fallo hablando con el router", res["mensaje"])
+        self.assertIn("p001|10.0.0.7", self.d.cargar_enviados(self.d.MK_SENT_DNS))
+        self.assertNotIn(("espejo", "p001"), self.orden)
+        self.assertIn("p001", self.d.pids_activos())
+
+    def test_dos_bajas_a_la_vez(self):
+        """Correccion de defecto (auditoria ap2 H12): con una baja del punto en curso, otra no entra ni
+        suelta la marca de la primera."""
+        self.d._PREBAJA["p001"] = (time.time() + 60, "op-1")
+        with self.d.cerrojo_operacion("p001", "baja"):
+            res = self.d.baja_limpiar_router("p001", "ana")
+        self.assertIn("ya hay una baja", res["mensaje"])
+        self.assertEqual(self.orden, [])
+        self.assertNotIn("p001", self.d.pids_activos())
+
+    def test_cerrojo_de_fondo_ocupado_espera_poco(self):
+        """Correccion de defecto (auditoria ap2 H3): con la tarea de fondo del punto en marcha no se
+        espera minutos ni se toca el router: se pide reintentar."""
+        lk = self.d.cerrojo_operacion("p001", "fondo")
+        lk.espera = 0
+        cerrojo = self.d.cerrojo_operacion
+        self.d.cerrojo_operacion = lambda pid, op, espera=120: cerrojo(pid, op, 0 if op == "fondo" else espera)
+        with lk:
+            res = self.d.baja_limpiar_router("p001", "ana")
+        self.d.cerrojo_operacion = cerrojo
+        self.assertIn("tarea de fondo", res["mensaje"])
+        self.assertEqual(self.orden, [])
+
+
+class MarcaDeBaja(Base):
+    def test_envio_durante_la_baja_se_niega(self):
+        """Correccion de defecto (auditoria ap2 H4): mientras se da de baja, mk_add (manual o de fondo) no
+        manda nada a ese router; a otro punto si."""
+        self.d._PREBAJA["p001"] = (time.time() + 60, None)
+        ok, msg = self.d.mk_add(IP, router={"id": "p001"})
+        self.assertFalse(ok)
+        self.assertIn("se esta dando de baja", msg)
+
+    def test_caduca_y_va_ligada_a_su_operacion(self):
+        """Correccion de defecto (auditoria ap2 H1): la marca caduca sola y baja_cancelada solo suelta la
+        de su operacion."""
+        self.d._PREBAJA["p001"] = (time.time() + 60, "op-1")
+        self.d.baja_cancelada("p001", op="op-vieja")
+        self.assertNotIn("p001", self.d.pids_activos())
+        self.d.baja_cancelada("p001", op="op-1")
+        self.assertIn("p001", self.d.pids_activos())
+        self.d._PREBAJA["p001"] = (time.time() - 1, "op-2")
+        self.assertIn("p001", self.d.pids_activos())
+
+    def test_nodo_del_final_del_detalle(self):
+        """Correccion de defecto (auditoria ap2 H8): el texto del router puede llevar otro «nodo=»; cuenta
+        el del final (el que pone _suf_nodo)."""
+        self.d.mk_log("QUITADO", IP, "op", "error del router nodo=p002 x nodo=p001")
+        self.assertIn(time.strftime("%Y-%m-%d"), self.d.cargar_acciones("p001"))
+        self.assertEqual(self.d.cargar_acciones("p002"), {})
+
+
+class AccionesViejas(unittest.TestCase):
+    def test_un_solo_punto_hereda_lo_de_antes(self):
+        """Conservacion (auditoria ap2 H7): con un acciones.json de antes (sin cuenta por punto) y un
+        solo punto, su Historico enseña lo de antes y sigue sumando encima."""
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        a = _dash.Arbol(tmp.name, puntos={"p001": _dash.punto("norte", 1)})
+        d = _dash.cargar(a)
+        self.addCleanup(_dash.restaurar)
+        d.nodos.asegurar_dirs()
+        hoy = time.strftime("%Y-%m-%d")
+        with open(d.ACCIONES_FILE, "w", encoding="utf-8") as f:
+            json.dump({"dias": {hoy: {"ENVIADO": 7}}}, f)
+        self.assertEqual(d.cargar_acciones("p001")[hoy], {"ENVIADO": 7})
+        d.mk_log("ENVIADO", "p001|" + IP, "op")
+        self.assertEqual(d.cargar_acciones("p001")[hoy], {"ENVIADO": 8})
+        self.assertEqual(d.cargar_acciones(d.nodos.TODOS)[hoy], {"ENVIADO": 8})
 
 
 class BajaFormulario(unittest.TestCase):
@@ -223,10 +327,11 @@ class BajaFormulario(unittest.TestCase):
         self.addCleanup(self.p.cerrar)
         self.ana = self.p.entrar("ana")
         self.limpiezas, self.canceladas = [], []
-        self.resultado = {"ok": True, "mensaje": "espejo retirado y 0 IP(s) quitadas del router"}
-        self.p.d.baja_limpiar_router = lambda pid, usuario=None: (
-            self.limpiezas.append((pid, usuario, len(self.p.orq.ordenes("punto.borrar")))) or dict(self.resultado))
-        self.p.d.baja_cancelada = lambda pid: self.canceladas.append(pid)
+        self.resultado = {"ok": True, "mensaje": "0 IP(s) quitadas del router y espejo retirado"}
+        self.p.d.baja_limpiar_router = lambda pid, usuario=None, op=None: (
+            self.limpiezas.append((pid, usuario, len(self.p.orq.ordenes("punto.borrar")), op))
+            or dict(self.resultado))
+        self.p.d.baja_cancelada = lambda pid, op=None: self.canceladas.append((pid, op))
 
     def baja(self, **extra):
         return self.p.pedir("POST", "/puntos/p001/borrar", dict({"confirmar": "norte"}, **extra), cookie=self.ana)
@@ -237,19 +342,22 @@ class BajaFormulario(unittest.TestCase):
         self.assertRegex(r.texto, r"<input type=checkbox name=limpiar_router value=1 checked>")
 
     def test_limpia_antes_de_pedir_la_baja(self):
-        """Capacidad nueva (A-21(5)): con la casilla, primero se limpia el router y despues se pide
-        punto.borrar."""
+        """Capacidad nueva (A-21(5)): con la casilla, primero se limpia el router (con el op_id de la
+        baja) y despues se pide punto.borrar con ese mismo op_id."""
         r = self.baja(limpiar_router="1")
         self.assertEqual(r.status, 303)
-        self.assertEqual(self.limpiezas, [("p001", "ana", 0)])
-        self.assertEqual(len(self.p.orq.ordenes("punto.borrar")), 1)
+        (pid, usuario, antes, op), = self.limpiezas
+        self.assertEqual((pid, usuario, antes), ("p001", "ana", 0))
+        self.assertEqual(self.p.orq.ordenes("punto.borrar")[0]["op_id"], op)
 
     def test_router_que_falla_para_la_baja(self):
-        """Capacidad nueva: si el router no se pudo limpiar, NO se pide la baja y se explica."""
-        self.resultado = {"ok": False, "mensaje": "no se pudo retirar el espejo: sin respuesta"}
+        """Capacidad nueva: si el router no se pudo limpiar, NO se pide la baja y se explica, diciendo si
+        el router ya se toco."""
+        self.resultado = {"ok": False, "tocado": True, "mensaje": "2 IP(s) quitadas, pero no se pudo retirar el espejo"}
         r = self.baja(limpiar_router="1")
         self.assertEqual(r.status, 409)
         self.assertIn("No se dio de baja", r.texto)
+        self.assertIn("el router ya se toco", r.texto)
         self.assertEqual(self.p.orq.ordenes("punto.borrar"), [])
 
     def test_sin_casilla_no_toca_el_router(self):
@@ -259,8 +367,9 @@ class BajaFormulario(unittest.TestCase):
         self.assertEqual(self.limpiezas, [])
         self.assertEqual(len(self.p.orq.ordenes("punto.borrar")), 1)
 
-    def test_baja_rechazada_devuelve_el_punto_al_fondo(self):
-        """Capacidad nueva: si el orquestador no acepta la baja tras limpiar, el punto vuelve al fondo."""
+    def test_baja_rechazada_devuelve_el_punto_y_avisa(self):
+        """Capacidad nueva (auditoria ap2 H3): si el orquestador no acepta la baja tras limpiar, el punto
+        vuelve al fondo y el aviso dice que el router ya se limpio."""
         orq = self.p.orq
         pw = sys.modules["puntos_web"]
 
@@ -273,7 +382,62 @@ class BajaFormulario(unittest.TestCase):
         self.addCleanup(setattr, pw, "TRANSPORTE", orq)
         r = self.baja(limpiar_router="1")
         self.assertEqual(r.status, 409)
-        self.assertEqual(self.canceladas, ["p001"])
+        self.assertIn("El router YA se limpio", r.texto)
+        self.assertEqual(self.canceladas, [("p001", self.limpiezas[0][3])])
+
+    def test_baja_que_termina_mal_suelta_el_punto(self):
+        """Correccion de defecto (auditoria ap2 H1): aceptada pero terminada mal (REVERTIDA), el barrido
+        devuelve el punto al fondo (solo la marca de esa operacion)."""
+        pw = sys.modules["puntos_web"]
+        r = self.baja(limpiar_router="1")
+        op = r.cab("Location").rsplit("/", 1)[1]
+        pw.ops().terminar(op, codigo="REVERTIDA", mensaje="no se pudo")
+        pw.barrer_bajas(self.p.d, esperar=True)
+        self.assertIn(("p001", op), self.canceladas)
+
+
+class BajaPorHttpDeVerdad(unittest.TestCase):
+    """La ruta HTTP con la limpieza REAL (auditoria ap2 H11): solo el router de mas abajo es falso."""
+
+    def test_baja_completa(self):
+        """Capacidad nueva: POST de la baja -> se quitan del router las IPs de p001, se retira el espejo,
+        se pide punto.borrar y el punto queda marcado con el op_id de esa baja."""
+        p = PanelP()
+        self.addCleanup(p.cerrar)
+        ana = p.entrar("ana")
+        d, hechas = p.d, []
+
+        class Con:
+            def close(self):
+                pass
+        mk_de = d.cargar_mk_de
+        d.cargar_mk_de = lambda r: dict(mk_de(r), USER="ids-api", PASS="x")      # API configurada
+        d.mk_conectar = lambda m, timeout=15: Con()
+        d._mk_quitar_en = lambda s_, ip, lst: (hechas.append((ip, lst)) or (True, "1 quitada"))
+        d.espejo_retirar = lambda pid, usuario=None: (hechas.append(("espejo", pid)) or {"ok": True, "mensaje": "ok"})
+        d.guardar_enviados({"p001|" + IP: {"cuando": 1, "router": "p001", "lista": "clientes-botnet"},
+                            "p002|" + IP: {"cuando": 1, "router": "p002", "lista": "clientes-botnet"}}, d.MK_SENT)
+        r = p.pedir("POST", "/puntos/p001/borrar", {"confirmar": "norte", "limpiar_router": "1"}, cookie=ana)
+        self.assertEqual(r.status, 303)
+        self.assertEqual(hechas[-1], ("espejo", "p001"))
+        self.assertIn((IP, "clientes-botnet"), hechas)
+        self.assertEqual(list(d.cargar_enviados(d.MK_SENT)), ["p002|" + IP])
+        op = p.orq.ordenes("punto.borrar")[0]["op_id"]
+        self.assertEqual(d._PREBAJA["p001"][1], op)
+
+
+class TokenIlegible(unittest.TestCase):
+    def test_pedir_no_lanza(self):
+        """Correccion de defecto (auditoria ap2 H1): un token del orquestador que no es UTF-8 da
+        SIN_TOKEN en vez de lanzar (la baja ya habia limpiado el router y salia un 500)."""
+        sys.path.insert(0, _dash.LIB)
+        from idspanel import orq
+        with tempfile.TemporaryDirectory() as t:
+            ruta = os.path.join(t, "token")
+            with open(ruta, "wb") as f:
+                f.write(bytes([0xff, 0xfe, 0x00]) + b"roto")
+            r = orq.ClienteOrq(os.path.join(t, "sock"), ruta, transporte=lambda pet: {}).pedir("punto.borrar", {})
+        self.assertEqual((r["ok"], r["codigo"]), (False, orq.SIN_TOKEN))
 
 
 class IpsUnicas(Entorno):

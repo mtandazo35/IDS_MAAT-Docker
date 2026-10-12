@@ -1704,7 +1704,13 @@ def _router_destino(router):
     return router
 
 def mk_add(ip, comment="", lista=None, ttl=None, router=None):
-    d = cargar_mk_de(_router_destino(router))
+    _r = _router_destino(router)
+    _p = (_r or {}).get("id", "")
+    if _p and (_p in _BAJAS or _en_prebaja(_p)):
+        # la baja ya limpio (o esta limpiando) su router: lo que entrara ahora quedaria cortado
+        # en el router y fuera del registro tras la purga (auditoria ap2 H4)
+        return (False, "el punto %s se esta dando de baja: no se le manda nada" % _p)
+    d = cargar_mk_de(_r)
     lst = lista or d.get("LIST", "suricata-cuarentena")
     tt = ttl if ttl is not None else d.get("TTL")
     s = mk_conectar(d)
@@ -2581,7 +2587,12 @@ def cargar_acciones(nodo=None):
     d = _leer_acciones()
     if nodo is None:
         nodo = nodos.nodo_actual() if nodos.hay_nodo() else nodos.TODOS
-    dias = d.get("dias") if nodo == nodos.TODOS else (d.get("nodos") or {}).get(nodo)
+    if nodo == nodos.TODOS:
+        dias = d.get("dias")
+    elif "nodos" not in d and nodos.pids() == [nodo]:
+        dias = d.get("dias")                 # acciones.json de antes y un solo punto: es todo suyo
+    else:
+        dias = (d.get("nodos") or {}).get(nodo)
     return dias if isinstance(dias, dict) else {}
 
 _RE_NODO_DET = re.compile(r"\bnodo=(p[0-9]{3})\b")
@@ -2605,6 +2616,9 @@ def contar_accion(accion, pid=""):
         with _ACC_LOCK:
             d = _leer_acciones()
             por_nodo = d.get("nodos") if isinstance(d.get("nodos"), dict) else {}
+            if "nodos" not in d and isinstance(d.get("dias"), dict) and len(nodos.pids()) == 1:
+                # acciones.json de antes de contar por punto: con un solo punto, lo hecho es suyo
+                por_nodo[nodos.pids()[0]] = json.loads(json.dumps(d["dias"]))
             if nodos.pid_valido(pid):
                 por_nodo[pid] = _sumar(por_nodo.get(pid))
             tmp = "%s.%d.tmp" % (ACCIONES_FILE, os.getpid())
@@ -2614,15 +2628,18 @@ def contar_accion(accion, pid=""):
     except OSError:
         pass
 
-def mk_log(accion, ip, quien, detalle=""):
+def mk_log(accion, ip, quien, detalle="", pid=None):
     try:
         with open(MK_LOG, "a", encoding="utf-8") as f:
             f.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} {accion} {ip} por={quien} {detalle}\n")
     except OSError:
         pass
-    # el punto: el de la identidad `pid|ip` o el `nodo=pNNN` que dejan _suf_nodo y los destinos
-    _m = _RE_NODO_DET.search(detalle or "")
-    contar_accion(accion, rid_de(ip or "") or (_m.group(1) if _m else ""))
+    # el punto: el que se pasa, el de la identidad `pid|ip` o el `nodo=pNNN` del FINAL del detalle
+    # (lo deja _suf_nodo; antes puede ir texto del router con otro "nodo=": auditoria ap2 H8)
+    if pid is None:
+        _m = _RE_NODO_DET.findall(detalle or "")
+        pid = rid_de(ip or "") or (_m[-1] if _m else "")
+    contar_accion(accion, pid)
     bitacora(accion, f"{ip} {detalle}".strip(), quien=quien)   # tambien a la bitacora general
 
 def _ttl_efectivo(m, ttl_key):
@@ -4278,7 +4295,7 @@ def listas_en_uso(pids=None):
     vis = set(pids) if pids is not None else None
     dentro = {}
     for _k, v in (cargar_enviados(MK_SENT) or {}).items():
-        if vis is not None and ((v or {}).get("router") or rid_de(_k)) not in vis:
+        if vis is not None and _rid_entrada(_k, v) not in vis:
             continue
         l = (v or {}).get("lista") or ""
         if l:
@@ -8346,11 +8363,11 @@ def _por_nodo(fn, pids, *args):
         # un punto dado de baja (o que ya no esta en estado.json) no se toca: sus tareas
         # volverian a crear nodos/<pid>/ despues de la purga (auditoria A-09). El cerrojo
         # (pid, "fondo") lo toma tambien purgar_punto: la baja espera a la tarea en curso.
-        if pid in _BAJAS or pid in _PREBAJA or not nodos.existe(pid):
+        if pid in _BAJAS or _en_prebaja(pid) or not nodos.existe(pid):
             continue
         try:
             with cerrojo_operacion(pid, "fondo", espera=GEN_TIMEOUT + 60):
-                if pid in _BAJAS or pid in _PREBAJA or not nodos.existe(pid):
+                if pid in _BAJAS or _en_prebaja(pid) or not nodos.existe(pid):
                     continue
                 with nodos.contexto(pid):
                     fn(pid, *args)
@@ -9223,46 +9240,76 @@ def espejo_retirar(pid, usuario=None):
 _BAJAS = set()
 _AUSENTES = {}          # pid -> desde cuando falta de estado.json con restos en el panel
 
-# Puntos cuya baja esta limpiando el router (baja_limpiar_router): el fondo no les manda
-# nada nuevo mientras tanto. Aparte de _BAJAS porque barrer_bajas purga lo que hay en
-# _BAJAS, y si la limpieza falla el punto sigue vivo.
-_PREBAJA = set()
+# Puntos cuya baja limpio (o esta limpiando) el router: ni el fondo ni un envio a mano les
+# mandan nada mientras tanto. Aparte de _BAJAS porque barrer_bajas purga lo que hay en
+# _BAJAS, y si la baja no llega a hacerse el punto sigue vivo. pid -> (caduca, op_id): va
+# ligado a SU operacion de baja (si termina mal, baja_cancelada la suelta) y caduca solo,
+# para que nada pueda dejar un punto vivo fuera del fondo para siempre (auditoria ap2 H1).
+PREBAJA_S = 900
+_PREBAJA = {}
+
+def _en_prebaja(pid):
+    v = _PREBAJA.get(pid)
+    if v is None:
+        return False
+    if time.time() > v[0]:
+        _PREBAJA.pop(pid, None)
+        return False
+    return True
 
 def pids_activos():
     """Los puntos con los que trabaja el fondo: los de estado.json menos las bajas."""
-    return [p for p in nodos.pids() if p not in _BAJAS and p not in _PREBAJA]
+    return [p for p in nodos.pids() if p not in _BAJAS and not _en_prebaja(p)]
 
-def _quitar_de_router(s_, pid, m, quien):
+def _pendientes_router(pid):
+    """Cuantas IPs tiene el panel apuntadas en el router de ese punto (cuarentenas y destinos)."""
+    n = sum(1 for path in (MK_SENT, MK_SENT_DNS, MK_SENT_GRAD)
+            for k, v in cargar_enviados(path).items() if _rid_entrada(k, v) == pid)
+    return n + sum(1 for v in cargar_enviados(MK_SENT_DST).values() if pid in ((v or {}).get("puntos") or []))
+
+def _quitar_de_router(s_, pid, m, quien, acum):
     """Quita del router del punto (conexion `s_` abierta) lo que el panel le puso en sus
     address-lists: CPEs en cuarentena (normal, DNS y graduada) y destinos bloqueados. Cada IP
-    sale del registro solo si el router lo confirma. Devuelve (quitadas, [(ip, error)])."""
-    pref = pid + "|"
-    quitadas, fallos = 0, []
+    sale del registro solo si el router lo confirma, de su lista guardada Y de la configurada
+    hoy (si la lista se renombro, la IP no se da por quitada sin buscarla donde esta: H10).
+    Un error de la conexion corta aqui (IOError; el resto no se toca). Lo hecho va sumandose en
+    `acum` ("quitadas", "fallos"), asi se sabe tambien tras un corte a medias."""
+
+    def _quitar(ip, listas):
+        for lst in dict.fromkeys(l for l in listas if l):
+            try:
+                ok, err = _mk_quitar_en(s_, ip, lst)
+            except Exception as ex:          # timeout o conexion rota: no se sigue (H2)
+                raise IOError("%s: %s" % (ip, str(ex)[:160] or type(ex).__name__))
+            if not ok:
+                return False, err
+        return True, ""
     for path, campo, defecto in ((MK_SENT, "LIST", "suricata-cuarentena"),
                                  (MK_SENT_DNS, "LIST_DNS", "suricata-dns-sospechoso"),
                                  (MK_SENT_GRAD, "LIST_GRAD", "suricata-graduada")):
         for k, v in sorted(cargar_enviados(path).items()):
-            if not k.startswith(pref):
+            if _rid_entrada(k, v) != pid:
                 continue
             ip = ip_de(k)
             lst = (v or {}).get("lista") or m.get(campo) or defecto
-            ok, err = _mk_quitar_en(s_, ip, lst)
+            ok, err = _quitar(ip, (lst, m.get(campo) or defecto))
             if ok:
                 quitar_enviados([k], path)
-                quitadas += 1
+                acum["quitadas"] += 1
             else:
-                fallos.append((ip, err))
-            mk_log("QUITADO" if ok else "ERROR-QUITAR", ip, quien,
-                   "lista=%s (baja del punto) %s" % (lst, err) + _suf_nodo(k))
+                acum["fallos"].append((ip, err))
+            # QUITADO-BAJA y no QUITADO: no es la liberacion de un CPE que se limpio (H6)
+            mk_log("QUITADO-BAJA" if ok else "ERROR-QUITAR", ip, quien,
+                   "lista=%s (baja del punto) %s" % (lst, err) + _suf_nodo(k), pid=pid)
     lst = m.get("LIST_DST") or "suricata-destinos-malos"
     for ip, v in sorted(cargar_enviados(MK_SENT_DST).items()):
         if pid not in ((v or {}).get("puntos") or []):
             continue
-        ok, err = _mk_quitar_en(s_, ip, lst)
+        ok, err = _quitar(ip, (lst,))
         if not ok:
-            fallos.append((ip, err))
+            acum["fallos"].append((ip, err))
             continue
-        quitadas += 1
+        acum["quitadas"] += 1
         with _ENV_LOCK:                          # releido dentro del cerrojo (auditoria A-03)
             env = cargar_enviados(MK_SENT_DST)
             rec = env.get(ip)
@@ -9273,64 +9320,91 @@ def _quitar_de_router(s_, pid, m, quien):
                 else:
                     env.pop(ip, None)
                 guardar_enviados(env, MK_SENT_DST)
-        mk_log("DESTINO-QUITADO", ip, quien, "(baja del punto) nodo=%s" % pid)
-    return quitadas, fallos
+        mk_log("DESTINO-QUITADO-BAJA", ip, quien, "(baja del punto) nodo=%s" % pid, pid=pid)
 
-def baja_limpiar_router(pid, usuario=None):
-    """Antes de dar de baja un punto (auditoria A-21(5)): retira el espejo de su MikroTik y
-    quita de sus address-lists lo que puso el panel. Hay que hacerlo ANTES, porque la baja
+def baja_limpiar_router(pid, usuario=None, op=None):
+    """Antes de dar de baja un punto (auditoria A-21(5)): saca de las address-lists de su
+    MikroTik lo que puso el panel y retira el espejo. Hay que hacerlo ANTES, porque la baja
     destruye el tunel por el que se llega al router; si no, los abonados en cuarentena
     quedaban cortados para siempre en un router que el panel ya no ve.
 
-    Sin usuario/clave de la API el panel nunca le hablo a ese router: no hay nada suyo que
-    quitar y sale ok. Mientras dura, el fondo no le manda nada nuevo a ese punto (_PREBAJA);
-    si falla, el punto sigue como estaba. {"ok", "api", "mensaje", "espejo", "quitadas",
+    Primero las IPs y el espejo al final: si algo falla a medias, el punto sigue vigilado
+    (H3). Desde que empieza, ni el fondo ni un envio a mano le mandan nada (_PREBAJA, ligado a
+    `op`, la operacion de baja); si falla, se suelta. Sin usuario/clave de la API solo sale ok
+    si el panel no tiene nada apuntado en ese router (H5). Una sola baja a la vez por punto.
+    {"ok", "api", "tocado" (si ya cambio algo en el router), "mensaje", "espejo", "quitadas",
     "fallos": [(ip, error)]}"""
     pid = nodos.exigir_pid(pid)
     quien = usuario or "?"
-    res = {"ok": False, "api": False, "mensaje": "", "espejo": None, "quitadas": 0, "fallos": []}
+    res = {"ok": False, "api": False, "tocado": False, "mensaje": "", "espejo": None, "quitadas": 0,
+           "fallos": []}
     m = cargar_mk_de(router_por_id(pid))
     if not (m.get("USER") and m.get("PASS")):
-        res.update(ok=True, mensaje="sin API configurada: el panel no puso nada en ese router")
+        n = _pendientes_router(pid)
+        if n:
+            res["mensaje"] = ("el panel tiene %d IP(s) de este punto en las listas de su router y no hay "
+                              "usuario/clave de la API para quitarlas: configurala en esta ficha (API) o "
+                              "desmarca la casilla y quitalas a mano" % n)
+        else:
+            res.update(ok=True, mensaje="sin API configurada: el panel no puso nada en ese router")
         return res
     res["api"] = True
-    _PREBAJA.add(pid)
+    mio = False
     try:
-        esp = espejo_retirar(pid, usuario=quien)
-        res["espejo"] = esp
-        if not esp.get("ok"):
-            res["mensaje"] = "no se pudo retirar el espejo: %s" % (esp.get("mensaje") or "sin detalle")
+        with cerrojo_operacion(pid, "baja", espera=0):
+            mio = True
+            _PREBAJA[pid] = (time.time() + PREBAJA_S, op)
+            try:
+                # espera corta: la tarea de fondo del punto puede tardar minutos (H3)
+                with cerrojo_operacion(pid, "fondo", espera=30):
+                    s_ = mk_conectar(m, timeout=15)
+                    try:
+                        _quitar_de_router(s_, pid, m, quien, res)
+                    finally:
+                        try: s_.close()
+                        except Exception: pass
+            except OperacionEnCurso:
+                res["mensaje"] = ("hay una tarea de fondo del punto en marcha; vuelve a intentarlo en un "
+                                  "minuto (no se toco el router)")
+                return res
+            except Exception as ex:
+                res["tocado"] = res["quitadas"] > 0
+                res["mensaje"] = "fallo hablando con el router: %s" % (str(ex)[:200] or type(ex).__name__)
+                return res
+            res["tocado"] = res["quitadas"] > 0
+            if res["fallos"]:
+                res["mensaje"] = ("%d IP(s) quitadas, pero %d no se pudieron quitar (la primera: %s: %s); "
+                                  "el espejo sigue puesto" % (res["quitadas"], len(res["fallos"]),
+                                                              res["fallos"][0][0], res["fallos"][0][1][:120]))
+                return res
+            try:
+                esp = espejo_retirar(pid, usuario=quien)
+            except Exception as ex:
+                esp = {"ok": False, "mensaje": str(ex)[:200]}
+            res["espejo"] = esp
+            if not esp.get("ok"):
+                res["mensaje"] = ("%d IP(s) quitadas del router, pero no se pudo retirar el espejo: %s"
+                                  % (res["quitadas"], esp.get("mensaje") or "sin detalle"))
+                return res
+            res.update(ok=True, tocado=True,
+                       mensaje="%d IP(s) quitadas del router y espejo retirado" % res["quitadas"])
             return res
-        try:
-            s_ = mk_conectar(m, timeout=15)
-        except Exception as ex:
-            res["mensaje"] = "espejo retirado, pero no se pudo conectar para quitar las IPs: %s" % str(ex)[:160]
-            return res
-        try:
-            with cerrojo_operacion(pid, "fondo", espera=GEN_TIMEOUT + 60):
-                res["quitadas"], res["fallos"] = _quitar_de_router(s_, pid, m, quien)
-        except OperacionEnCurso as ex:
-            res["mensaje"] = "espejo retirado; las IPs no: %s" % ex
-            return res
-        finally:
-            try: s_.close()
-            except Exception: pass
-        if res["fallos"]:
-            res["mensaje"] = ("espejo retirado y %d IP(s) quitadas, pero %d no se pudieron quitar (la "
-                              "primera: %s: %s)" % (res["quitadas"], len(res["fallos"]),
-                                                    res["fallos"][0][0], res["fallos"][0][1][:120]))
-            return res
-        res.update(ok=True, mensaje="espejo retirado y %d IP(s) quitadas del router" % res["quitadas"])
+    except OperacionEnCurso:
+        res["mensaje"] = "ya hay una baja de este punto en curso"
         return res
     finally:
-        if not res["ok"]:
-            _PREBAJA.discard(pid)
+        if mio and not res["ok"]:
+            _PREBAJA.pop(pid, None)
         bitacora("BAJA-ROUTER", "punto=%s %s: %s" % (pid, "ok" if res["ok"] else "fallo",
                                                      res["mensaje"][:200]), quien=quien)
 
-def baja_cancelada(pid):
-    """El orquestador no acepto la baja tras limpiar el router: el fondo vuelve a ese punto."""
-    _PREBAJA.discard(pid)
+def baja_cancelada(pid, op=None):
+    """La baja no se hizo tras limpiar el router (el orquestador no la acepto o termino mal): el
+    punto vuelve al fondo. Con `op`, solo si la marca es de ESA operacion (otra baja posterior
+    del mismo punto no se suelta por una vieja)."""
+    v = _PREBAJA.get(pid)
+    if v is not None and (op is None or v[1] in (None, op)):
+        _PREBAJA.pop(pid, None)
 
 def purgar_punto(pid, quien=None):
     """Baja de un punto en el PANEL (la del orquestador la pide el apartado Puntos): borra

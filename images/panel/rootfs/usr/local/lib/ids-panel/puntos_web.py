@@ -1006,7 +1006,7 @@ def pagina_op(h, op_id):
     return _html_privado(h, pagina(d, "Operacion", cuerpo))
 
 
-def _encolar(h, pid, orden, params, nombre=None, token="", al_fallar=None):
+def _encolar(h, pid, orden, params, nombre=None, token="", al_fallar=None, nota_fallo=""):
     """Una orden de cola del orquestador -> 303 a su avance. El op_id es el token del formulario
     (A-08, como el alta): el mismo formulario enviado dos veces lleva a la misma operacion y el
     orquestador no la encola dos veces. Sin token valido (cliente viejo), uno nuevo."""
@@ -1018,7 +1018,10 @@ def _encolar(h, pid, orden, params, nombre=None, token="", al_fallar=None):
                           ros_version=p.get("ros_version"))
     if previa is not None:
         if (previa.get("usuario"), previa.get("orden"), previa.get("pid")) != (usuario, orden, pid):
-            return ficha(h, pid, "Ese formulario ya se uso para otra orden u otro punto. Recarga la ficha.", 409)
+            if al_fallar is not None:
+                al_fallar(pid)
+            return ficha(h, pid, nota_fallo + "Ese formulario ya se uso para otra orden u otro punto. Recarga la "
+                                              "ficha.", 409)
         _bit(d, orden.upper().replace(".", "-"), pid=pid, resultado="REPETIDA", extra="op=%s" % op_id)
         return h._redirect("/operaciones/%s" % op_id)
     r = cliente().pedir(orden, params, quien="panel:%s" % usuario, ip=_ip(d), op_id=op_id)
@@ -1028,7 +1031,7 @@ def _encolar(h, pid, orden, params, nombre=None, token="", al_fallar=None):
     ops().quitar(op_id)
     if al_fallar is not None:
         al_fallar(pid)
-    return ficha(h, pid, _orq.traducir(r.get("codigo"), r.get("mensaje"), r.get("datos")), 409)
+    return ficha(h, pid, nota_fallo + _orq.traducir(r.get("codigo"), r.get("mensaje"), r.get("datos")), 409)
 
 
 # --------------------------------------------------------------------------------------------
@@ -1163,6 +1166,7 @@ def _barrer(d, ahora):
     fresco = vivos is not None and ts_est is not None and abs(ahora - ts_est) <= ESTADO_FRESCO_S
     vivos = set(vivos or ())
     confirmadas, pedidas = set(), set()
+    cancelar = getattr(d, "baja_cancelada", None)
     for op_id, rec in _ops_baja():
         pid = rec["pid"]
         if rec.get("terminada"):
@@ -1171,6 +1175,12 @@ def _barrer(d, ahora):
             confirmadas.add(pid)
         else:
             pedidas.add(pid)
+        # una baja que termino mal (REVERTIDA, FALLO...): el punto sigue vivo y vuelve al fondo.
+        # Solo suelta la marca de ESA operacion (auditoria ap2 H1)
+        rec2 = ops().obtener(op_id)          # releido: _confirmar_baja pudo terminarla ahora
+        cod = (rec2 or rec).get("codigo") if (rec2 or rec).get("terminada") else None
+        if cod and cod != "OK" and cancelar is not None:
+            cancelar(pid, op=op_id)
     pedidas -= confirmadas
     purgadas = _leer_purgadas()
     cambio, hechos = False, []
@@ -1769,20 +1779,36 @@ def post(h, ruta, form):
             ficha(h, pid, "Para dar de baja hay que escribir exactamente el nombre del punto.", 400)
             return True
         d = _dash(h)
+        # el op_id de la baja es el token del formulario: la marca de «en baja» del punto va ligada
+        # a ESA operacion (si termina mal, el barrido la suelta: auditoria ap2 H1)
+        if not _operaciones.RE_OPID.match(tok):
+            tok = str(uuid.uuid4())
         limpiar = getattr(d, "baja_limpiar_router", None)
+        nota = ""
         if form.get("limpiar_router") and limpiar is not None:
             # antes de la baja: despues ya no hay tunel para llegar al router (A-21(5))
-            res = limpiar(pid, usuario=_usuario(d))
+            res = limpiar(pid, usuario=_usuario(d), op=tok)
             if not res.get("ok"):
                 _bit(d, "PUNTO-BORRAR", pid=pid, resultado="router-sin-limpiar")
-                ficha(h, pid, "No se dio de baja: %s. Arregla la conexion con el router y vuelve a intentarlo; "
+                ficha(h, pid, "No se dio de baja: %s.%s Arregla la conexion con el router y vuelve a intentarlo; "
                               "si ese router ya no existe, desmarca \"Limpiar antes el MikroTik\" (lo que el "
-                              "panel le puso tendras que quitarlo a mano)." % res.get("mensaje", "fallo"), 409)
+                              "panel le puso tendras que quitarlo a mano)." % (
+                                  res.get("mensaje", "fallo"),
+                                  " OJO: el router ya se toco (se quitaron IPs de sus listas)." if res.get("tocado")
+                                  else ""), 409)
                 return True
+            nota = ("El router YA se limpio (%s): el punto sigue activo pero sin espejo; vuelve a montar el espejo "
+                    "desde esta ficha o repite la baja. " % res.get("mensaje", ""))
         else:
             _bit(d, "PUNTO-BORRAR", pid=pid, resultado="sin-limpiar-router")
-        _encolar(h, pid, "punto.borrar", {"pid": pid, "confirmar": confirmar}, nombre=confirmar, token=tok,
-                 al_fallar=getattr(d, "baja_cancelada", None))
+        cancelar = getattr(d, "baja_cancelada", None)
+        try:
+            _encolar(h, pid, "punto.borrar", {"pid": pid, "confirmar": confirmar}, nombre=confirmar, token=tok,
+                     al_fallar=(lambda p_: cancelar(p_, op=tok)) if cancelar else None, nota_fallo=nota)
+        except BaseException:
+            if cancelar:
+                cancelar(pid, op=tok)
+            raise
     elif acc == "regenerar":
         _encolar(h, pid, "punto.vpn.regenerar", {"pid": pid}, token=tok)
     elif acc in ACCIONES_COLA:

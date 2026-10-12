@@ -111,15 +111,19 @@ listadas en `inv_C.md` §5.1), pintada con `wrap()`/`nav()` del dashboard y sus 
 - La baja borra todo el punto en el orquestador **y** en el panel: `nodos/<pid>/`, su entrada de `routers.json`,
   las claves `pid|…` de los registros globales y su cuenta de acciones del Histórico. Queda una línea en la bitácora.
 - **Antes** de pedir `punto.borrar` (apartado 2, auditoría A-21(5)), con la casilla «Limpiar antes el MikroTik»
-  marcada por defecto, el panel usa el túnel que la baja va a destruir para retirar el espejo (`espejo_retirar`:
-  fasttrack como estaba) y sacar de las address-lists del router lo que puso: CPEs en cuarentena (normal, DNS,
-  graduada, cada uno de su lista guardada) y su parte de los destinos bloqueados. Cada IP sale del registro solo si
-  el router lo confirma. Si algo falla, **no se pide la baja** y se dice qué falta; desmarcar la casilla (router que
-  ya no existe) da de baja sin hablar con el router. Sin usuario/clave de API no hay nada que limpiar. Mientras
-  limpia, el fondo no manda nada nuevo a ese punto; si el orquestador rechaza la baja, el punto vuelve al fondo.
-  Las reglas de acción por categoría (`Suricata:<cat>:`) se quedan: con las listas vacías no cortan nada.
+  marcada por defecto, el panel usa el túnel que la baja va a destruir para limpiar el router: **primero** saca de
+  sus address-lists lo que puso (CPEs en cuarentena normal, DNS y graduada, de su lista guardada y de la configurada
+  hoy; y su parte de los destinos bloqueados), y **al final** retira el espejo (`espejo_retirar`: fasttrack como
+  estaba). Cada IP sale del registro solo si el router lo confirma; un timeout corta la limpieza y se explica. Si
+  algo falla, **no se pide la baja**, el punto sigue vigilado y el aviso dice si el router ya se tocó; desmarcar la
+  casilla (router que ya no existe) da de baja sin hablar con el router. Sin usuario/clave de API solo se sigue si
+  el panel no tiene nada apuntado en ese router. Una baja a la vez por punto; la espera por la tarea de fondo es
+  corta (30 s). Desde que empieza, ni el fondo ni un envío a mano mandan nada a ese punto: la marca va ligada al
+  `op_id` de la baja, caduca a los 15 min y la suelta el barrido si la baja termina mal o el orquestador la
+  rechaza. Lo quitado cuenta como `QUITADO-BAJA` (no suma a «liberados»). Las reglas de acción por categoría
+  (`Suricata:<cat>:`) se quedan: con las listas vacías no cortan nada.
 - **Cada nodo ve solo lo suyo** (apartado 2, auditoría A-18): el Histórico cuenta las acciones del punto mirado
-  (`acciones.json` con total y `nodos.<pid>`); «listas en uso» y el diagnóstico cuentan los CPEs del punto; la
+  (`acciones.json` con total y `nodos.<pid>`; un `acciones.json` de antes con un solo punto es de ese punto); «listas en uso» y el diagnóstico cuentan los CPEs del punto; la
   ficha abierta con la IP sola (enlace de Telegram) usa el punto mirado, y en «Todos» el único punto con esa IP o,
   si son varios, pregunta cuál; el historial de asignaciones es el del punto del CPE; «IPs únicas» del informe
   cuenta `pid|ip` para las IPs de abonado. La lista «nunca bloquear» admite `pNNN|IP` (solo ese punto) y la IP sola

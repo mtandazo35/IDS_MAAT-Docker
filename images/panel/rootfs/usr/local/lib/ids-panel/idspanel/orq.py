@@ -72,7 +72,7 @@ class ClienteOrq:
         op_id = op_id or str(uuid.uuid4())
         try:
             token = self._token()
-        except OSError:
+        except (OSError, ValueError):            # ilegible o no UTF-8: «nunca lanza» (auditoria ap2 H1)
             return {"op_id": op_id, "ok": False, "codigo": SIN_TOKEN,
                     "mensaje": "no se puede leer el token del orquestador", "datos": {}}
         pet = {"v": 1, "op_id": op_id, "token": token, "orden": orden, "params": params or {},
