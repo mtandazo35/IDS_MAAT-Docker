@@ -150,7 +150,8 @@ def main():
     # comentario y el modal _ASK. Lo que se comprueba es lo mismo: el boton cierra la barra
     # ('</div></div>' justo despues) y el panel va FUERA, a continuacion.
     check("el boton en la barra y el panel fuera de ella",
-          re.search(r"\+ _ubtn \+ '</div></div>' \+ _upanel\s*(#[^\n]*\n\s*)*\+", DASH) is not None, "")
+          re.search(r"\+ _ubtn(?: \+ _BURGER_BTN)? \+ '</div></div>' \+ _upanel\s*(#[^\n]*\n\s*)*\+",
+                    DASH) is not None, "")
     i_ruta = DASH.index('if path == "/mi-foto":')
     i_get = DASH.rindex("def do_GET", 0, i_ruta)
     i_auth = DASH.index("if not self._auth_ok():", i_get)   # la puerta, no el /login de antes

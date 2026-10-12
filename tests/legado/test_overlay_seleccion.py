@@ -79,7 +79,10 @@ def main():
     check("las capas del actualizador retirado no quedan", "id=updov" not in SRC
           and "id=updask" not in SRC, "")
     for nombre in ("aptmodal", "fichamodal", "askov", "exmodal", "mmasivo", "mkwait", "ovlNew"):
-        i = SRC.find("id=" + nombre) if ("id=" + nombre) in SRC else SRC.find(nombre)
+        # el marcado de la capa (id= o class=), no la primera mencion: las reglas CSS del tema
+        # la nombran antes en el fichero
+        i = (SRC.find("id=" + nombre) if ("id=" + nombre) in SRC
+             else SRC.find("class=" + nombre) if ("class=" + nombre) in SRC else SRC.find(nombre))
         trozo = SRC[max(0, i - 40): i + 320]
         check("la capa %s lleva la guarda" % nombre, "this._dn===this" in trozo, trozo[:140])
 

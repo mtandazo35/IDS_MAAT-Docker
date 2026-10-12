@@ -1116,6 +1116,11 @@ _CSS = (
     ".evw pre.evjson{white-space:pre-wrap;word-break:break-word;font:12.5px/1.45 ui-monospace,Consolas,monospace;"
     "padding:14px 16px;margin:0}"
     ".evw .retencion{margin:4px 0 14px}"
+    # movil: la tabla conserva un ancho legible y se desliza dentro de su tarjeta
+    ".evw .card table{min-width:760px}"
+    "@media(max-width:640px){.evw form.evf label{flex:1 1 140px}"
+    ".evw form.evf input,.evw form.evf select{width:100%;box-sizing:border-box}"
+    ".evw form.evf input.corto{width:100%}.evw td.res{min-width:220px}}"
     "</style>")
 
 

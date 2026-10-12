@@ -37,6 +37,13 @@ jobs:
           shellcheck --severity=warning "${sh[@]}"
       - name: finales LF y sin BOM
         run: python -m unittest discover -s tests -p "test_ci_eol.py"
+      - name: tailwind.css del panel al día (CLI fijado por versión y SHA-256; images/panel/tailwind)
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/tailwindcss"             https://github.com/tailwindlabs/tailwindcss/releases/download/v3.4.17/tailwindcss-linux-x64
+          echo "7d24f7fa191d2193b78cd5f5a42a6093e14409521908529f42d80b11fde1f1d4  $RUNNER_TEMP/tailwindcss" | sha256sum -c -
+          chmod +x "$RUNNER_TEMP/tailwindcss"
+          TAILWIND="$RUNNER_TEMP/tailwindcss" sh images/panel/tailwind/build.sh
+          git diff --exit-code -- images/panel/rootfs/usr/local/share/ids-panel/tailwind.css             || { echo "tailwind.css desactualizado: ejecuta images/panel/tailwind/build.sh y commitea"; exit 1; }
       - name: sintaxis YAML de los workflows y del compose renderizado (PyYAML)
         run: |
           python -m pip install --quiet --only-binary=:all: "pyyaml==${PYYAML_CI}"
