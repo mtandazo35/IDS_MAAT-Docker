@@ -16522,7 +16522,11 @@ class H(BaseHTTPRequestHandler):
         CTX.form = {k: v[0] for k, v in q.items()}
         if ruta == "/login":
             ip = self._client_ip()
-            u = q.get("usuario", [""])[0]; p = q.get("clave", [""])[0]
+            u = q.get("usuario", [""])[0].strip(); p = q.get("clave", [""])[0]
+            # los usuarios se guardan en minusculas: «Vicente» entra como «vicente» (si no hay uno
+            # guardado tal cual, de antes)
+            if u != u.lower() and not any(r.get("user") == u for r in cargar_usuarios()):
+                u = u.lower()
             # el bloqueo por fuerza bruta solo aplica cuando NO hay lista de confianza;
             # con lista, el acceso ya esta restringido a IPs de confianza (no hay que bloquearlas)
             espera = login_bloqueado(ip) if not cargar_confianza() else 0
@@ -17672,7 +17676,9 @@ class H(BaseHTTPRequestHandler):
             extra = " La lista quedo vacia: acceso abierto con bloqueo por fallos." if not nueva else ""
             return self._html(perfil_page(f"IP {val} quitada de confianza.{extra}", ok=True))
         if accion == "add_user":
-            nu = (q.get("nuser", [""])[0]).strip()
+            # el usuario se guarda en minusculas: «Vicente» es «vicente» (y en el login se admite
+            # escribirlo con mayusculas), en vez de rechazarlo
+            nu = (q.get("nuser", [""])[0]).strip().lower()
             npw = q.get("npass", [""])[0]
             nrole = q.get("nrole", ["lectura"])[0]
             nombre = (q.get("nnombre", [""])[0]).strip()[:60]
@@ -17683,8 +17689,9 @@ class H(BaseHTTPRequestHandler):
             if not RE_USUARIO.match(nu):
                 # el mismo patron que `ids-panel crear-admin`: un nombre con comillas acababa
                 # dentro del JS de los modales (auditoria B-17)
-                return self._html(perfil_page("Usuario invalido: minusculas, numeros, punto, guion y "
-                                              "guion bajo (max 32, empieza por letra o numero).", ok=False))
+                return self._html(perfil_page("Usuario invalido: letras sin tildes ni enie, numeros, punto, guion "
+                                              "y guion bajo, sin espacios (max 32, empieza por letra o numero).",
+                                              ok=False))
             if len(npw) < 6:
                 return self._html(perfil_page("La clave del usuario debe tener al menos 6 caracteres.", ok=False))
             if foto and (not foto.startswith("data:image/") or len(foto) > 300_000):

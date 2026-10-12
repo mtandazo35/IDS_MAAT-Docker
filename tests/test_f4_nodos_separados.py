@@ -557,6 +557,23 @@ class EstadoTrasLaOrden(unittest.TestCase):
         self.assertNotIn("p001", json.loads(est.read_text(encoding="utf-8"))["puntos"])
 
 
+class UsuarioConMayusculas(unittest.TestCase):
+    def test_vicente_se_guarda_en_minusculas_y_entra(self):
+        """Correccion de defecto (el user: «error al crear el user Vicente»): el usuario con mayusculas
+        se guarda en minusculas en vez de rechazarse, y en el login se puede escribir con mayusculas."""
+        from _dash_p import CLAVE
+        p = PanelP()
+        self.addCleanup(p.cerrar)
+        ana = p.entrar("ana")
+        r = p.pedir("POST", "/perfil", {"accion": "add_user", "nuser": "Vicente", "npass": CLAVE,
+                                        "nrole": "lectura"}, cookie=ana)
+        self.assertNotIn("Usuario invalido", r.texto)
+        self.assertIn("vicente", [u["user"] for u in p.d.cargar_usuarios()])
+        self.assertNotIn("Vicente", [u["user"] for u in p.d.cargar_usuarios()])
+        self.assertTrue(p.entrar("Vicente"))
+        self.assertTrue(p.entrar("vicente"))
+
+
 class SoloElUltimoReporte(Entorno):
     def test_borra_las_instantaneas_viejas(self):
         """Capacidad nueva (el user quito «Reportes guardados», 2026-10-12): el generador deja solo el
