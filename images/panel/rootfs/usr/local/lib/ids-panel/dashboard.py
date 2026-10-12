@@ -8600,8 +8600,8 @@ _NAV_LINKS = [("/", "En vivo"), ("/top", "Top origenes"), ("/detalle", "Detalle"
               ("/eventos", "Eventos"),
               ("/exclusiones", "Exclusiones"),
               ("/ajustes", "Ajustes")]   # Log y Documentacion viven dentro de Ajustes
-# Puntos no es pestana: va en la franja de debajo de la barra, junto al selector de nodo (con
-# el selector, Eventos y Puntos arriba, la barra no cabia y se comia Ajustes y el menu del usuario)
+# Puntos no es pestana (con el selector, Eventos y Puntos arriba la barra no cabia y se comia
+# Ajustes y el menu del usuario): se abre desde Ajustes -> Puntos
 _NAV_SOLO_ADMIN = ("/exclusiones", "/puntos")
 # paginas que no dependen del nodo: no llevan selector (CONTRATO-F2 §10, inv_B §2)
 _NAV_SIN_NODO = ("/ajustes", "/puntos", "/log", "/bitacora", "/documentacion")
@@ -8689,10 +8689,6 @@ box-shadow:0 10px 32px rgba(0,0,0,.22);padding:6px 0;font:14px system-ui,-apple-
 .empbar .nodosel select{max-width:320px;padding:6px 9px;border-radius:8px;border:1px solid #d7d6d2;
 background:#fff;color:#0b0b0b;font:13px system-ui;cursor:pointer}
 .empbar .nodosel .nsdot{width:9px;height:9px;border-radius:50%;flex:none}
-.empbar .ptlink{margin-left:8px;padding:6px 12px;border-radius:8px;color:#2a5fa0;text-decoration:none;font:600 13px system-ui;
-border:1px solid #d8e5f7;background:#f3f7fd;white-space:nowrap}
-.empbar .ptlink:hover{background:#e7f0fb}
-.empbar .ptlink.on{background:#2a78d6;color:#fff;border-color:#2a78d6}
 .empbar .push{margin-left:auto}
 .nodochip{display:inline-block;margin-left:6px;padding:1px 8px;border-radius:20px;background:#eef2f7;
 color:#33322f;font:600 11px system-ui;vertical-align:middle}
@@ -8835,19 +8831,15 @@ def nav(active=""):
               + _ubtn + '</div></div>' + _upanel
               # el modal de confirmacion/aviso: sustituye a confirm() y alert() del navegador
               + _ASK)
-    # franja de debajo: a la izquierda el selector de nodo y Puntos (admin); a la derecha la marca
-    # de la empresa (logo + nombre), bajo el menu del usuario
+    # franja de debajo: a la izquierda el selector de nodo; a la derecha la marca de la empresa
+    # (logo + nombre), bajo el menu del usuario. Puntos se abre desde Ajustes (apartado Puntos)
     emp = cargar_empresa()
     tiene_logo = emp.get("logo", "").startswith("data:image/")
     elogo = f'<img class="elogo" src="{html.escape(emp["logo"])}" alt="">' if tiene_logo else ""
     enom = f'<span class="en">{html.escape(emp["nombre"])}</span>' if emp.get("nombre") else ""
-    puntos = ""
-    if es_admin_nav:
-        puntos = ('<a href="/puntos" class="ptlink%s" title="Alta, VPN, espejo y baja de cada MikroTik">'
-                  'Gestionar puntos</a>' % (" on" if (active or "").startswith("/puntos") else ""))
     empbar = ""
-    if selector or puntos or elogo or enom:
-        empbar = ('<div class="empbar"><div class="empwrap">' + selector + puntos
+    if selector or elogo or enom:
+        empbar = ('<div class="empbar"><div class="empwrap">' + selector
                   + '<span class="push"></span>' + elogo + enom + '</div></div>')
     return _NAV_CSS + _SORT_JS + _POS_JS + navbar + empbar
 

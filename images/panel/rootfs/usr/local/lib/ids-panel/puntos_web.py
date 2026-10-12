@@ -528,7 +528,7 @@ def pagina(d, titulo, cuerpo, refresco=0):
             "<link rel=icon type=image/png href=/favicon.ico>"
             "<meta name=viewport content='width=device-width,initial-scale=1'>" + meta +
             "<title>%s</title><style>%s%s</style></head><body>" % (esc(titulo), d.BASE_CSS, _CSS)
-            + d.nav("/puntos") + "<main>" + cuerpo + "</main>" + _JS + "</body></html>")
+            + d.nav("/ajustes") + "<main>" + cuerpo + "</main>" + _JS + "</body></html>")
 
 
 def _prohibido(h):
