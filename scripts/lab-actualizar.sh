@@ -63,8 +63,7 @@ restaurar_estado() {   # $1 = origen (anterior | original)
 
 reiniciar_orq() {
   systemctl restart ids-orq
-  local i
-  for i in $(seq 1 30); do
+  for _ in $(seq 1 30); do
     [ -S /run/ids-orq/orq.sock ] && return 0
     sleep 1
   done
@@ -73,8 +72,8 @@ reiniciar_orq() {
 
 aplicar_panel() {
   ids-orq panel aplicar
-  local i estado=""
-  for i in $(seq 1 60); do
+  local estado=""
+  for _ in $(seq 1 60); do
     estado=$(docker inspect -f '{{.State.Health.Status}}' ids-core-panel 2>/dev/null || true)
     [ "$estado" = healthy ] && { log "panel sano"; return 0; }
     sleep 2
