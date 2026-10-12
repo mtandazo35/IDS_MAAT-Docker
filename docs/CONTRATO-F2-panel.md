@@ -118,6 +118,9 @@ listadas en `inv_C.md` §5.1), pintada con `wrap()`/`nav()` del dashboard y sus 
   `/srv/ids/puntos/<pid>/suricata/threshold.config` (atómico, validado: solo líneas `suppress`/`threshold`/
   `event_filter`/comentarios) y recarga Suricata de ese punto sin cortar el espejo
   (`suricatasc -c reload-rules` por el socket de control; si falla, reinicio del contenedor `suricata`).
+- `threshold.config` de cada punto lo **gestiona entero el panel** desde Exclusiones: una línea escrita a mano en
+  el servidor se pierde al siguiente guardado (auditoría B-19). El motivo de cada exclusión va como línea de
+  comentario propia, nunca al final de una regla.
 - Memoria del panel (`RESERVA_PANEL_MB`): 1536 MiB. El generador corre como subproceso con `RLIMIT_AS` de
   1 GiB y **de un nodo en uno** (nunca en paralelo).
 
@@ -184,7 +187,9 @@ Respuestas al documento «Suricata IDS Lab: definición de la evolución multiso
 | Sin contexto en un hilo | `SinContexto` (error de programación; nunca se supone un nodo) |
 | Acción | destino = el de la propia operación (`pid|ip` o pid del formulario) validado con `exigir_pid()`; **nunca** el selector, la sesión ni `TODOS`. Sin destino inequívoco no se ejecuta |
 
-El contexto se restablece también con excepción. Dos pestañas en nodos distintos: cada petición lleva su nodo y
+El contexto se restablece también con excepción. Una petición sin `?nodo=` usa el último nodo elegido
+en la sesión (compartida por las pestañas del navegador): por eso todo enlace y formulario del panel lleva
+`nodo=` explícito, y una acción nunca toma su destino de ahí (auditoría A-11). Dos pestañas en nodos distintos: cada petición lleva su nodo y
 cada acción su destino; cambiar el selector en una no cambia lo que hace la otra.
 
 ### 10.2 Permisos en el servidor (cada operación)
@@ -202,6 +207,10 @@ todos sus puntos (decisión del usuario), pero cada operación exige su rol.
 | Exclusiones de detección, MikroTik (conexión, listas, reglas, políticas), públicas, feeds y claves, DNS, IA, empresa | no | no | sí |
 | **Puntos**: ver la gestión, alta, baja, arrancar/parar/reiniciar, regenerar VPN, ajustar prefijos, API, **espejo** (plan/aplicar/pausar/retirar), logs | no | no | sí |
 | Usuarios y roles, log de accesos, bitácora, actualizar reglas | no | no | sí |
+
+Precisiones (auditoría B-18, 2026-10-12): «ver Cuarentena» incluye la **ficha de evidencia** de un CPE
+(lectura); **refrescar el reporte de conducta** es de operador (lanza trabajo de fondo); **revisar públicas
+(DNSBL)** es de admin, como el resto de públicas. Un botón que el rol no puede usar no se muestra.
 
 La vista de estado de cada punto (colores del selector) la ven todos. Toda operación deja en la bitácora:
 usuario o proceso, punto, objetivo, operación, fecha y resultado, sin secretos. Una masiva desde «Todos» se
