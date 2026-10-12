@@ -1977,6 +1977,12 @@ class Orquestador:
                 json.dumps(ctx.pasos, ensure_ascii=False), ctx.total,
                 json.dumps(ctx.log[-20:], ensure_ascii=False), ahora(), ctx.pid, f["op_id"]))
         self._diario(f, ctx, codigo)
+        # estado.json al momento: si no, el panel sigue viendo hasta 15 s el punto recien dado de
+        # baja (o parado, o creado) como estaba antes de la orden
+        try:
+            self.escribir_estado()
+        except Exception as e:  # noqa: BLE001 - el ciclo de supervision lo reescribe igual
+            log("estado tras %s: %r" % (f["orden"], e))
         with self._cola_cv:
             self._cola_cv.notify_all()
         return True

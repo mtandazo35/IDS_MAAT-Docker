@@ -88,13 +88,39 @@ def leer_estado():
         return _EST["datos"]
 
 
+_PURG = {"marca": None, "pids": frozenset()}
+
+
+def purgados():
+    """pids que el panel ya dio de baja y purgo (ESTADO/bajas-purgadas.json, lo escribe el
+    apartado Puntos). Los pid no se reutilizan."""
+    p = os.path.join(ESTADO, "bajas-purgadas.json")
+    try:
+        st = os.stat(p)
+        marca = (st.st_mtime_ns, st.st_size)
+    except OSError:
+        return frozenset()
+    with _EST_LOCK:
+        if marca != _PURG["marca"]:
+            try:
+                with open(p, encoding="utf-8") as f:
+                    d = json.load(f)
+                _PURG["pids"] = frozenset(k for k in d if RE_PID.match(k)) if isinstance(d, dict) else frozenset()
+            except (OSError, ValueError):
+                return _PURG["pids"]
+            _PURG["marca"] = marca
+        return _PURG["pids"]
+
+
 def puntos():
     """Puntos existentes, ordenados por pid: [{pid, nombre, n, estado, deseado, redes,
-    api_puerto, sensor, tzsp_puerto, ...}]. Lo que falte en estado.json va vacío."""
+    api_puerto, sensor, tzsp_puerto, ...}]. Lo que falte en estado.json va vacío. Un punto que
+    el panel ya dio de baja no sale aunque estado.json aun lo liste unos segundos."""
     ps = leer_estado().get("puntos") or {}
+    fuera = purgados()
     salida = []
     for pid in sorted(ps):
-        if not RE_PID.match(pid) or not isinstance(ps[pid], dict):
+        if not RE_PID.match(pid) or not isinstance(ps[pid], dict) or pid in fuera:
             continue
         d = dict(ps[pid])
         d["pid"] = pid

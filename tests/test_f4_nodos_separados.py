@@ -530,6 +530,33 @@ class AccionesEnLaLista(unittest.TestCase):
         self.assertNotIn("action='/puntos/p001/parar'", r.texto)
 
 
+class BajaSeVeAlMomento(Base):
+    def test_punto_purgado_no_sale_aunque_estado_lo_liste(self):
+        """Correccion de defecto (el user: «acabo de eliminar y seguia»): un punto que el panel ya dio de
+        baja y purgo no sale en la lista ni en el selector aunque estado.json aun lo liste unos segundos."""
+        self.assertIn("p002", self.n.pids())
+        with open(os.path.join(self.n.ESTADO, "bajas-purgadas.json"), "w", encoding="utf-8") as f:
+            json.dump({"p002": int(time.time())}, f)
+        self.assertEqual(self.n.pids(), ["p001"])
+        self.assertFalse(self.n.existe("p002"))
+
+
+class EstadoTrasLaOrden(unittest.TestCase):
+    def test_estado_json_se_reescribe_al_terminar(self):
+        """Correccion de defecto (el user: «acabo de eliminar y seguia»): al terminar punto.borrar el
+        orquestador reescribe estado.json en el acto, sin esperar al ciclo de 15 s."""
+        import _ayuda_orq as A
+        mod, e, s_, orq = A.preparar(ncpu=8)
+        self.addCleanup(A.cerrar, orq, e)
+        A.crear(self, orq, {"nombre": "norte", "redes_abonados": ["10.0.0.0/24"]})
+        orq.escribir_estado()
+        est = e.ruta("/srv/ids/run/estado.json")
+        self.assertIn("p001", json.loads(est.read_text(encoding="utf-8"))["puntos"])
+        r = A.ejecutar_orden(orq, "punto.borrar", {"pid": "p001", "confirmar": "norte"})
+        self.assertEqual(r["codigo"], "OK", A.explicar(r))
+        self.assertNotIn("p001", json.loads(est.read_text(encoding="utf-8"))["puntos"])
+
+
 class SoloElUltimoReporte(Entorno):
     def test_borra_las_instantaneas_viejas(self):
         """Capacidad nueva (el user quito «Reportes guardados», 2026-10-12): el generador deja solo el
