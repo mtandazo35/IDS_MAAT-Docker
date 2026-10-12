@@ -41,7 +41,9 @@ def cargar(nombre, conf, redes_punto=None):
     for n in arbol.body:
         seg = ast.get_source_segment(cuerpo, n) or ""
         # la memoria por IP del generador (_MI_CPE_CACHE) va con la funcion
-        if ("_MIS_NETS" in seg or "_mis_txt" in seg or "_MI_CPE_CACHE" in seg or "def es_mi_cpe" in seg or "def mis_redes" in seg):
+        # (adaptada, A-14) el generador tiene las redes por punto: _REDES_DEFECTO y _redes_de_texto
+        if ("_MIS_NETS" in seg or "_mis_txt" in seg or "_MI_CPE_CACHE" in seg or "def es_mi_cpe" in seg
+                or "def mis_redes" in seg or "_REDES_DEFECTO" in seg or "def _redes_de_texto" in seg):
             trozos.append(seg)
     if not trozos:
         raise SystemExit("no se encontro el bloque de redes propias en " + nombre)

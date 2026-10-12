@@ -106,10 +106,18 @@ Lo aplica el panel desde la ficha del punto, siempre después de la vista previa
 Es equivalente a:
 
 ```
-/ip firewall address-list add list=ids-vigilados address=10.0.0.0/24 comment="IDS ids-maat:p003"
-/ip firewall mangle add chain=forward src-address-list=ids-vigilados connection-bytes=0-10000     action=sniff-tzsp sniff-target=100.64.3.1 sniff-target-port=37008 comment="IDS ids-maat:p003"
-/ip firewall mangle add chain=forward dst-address-list=ids-vigilados connection-bytes=0-10000     action=sniff-tzsp sniff-target=100.64.3.1 sniff-target-port=37008 comment="IDS ids-maat:p003"
+/ip firewall address-list add list=ids-vigilados address=10.0.0.0/24 comment="IDS ids-maat:p003:espejo"
+/ip firewall mangle add chain=forward src-address-list=ids-vigilados connection-bytes=0-10000     action=sniff-tzsp sniff-target=100.64.3.1 sniff-target-port=37008 comment="IDS ids-maat:p003:espejo"
+/ip firewall mangle add chain=forward dst-address-list=ids-vigilados connection-bytes=0-10000     action=sniff-tzsp sniff-target=100.64.3.1 sniff-target-port=37008 comment="IDS ids-maat:p003:espejo"
 ```
+
+**Comentario propio del espejo: `IDS ids-maat:<pid>:espejo`.** Lo del alta (§1.2/§1.3: la regla
+`chain=input` que acepta la API-SSL desde el sensor y el blackhole del túnel) lleva
+`IDS ids-maat:<pid>` y **el espejo no lo toca nunca**: ni al aplicar, ni al pausar, ni al retirar.
+Sin esa regla, en un router con la cadena `input` en `drop`, el panel se quedaría sin API en ese
+punto. Un espejo montado por una versión anterior (con el comentario del alta) se reconoce solo
+por su forma (mangle `sniff-tzsp`; filter `chain=forward` que usa `ids-vigilados`; entradas de
+`ids-vigilados`) y al volver a aplicar pasa al comentario propio.
 
 **FastTrack.** Los paquetes acelerados no pasan por mangle, así que sin tocar el fasttrack el espejo solo
 vería el primer paquete de cada conexión. Solo se cambian **condiciones de reglas `fasttrack-connection`**,
@@ -120,8 +128,8 @@ que deciden qué conexiones se aceleran y nunca qué tráfico pasa:
 /ip firewall filter set <id-ft> src-address-list=!ids-vigilados dst-address-list=!ids-vigilados
 # 2) los vigilados se aceleran a partir de los 10 KB, con las MISMAS condiciones que <id-ft>
 #    (connection-state, hw-offload, interfaces...), justo detrás de ella
-/ip firewall filter add chain=forward action=fasttrack-connection <condiciones de id-ft>     src-address-list=ids-vigilados connection-bytes=10000-0 place-before=<siguiente a id-ft>     comment="IDS ids-maat:p003"
-/ip firewall filter add chain=forward action=fasttrack-connection <condiciones de id-ft>     dst-address-list=ids-vigilados connection-bytes=10000-0 place-before=<siguiente a id-ft>     comment="IDS ids-maat:p003"
+/ip firewall filter add chain=forward action=fasttrack-connection <condiciones de id-ft>     src-address-list=ids-vigilados connection-bytes=10000-0 place-before=<siguiente a id-ft>     comment="IDS ids-maat:p003:espejo"
+/ip firewall filter add chain=forward action=fasttrack-connection <condiciones de id-ft>     dst-address-list=ids-vigilados connection-bytes=10000-0 place-before=<siguiente a id-ft>     comment="IDS ids-maat:p003:espejo"
 ```
 
 - Por qué no amplía nada: un paquete que no se acelera sigue recorriendo el filtro entero, así que con
@@ -131,10 +139,17 @@ que deciden qué conexiones se aceleran y nunca qué tráfico pasa:
   muestra en la vista previa y pide resolverlo a mano. Si hay varias reglas fasttrack, se tratan todas
   igual. Sin regla fasttrack, solo van la address-list y los dos mangle.
 - No hay regla de DNS aparte. IPv6 queda fuera de esta versión: no se toca el fasttrack de `/ipv6`.
+- **Espejos viejos hacia el mismo sensor:** un mangle `sniff-tzsp` ajeno (sin el comentario del espejo)
+  que ya apunta al sensor del punto se **apaga** (`disabled=yes`, no se borra) antes de crear los
+  nuestros: dos espejos a la vez llenan el túnel y el TZSP (UDP) se pierde. Sale en la vista previa.
+  **Retirar no lo vuelve a encender** (se apagó a propósito); si hace falta, se enciende a mano.
+- **Respaldo local corrupto:** retirar usa el último JSON de respaldo del punto que se pueda leer;
+  si ninguno vale, quita `!ids-vigilados` de las fasttrack que lo tengan en los dos campos.
 - **Idempotente**: aplicar dos veces no duplica nada (se busca por comentario y por las condiciones).
-- **Pausa**: deshabilita los dos mangle (`disabled=yes`, por comentario). El fasttrack queda como está.
-- **Retirada**: borra lo que lleva el comentario del punto y devuelve a `<id-ft>` sus valores originales de
-  `src-address-list`/`dst-address-list` (del respaldo). Nunca borra reglas sin el comentario del punto.
+- **Pausa**: deshabilita los dos mangle del espejo (`disabled=yes`, por comentario). El fasttrack queda como está.
+- **Retirada**: borra lo que lleva el comentario del espejo y devuelve a `<id-ft>` sus valores originales de
+  `src-address-list`/`dst-address-list` (del respaldo). Nunca borra reglas sin ese comentario, ni las del
+  alta (`IDS ids-maat:<pid>`: API-SSL y blackhole), que solo se quitan en la baja (§2.1).
 - **Prueba de aceptación** (laboratorio, con un MikroTik real de cada versión): mismo resultado antes y
   después en tráfico permitido, bloqueado y en cuarentena; espejo en las dos direcciones; aceleración
   pasados los 10 KB; aplicar dos veces sin duplicar; retirar sin tocar reglas ajenas.
@@ -144,9 +159,10 @@ que deciden qué conexiones se aceleran y nunca qué tráfico pasa:
 Sirve para una baja sin API, o para terminar una baja con API (`ovpn-client` y usuario). El
 certificado `ids-promax` no se borra.
 
-La expresión `ids-maat:p003(:|\$)` casa `IDS ids-maat:p003` y las cuarentenas `ids-maat:p003:<id>`,
-pero no `ids-maat:p0031` ni otro punto (con `comment~"ids-maat:p003"` a secas se borrarían también
-las de `p0031`). El panel no usa expresiones: borra solo lo que lleva exactamente el comentario.
+La expresión `ids-maat:p003(:|\$)` casa lo del alta (`IDS ids-maat:p003`), lo del espejo
+(`IDS ids-maat:p003:espejo`) y las cuarentenas `ids-maat:p003:<id>`, pero no `ids-maat:p0031` ni otro
+punto (con `comment~"ids-maat:p003"` a secas se borrarían también las de `p0031`). El panel no usa
+expresiones: borra solo lo que lleva exactamente su comentario.
 
 ```
 /ip firewall mangle remove [find comment~"ids-maat:p003(:|\$)"]
@@ -162,19 +178,50 @@ las de `p0031`). El panel no usa expresiones: borra solo lo que lleva exactament
 
 ## 3. Respaldos y recuperación
 
-### 3.1 Qué se respalda y cuándo
+### 3.1 Qué se respalda hoy y cuándo
+
+**No hay respaldo diario automático.** La orden `sistema.respaldar` del orquestador está
+**reservada y sin implementar** (contesta «no disponible») y no hay ningún timer de respaldo en
+`host/systemd/`. Lo que existe de verdad:
 
 | Respaldo | Cuándo | Contenido | Dónde |
 |---|---|---|---|
-| Diario | timer del orquestador | `estado.db`, `bitacora.db`, `orq.db` (con `setpriv`), PKI, `/srv/ids/puntos` | `/root/backups/ids-maat-diario-<fecha>.tar.gz`, 0600, 14 días |
-| Antes de actualizar | `sistema.actualizar` | lo mismo, más el firewall | `/root/backups/ids-maat-<ts>.tar.gz` |
-| Antes de cambiar el acceso | `acceso.aplicar` | `/srv/ids/fw/` | `/root/backups/` |
-| Firewall del router | antes de aplicar o quitar el espejo | `/export` de `ip firewall`, `ip route` e `interface ovpn-client` | `/srv/ids/panel/respaldos/<pid>/` |
-| `eventos.db` | opcional | alertas y agregados | aparte, porque es grande y se puede reconstruir |
+| Instalación | cada `install.sh` (también al reinstalar), antes de tocar nada | `etc/ssh`, `etc/docker`, `etc/fail2ban`, `/srv/ids/fw`, `/etc/ids-maat` **sin `master.key`**, `/srv/ids/panel`, `/srv/ids/estado` (`orq.db`), `/srv/ids/pki`, `/srv/ids/puntos` | `/root/backups/ids-maat-install-<ts>.tar.gz`, 0600 |
+| Laboratorio | cada `scripts/lab-actualizar.sh` (solo el VPS de laboratorio) | `/etc/ids-maat` **sin `master.key`**, el orquestador instalado y sus unidades, `/srv/ids/panel`, `estado`, `pki`, `puntos`, `fw` | `/root/backups/ids-maat-lab-<ts>.tar.gz`, 0600 |
+| Firewall del host | cada vez que el orquestador regenera `ids_host.nft` | el `ids_host.nft` anterior | `/root/backups/ids-maat-fw-<ts>.nft` (los 20 últimos) |
+| Firewall del router | antes de aplicar, pausar o retirar el espejo | `/export` en el router (fichero `ids-maat-<pid>-<ts>.rsc` del propio MikroTik) y copia JSON de las tablas | `/srv/ids/panel/respaldos/espejo/<pid>/` |
+| Eventos (`/srv/ids/datos`) | no se respaldan | `eve.json`/`dns.json` de cada punto | son grandes y caducan a los 30 días; si se quieren, aparte |
+
+Mientras no exista el respaldo diario, **el respaldo del VPS es el del proveedor** (instantánea del
+disco) más, si se quiere una copia propia, el procedimiento manual de abajo. Ninguno de los dos se
+lleva la clave maestra.
+
+**Respaldo manual completo (como root).** Para una copia coherente se para el panel (sus bases
+SQLite se escriben en vivo) y se copia `orq.db` con la API de copia de SQLite:
+
+```sh
+ts=$(date -u +%Y%m%dT%H%M%SZ); f=/root/backups/ids-maat-manual-$ts.tar.gz
+install -d -m 0700 /root/backups
+python3 -c 'import sqlite3; s = sqlite3.connect("/srv/ids/estado/orq.db"); d = sqlite3.connect("/srv/ids/estado/orq.db.copia"); s.backup(d); d.close()'
+docker stop ids-core-panel
+(umask 077; tar -czf "$f" --exclude=ids-maat/master.key --exclude=estado/orq.db --exclude='estado/orq.db-*' \
+    -C / etc/ids-maat srv/ids/estado srv/ids/pki srv/ids/puntos srv/ids/panel srv/ids/fw srv/ids/core)
+docker start ids-core-panel
+rm -f /srv/ids/estado/orq.db.copia
+tar -tzf "$f" >/dev/null && sha256sum "$f" > "$f.sha256"
+tar -tzf "$f" | grep -c 'master\.key$'     # tiene que dar 0
+```
 
 **La clave maestra (`/etc/ids-maat/master.key`, 0440 `root:ids-panel`, montada ro en el panel) nunca
-va dentro de esos tar.** Se guarda aparte en
-el gestor de secretos del dueño. Sin ella, las claves API cifradas no sirven. Con ella y el
+va dentro de esos tar** (`install.sh` y `lab-actualizar.sh` la excluyen y lo comprueban): con ella y
+el tar se descifrarían las claves API de los MikroTik y los tokens. Se guarda **aparte**, una vez y
+cada vez que cambie, en el gestor de secretos del dueño:
+
+```sh
+cat /etc/ids-maat/master.key     # 64 caracteres hex: copiarlos al gestor de secretos, nunca a /root/backups
+```
+
+Sin ella, las claves cifradas del respaldo no sirven (el panel arranca y avisa). Con ella y el
 respaldo, sí.
 
 ### 3.2 Copia fuera del VPS
@@ -184,21 +231,29 @@ La copia la **descarga** una máquina de las redes de gestión, por SSH con una 
 sistema.
 
 ```sh
-# en la máquina de respaldo (cron diario)
-rsync -a --chmod=F600 root@ids.empresa.example:/root/backups/ids-maat-diario-*.tar.gz /respaldos/empresa/
+# en la máquina de respaldo (cron), los tar que existen de verdad (manuales y de instalación)
+rsync -a --chmod=F600 'root@ids.empresa.example:/root/backups/ids-maat-manual-*' /respaldos/empresa/
+rsync -a --chmod=F600 'root@ids.empresa.example:/root/backups/ids-maat-install-*' /respaldos/empresa/
 ```
 
 ### 3.3 Recuperar en un VPS nuevo
 
-1. Instalar Debian 13 y ejecutar `instalar.sh` **con la misma versión** que figura en el respaldo
-   (`release.json`).
-2. Copiar `master.key` a `/etc/ids-maat/master.key` (0440 `root:ids-panel`; el panel la lee por grupo).
-3. Restaurar el tar en `/srv/ids` y comprobar el sha256.
-4. Ejecutar `ids-orq reconstruir`: recrea las instancias desde `orq.db` y `/srv/ids/puntos`, con
-   los mismos puertos y las mismas credenciales VPN, porque la PKI y los usuarios están en el
-   respaldo.
+1. Instalar Debian 13 y ejecutar `install.sh` **con la misma versión** que figura en el respaldo
+   (`/etc/ids-maat/imagenes.json` del tar), con las mismas opciones de red (`--tun-base`, gestión,
+   proxy).
+2. Copiar `master.key` desde el gestor de secretos a `/etc/ids-maat/master.key`
+   (`chown root:10500`, `chmod 0440`; el panel la lee por grupo).
+3. Comprobar el sha256 del tar y restaurarlo: `systemctl stop ids-orq; docker stop ids-core-panel`,
+   `tar -xzf ids-maat-manual-<ts>.tar.gz -C /` (no trae `master.key`), y
+   `mv /srv/ids/estado/orq.db.copia /srv/ids/estado/orq.db` si el tar es del procedimiento manual.
+4. `systemctl start ids-orq`, `ids-orq reconciliar` (levanta los puntos de `orq.db` con su
+   `compose.yml`, sus puertos y sus credenciales VPN, que van en `/srv/ids/puntos` y la PKI) e
+   `ids-orq panel aplicar`.
 5. Apuntar `ids.empresa.example` a la IP nueva. Los MikroTik reconectan solos, sin tocarlos.
-6. Comprobar en Puntos que cada punto vuelve a `activo` con espejo.
+6. **Prueba de restauración:** en Ajustes no sale el aviso de clave maestra; en Puntos cada punto
+   vuelve a `activo`, y en su ficha **API → probar** conecta (eso descifra `routers.json` con la
+   `master.key` restaurada). Si la clave no es la buena, el panel avisa y las claves hay que volver
+   a escribirlas.
 
 ## 4. Acceso de emergencia
 
@@ -249,7 +304,7 @@ rsync -a --chmod=F600 root@ids.empresa.example:/root/backups/ids-maat-diario-*.t
 | Ver las jaulas de fail2ban | `fail2ban-client status sshd` y `fail2ban-client status ids-vpn` |
 | Desbanear una IP | `fail2ban-client set ids-vpn unbanip 203.0.113.45` (OpenVPN) o `fail2ban-client set sshd unbanip 203.0.113.45` (SSH); ver abajo |
 | Estado de los puntos | `ids-orq punto estado '*'` o `cat /srv/ids/run/estado.json` |
-| Rotar la clave maestra | orden de mantenimiento en Ajustes; antes, guardar la clave nueva fuera del VPS |
+| Rotar la clave maestra | todavía no existe (no hay `kid`; [DATOS.md](DATOS.md) §6): cambiarla exige volver a guardar cada secreto |
 | Cambiar la IP del VPS | restaurar o mover y cambiar el registro DNS `ids.empresa.example`; los MikroTik no se tocan |
 | Actualizar el orquestador | `/root/ids-maat/actualizar-orquestador.sh <version>` |
 

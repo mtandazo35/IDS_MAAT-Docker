@@ -65,6 +65,8 @@ class Unidades(unittest.TestCase):
         self.assertEqual((s["PrivateTmp"], s["ProtectHome"], s["NoNewPrivileges"]), ("yes", "read-only", "yes"))
         # el CLI de docker necesita un directorio escribible para su configuración
         self.assertTrue(s["Environment"].startswith("DOCKER_CONFIG=/srv/ids/"))
+        # tope de memoria (A-04): un fallo del orquestador no se come la RAM de los puntos
+        self.assertEqual(s["MemoryMax"], "1G")
 
     def test_timers(self):
         r = unidad("ids-reglas.timer")["Timer"]

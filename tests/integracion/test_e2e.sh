@@ -10,7 +10,8 @@
 #  4. docker restart ids-p001-vpn -> el orquestador ve netns distintos y reinicia suricata
 #  5. reglas actualizar --sin-descarga reinicia los suricata de uno en uno
 #  6. punto borrar no deja nada en {puntos,datos,run,ctl}/p001
-#  7. (con IDS_IMG_PANEL) panel (dashboard heredado + Puntos, CONTRATO-F2): ids-orq panel aplicar
+#  7. (con IDS_IMG_PANEL; sin él la prueba sale con 77 tras el paso 6, nunca con 0) panel
+#     (dashboard heredado + Puntos, CONTRATO-F2): ids-orq panel aplicar
 #     -> healthy, con la clave maestra montada ro; crear-admin imprime CLAVE=; formulario POST /login
 #     (usuario, clave): mala -> sin sesión, buena -> 303 con cookie sid; /puntos; /puntos/nuevo ->
 #     303 /operaciones/<uuid>; Origin ajeno -> 403; orq.jsonl con quien = panel:admin; la clave
@@ -225,8 +226,12 @@ done
 docker inspect ids-p001-vpn >/dev/null 2>&1 && mal "queda el contenedor ids-p001-vpn" || ok "sin contenedores de p001"
 
 echo "== 7. panel: núcleo, primer admin, login, Puntos, alta desde la web y eventos por nodo"
+# Sin panel el paso 7 NO está verificado: la prueba entera sale con 77 (omitida), nunca con 0
+# (auditoría B-03); con IDS_SH_OBLIGATORIAS=1 (CI) eso es un fallo.
+PANEL_OMITIDO=""
 if [ "$PANEL" = 0 ]; then
-  echo "  (omitido: falta IDS_IMG_PANEL, la imagen o curl)"
+  PANEL_OMITIDO="falta IDS_IMG_PANEL, la imagen o curl"
+  echo "  (omitido: $PANEL_OMITIDO)"
 else
   # Rutas y campos del panel (CONTRATO-F2 §5 y el formulario de login del dashboard heredado):
   # POST /login (usuario, clave) -> 303 con la cookie sid; GET /puntos; GET /puntos/nuevo (si trae
@@ -341,5 +346,6 @@ fi
 
 echo
 [ "$FALLOS" -eq 0 ] || { echo "test_e2e: $FALLOS fallos"; exit 1; }
+[ -z "$PANEL_OMITIDO" ] || omitir "pasos 1-6 bien; el paso 7 (panel) no se ha verificado: $PANEL_OMITIDO"
 echo "test_e2e: todo bien"
 exit 0

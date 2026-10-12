@@ -90,7 +90,11 @@ def main():
 
     # ================= 2) es_mi_cpe con memoria =================
     nets = [ipaddress.ip_network("10.0.0.0/8"), ipaddress.ip_network("100.64.0.0/10")]
-    n2 = piezas(("_MI_CPE_CACHE", "_MI_CPE_CACHE_MAX", "es_mi_cpe"), {"_MIS_NETS": nets})
+    # (adaptada, A-14) las redes son por punto: mis_redes(pid) y la memoria por (punto, IP)
+    class _Nodos:
+        TODOS = "_todos"
+    n2 = piezas(("_MI_CPE_CACHE", "_MI_CPE_CACHE_MAX", "es_mi_cpe"),
+                {"mis_redes": lambda _pid: nets, "NODO": "p001", "nodos": _Nodos})
     f = n2["es_mi_cpe"]
     def lenta(ip):
         try:
@@ -100,7 +104,8 @@ def main():
         return any(a.version == n.version and a in n for n in nets)
     casos = ["10.1.2.3", "100.64.5.5", "100.128.0.1", "8.8.8.8", "basura", "", "::1", "fd00::1", "10.1.2.3"]
     check("es_mi_cpe con memoria = sin memoria en %d casos" % len(casos), all(f(c) == lenta(c) for c in casos), "")
-    check("la segunda vez sale de la memoria", "10.1.2.3" in n2["_MI_CPE_CACHE"] and n2["_MI_CPE_CACHE"]["10.1.2.3"] is True, "")
+    check("la segunda vez sale de la memoria", ("p001", "10.1.2.3") in n2["_MI_CPE_CACHE"]
+          and n2["_MI_CPE_CACHE"][("p001", "10.1.2.3")] is True, "")
     n2["_MI_CPE_CACHE_MAX"] = 3
     n2["_MI_CPE_CACHE"].clear()
     for i in range(10):

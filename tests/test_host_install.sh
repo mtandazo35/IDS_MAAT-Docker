@@ -182,13 +182,21 @@ p_respaldo() {
   echo "Port 22" > "$IDS_RAIZ/etc/ssh/sshd_config"
   echo "{}" > "$IDS_RAIZ/etc/docker/daemon.json"
   echo "table inet ids_host" > "$IDS_RAIZ/srv/ids/fw/ids_host.nft"
+  # B-05/B-06: el panel y el estado del orquestador entran; la clave maestra no
+  mkdir -p "$IDS_RAIZ/etc/ids-maat" "$IDS_RAIZ/srv/ids/panel/conf" "$IDS_RAIZ/srv/ids/estado"
+  echo "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef" > "$IDS_RAIZ/etc/ids-maat/master.key"
+  echo "VERSION=0.1.0" > "$IDS_RAIZ/etc/ids-maat/ids.conf"
+  echo '{"p001": {"PASS": "enc1:x"}}' > "$IDS_RAIZ/srv/ids/panel/conf/routers.json"
+  echo "db" > "$IDS_RAIZ/srv/ids/estado/orq.db"
   TS=20261010T081500Z
   respaldo || return 1
   local f="$IDS_RAIZ/root/backups/ids-maat-install-$TS.tar.gz" lista
   lista=$(tar -tzf "$f") || return 2
-  for e in etc/ssh/sshd_config etc/docker/daemon.json srv/ids/fw/ids_host.nft; do
+  for e in etc/ssh/sshd_config etc/docker/daemon.json srv/ids/fw/ids_host.nft etc/ids-maat/ids.conf \
+           srv/ids/panel/conf/routers.json srv/ids/estado/orq.db; do
     grep -qx "$e" <<<"$lista" || { echo "falta $e en el respaldo"; return 3; }
   done
+  if grep -E '(^|/)master\.key$' <<<"$lista" >/dev/null; then echo "la clave maestra está en el respaldo"; return 4; fi
   return 0
 }
 

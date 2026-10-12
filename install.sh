@@ -330,17 +330,24 @@ respaldo() {
   local destino rel=() p
   install -d -m 0700 "${R}/root/backups"
   destino="${R}/root/backups/ids-maat-install-${TS}.tar.gz"
-  for p in etc/ssh/sshd_config etc/ssh/sshd_config.d etc/docker srv/ids/fw etc/fail2ban etc/ids-maat; do
+  # Incluye el panel (usuarios, routers.json con las claves API cifradas, exclusiones, registros),
+  # el estado del orquestador (orq.db), la PKI y los puntos (auditoría B-05). La clave maestra NO
+  # entra: con ella y el tar se descifrarían los secretos; se respalda aparte (OPERACION §3, B-06).
+  for p in etc/ssh/sshd_config etc/ssh/sshd_config.d etc/docker srv/ids/fw etc/fail2ban etc/ids-maat \
+           srv/ids/panel srv/ids/estado srv/ids/pki srv/ids/puntos; do
     [ -e "${R}/$p" ] && rel+=("$p")
   done
   if [ ${#rel[@]} -gt 0 ]; then
-    tar -czf "$destino" -C "${R:-/}" "${rel[@]}"
+    (umask 077; tar -czf "$destino" --exclude=etc/ids-maat/master.key -C "${R:-/}" "${rel[@]}")
   else
     tar -czf "$destino" -T /dev/null
   fi
   chmod 0600 "$destino"
   tar -tzf "$destino" >/dev/null || fallar "el respaldo $destino no se puede leer: no se toca nada"
-  log "respaldo: $destino"
+  if tar -tzf "$destino" | grep -E '(^|/)master\.key$' >/dev/null; then
+    fallar "el respaldo $destino lleva la clave maestra: no se toca nada"
+  fi
+  log "respaldo: $destino (sin la clave maestra: respáldala aparte, OPERACION §3)"
 }
 
 paquetes() {

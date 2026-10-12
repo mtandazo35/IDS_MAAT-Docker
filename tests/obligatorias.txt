@@ -1,6 +1,10 @@
 # Pruebas que NO pueden omitirse en el CI (tests/correr.py --obligatorias <plataforma>).
-# Una obligatoria omitida no cuenta como verificada: la corrida falla y dice cuál y por qué.
-# Formato: <patrón fnmatch del id de la prueba> [todas|linux|windows][,...]  # motivo
+# Una obligatoria omitida no cuenta como verificada: la corrida falla y dice cuál y por qué. Un
+# patrón que no casa con ninguna prueba también falla (no puede desaparecer en silencio), y un
+# módulo omitido entero al importarse cuenta como omitido (auditoría B-03).
+# Formato: <patrón fnmatch del id de la prueba> [todas|linux|windows|root][,...]  # motivo
+# Plataformas: linux (job pruebas), windows (job pruebas-windows), root (job imagenes, como root
+# en Linux: aplica también las de linux).
 test_secretos.*                         todas   # secretos cifrados del panel (CONTRATO-F2 §10.3): exige cryptography
 test_feeds_panel.*                      todas   # claves de feeds cifradas: exige cryptography
 test_informe_diario.*                   todas   # token de Telegram cifrado: exige cryptography
@@ -11,3 +15,22 @@ test_orq_retencion.*                    todas   # retención por fecha y por dis
 test_host_ficheros.LogrotateReal.*      linux   # logrotate real: rotación fechada sin tope de número
 test_orq_pki.*                          linux   # openssl real
 legado.*                                linux   # pruebas heredadas de suricata-ids-lab (docs/PRUEBAS-HEREDADAS.md)
+# Casos obligatorios de CONTRATO-F2 §10.5 (auditoría B-03)
+test_eventos_busqueda.*                 todas   # §10.5 Eventos: rutas manipuladas, JSON incompleto, .gz que descomprime mucho, límites
+test_eventos_detalle.*                  linux   # §10.5 Eventos: enlaces simbólicos y rutas manipuladas (en Windows no hay symlinks)
+test_p_pantallas.*                      todas   # §10.2 permisos por rol en las pantallas
+test_p_puntos.*                         todas   # §10.2 permisos por rol y CSRF en Puntos
+legado.test_csrf_origen.*               todas   # CSRF (Origin / Sec-Fetch-Site)
+test_n_routers.APIporRele.test_af_unix_real  linux  # relé de la API por AF_UNIX real
+test_orq_panel.Aplicar.test_master_key_legible_por_el_grupo_del_panel  root  # master.key 0440 root:10500 (solo como root)
+# PyYAML real (auditoría B-01/B-03): el CI lo instala con versión fijada
+test_orq_panel.ComposeCore.test_compose_como_lo_lee_docker  todas  # compose del núcleo leído como Docker
+test_suricata_plantilla.Estructura.test_yaml_valido_con_pyyaml  todas  # suricata.yaml renderizado
+test_f3_ci.*                            todas   # sintaxis YAML de los workflows y del compose renderizado
+# Correcciones de la auditoría F3 (A-02, A-04, A-13, A-14, A-22, A-23, A-25, A-28)
+test_f3_espejo_alta.*                   todas   # A-02: el espejo no toca la regla API-SSL del alta
+test_f3_orq_contenedor.*                linux   # A-04: sin seguir enlaces ni FIFO (symlink/FIFO solo en POSIX)
+test_f3_orq_validacion.*                todas   # A-13/A-22/A-23/A-28
+test_f3_hrep_identidad.*                todas   # A-14: identidades por punto en el generador
+test_f3_informe.*                       linux   # A-25/A-26 (FIFO y symlink solo en POSIX)
+test_f3_lab.*                           linux   # B-02/B-05/B-06: lab-actualizar exige CI verde; su tar sin master.key y con el panel

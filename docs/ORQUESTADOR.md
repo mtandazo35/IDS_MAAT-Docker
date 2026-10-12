@@ -267,12 +267,16 @@ Todos los pasos son idempotentes: borrar lo ya borrado devuelve `OK`.
   - Antes se avisa de que serán 30–90 s sin captura.
   - Si a los 180 s no está sano, el punto pasa a `error` con las últimas 50 líneas del log.
 
-### 11.4 Respaldo diario
+### 11.4 Respaldo diario (diseño, **sin implementar**)
 
-Un timer del orquestador hace cada día un respaldo en `/root/backups/ids-maat-diario-<fecha>.tar.gz`:
+> **Estado real (auditoría B-05):** no existe. `sistema.respaldar` es una orden reservada y no hay
+> timer; lo que se respalda hoy y el procedimiento manual están en [OPERACION.md](OPERACION.md) §3.
+> Lo de abajo es el diseño pendiente.
+
+Un timer del orquestador hará cada día un respaldo en `/root/backups/ids-maat-diario-<fecha>.tar.gz`:
 
 - **Qué incluye:** `estado.db`, `bitacora.db` y `orq.db` (con `setpriv`, [DATOS.md](DATOS.md) §1.1),
-  más la PKI y `/srv/ids/puntos`.
+  más la PKI, `/srv/ids/puntos` y `/srv/ids/panel`; **nunca** `master.key` (se respalda aparte).
 - **Permisos y retención:** 0600, con una retención configurable (14 días por defecto).
 - **Verificación:** `tar -tzf` y sha256. Si falla, se avisa por el canal propio (§9).
 - **Copia fuera del VPS y recuperación:** [OPERACION.md](OPERACION.md) §3.

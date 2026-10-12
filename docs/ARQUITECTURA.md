@@ -360,7 +360,7 @@ La tabla completa está en [FASES-Y-CANARIO.md](FASES-Y-CANARIO.md) §3.
 | Dejar fuera al dueño al cambiar el acceso | modo seguro, validaciones en el orquestador, consola, `acceso-emergencia.sh` y túnel SSH |
 | Fuerza bruta contra OpenVPN | `meter` en el host, freno antes de scrypt, jaula `ids-vpn` |
 | RouterOS 6.49 con OpenSSL 3 | se prueba en F1a; si falla, `SECLEVEL=0` y después `legacy`, solo en ese punto |
-| Pérdida del VPS | respaldo diario con copia fuera, nombre DNS para los routers, recuperación probada |
+| Pérdida del VPS | respaldo diario con copia fuera (pendiente: hoy, respaldo del proveedor y el manual de [OPERACION.md](OPERACION.md) §3), nombre DNS para los routers, recuperación probada |
 
 ---
 

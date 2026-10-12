@@ -13,6 +13,9 @@ env:
   PYTHONUTF8: "1"
   # solo para las pruebas (pip, rueda binaria); la imagen del panel usa python3-cryptography de Debian
   CRYPTOGRAPHY_CI: "44.0.2"
+  # PyYAML real para validar la sintaxis de los workflows y del compose renderizado (auditoría
+  # B-01): sus pruebas son obligatorias (tests/obligatorias.txt), así que aquí no pueden omitirse
+  PYYAML_CI: "6.0.2"
 
 jobs:
   lint:
@@ -34,6 +37,10 @@ jobs:
           shellcheck --severity=warning "${sh[@]}"
       - name: finales LF y sin BOM
         run: python -m unittest discover -s tests -p "test_ci_eol.py"
+      - name: sintaxis YAML de los workflows y del compose renderizado (PyYAML)
+        run: |
+          python -m pip install --quiet --only-binary=:all: "pyyaml==${PYYAML_CI}"
+          cd tests && python -m unittest -v test_f3_ci.YamlReal
       - name: nft -c de los .nft renderizados (debian:trixie-slim, NET_ADMIN)
         run: |
           python .github/scripts/render_nft.py "$RUNNER_TEMP/nft"
@@ -52,9 +59,9 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq --no-install-recommends fail2ban logrotate openssl >/dev/null
-      - name: cryptography para secretos.py (en la imagen es python3-cryptography de Debian)
+      - name: cryptography para secretos.py (en la imagen es python3-cryptography de Debian) y PyYAML
         run: |
-          python -m pip install --quiet --only-binary=:all: "cryptography==${CRYPTOGRAPHY_CI}"
+          python -m pip install --quiet --only-binary=:all: "cryptography==${CRYPTOGRAPHY_CI}" "pyyaml==${PYYAML_CI}"
       - name: tests/run.sh (resultados y omisiones con su motivo en el resumen del job)
         env:
           IDS_OBLIGATORIAS: linux
@@ -71,9 +78,9 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
-      - name: cryptography para secretos.py
+      - name: cryptography para secretos.py y PyYAML
         run: |
-          python -m pip install --quiet --only-binary=:all: "cryptography==${CRYPTOGRAPHY_CI}"
+          python -m pip install --quiet --only-binary=:all: "cryptography==${CRYPTOGRAPHY_CI}" "pyyaml==${PYYAML_CI}"
       - name: tests/run.sh (Git Bash; resultados y omisiones con su motivo en el resumen del job)
         env:
           IDS_OBLIGATORIAS: windows
@@ -87,9 +94,11 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
-      - name: cryptography para secretos.py (las pruebas unittest se repiten como root)
+      - name: herramientas y paquetes de las pruebas (se repiten como root, con obligatorias)
         run: |
-          python -m pip install --quiet --only-binary=:all: "cryptography==${CRYPTOGRAPHY_CI}"
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends fail2ban logrotate openssl >/dev/null
+          python -m pip install --quiet --only-binary=:all: "cryptography==${CRYPTOGRAPHY_CI}" "pyyaml==${PYYAML_CI}"
       - name: build de las imágenes (sin publicar)
         run: |
           bash images/build.sh vpn ci
@@ -101,4 +110,6 @@ jobs:
           IDS_IMG_SURICATA: ids-maat-suricata:ci
           IDS_IMG_PANEL: ids-maat-panel:ci
           IDS_SH_OBLIGATORIAS: "1"
+          # obligatorias de linux y las que solo corren como root (master.key 0440 root:10500)
+          IDS_OBLIGATORIAS: root
         run: sudo -E env "PATH=$PATH" "IDS_RESUMEN=$GITHUB_STEP_SUMMARY" bash tests/run.sh --imagenes --integracion

@@ -13,8 +13,9 @@ puntos, un mensaje de Telegram (si esta configurado) y el texto por stdout. Al s
 tope de memoria (RLIMIT_AS 1 GiB) es del informe y no del servidor. --sin-enviar: solo imprime.
 El token de Telegram va cifrado en conf/report.conf (secretos.py, asociado "report:TELEGRAM_TOKEN").
 """
-import argparse, gzip, io, json, os, sys, time, urllib.request, urllib.parse, urllib.error
+import argparse, gzip, io, json, os, stat, sys, time, urllib.request, urllib.parse, urllib.error
 from collections import Counter, defaultdict
+from datetime import datetime
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import nodos  # noqa: E402
@@ -26,6 +27,7 @@ HOURS = 24
 MAX_LINES = 20_000_000
 TELEGRAM_MAX = 4000
 ASOC_TOKEN = "report:TELEGRAM_TOKEN"
+RC_TELEGRAM = 4        # el informe se hizo pero Telegram fallo: el panel lo anota como fallo (A-25)
 
 def conf():
     d = {}
@@ -39,9 +41,29 @@ def conf():
     return d
 
 def opener(p):
+    """Abre un eve.json(.gz) del punto SIN seguir enlaces y solo si es un fichero regular (A-26):
+    datos/<pid> lo escribe el contenedor suricata; un enlace o una FIFO no se leen."""
+    fd = os.open(p, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+                 | getattr(os, "O_BINARY", 0))
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise OSError("%s: no es un fichero regular" % p)
+        f = os.fdopen(fd, "rb")
+    except BaseException:
+        os.close(fd)
+        raise
     if p.endswith(".gz"):
-        return io.TextIOWrapper(gzip.open(p, "rb"), encoding="utf-8", errors="replace")
-    return open(p, encoding="utf-8", errors="replace")
+        return io.TextIOWrapper(gzip.GzipFile(fileobj=f, mode="rb"), encoding="utf-8", errors="replace")
+    return io.TextIOWrapper(f, encoding="utf-8", errors="replace")
+
+def _ts(txt):
+    """Epoch de una marca de Suricata (2026-10-12T07:00:00.123456-0500), o None."""
+    for fmt in ("%Y-%m-%dT%H:%M:%S.%f%z", "%Y-%m-%dT%H:%M:%S%z"):
+        try:
+            return datetime.strptime(str(txt), fmt).timestamp()
+        except (ValueError, TypeError):
+            pass
+    return None
 
 # Clasificacion: (claves, nivel, explicacion, accion). nivel 1=infectado, 2=atacando, 3=sospechoso.
 # Gana la primera regla cuya palabra clave aparece en la firma.
@@ -144,6 +166,11 @@ def analizar(pid, excl, cutoff, umbral):
                     continue
                 if not isinstance(e, dict) or e.get("event_type") != "alert":
                     continue
+                # por la marca de CADA evento, no solo por el mtime del fichero: el eve.json vivo
+                # trae tambien alertas de antes de las ultimas 24 h (A-25)
+                _t = _ts(e.get("timestamp"))
+                if _t is not None and _t < cutoff:
+                    continue
                 a = e.get("alert") or {}
                 sig = str(a.get("signature", ""))
                 cat = a.get("category") or ""
@@ -233,8 +260,13 @@ def informe(nodo=nodos.TODOS, ahora=None):
     excl = cargar_exclusiones()
     secciones = []
     for pid in nodos.nodos_de(nodos.validar_nodo(nodo)):
-        texto = seccion(pid, analizar(pid, excl, cutoff, umbral))
-        guardar(pid, texto, ahora)
+        try:
+            texto = seccion(pid, analizar(pid, excl, cutoff, umbral))
+            guardar(pid, texto, ahora)
+        except (nodos.NodoInexistente, nodos.NodoInvalido):
+            # dado de baja mientras se hacia el informe: se salta ese punto, no se cancela todo (A-25)
+            print("informe: %s ya no existe; se salta" % pid, file=sys.stderr)
+            continue
         secciones.append(texto)
     empresa = os.environ.get("IDS_EMPRESA") or "IDS"
     cab = f"IDS {empresa} - resumen de {HOURS}h"
@@ -269,9 +301,13 @@ def token_telegram(c):
         return ""
 
 def enviar(textos):
+    """True si se envio todo; False si Telegram esta configurado y algo fallo (o el token no se
+    puede descifrar); None si Telegram no esta configurado (no hay nada que enviar)."""
     c = conf()
+    if not (c.get("TELEGRAM_TOKEN") and c.get("TELEGRAM_CHAT_ID")):
+        return None
     tok, chat = token_telegram(c), c.get("TELEGRAM_CHAT_ID")
-    if not (tok and chat):
+    if not tok:
         return False
     ok = True
     for texto in textos:
@@ -306,10 +342,11 @@ def main(argv=None):
         print("punto inexistente: %s" % a.nodo, file=sys.stderr)
         return 3
     textos = mensajes(cab, secciones)
-    if not a.sin_enviar:
-        enviar(textos)
+    rc = 0
+    if not a.sin_enviar and enviar(textos) is False:
+        rc = RC_TELEGRAM                 # el informe esta hecho, pero no ha llegado (A-25)
     print("\n\n".join(textos))
-    return 0
+    return rc
 
 if __name__ == "__main__":
     sys.exit(main())

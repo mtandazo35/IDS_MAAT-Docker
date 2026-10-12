@@ -1,0 +1,5 @@
+# Contexto de build de images/panel: nada de cachés de Python de las pruebas ni de restos de
+# módulos que ya no existen (auditoría B-21). El código se precompila dentro del build.
+**/__pycache__
+**/*.pyc
+**/*.pyo

@@ -16,7 +16,7 @@ teniendo sentido, por orden de lo que costaria el fallo:
 Cambios deliberados (CONTRATO-F2 §4 y OPERACION.md §2), comprobados como tales:
   - ya no hay regla de DNS aparte: el DNS va dentro del recorte connection-bytes=0-10000;
   - ya no hay modo local sin recorte: el espejo va siempre por el tunel del punto;
-  - ninguna regla `accept`, y todo lleva el comentario `IDS ids-maat:<pid>`.
+  - ninguna regla `accept`, y todo lleva el comentario propio `IDS ids-maat:<pid>:espejo` (A-02).
 Retirado: alta del router en el panel (ENABLED=0, mikrotik.conf: ahora es el apartado Puntos),
 la clave por fichero de credenciales y su lectura (leer_credenciales) y el cliente api-ssl
 sacado del dashboard (lo sustituye la conexion por el rele del punto, zona N).
@@ -33,7 +33,7 @@ import extraer  # noqa: E402
 
 SENSOR = "100.64.3.1"
 PID = "p003"
-COM = "IDS ids-maat:" + PID
+COM = "IDS ids-maat:" + PID + ":espejo"   # comentario propio del espejo (A-02)
 
 fallos = 0
 
@@ -224,7 +224,7 @@ def main():
           r7.escrituras() == [], r7.escrituras())
     term = "\n".join(p7["terminal"])
     check("y dice lo que haria, como se escribe en la terminal del router",
-          '/ip firewall address-list add list=ids-vigilados address=10.20.0.0/16 comment="IDS ids-maat:p003"' in term
+          '/ip firewall address-list add list=ids-vigilados address=10.20.0.0/16 comment="IDS ids-maat:p003:espejo"' in term
           and "/ip firewall mangle add chain=forward action=sniff-tzsp sniff-target=%s" % SENSOR in term
           and "connection-bytes=0-10000" in term
           and "/ip firewall mangle set *51 disabled=yes" in term

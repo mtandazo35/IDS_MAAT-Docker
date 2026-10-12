@@ -58,7 +58,7 @@ punto (`punto_id NULL` = toda la empresa).
 | `punto` | P (raíz) | `id` `p001…` (secuencia, **nunca se reutiliza**), `nombre` único, `n`, `red_tunel`, `ip_srv`, `ip_mk`, `puerto_vpn`, `ros_version`, `redes_abonados`, `perfil`, `hilos`, `tls_legacy`, `api_puerto`, `ip_publica_esperada`, `estado`, `fila_version` | `UNIQUE(n)` y `UNIQUE(puerto_vpn)`. El `id` sale de una secuencia monotónica (`secuencia_punto`) que no retrocede, ni siquiera tras una baja, en la que la fila se borra. `n` vuelve a estar libre 7 días después (enfriamiento en `orq.db`) |
 | `instancia` | P (1:1) | `estado_deseado` (activa / pausada / borrada), digests actual y previo, `observado` | el estado real lo publica el orquestador en `estado.json` |
 | `vpn_usuario` | P | `(punto_id, usuario)`, creado, rotado | el hash vive en el fichero del orquestador |
-| `mikrotik` | P (1:1) | `cert_fp`, usuario, `clave_cifrada`, `clave_kid`, `identidad`, `sw_id`, `version_ros`, listas, TTL, `envio_habilitado` (0 por defecto) | el destino es el relé del punto; no hay host configurable |
+| `mikrotik` | P (1:1) | `cert_fp`, usuario, `clave_cifrada` (`enc1:`, sin `kid`: §6), `identidad`, `sw_id`, `version_ros`, listas, TTL, `envio_habilitado` (0 por defecto) | el destino es el relé del punto; no hay host configurable |
 | `usuario`, `rol` | G | `login` inmutable; roles `admin` / `operador` / `lectura` | — |
 | `visibilidad` | G | `(usuario_id, punto_id NULL, recurso, nivel)` | hoy cada usuario tiene una sola fila `(NULL, '*', 'actuar')` |
 | `sesion` | G | `token_sha256`, `csrf`, expira, ip, `punto_sel` | nunca se guarda el token |
@@ -165,18 +165,32 @@ retención posterior (§8).
   el SHA256 del índice firmado por Debian (la garantía que daría `pip --require-hashes`), sobre la base
   fijada por digest, sin pip ni compilador en la imagen y con el libssl de la base, que recibe los
   avisos de seguridad de Debian. La versión instalada queda en `/usr/share/ids-maat/cryptography-version`.
-  Formato y AAD: `secretos.py` del panel (`enc1:<base64>`; AAD `router:<pid>:PASS`,
-  `feeds:<CLAVE>`, `report:TELEGRAM_TOKEN`).
-- **AAD:** `"mikrotik:" + punto_id` o `"ajuste:" + clave`. Copiar el cifrado de un punto a otro no
-  descifra.
+  Formato: `secretos.py` del panel, `enc1:<base64(nonce de 12 bytes + texto cifrado + etiqueta)>`.
+  Un valor sin `enc1:` es texto en claro de una configuración vieja: se usa y el panel lo vuelve a
+  guardar cifrado al arrancar (`migrar_secretos`).
+- **AAD (`asociado`), exactamente los de `secretos.py` y sus llamadores:**
+
+  | Secreto | Dónde se guarda | AAD |
+  |---|---|---|
+  | clave API del MikroTik de un punto | `conf/routers.json`, campo `PASS` del punto | `router:<pid>:PASS` |
+  | claves de feeds (`ABUSE_CH_AUTH_KEY`, `ABUSEIPDB_KEY`, `GROQ_API_KEY`) | `conf/feeds.conf` | `feeds:<CLAVE>` |
+  | token de Telegram | `conf/report.conf`, `TELEGRAM_TOKEN` | `report:TELEGRAM_TOKEN` |
+
+  Copiar el valor cifrado a otro campo o a otro punto no lo descifra (la AAD no casa).
 - **Clave maestra:** 32 bytes en `/etc/ids-maat/master.key` (0440 `root:ids-panel`: el panel corre
   como 10500 sin capacidades y la lee por grupo). Se monta **solo en el panel**, en
   `/run/secrets/master_key:ro` (`IDS_MASTER_KEY`), fuera de `/srv/ids/panel`. `ids-orq panel aplicar`
   se niega si no existe (Docker crearía un directorio con ese nombre). Sin ella el panel arranca y
   avisa de que no puede usar esos secretos; no los borra. Una copia del volumen o un respaldo de las bases no basta para
   descifrar. La clave maestra se respalda aparte ([OPERACION.md](OPERACION.md) §3).
-- **Rotación:** `clave_kid` lo permite. Una tarea descifra con la vieja y cifra con la nueva en una
-  sola transacción.
+- **Rotación:** hoy **no hay** rotación de la clave maestra: `secretos.py` no lleva identificador de
+  clave (`kid`) y el formato `enc1:` admite una sola clave. Cambiarla exige descifrar con la vieja y
+  volver a guardar cada secreto con la nueva (o volver a escribirlos en Ajustes y en Puntos → API);
+  eso es trabajo pendiente, no una orden del panel.
+- **Token de Telegram:** no tiene pantalla en Ajustes. Se escribe a mano en
+  `/srv/ids/panel/conf/report.conf` (`TELEGRAM_TOKEN=…` y `TELEGRAM_CHAT_ID=…`, fichero 0600 del
+  uid 10500) y se reinicia el panel (`docker restart ids-core-panel`): al arrancar lo cifra
+  (`migrar_secretos`). **Hasta ese reinicio está en claro en disco.**
 - **La clave en claro existe solo en memoria**, al abrir la conexión. **Nunca vuelve al
   navegador**: el campo es de solo escritura y «vacío = no cambiar».
 - **Lo que el panel nunca tiene:** la CA, `docker.sock` ni los hashes VPN. Las credenciales VPN del

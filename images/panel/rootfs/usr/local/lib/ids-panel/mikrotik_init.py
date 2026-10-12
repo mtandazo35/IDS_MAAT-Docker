@@ -9,7 +9,11 @@ documento. Requisito que manda sobre todo:
     Instalar, actualizar, pausar o retirar el espejo no autoriza trafico que la politica
     original del router rechazaba. Por eso aqui NO SE CREA NINGUNA REGLA `accept`.
 
-Lo que se monta, todo con el comentario `IDS ids-maat:<pid>`:
+Lo que se monta, todo con el comentario PROPIO del espejo `IDS ids-maat:<pid>:espejo`
+(auditoria A-02): el alta del punto pone con `IDS ids-maat:<pid>` la regla `chain=input` que
+deja entrar a la API-SSL desde el tunel y el blackhole del tunel, y el espejo NO los toca nunca
+(sin esa regla, con la cadena input en drop, el panel se queda sin API en ese router). La baja
+manual de OPERACION §2.1 (`comment~"ids-maat:<pid>(:|$)"`) sigue quitandolo todo:
 
   - address-list `<lista>` con cada red del punto (prefijos editables: una red con nuestro
     comentario que ya no esta en `redes` se quita; una direccion que ya estaba en la lista sin
@@ -32,7 +36,7 @@ Interfaz (la usa la pantalla Puntos; `conexion` es el socket ya logueado de `mk_
 plan(conexion, pid, sensor, puerto, redes, lista="ids-vigilados") -> dict   (solo lectura)
     {"pid": "p003", "sensor": "192.0.2.10", "puerto": 37008, "lista": "ids-vigilados",
      "redes": ["10.0.0.0/24", "10.0.9.7"],        # normalizadas; un /32 sin "/32", como el router
-     "comentario": "IDS ids-maat:p003",
+     "comentario": "IDS ids-maat:p003:espejo",
      "identidad": "nombre del router",             # /system/identity/print
      "cambios": [{"que": "texto para el operador", "orden": "/ip/firewall/mangle/add",
                   "args": ["=chain=forward", ...]}, ...],   # en el orden en que se aplican
@@ -75,8 +79,9 @@ retirar(conexion, pid, respaldo, lista=None) -> {"ok", "hechos", "fallo", "sin_a
     `respaldo`: el dict o la ruta del JSON que guardo aplicar() (vale el ultimo: lleva los
     valores originales del fasttrack de los anteriores; ver ultimo_respaldo()), el DIRECTORIO
     de respaldos del panel (se usa el ultimo JSON de ese punto), o None.
-    Antes, `/export` en el router. Borra de mangle, filter y address-list SOLO lo que lleva
-    exactamente el comentario `IDS ids-maat:<pid>`, y devuelve a cada fasttrack sus valores
+    Antes, `/export` en el router. Borra de mangle, filter y address-list SOLO lo del espejo
+    (comentario exacto `IDS ids-maat:<pid>:espejo`, o el `IDS ids-maat:<pid>` de versiones
+    anteriores en reglas con forma de espejo: ver es_del_espejo()), y devuelve a cada fasttrack sus valores
     originales de src/dst-address-list segun el respaldo (solo los campos que siguen siendo
     `!<lista>`: si alguien los cambio despues, no se tocan y se avisa). Una fasttrack que no
     esta en el respaldo y tiene `!<lista>` en los dos campos los pierde (unset). Nunca borra
@@ -239,8 +244,39 @@ def en_terminal(orden, args):
 
 # --- utilidades -------------------------------------------------------------------------
 def comentario(pid):
-    """El comentario de todo lo que el espejo del punto crea en el router."""
+    """El comentario de todo lo que el espejo del punto crea en el router. Es PROPIO del espejo:
+    lo que el alta pone con `comentario_alta(pid)` (la regla input de la API-SSL, el blackhole)
+    no es del espejo y el espejo no lo toca (auditoria A-02)."""
+    return "IDS ids-maat:%s:espejo" % pid
+
+
+def comentario_alta(pid):
+    """El comentario del alta del punto (OPERACION §1.2/§1.3). Las versiones anteriores del
+    espejo tambien lo usaban: por eso solo cuenta como del espejo con forma de espejo."""
     return "IDS ids-maat:%s" % pid
+
+
+def es_del_espejo(f, tabla, pid, lista=LISTA):
+    """¿Es esta fila del espejo del punto? Con el comentario propio, si. Con el comentario del
+    alta (espejos montados por versiones anteriores), solo si tiene forma de espejo:
+      - mangle: `action=sniff-tzsp`;
+      - filter: `chain=forward` y usa la lista del espejo (las fasttrack de vigilados y el
+        `accept` de vigilados de una version anterior); NUNCA `chain=input` (la API-SSL);
+      - address-list: entradas de la lista del espejo.
+    Nada mas: una regla del alta o ajena con un comentario parecido no se toca."""
+    com = f.get("comment")
+    if com == comentario(pid):
+        return True
+    if com != comentario_alta(pid):
+        return False
+    if tabla == "mangle":
+        return f.get("action") == "sniff-tzsp"
+    if tabla == "filter":
+        return (f.get("chain") == "forward"
+                and lista in (f.get("src-address-list", ""), f.get("dst-address-list", "")))
+    if tabla == "address-list":
+        return f.get("list") == lista
+    return False
 
 def _si(v):
     return str(v).strip().lower() in ("true", "yes")
@@ -346,6 +382,9 @@ def _calcular(s, pid, sensor, puerto, redes, lista):
     pid, sensor, puerto, redes, lista = _validar(pid, sensor, puerto, redes, lista)
     com = comentario(pid)
     t = _leer_router(s, lista, com)
+
+    def mio(f, tabla):
+        return es_del_espejo(f, tabla, pid, lista)
     cambios, avisos, bloqueos, fasttrack = [], [], [], []
 
     def cambio(que, orden, args):
@@ -362,15 +401,18 @@ def _calcular(s, pid, sensor, puerto, redes, lista):
                    ["=list=" + lista, "=address=" + r, "=comment=" + com])
     for f in t["address-list"]:
         dire = _norm_dir(f.get("address", ""))
-        if f.get("comment") == com:
+        if mio(f, "address-list"):
             if f.get("list") == lista and dire in redes:
+                if f.get("comment") != com:     # de una version anterior: pasa al comentario propio
+                    cambio("poner el comentario del espejo a %s en la lista %s" % (dire, lista),
+                           AL + "set", ["=.id=" + f[".id"], "=comment=" + com])
                 continue
             cambio("quitar %s de la lista %s (ya no es una red del punto)" % (dire, f.get("list")),
                    AL + "remove", ["=.id=" + f[".id"]])
         elif f.get("list") == lista and dire not in redes:
             avisos.append("%s esta en la lista %s sin el comentario del punto: se vigila aunque no "
                           "sea una red del punto, y no se toca" % (dire, lista))
-    if not redes and not any(f.get("comment") != com for f in t["address-list"]
+    if not redes and not any(not mio(f, "address-list") for f in t["address-list"]
                              if f.get("list") == lista):
         avisos.append("la lista %s queda VACIA: no se espejara nada hasta que el punto tenga redes"
                       % lista)
@@ -383,9 +425,9 @@ def _calcular(s, pid, sensor, puerto, redes, lista):
             ("passthrough", "yes")]
     quiero = [("ida", base + [("src-address-list", lista)]),
               ("vuelta", base + [("dst-address-list", lista)])]
-    mias = [f for f in t["mangle"] if f.get("comment") == com]
+    mias = [f for f in t["mangle"] if mio(f, "mangle")]
     for f in t["mangle"]:
-        if f.get("comment") == com or _si(f.get("disabled", "false")):
+        if mio(f, "mangle") or _si(f.get("disabled", "false")):
             continue
         if f.get("action") == "sniff-tzsp" and f.get("sniff-target", "").strip() == sensor:
             cambio("apagar un espejo viejo hacia este sensor (%s, comment=%r)"
@@ -401,7 +443,7 @@ def _calcular(s, pid, sensor, puerto, redes, lista):
     pendientes = []
     for rol, campos in quiero:
         otro = "dst-address-list" if rol == "ida" else "src-address-list"
-        mio = dict(campos)
+        quiero_f = dict(campos)
         cand = [f for f in mias if f not in usadas
                 and f.get(campos[-1][0]) == lista and not f.get(otro)]
         args = ["=%s=%s" % kv for kv in campos] + ["=comment=" + com]
@@ -410,7 +452,8 @@ def _calcular(s, pid, sensor, puerto, redes, lista):
             continue
         f = cand[0]
         usadas.append(f)
-        if all(_val(f.get(k, "")) == _val(v) for k, v in mio.items()) and not _si(f.get("disabled")):
+        if (all(_val(f.get(k, "")) == _val(v) for k, v in quiero_f.items())
+                and not _si(f.get("disabled")) and f.get("comment") == com):
             continue
         pendientes.append(("espejo de %s: actualizar (%s)" % (rol, f[".id"]), MG + "set",
                            ["=.id=" + f[".id"]] + args + ["=disabled=no"]))
@@ -427,7 +470,7 @@ def _calcular(s, pid, sensor, puerto, redes, lista):
     pool = []           # nuestras fasttrack de vigilados que ya estan: (clave, regla)
     sobran = []         # el resto de lo nuestro en filter
     for f in reglas:
-        if f.get("comment") != com:
+        if not mio(f, "filter"):
             continue
         rol = _rol_compania(f, lista)
         if rol:
@@ -435,7 +478,7 @@ def _calcular(s, pid, sensor, puerto, redes, lista):
         else:
             sobran.append(f)
     for i, f in enumerate(reglas):
-        if f.get("comment") == com:
+        if mio(f, "filter"):
             continue
         src, dst = f.get("src-address-list", ""), f.get("dst-address-list", "")
         apagada = _si(f.get("disabled", "false"))
@@ -471,16 +514,21 @@ def _calcular(s, pid, sensor, puerto, redes, lista):
         ft["accion"] = "ya-excluida" if hecha else "excluir"
         ft["que"] = ("ya excluye a %s" % lista) if hecha else (
             "excluir %s (sus valores de ahora van al respaldo)" % lista)
-        sig = next((g[".id"] for g in reglas[i + 1:] if g.get("comment") != com), None)
+        sig = next((g[".id"] for g in reglas[i + 1:] if not mio(g, "filter")), None)
         cond = _condiciones(f)
         for rol, campo in (("ida", "src-address-list"), ("vuelta", "dst-address-list")):
             clave = (rol, f.get("chain", ""), _clave_cond(f))
             ya = next((x for x in pool if x[0] == clave), None)
             if ya:
                 pool.remove(ya)
+                arreglo = []
                 if _si(ya[1].get("disabled")):
-                    cambio("habilitar el fasttrack de vigilados (%s) de %s" % (rol, f[".id"]), FI + "set",
-                           ["=.id=" + ya[1][".id"], "=disabled=no"])
+                    arreglo.append("=disabled=no")
+                if ya[1].get("comment") != com:  # de una version anterior: comentario propio
+                    arreglo.append("=comment=" + com)
+                if arreglo:
+                    cambio("habilitar o marcar como del espejo el fasttrack de vigilados (%s) de %s"
+                           % (rol, f[".id"]), FI + "set", ["=.id=" + ya[1][".id"]] + arreglo)
                 continue
             args = ["=chain=" + f.get("chain", "forward"), "=action=" + FT]
             args += ["=%s=%s" % kv for kv in cond]
@@ -677,15 +725,15 @@ def pausar(conexion, pid, respaldo_dir=None):
     antes guarda tambien la copia local de esos mangle (`<respaldo_dir>/<pid>/pausa-*.json`)."""
     res = {"ok": False, "hechos": [], "fallo": None, "sin_aplicar": [], "export": None,
            "respaldo": None}
-    com = comentario(_validar_pid(pid))
+    _validar_pid(pid)
     try:
-        mg = _mk_print(conexion, MG + "print", consulta=["?comment=" + com])
+        mg = _mangle_del_espejo(conexion, pid)
     except ErrorRouter as e:
         res["fallo"] = str(e)
         return res
     cambios = [{"que": "pausar el espejo %s" % f[".id"], "orden": MG + "set",
                 "args": ["=.id=" + f[".id"], "=disabled=yes"]}
-               for f in mg if f.get("comment") == com and not _si(f.get("disabled", "false"))]
+               for f in mg if not _si(f.get("disabled", "false"))]
     if not cambios:
         res["ok"] = True
         return res
@@ -698,6 +746,17 @@ def pausar(conexion, pid, respaldo_dir=None):
     if not _exportar(conexion, pid, res):
         return res
     return _correr(conexion, cambios, res)
+
+
+def _mangle_del_espejo(conexion, pid):
+    """Los mangle del espejo del punto (comentario propio, o el del alta con sniff-tzsp)."""
+    vistos, out = set(), []
+    for com in (comentario(pid), comentario_alta(pid)):
+        for f in _mk_print(conexion, MG + "print", consulta=["?comment=" + com]):
+            if f.get(".id") not in vistos and es_del_espejo(f, "mangle", pid):
+                vistos.add(f.get(".id"))
+                out.append(f)
+    return out
 
 
 def _guardar_pausa(respaldo_dir, pid, mangle):
@@ -714,10 +773,23 @@ def _cargar_respaldo(respaldo, pid=None):
     if respaldo is None:
         return {}
     if isinstance(respaldo, str) and os.path.isdir(respaldo):
-        # el directorio de respaldos del panel: vale el ultimo JSON del espejo de ese punto
-        respaldo = ultimo_respaldo(respaldo, pid) if pid else None
-        if respaldo is None:
+        # el directorio de respaldos del panel: vale el ultimo JSON del espejo de ese punto QUE SE
+        # PUEDA LEER; uno corrupto (corte a mitad, disco lleno) no bloquea retirar (A-21): se usa
+        # el anterior valido
+        if not pid:
             return {}
+        _validar_pid(pid)
+        rutas = sorted(glob.glob(os.path.join(respaldo, pid, "espejo-*.json")),
+                       key=_orden_respaldo, reverse=True)
+        for ruta in rutas:
+            try:
+                with open(ruta, encoding="utf-8") as fh:
+                    d = json.load(fh)
+            except (OSError, ValueError):
+                continue
+            if isinstance(d, dict) and isinstance(d.get("fasttrack", {}), dict):
+                return d
+        return {}
     if isinstance(respaldo, dict):
         return respaldo
     try:
@@ -743,19 +815,21 @@ def plan_retirar(conexion, pid, respaldo=None, lista=None):
     com = comentario(pid)
     excl = "!" + lista
     reglas = _mk_print(conexion, FI + "print")
-    mg = _mk_print(conexion, MG + "print", consulta=["?comment=" + com])
+    mg = _mangle_del_espejo(conexion, pid)
     al = _mk_print(conexion, AL + "print", consulta=["?comment=" + com])
+    vistos = {f.get(".id") for f in al}
+    al += [f for f in _mk_print(conexion, AL + "print", consulta=["?comment=" + comentario_alta(pid)])
+           if f.get(".id") not in vistos and es_del_espejo(f, "address-list", pid, lista)]
     cambios, avisos = [], []
 
     def cambio(que, orden, args):
         cambios.append({"que": que, "orden": orden, "args": args})
 
     for f in mg:
-        if f.get("comment") == com:
-            cambio("quitar el espejo %s" % f[".id"], MG + "remove", ["=.id=" + f[".id"]])
+        cambio("quitar el espejo %s" % f[".id"], MG + "remove", ["=.id=" + f[".id"]])
     ids = {f.get(".id") for f in reglas}
     for f in reglas:
-        if f.get("comment") == com or f.get("action") != FT:
+        if es_del_espejo(f, "filter", pid, lista) or f.get("action") != FT:
             continue
         orig = originales.get(f[".id"])
         campos = ("src-address-list", "dst-address-list")
@@ -785,10 +859,10 @@ def plan_retirar(conexion, pid, respaldo=None, lista=None):
         if ftid not in ids:
             avisos.append("el fasttrack %s del respaldo ya no existe en el router" % ftid)
     for f in reglas:
-        if f.get("comment") == com:
-            cambio("quitar la regla filter %s del punto" % f[".id"], FI + "remove", ["=.id=" + f[".id"]])
+        if es_del_espejo(f, "filter", pid, lista):
+            cambio("quitar la regla filter %s del espejo" % f[".id"], FI + "remove", ["=.id=" + f[".id"]])
     for f in al:
-        if f.get("comment") == com:
+        if es_del_espejo(f, "address-list", pid, lista):
             cambio("quitar %s de la lista %s" % (f.get("address"), f.get("list")), AL + "remove",
                    ["=.id=" + f[".id"]])
     return {"pid": pid, "lista": lista, "cambios": cambios,

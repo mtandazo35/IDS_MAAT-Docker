@@ -33,7 +33,7 @@ RAIZ = extraer.RAIZ
 GEN = extraer.fuente("HREP")
 ARBOL = ast.parse(GEN)
 
-PIEZAS = ("opener", "_RE_TS_LINEA", "abrir_desde", "parse_ts", "_parse_ts_lento",
+PIEZAS = ("_abrir_bin", "opener", "_RE_TS_LINEA", "abrir_desde", "parse_ts", "_parse_ts_lento",
           "_TS_CACHE", "_TS_CACHE_MAX", "TZ_EC", "logs_de_la_ventana")
 
 fallos = 0

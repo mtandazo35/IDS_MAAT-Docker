@@ -27,6 +27,7 @@ import re
 import secrets
 import shutil
 import sqlite3
+import stat
 import string
 import subprocess
 import sys
@@ -40,13 +41,15 @@ ORQ_VERSION = "0.1.0"
 UID_PANEL = 10500
 GID_PANEL = 10500
 REGISTRO = "ghcr.io/mtandazo35"
-RE_IMAGEN_PROD = re.compile(r"^ghcr\.io/mtandazo35/ids-maat-(vpn|suricata|panel)@sha256:[0-9a-f]{64}$")
-RE_IMAGEN_DEV = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/:@-]{0,254}$")
-RE_PID = re.compile(r"^p\d{3}$")
-RE_NOMBRE = re.compile(r"^[a-z0-9][a-z0-9-]{1,30}$")
-RE_USUARIO = re.compile(r"^vpn[0-9a-f]{6}$")
-RE_OPID = re.compile(r"^[0-9A-Za-z-]{8,64}$")
-RE_TS = re.compile(r"^\d{8}T\d{6}Z$")
+# `\Z` y `[0-9]`, no `$` ni `\d` (auditoría A-23): `$` deja pasar un «\n» final (un nombre con
+# salto de línea rompía el bloque RouterOS) y `\d` acepta dígitos Unicode.
+RE_IMAGEN_PROD = re.compile(r"^ghcr\.io/mtandazo35/ids-maat-(vpn|suricata|panel)@sha256:[0-9a-f]{64}\Z")
+RE_IMAGEN_DEV = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/:@-]{0,254}\Z")
+RE_PID = re.compile(r"^p[0-9]{3}\Z")
+RE_NOMBRE = re.compile(r"^[a-z0-9][a-z0-9-]{1,30}\Z")
+RE_USUARIO = re.compile(r"^vpn[0-9a-f]{6}\Z")
+RE_OPID = re.compile(r"^[0-9A-Za-z-]{8,64}\Z")
+RE_TS = re.compile(r"^[0-9]{8}T[0-9]{6}Z\Z")
 RE_MARCADOR = re.compile(r"@@([A-Z0-9_]+)@@")
 
 # Perfiles (§4.6.2). La tabla vive SOLO aquí.
@@ -79,7 +82,7 @@ INTERVALO_ESTADO_S = 15
 INTERVALO_NETNS_S = 30
 ESPERAS_REINICIO_S = (30, 120, 600)
 MAX_REINICIOS_HORA = 3
-MAX_MENSAJE = 64 * 1024
+MAX_MENSAJE = 1024 * 1024          # cabe un threshold de MAX_THRESHOLD con el escapado JSON (A-23)
 MAX_PETICIONES_MIN = 240
 RELEASES_A_CONSERVAR = 3
 MAX_RESPALDOS_FW = 20
@@ -88,6 +91,9 @@ DISCO_MIN_LIBRE_PCT = 15             # por debajo, se borran antes de tiempo los
 INTERVALO_PODA_S = 86400             # poda por fecha: una vez al día (y al arrancar)
 MAX_THRESHOLD = 256 * 1024
 MAX_LINEAS_THRESHOLD = 5000
+MAX_LINEA_THRESHOLD = 4096           # Suricata lee el threshold.config con líneas de 8191 bytes (A-23)
+MIN_TOKEN = 32
+MIN_PREFIJO_REDES = 8                # redes de abonados: como mucho /8 (A-28)
 
 # Núcleo (F1b, CONTRATO-F1b «Integración»): el panel en la red ids-core reservada en F1a
 CORE_PROYECTO = "ids-core"
@@ -101,8 +107,8 @@ PANEL_DIR = "/srv/ids/panel"
 PANEL_USUARIOS = PANEL_DIR + "/conf/usuarios.json"     # CONTRATO-F2 §7 (lo escribe ids-panel)
 MASTER_KEY = "/etc/ids-maat/master.key"               # en el panel: /run/secrets/master_key (ro)
 ESPERA_PANEL_S = 120
-RE_USUARIO_PANEL = re.compile(r"^[a-z0-9][a-z0-9._-]{0,31}$")     # el mismo que ids-panel
-RE_ZONA = re.compile(r"^(UTC|[A-Za-z]+(/[A-Za-z0-9_+-]+){1,2})$")
+RE_USUARIO_PANEL = re.compile(r"^[a-z0-9][a-z0-9._-]{0,31}\Z")     # el mismo que ids-panel
+RE_ZONA = re.compile(r"^(UTC|[A-Za-z]+(/[A-Za-z0-9_+-]+){1,2})\Z")
 SALIDA_PANEL_YA_EXISTE = 3
 
 PASOS_CREAR = ["validar", "asignar", "admisión de RAM", "directorios", "certificado",
@@ -206,18 +212,45 @@ def asegurar_dir(path, modo, uid=0, gid=0):
 def escribir_atomico(path, contenido, modo=0o644, uid=0, gid=0):
     """Escribe con fichero temporal en el mismo directorio y os.replace (rename atómico)."""
     path = Path(path)
-    tmp = path.with_name(".%s.tmp%d" % (path.name, os.getpid()))
+    # temporal NUEVO (O_EXCL|O_NOFOLLOW, nombre único): nunca se escribe a través de un enlace o
+    # de un fichero que ya estuviera ahí, y modo y dueño van sobre el descriptor (A-04)
+    tmp = path.with_name(".%s.tmp%d.%s" % (path.name, os.getpid(), secrets.token_hex(4)))
     datos = contenido.encode("utf-8") if isinstance(contenido, str) else contenido
-    with open(tmp, "wb") as f:
-        f.write(datos)
-        f.flush()
+    fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+                 | getattr(os, "O_BINARY", 0) | getattr(os, "O_CLOEXEC", 0), 0o600)
+    try:
+        with os.fdopen(fd, "wb", closefd=False) as f:
+            f.write(datos)
+            f.flush()
+            try:
+                os.fsync(fd)
+            except OSError:
+                pass
+        if hasattr(os, "fchmod"):
+            try:
+                os.fchmod(fd, modo)
+            except OSError:
+                pass
+        if hasattr(os, "fchown") and es_root():
+            os.fchown(fd, uid, gid)
+    except BaseException:
+        os.close(fd)
         try:
-            os.fsync(f.fileno())
+            os.unlink(str(tmp))
         except OSError:
             pass
-    _chmod(tmp, modo)
-    _chown(tmp, uid, gid)
-    os.replace(tmp, path)
+        raise
+    os.close(fd)
+    if not hasattr(os, "fchmod"):
+        _chmod(tmp, modo)                  # solo Windows (pruebas): el nombre es nuestro (O_EXCL)
+    try:
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(str(tmp))
+        except OSError:
+            pass
+        raise
     return path
 
 
@@ -379,7 +412,11 @@ def imagenes():
 
 
 def leer_token():
-    return ruta("/etc/ids-maat/orq_token").read_text(encoding="utf-8").strip()
+    """El token del socket. Uno vacío o corto no vale (A-23): con él cualquier token vacío entraría."""
+    t = ruta("/etc/ids-maat/orq_token").read_text(encoding="utf-8").strip()
+    if len(t) < MIN_TOKEN:
+        raise OSError("orq_token vacío o demasiado corto (mín. %d caracteres)" % MIN_TOKEN)
+    return t
 
 
 def meminfo():
@@ -823,12 +860,103 @@ def plantilla_suricata(imagen):
 
 
 # --------------------------------------------------------------------------------------------
+# Ficheros en directorios que escriben los contenedores (auditoría A-04)
+# --------------------------------------------------------------------------------------------
+# datos/<pid> lo escribe suricata y run/<pid> y ctl/<pid> los escribe vpn: root dentro del
+# contenedor, sin userns. El orquestador es root en el host, así que ahí NUNCA sigue un enlace
+# ni escribe por nombre en algo que el contenedor pueda haber plantado:
+#   - abre sin seguir enlaces (O_NOFOLLOW) ni bloquearse (O_NONBLOCK: una FIFO no cuelga tick());
+#   - solo ficheros regulares (lstat antes y fstat después, mismo inodo) con UN solo nombre
+#     (st_nlink == 1: un enlace duro a un fichero ajeno no cuela);
+#   - lee con tope de bytes;
+#   - los temporales se crean con O_CREAT|O_EXCL|O_NOFOLLOW y el modo, dueño y fechas se ponen
+#     sobre el descriptor (fchmod/fchown/futimens), nunca por nombre.
+# Los directorios padre (datos/, run/, ctl/) son del host y el contenedor no puede cambiarlos.
+
+_O_NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
+_O_NONBLOCK = getattr(os, "O_NONBLOCK", 0)
+_O_EXTRA = getattr(os, "O_BINARY", 0) | getattr(os, "O_CLOEXEC", 0)
+TOPE_STATUS_OVPN = 1024 * 1024        # openvpn-status.log: un cliente, unas pocas líneas
+TOPE_TZSP = 64 * 1024                  # tzsp.json: un objeto pequeño
+TOPE_STATS_EVE = 512 * 1024            # cola de eve.json donde buscar el último «stats»
+TOPE_PRIMER_TS = 64 * 1024             # principio de un eve/dns (descomprimido)
+TOPE_PRIMER_TS_GZ = 1024 * 1024        # comprimido que se lee como mucho para sacar ese principio
+
+
+class FicheroNoSeguro(OSError):
+    """Un fichero de un directorio de contenedor que no se toca: enlace, FIFO, dispositivo,
+    directorio, varios nombres o cambiado entre la comprobación y la apertura."""
+
+
+def es_regular_suelto(path):
+    """lstat: fichero regular (no enlace, no FIFO) con un solo nombre. Nunca sigue enlaces."""
+    try:
+        st = os.lstat(str(path))
+    except OSError:
+        return False
+    return stat.S_ISREG(st.st_mode) and st.st_nlink == 1
+
+
+def abrir_de_contenedor(path):
+    """(fd de solo lectura, fstat) de un fichero de un directorio de contenedor, o FicheroNoSeguro
+    / OSError. Quien llama cierra el fd."""
+    path = str(path)
+    lst = os.lstat(path)
+    if not stat.S_ISREG(lst.st_mode):
+        raise FicheroNoSeguro("%s: no es un fichero regular" % path)
+    fd = os.open(path, os.O_RDONLY | _O_NOFOLLOW | _O_NONBLOCK | _O_EXTRA)
+    try:
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode) or (st.st_dev, st.st_ino) != (lst.st_dev, lst.st_ino):
+            raise FicheroNoSeguro("%s: cambió entre la comprobación y la apertura" % path)
+        if st.st_nlink != 1:
+            raise FicheroNoSeguro("%s: tiene %d nombres (enlace duro)" % (path, st.st_nlink))
+    except BaseException:
+        os.close(fd)
+        raise
+    return fd, st
+
+
+def _leer_fd(fd, tope):
+    trozos, n = [], 0
+    while n < tope:
+        b = os.read(fd, min(1024 * 1024, tope - n))
+        if not b:
+            break
+        trozos.append(b)
+        n += len(b)
+    return b"".join(trozos)
+
+
+def leer_de_contenedor(path, tope, desde_el_final=False):
+    """Como mucho `tope` bytes de un fichero de un directorio de contenedor (del principio o, con
+    `desde_el_final`, de la cola). Lanza OSError (FicheroNoSeguro incluido)."""
+    fd, st = abrir_de_contenedor(path)
+    try:
+        if desde_el_final and st.st_size > tope:
+            os.lseek(fd, st.st_size - tope, os.SEEK_SET)
+        return _leer_fd(fd, tope)
+    finally:
+        os.close(fd)
+
+
+def mismo_inodo(path, st):
+    """¿El nombre sigue apuntando (sin seguir enlaces) al inodo `st`, con un solo nombre?"""
+    try:
+        l = os.lstat(str(path))
+    except OSError:
+        return False
+    return (stat.S_ISREG(l.st_mode) and (l.st_dev, l.st_ino) == (st.st_dev, st.st_ino)
+            and l.st_nlink == 1)
+
+
+# --------------------------------------------------------------------------------------------
 # Lecturas de estado (estado.json §5.10)
 # --------------------------------------------------------------------------------------------
 
 def leer_status_openvpn(path):
     try:
-        txt = Path(path).read_text(encoding="utf-8", errors="replace")
+        txt = leer_de_contenedor(path, TOPE_STATUS_OVPN).decode("utf-8", errors="replace")
     except OSError:
         return {"conectado": False, "desde": None, "ip_real": None, "usuario": None}
     for linea in txt.splitlines():
@@ -850,10 +978,10 @@ def leer_status_openvpn(path):
 
 def leer_tzsp(path, t):
     try:
-        d = json.loads(Path(path).read_text(encoding="utf-8"))
+        d = json.loads(leer_de_contenedor(path, TOPE_TZSP).decode("utf-8"))
         return {"edad_s": max(0, t - int(d.get("ts", 0))), "rx": int(d.get("rx", 0)),
                 "tx": int(d.get("tx", 0)), "rechazados": int(d.get("rechazados", 0))}
-    except (OSError, ValueError, TypeError):
+    except (OSError, ValueError, TypeError, AttributeError):
         return {"edad_s": None, "rx": None, "tx": None, "rechazados": None}
 
 
@@ -871,11 +999,8 @@ def leer_stats_eve(path, t):
     vacio = {"stats_edad_s": None, "reglas_cargadas": None, "reglas_fallidas": None,
              "kernel_packets": None, "kernel_drops": None}
     try:
-        with open(path, "rb") as f:
-            f.seek(0, 2)
-            tam = f.tell()
-            f.seek(max(0, tam - 512 * 1024))
-            bloque = f.read().decode("utf-8", errors="replace")
+        bloque = leer_de_contenedor(path, TOPE_STATS_EVE, desde_el_final=True).decode(
+            "utf-8", errors="replace")
     except OSError:
         return vacio
     for linea in reversed(bloque.splitlines()):
@@ -962,9 +1087,16 @@ def validar_threshold(contenido):
     for i, linea in enumerate(lineas, 1):
         if any(ord(c) < 32 and c != "\t" for c in linea):
             raise _inv("línea %d: caracteres de control" % i)
+        if len(linea.encode("utf-8")) > MAX_LINEA_THRESHOLD:
+            raise _inv("línea %d: demasiado larga (máx. %d bytes)" % (i, MAX_LINEA_THRESHOLD))
         x = linea.strip()
         if not x or x.startswith("#"):
-            continue
+            continue                      # comentario en línea propia: se admite tal cual
+        if "#" in x:
+            # Suricata no admite comentarios al final de una regla del threshold (A-13): el motivo
+            # de una exclusión va en una línea propia que empiece por «#», encima de la regla
+            raise _inv("línea %d: comentario al final de una regla; ponlo en una línea propia que "
+                       "empiece por # (encima de la regla)" % i)
         m = RE_TH_LINEA.match(x)
         if not m:
             raise _inv("línea %d: solo se admiten suppress, threshold, event_filter y comentarios" % i)
@@ -1012,7 +1144,7 @@ def fecha_rotado(path):
     reciente que el límite."""
     p = Path(path)
     try:
-        mtime = int(p.stat().st_mtime)
+        mtime = int(os.lstat(str(p)).st_mtime)     # sin seguir enlaces (A-04)
     except OSError:
         return None
     m = RE_FECHA_ROTADO.match(p.name)
@@ -1034,8 +1166,7 @@ def rotados(pid):
     except OSError:
         return salida
     for f in hijos:
-        if (not RE_ROTADO.match(f.name) or f.name.endswith(".tmp") or f.is_symlink()
-                or not f.is_file()):
+        if not RE_ROTADO.match(f.name) or f.name.endswith(".tmp") or not es_regular_suelto(f):
             continue
         cota = fecha_rotado(f)
         if cota is not None:
@@ -1052,37 +1183,78 @@ INTERVALO_COMPRIMIR_S = 60
 def comprimir_rotado(f):
     """gzip de un rotado conservando su mtime (= su último evento), dueño y modo: Eventos del
     panel salta ficheros por mtime y logrotate/gzip no lo conservan. Atómico (.tmp + rename);
-    el original solo se borra cuando el .gz está completo. Devuelve la ruta del .gz o None."""
+    el original solo se borra cuando el .gz está completo. Devuelve la ruta del .gz o None.
+
+    datos/<pid> lo escribe el contenedor suricata (A-04): el origen se abre sin seguir enlaces y
+    solo si es un fichero regular con un nombre; el temporal se crea nuevo (O_EXCL|O_NOFOLLOW,
+    tras borrar el NOMBRE que hubiera, que nunca sigue un enlace) y su modo, dueño y fechas se
+    ponen sobre el descriptor. Antes de renombrar y de borrar se comprueba que cada nombre sigue
+    siendo el inodo que se ha escrito o leído."""
     import gzip
     f = Path(f)
     try:
-        st = f.stat()
-    except OSError:
+        fd_src, st = abrir_de_contenedor(f)
+    except OSError as e:
+        log("comprimir %s: no se toca (%s)" % (f, e))
         return None
     destino = f.with_name(f.name + ".gz")
     # con punto delante: el glob `eve.json*` del panel (Eventos, generador) no lo ve a medias
     tmp = f.with_name("." + f.name + ".gz.tmp")
+    fd_tmp = None
+    escrito = False
     try:
-        with open(f, "rb") as src, open(tmp, "wb") as raw:
+        try:
+            os.unlink(str(tmp))            # resto o algo plantado: se quita el NOMBRE, sin seguirlo
+        except FileNotFoundError:
+            pass
+        fd_tmp = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_EXCL | _O_NOFOLLOW | _O_EXTRA,
+                         0o600)
+        st_tmp = os.fstat(fd_tmp)
+        with os.fdopen(fd_src, "rb", closefd=False) as src, \
+                os.fdopen(fd_tmp, "wb", closefd=False) as raw:
             with gzip.GzipFile(filename=f.name, mode="wb", fileobj=raw, compresslevel=6,
                                mtime=int(st.st_mtime)) as gz:
                 shutil.copyfileobj(src, gz, 1024 * 1024)
             raw.flush()
-            os.fsync(raw.fileno())
-        os.chmod(tmp, st.st_mode & 0o777)
-        if es_root():
-            os.chown(tmp, st.st_uid, st.st_gid)
-        os.utime(tmp, ns=(st.st_atime_ns, st.st_mtime_ns))
-        os.replace(tmp, destino)
-        f.unlink()
+            os.fsync(fd_tmp)
+        if hasattr(os, "fchmod"):
+            os.fchmod(fd_tmp, st.st_mode & 0o777)
+        else:                              # solo Windows (pruebas): el nombre es el nuestro (O_EXCL)
+            os.chmod(str(tmp), st.st_mode & 0o777)
+        if es_root() and hasattr(os, "fchown"):
+            os.fchown(fd_tmp, st.st_uid, st.st_gid)
+        if os.utime in os.supports_fd:
+            os.utime(fd_tmp, ns=(st.st_atime_ns, st.st_mtime_ns))
+        else:
+            os.utime(str(tmp), ns=(st.st_atime_ns, st.st_mtime_ns))
+        escrito = True
+        if not mismo_inodo(tmp, st_tmp):
+            raise FicheroNoSeguro("%s cambió mientras se escribía" % tmp)
+        if not mismo_inodo(f, st):
+            raise FicheroNoSeguro("%s cambió mientras se comprimía" % f)
+        os.close(fd_tmp)
+        fd_tmp = None
+        os.close(fd_src)
+        fd_src = None
+        os.replace(str(tmp), str(destino))
+        if mismo_inodo(f, st):
+            os.unlink(str(f))
         return destino
     except OSError as e:
         log("comprimir %s: %s" % (f, e))
-        try:
-            tmp.unlink()
-        except OSError:
-            pass
+        if escrito or fd_tmp is not None:
+            try:
+                os.unlink(str(tmp))        # el nombre: nunca sigue un enlace
+            except OSError:
+                pass
         return None
+    finally:
+        for fd in (fd_tmp, fd_src):
+            if fd is not None:
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
 
 
 def comprimir_rotados(pids, t, espera=ESPERA_COMPRIMIR_S):
@@ -1095,17 +1267,18 @@ def comprimir_rotados(pids, t, espera=ESPERA_COMPRIMIR_S):
         except OSError:
             continue
         for f in hijos:
-            if f.name.startswith(".") and f.name.endswith(".gz.tmp") and not f.is_symlink():
+            if f.name.startswith(".") and f.name.endswith(".gz.tmp"):
                 try:
-                    if t - f.stat().st_mtime > 3600:     # resto de una compresión interrumpida
-                        f.unlink()
+                    # resto de una compresión interrumpida (o algo plantado): se borra el NOMBRE
+                    if t - os.lstat(str(f)).st_mtime > 3600:
+                        os.unlink(str(f))
                 except OSError:
                     pass
                 continue
-            if not RE_ROTADO_SIN_COMPRIMIR.match(f.name) or f.is_symlink() or not f.is_file():
+            if not RE_ROTADO_SIN_COMPRIMIR.match(f.name) or not es_regular_suelto(f):
                 continue
             try:
-                if t - f.stat().st_mtime < espera:
+                if t - os.lstat(str(f)).st_mtime < espera:
                     continue
             except OSError:
                 continue
@@ -1118,24 +1291,41 @@ def comprimir_rotados(pids, t, espera=ESPERA_COMPRIMIR_S):
 _PRIMER_TS = {}
 
 
+def _principio_gz(comprimido, tope):
+    """Hasta `tope` bytes descomprimidos del principio de un gzip (varios miembros), sin pasar de
+    lo que ya se ha leído comprimido: un .gz de miembros vacíos no gasta más que eso."""
+    import zlib
+    salida = b""
+    resto = comprimido
+    while resto and len(salida) < tope:
+        d = zlib.decompressobj(31)
+        salida += d.decompress(resto, tope - len(salida))
+        if not d.eof:
+            break
+        resto = d.unused_data
+    return salida[:tope]
+
+
 def primer_ts(path):
     """Marca de tiempo del primer evento de un fichero (vivo o .gz), con caché por tamaño y
     mtime. Solo lee el principio: como mucho 64 KiB descomprimidos."""
-    import gzip
     import zlib
     p = Path(path)
     try:
-        st = p.stat()
+        st = os.lstat(str(p))              # sin seguir enlaces (A-04)
     except OSError:
+        return None
+    if not stat.S_ISREG(st.st_mode):
         return None
     clave = (str(p), st.st_size, st.st_mtime_ns)
     if clave in _PRIMER_TS:
         return _PRIMER_TS[clave]
     ts = None
     try:
-        abrir = gzip.open if p.name.endswith(".gz") else open
-        with abrir(p, "rb") as f:
-            bloque = f.read(64 * 1024)
+        if p.name.endswith(".gz"):
+            bloque = _principio_gz(leer_de_contenedor(p, TOPE_PRIMER_TS_GZ), TOPE_PRIMER_TS)
+        else:
+            bloque = leer_de_contenedor(p, TOPE_PRIMER_TS)
         for linea in bloque.decode("utf-8", errors="replace").splitlines()[:50]:
             m = re.search(r'"timestamp"\s*:\s*"([^"]+)"', linea)
             if m:
@@ -1157,9 +1347,11 @@ def datos_mas_viejos(pid):
     for nombre in ("eve.json", "dns.json"):
         f = ruta("/srv/ids/datos/%s/%s" % (pid, nombre))
         try:
-            candidatos.append((int(f.stat().st_mtime), f))
+            st = os.lstat(str(f))           # sin seguir enlaces (A-04)
         except OSError:
-            pass
+            continue
+        if stat.S_ISREG(st.st_mode):
+            candidatos.append((int(st.st_mtime), f))
     mejor = None
     for cota, f in candidatos:
         ts = primer_ts(f)
@@ -1334,7 +1526,7 @@ def _solo(params, permitidos, requeridos=()):
 
 def _int(v, nombre, validos=None, rango=None):
     if isinstance(v, bool) or not isinstance(v, int):
-        if isinstance(v, str) and v.isdigit():
+        if isinstance(v, str) and v.isascii() and v.isdigit() and len(v) <= 9:   # '²' no (A-23)
             v = int(v)
         else:
             raise _inv("%s debe ser un entero" % nombre)
@@ -1381,6 +1573,10 @@ def validar_redes(redes, cfg):
             raise _inv("redes_abonados: %r no es un CIDR IPv4" % r)
         if net.prefixlen == 0:
             raise _inv("redes_abonados: 0.0.0.0/0 no está permitido")
+        if net.prefixlen < MIN_PREFIJO_REDES:
+            # /1 a /7 sería medio internet en la address-list del espejo (A-28; el panel usa el
+            # mismo tope en _redes_validas)
+            raise _inv("redes_abonados: %s es demasiado grande (como mucho /%d)" % (net, MIN_PREFIJO_REDES))
         for p, desc in prohibidas:
             if net.overlaps(p):
                 raise _inv("redes_abonados: %s se solapa con %s" % (net, desc))
@@ -1491,9 +1687,18 @@ def validar_params(orden, params, cfg_fn):
 # --------------------------------------------------------------------------------------------
 
 def _unix(path, timeout=10):
+    """Conecta a un socket de control de un contenedor (ctl/<pid>, run/<pid>). El contenedor
+    puede cambiar lo que hay en ese nombre (A-04): solo se conecta si es un socket y no un
+    enlace (que podría llevar al socket de otro punto o del host)."""
     import socket
     if not hasattr(socket, "AF_UNIX"):
         raise ErrorOrden("FALLO", "AF_UNIX no disponible en esta plataforma")
+    try:
+        st = os.lstat(str(path))
+    except OSError as e:
+        raise ErrorOrden("FALLO", "sin socket %s: %s" % (path, e.strerror or e))
+    if not stat.S_ISSOCK(st.st_mode):
+        raise ErrorOrden("FALLO", "%s no es un socket (¿enlace?): no se usa" % path)
     s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     s.settimeout(timeout)
     s.connect(str(path))
@@ -1638,8 +1843,12 @@ class Orquestador:
             token = leer_token()
         except OSError:
             return resp("FALLO", "no se puede leer el token del orquestador")
-        if not isinstance(pet.get("token"), str) or not hmac.compare_digest(
-                pet["token"].encode(), token.encode()):
+        try:
+            token_ok = isinstance(pet.get("token"), str) and hmac.compare_digest(
+                pet["token"].encode("utf-8"), token.encode("utf-8"))
+        except (UnicodeError, TypeError):       # p. ej. un surrogate suelto (A-23)
+            token_ok = False
+        if not token_ok:
             log("petición con token inválido (uid %s)" % uid)
             return resp("INVALIDO", "token inválido")
         if not isinstance(op_id, str) or not RE_OPID.match(op_id):
@@ -1655,6 +1864,19 @@ class Orquestador:
             params = validar_params(orden, pet.get("params"), config)
         except ErrorOrden as e:
             return resp(e.codigo, e.mensaje, e.datos)
+        if orden == "punto.crear" and params.get("pid") and uid != 0:
+            # el pid explícito es solo de la CLI root (reconstruir): desde el panel agotaría la
+            # secuencia con p999 (A-22)
+            return resp("INVALIDO", "pid explícito: solo desde la CLI del servidor")
+        # punto.borrar sí se encola: de un pid inexistente limpia restos («no existía») y solo
+        # alcanzaría a un punto posterior con el MISMO nombre (exige confirmar = nombre)
+        if (orden in ORDENES_COLA and orden not in ("punto.crear", "punto.borrar") and params.get("pid")
+                and self.punto(params["pid"]) is None
+                and self.q1("SELECT 1 FROM op WHERE op_id=?", (op_id,)) is None):
+            # una orden para un punto que no existe se rechaza al encolar: si no, se ejecutaría
+            # sobre el punto que se cree después con ese pid (A-22). Un reintento de una orden ya
+            # encolada (mismo op_id) sigue dando su estado.
+            return resp("NO_EXISTE", "no existe %s" % params["pid"])
         if orden == "punto.threshold":
             # se rechaza ya al encolar: un punto inexistente o dándose de baja no recibe nada
             p = self.punto(params["pid"])
@@ -2403,6 +2625,12 @@ class Orquestador:
     def asignar_pid(self, db, pedido=None):
         f = db.execute("SELECT valor FROM secuencia WHERE nombre='pid'").fetchone()
         siguiente = f[0] if f else 1
+        # sin la fila (orq.db perdida o restaurada vieja) no se vuelve a p001: nunca por debajo de
+        # un pid que ya se ve en los puntos o en el historial de órdenes (A-22)
+        vistos = [r[0] for r in db.execute("SELECT pid FROM punto UNION SELECT pid FROM op "
+                                           "WHERE pid IS NOT NULL").fetchall()]
+        maximo = max((int(x[1:]) for x in vistos if isinstance(x, str) and RE_PID.match(x)), default=0)
+        siguiente = max(siguiente, maximo + 1)
         if pedido is not None:
             num = int(pedido[1:])
             if num < siguiente or num < 1:
@@ -2975,7 +3203,12 @@ def manejar_conexion(orq, conn, uids):
                 pet = json.loads(buf.split(b"\n", 1)[0].decode("utf-8"))
             except ValueError:
                 pet = None
-            resp = orq.atender(pet, uid)
+            try:
+                resp = orq.atender(pet, uid)
+            except Exception as e:  # noqa: BLE001 - siempre hay respuesta; nunca se cierra mudo (A-23)
+                log("atender: %r" % e)
+                resp = {"op_id": None, "ok": False, "codigo": "INVALIDO",
+                        "mensaje": "petición no válida", "datos": {}}
         conn.sendall((json.dumps(resp, ensure_ascii=False) + "\n").encode("utf-8"))
     except OSError as e:
         log("conexión: %s" % e)

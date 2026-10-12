@@ -144,44 +144,71 @@ DOBLE_SENAL = _conf_key("DOBLE_SENAL", "1") == "1"
 # no bloquea nada util y ensucia la lista. Los ataques de fuera se siguen viendo, pero
 # en su propio apartado.
 # Configurable con MIS_REDES=CIDR,CIDR en conf/panel.conf (util si das IP
-# publica a tus clientes). Sin MIS_REDES: las `redes` de abonados del punto (en --todos, la
-# union de las de todos). Si tampoco hay: privadas RFC1918 + CGNAT.
-_MIS_NETS = []
-_mis_txt = _conf_key("MIS_REDES", "")
-if not _mis_txt.strip():
-    _mis_txt = ",".join(r for _p in nodos.nodos_de(NODO)
-                        for r in ((nodos.punto(_p) or {}).get("redes") or []) if isinstance(r, str))
-for _t in (_mis_txt.replace(";", ",").split(",")
-           or []):
-    _t = _t.strip()
-    if not _t:
-        continue
-    try:
-        _MIS_NETS.append(_ipm.ip_network(_t, strict=False))
-    except ValueError:
-        pass
-if not _MIS_NETS:
-    for _t in ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "100.64.0.0/10"):
-        _MIS_NETS.append(_ipm.ip_network(_t))
+# publica a tus clientes): vale para todos los puntos. Sin MIS_REDES: las `redes` de abonados
+# DE CADA PUNTO, y en --todos cada evento con las redes de SU punto, nunca la union (auditoria
+# A-14: con la union, una IP de la red de p002 vista en p001 contaba como abonado de p001 y el
+# envio masivo de «Todos» la mandaba al router de p001). Si un punto no tiene redes: privadas
+# RFC1918 + CGNAT.
+_REDES_DEFECTO = [_ipm.ip_network(_t) for _t in
+                  ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "100.64.0.0/10")]
+
+def _redes_de_texto(txt):
+    out = []
+    for _t in (txt or "").replace(";", ",").split(","):
+        _t = _t.strip()
+        if not _t:
+            continue
+        try:
+            out.append(_ipm.ip_network(_t, strict=False))
+        except ValueError:
+            pass
+    return out
+
+_MIS_NETS_GLOBAL = _redes_de_texto(_conf_key("MIS_REDES", ""))
+_MIS_NETS_PID = {}
+
+def mis_redes(pid):
+    """Las redes de abonados del punto `pid` (MIS_REDES si esta puesto; si no, las del punto;
+    si no tiene, las privadas)."""
+    if _MIS_NETS_GLOBAL:
+        return _MIS_NETS_GLOBAL
+    r = _MIS_NETS_PID.get(pid)
+    if r is None:
+        r = _redes_de_texto(",".join(x for x in ((nodos.punto(pid) or {}).get("redes") or [])
+                                     if isinstance(x, str))) if pid else []
+        r = r or _REDES_DEFECTO
+        _MIS_NETS_PID[pid] = r
+    return r
 
 _MI_CPE_CACHE = {}
 _MI_CPE_CACHE_MAX = 100_000     # IPs distintas por corrida; mas alla se calcula sin guardar
 
-def es_mi_cpe(ip):
-    """True si la IP pertenece a tus redes (un abonado), False si es de internet.
+def es_mi_cpe(ip, pid=None):
+    """True si la IP pertenece a las redes de abonados de SU punto, False si es de internet.
 
-    Con memoria por IP: se llama por evento (medio millon de veces en 1,5 M de lineas) y
-    construir un objeto ipaddress cada vez era el 12%% del generador; las IPs se repiten
+    `ip` puede ser una IP o una identidad `pid|ip` (entonces el punto sale de ahi); si no, el
+    punto es `pid` o, en el informe de un solo punto, ese punto. En --todos sin punto no se
+    supone ninguno: no es un abonado (nunca se mezclan las redes de varios puntos).
+
+    Con memoria por (punto, IP): se llama por evento (medio millon de veces en 1,5 M de lineas)
+    y construir un objeto ipaddress cada vez era el 12%% del generador; las IPs se repiten
     miles de veces, asi que la respuesta se guarda. Acotada para no crecer con un barrido."""
-    v = _MI_CPE_CACHE.get(ip)
+    if "|" in ip:
+        pid, ip = ip.split("|", 1)
+    if not pid and NODO != nodos.TODOS:
+        pid = NODO
+    if not pid:
+        return False
+    k = (pid, ip)
+    v = _MI_CPE_CACHE.get(k)
     if v is None:
         try:
             a = _ipm.ip_address(ip)
-            v = any(a.version == n.version and a in n for n in _MIS_NETS)
+            v = any(a.version == n.version and a in n for n in mis_redes(pid))
         except ValueError:
             v = False
         if len(_MI_CPE_CACHE) < _MI_CPE_CACHE_MAX:
-            _MI_CPE_CACHE[ip] = v
+            _MI_CPE_CACHE[k] = v
     return v
 
 
@@ -348,8 +375,25 @@ try:
 except OSError:
     pass
 
+def _abrir_bin(p):
+    """Fichero de eventos del punto en binario, SIN seguir enlaces y solo si es regular (A-26):
+    datos/<pid> lo escribe el contenedor suricata; un enlace o una FIFO no se leen."""
+    import stat as _st
+    fd = os.open(p, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+                 | getattr(os, "O_BINARY", 0))
+    try:
+        if not _st.S_ISREG(os.fstat(fd).st_mode):
+            raise OSError("%s: no es un fichero regular" % p)
+        return os.fdopen(fd, "rb")
+    except BaseException:
+        os.close(fd)
+        raise
+
 def opener(p):
-    return io.TextIOWrapper(gzip.open(p, "rb")) if p.endswith(".gz") else open(p, encoding="utf-8", errors="replace")
+    if p.endswith(".gz"):
+        return io.TextIOWrapper(gzip.GzipFile(fileobj=_abrir_bin(p), mode="rb"),
+                                encoding="utf-8", errors="replace")
+    return io.TextIOWrapper(_abrir_bin(p), encoding="utf-8", errors="replace")
 
 _RE_TS_LINEA = re.compile(r'"timestamp":"([^"]+)"')
 
@@ -367,8 +411,8 @@ def abrir_desde(p, corte, margen=4 * 1024 * 1024):
     if p.endswith(".gz") or not corte:
         return opener(p)
     try:
-        f = open(p, encoding="utf-8", errors="replace")
-        tam = os.path.getsize(p)
+        f = opener(p)
+        tam = os.fstat(f.fileno()).st_size
     except OSError:
         return opener(p)
     if tam <= margen * 2:
@@ -844,8 +888,7 @@ for _pid, p in files:
                 if ts > ts_max:
                     ts_max = ts
                 if ts > METR_DESDE:
-                    _ipsrc = ip_de(src)
-                    _mio_src = es_mi_cpe(_ipsrc); _mio_dst = es_mi_cpe(dst)
+                    _mio_src = es_mi_cpe(src); _mio_dst = es_mi_cpe(dst, _pid)
                     if _mio_src and not _mio_dst:          # TU red hacia fuera
                         _d = dias_m[time.strftime("%Y-%m-%d", time.localtime(ts))]
                         _cat = traducir(sig)
@@ -1184,7 +1227,7 @@ def _rdap_org(ip):
     Devuelve (etiqueta, pais) o ('', '') si falla. Timeout corto; el resultado se cachea en duenio."""
     try:
         req = urllib.request.Request(f"https://rdap.org/ip/{ip}",
-                                     headers={"User-Agent": "suricata-report/1.0",
+                                     headers={"User-Agent": "ids-maat-report/1.0",
                                               "Accept": "application/rdap+json"})
         with urllib.request.urlopen(req, timeout=2.5) as r:
             d = json.load(r)
@@ -1975,8 +2018,8 @@ def entrantes_section(n_src=8, n_sub=6, max_src=5000, max_det=60):
     internet insistente apareciera como 'CPE infectado'."""
     agg = {}
     for (s, sp, d, dp, pr, sig), v in flujos.items():
-        if es_mi_cpe(s) or not es_mi_cpe(d):
-            continue                      # solo internet -> tu red
+        if es_mi_cpe(s) or not es_mi_cpe(d, rid_de(s)):
+            continue                      # solo internet -> tu red (CPE propio nunca es «entrante»)
         e = agg.get(s)
         if e is None:
             if len(agg) >= max_src:       # cota de RAM, como el resto del script
@@ -2057,8 +2100,7 @@ DESTINOS_FILE = os.path.join(OUTDIR, "destinos-malos.json")
 try:
     _dm = {}
     for (_s, _sp, _d, _dp, _pr, _sig), _v in flujos.items():
-        _sip = ip_de(_s)
-        if not es_mi_cpe(_sip) or es_mi_cpe(_d):
+        if not es_mi_cpe(_s) or es_mi_cpe(_d, rid_de(_s)):
             continue                      # solo TU red -> internet
         _fuente, _cidr = reputacion_de(_d)
         if not _fuente or not es_malo_firme(_d):
@@ -2104,7 +2146,7 @@ try:
     _ent = {}
     for (_s, _sp, _d, _dp, _pr, _sig), _v in flujos.items():
         _sip = ip_de(_s)
-        if es_mi_cpe(_sip) or not es_mi_cpe(_d):
+        if es_mi_cpe(_s) or not es_mi_cpe(_d, rid_de(_s)):
             continue                      # solo internet -> tu red
         _e = _ent.get(_sip)
         if _e is None:
@@ -2192,7 +2234,7 @@ try:
 
     cand = []
     for src in inf_hits:
-        if not es_mi_cpe(ip_de(src)):
+        if not es_mi_cpe(src):
             continue            # atacante de internet, no un abonado: va al apartado de entrantes
         if nunca_bloquear(ip_de(src)):
             continue                                    # allowlist: nunca a cuarentena
@@ -2242,7 +2284,7 @@ try:
         return len(ev), ev
     cand_dns = []
     for src in dns_hits:
-        if not es_mi_cpe(ip_de(src)):
+        if not es_mi_cpe(src):
             continue            # solo tus abonados consultan "tu" DNS; lo de fuera no se cuarentena
         if nunca_bloquear(ip_de(src)):
             continue                                    # allowlist: nunca a cuarentena
@@ -2271,7 +2313,7 @@ try:
     # top con su banda de riesgo, para el motor de politicas del panel (tope 50 CPEs)
     top_r = []
     for _s, _t in by_src.most_common(80):
-        if not es_mi_cpe(ip_de(_s)):
+        if not es_mi_cpe(_s):
             continue            # el ranking de riesgo es de TUS CPEs; lo de fuera no se cuarentena
         if nunca_bloquear(ip_de(_s)):
             continue                                    # allowlist: fuera del motor de politicas

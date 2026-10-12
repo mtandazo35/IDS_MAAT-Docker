@@ -40,7 +40,10 @@ COPY rootfs/ /
 
 # git en Windows no guarda el bit +x de forma fiable: modos explícitos. El código se precompila
 # (la raíz es de solo lectura en ejecución) y se comprueba que arranca: CLI, módulos del panel
-# heredado (dashboard, generador, feeds, informe, espejo) y AES-GCM de cryptography.
+# heredado (dashboard con puntos_web y eventos_web, generador, feeds, informe, espejo) y AES-GCM
+# de cryptography. dashboard se importa con un entorno mínimo en /tmp (IDS_*), como en las pruebas:
+# compileall solo ve errores de sintaxis, no un import roto (auditoría B-21). La imagen usa el
+# Python 3.13 de trixie y el CI de unittest el 3.12: este import es la comprobación en 3.13.
 RUN set -eux; \
     chmod 0755 /usr/local/bin/ids-panel; \
     find /usr/local/lib/ids-panel /usr/local/share/ids-panel -type d -exec chmod 0755 {} +; \
@@ -51,6 +54,11 @@ RUN set -eux; \
     test -s /usr/local/share/ids-panel/mapa/topojson-client.min.js; \
     cd /usr/local/lib/ids-panel; \
     python3 -c 'import nodos, secretos, mikrotik_init, informe_diario; from cryptography.hazmat.primitives.ciphers.aead import AESGCM; AESGCM(bytes(32))'; \
+    e=$(mktemp -d); mkdir -p "$e/panel" "$e/datos" "$e/run"; \
+    env IDS_PANEL_DIR="$e/panel" IDS_DATOS="$e/datos" IDS_RUN="$e/run" IDS_MASTER_KEY="$e/master_key" \
+        IDS_ORQ_SOCK="$e/orq.sock" IDS_ORQ_TOKEN="$e/orq_token" IDS_TZ=UTC \
+        python3 -c 'import dashboard, puntos_web, eventos_web'; \
+    rm -rf "$e"; \
     python3 html_report.py --help >/dev/null; \
     python3 informe_diario.py --help >/dev/null; \
     cd /; \

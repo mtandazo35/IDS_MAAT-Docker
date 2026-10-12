@@ -21,7 +21,7 @@ import mikrotik_init as mk  # noqa: E402
 import _mikrotik_simulado as sim  # noqa: E402
 
 PID = "p003"
-COM = "IDS ids-maat:p003"
+COM = "IDS ids-maat:p003:espejo"   # comentario propio del espejo (A-02)
 FI, MG, AL = sim.TABLAS
 
 

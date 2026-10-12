@@ -418,6 +418,18 @@ def router_isp(con_fasttrack=True, extra_filter=(), extra_mangle=(), extra_al=()
     return r
 
 
+def con_alta(router, pid="p003", sensor=SENSOR, api_puerto=8729):
+    """Lo que el alta del punto deja en el router (OPERACION §1.2/§1.3): la regla `chain=input`
+    que acepta la API-SSL desde el sensor por el tunel, PRIMERA de la tabla (place-before=0),
+    con el comentario del alta `IDS ids-maat:<pid>`. No es del espejo: aplicar, pausar y
+    retirar el espejo no la tocan (auditoria A-02). Devuelve su .id."""
+    primera = router.tablas["/ip/firewall/filter"][0][".id"] if router.tablas["/ip/firewall/filter"] else None
+    return router._anadir("/ip/firewall/filter", {
+        "chain": "input", "in-interface": "ids-vpn", "src-address": sensor, "protocol": "tcp",
+        "dst-port": str(api_puerto), "action": "accept", "comment": "IDS ids-maat:%s" % pid},
+        antes=primera)
+
+
 CLIENTES = {
     "vigilado": "10.0.0.5",
     "vigilado-2": "10.0.1.7",

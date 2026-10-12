@@ -69,7 +69,7 @@ def main():
           g[0]["ini"] == t0 and g[0]["fin"] == t0 + 140, (g[0]["ini"], g[0]["fin"]))
     check("el dominio consultado no se repite ocho veces",
           g[0]["dst"] == ["dontworry.su"], g[0]["dst"])
-    check("y queda un flow_id como referencia para buscarlo en EveBox",
+    check("y queda un flow_id como referencia para buscarlo en Eventos",
           g[0]["flow"].startswith("1155593257528560"), g[0]["flow"])
 
     # --- lo que de verdad justifica "Confirmado": firmas DISTINTAS --------------------

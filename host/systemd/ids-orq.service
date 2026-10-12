@@ -25,6 +25,10 @@ ReadWritePaths=/srv/ids /root/backups /run/ids-orq
 PrivateTmp=yes
 ProtectHome=read-only
 NoNewPrivileges=yes
+# tope de memoria (auditoría A-04): lo que lee de los directorios de los contenedores ya va con
+# tope; esto es la red de seguridad para que un fallo del orquestador no se coma la RAM de los
+# puntos. Los procesos docker/compose que lanza cuentan aquí y caben de sobra.
+MemoryMax=1G
 
 [Install]
 WantedBy=multi-user.target
