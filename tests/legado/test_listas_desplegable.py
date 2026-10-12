@@ -89,8 +89,7 @@ def main():
            "abonado_de": lambda ip, rid="", mapa=None: (mapa or {}).get("%s|%s" % (rid, ip), {}),
            "listas_en_uso": lambda: [("botnet", "Botnet / CnC", "clientes-botnet", 2),
                                      ("p2p", "P2P", "clientes-p2p", 1),
-                                     ("spam", "Spam", "clientes-spam", 0)],
-           "listas_cpe_reglas": lambda: "reglas"}
+                                     ("spam", "Spam", "clientes-spam", 0)]}
     exec(codigo, ns2)
     h = ns2["_sec_listas"]()
     check("la fila con CPEs tiene desplegable con el numero de IPs",

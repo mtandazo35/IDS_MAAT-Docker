@@ -1695,7 +1695,7 @@ def _mk_quitar_en(s, ip, lst):
 # el router POR LA API.
 #
 # Meter un CPE en una lista no hace nada si ninguna regla la usa. Hasta aqui esas reglas
-# se imprimian para pegarlas a mano (listas_cpe_reglas); ahora se generan desde una
+# se imprimian para pegarlas a mano; ahora se generan desde una
 # plantilla por categoria y se reconcilian en el router: idempotente, acotado a lo
 # nuestro (comment "Suricata:<cat>:<n>") y con respaldo de las tablas antes de tocar.
 #
@@ -4241,63 +4241,6 @@ def cpes_por_lista():
     for l in out:
         out[l].sort(key=lambda e: e["cuando"], reverse=True)
     return out
-
-def listas_cpe_reglas():
-    """Las reglas de cada lista. No todas se tratan igual, que es el motivo de separarlas."""
-    def L(c):
-        # entrecomillado aqui: por L() pasan las siete reglas de categoria
-        return ros_lista(lista_de_categoria(c))
-    return "\n".join([
-        "# ORDEN: estas reglas de drop van ANTES de la regla de fasttrack-connection y",
-        "# antes de los accept. Con fasttrack activo una conexion ya establecida deja de",
-        "# pasar por filter, asi que el drop parece no aplicarse aunque este bien escrito.",
-        "/ip firewall filter",
-        "# Lo que hay que cortar: el equipo esta comprometido y ataca a terceros.",
-        'add chain=forward src-address-list=%s action=drop comment="Suricata: botnet"' % L("botnet"),
-        'add chain=forward src-address-list=%s action=drop comment="Suricata: escaneo"' % L("escaneo"),
-        'add chain=forward src-address-list=%s action=drop comment="Suricata: fuerza bruta"' % L("fuerza"),
-        "",
-        "# Meter un CPE en la address-list NO corta lo que ya tiene abierto: la regla solo",
-        "# mira los paquetes que pasan por ella. Hay que soltar las conexiones vivas:",
-        '#   /ip firewall connection remove [find src-address~"^192.0.2.25:"]',
-        "",
-        "# Spam: basta con cerrarle el correo saliente, no hace falta dejarlo sin internet.",
-        'add chain=forward src-address-list=%s protocol=tcp dst-port=25,465,587 '
-        'action=drop comment="Suricata: spam"' % L("spam"),
-        "",
-        "# DNS de malware: en vez de cortar, se le fuerza a TU resolutor, que ya filtra.",
-        "# OJO: redirect manda al resolutor DEL PROPIO ROUTER. Si el router no resuelve, el",
-        "# cliente se queda sin DNS y parece que le cortaste internet. O lo habilitas con",
-        "#   /ip dns set allow-remote-requests=yes",
-        "# o mandas el trafico a tu resolutor cambiando la accion de la regla de abajo por",
-        "#   action=dst-nat to-addresses=192.0.2.53 to-ports=53",
-        "/ip firewall nat",
-        'add chain=dstnat src-address-list=%s protocol=udp dst-port=53 '
-        'action=redirect to-ports=53 comment="Suricata: DNS de malware al resolutor propio"' % L("dns"),
-        "",
-        "# P2P y minado: no son un ataque, son consumo. Encolar rinde mas que cortar.",
-        "# La cadena completa es: marca de CONEXION -> marca de PAQUETE -> cola de arbol",
-        "# que consume esa marca. Faltando cualquiera de los tres pasos no se limita nada",
-        "# y ademas no da error: una simple queue con target=\"\" no engancha trafico, y",
-        "# una marca de paquete que ninguna cola consume no la usa nadie.",
-        "# Cada categoria lleva SU marca y SU cola: si comparten cola, el minado se come",
-        "# el limite del P2P y no hay forma de saber cual de los dos esta consumiendo.",
-        "# (ejemplo; ajusta los limites a tu plan)",
-        "/ip firewall mangle",
-        'add chain=forward src-address-list=%s action=mark-connection '
-        'new-connection-mark=p2p-con passthrough=yes comment="Suricata: P2P"' % L("p2p"),
-        'add chain=forward connection-mark=p2p-con action=mark-packet '
-        'new-packet-mark=p2p passthrough=no comment="Suricata: P2P"',
-        'add chain=forward src-address-list=%s action=mark-connection '
-        'new-connection-mark=minado-con passthrough=yes comment="Suricata: minado"' % L("minado"),
-        'add chain=forward connection-mark=minado-con action=mark-packet '
-        'new-packet-mark=minado passthrough=no comment="Suricata: minado"',
-        "/queue tree",
-        'add name=p2p-limite parent=global packet-mark=p2p max-limit=2M '
-        'comment="Suricata: P2P acotado"',
-        'add name=minado-limite parent=global packet-mark=minado max-limit=1M '
-        'comment="Suricata: minado acotado"',
-    ])
 
 def _motivo_bloqueo(clave):
     """Busca por que un CPE es candidato (firma, banda, score, conteos) en cuarentena.json,
@@ -8859,7 +8802,29 @@ BASE_CSS = (
     "@media(max-width:820px){main{padding:16px 14px}h1{font-size:19px}}"
 )
 
-_TW_LINK = "<link rel=stylesheet href=/vendor/tailwind.css>"
+_TW_CACHE = {"firma": None, "v": ""}
+
+def _tw_version():
+    """Huella corta del tailwind.css de la imagen (sha256, 12 hex), recalculada solo si cambia
+    su (mtime, tamano). Va en el enlace (?v=...): cada CSS nuevo es una URL nueva y el navegador
+    lo baja solo, sin Ctrl+F5. "" si falta el fichero."""
+    try:
+        st = os.stat(os.path.join(nodos.SHARE, "tailwind.css"))
+    except OSError:
+        return ""
+    firma = (st.st_mtime_ns, st.st_size)
+    if _TW_CACHE["firma"] != firma:
+        try:
+            with open(os.path.join(nodos.SHARE, "tailwind.css"), "rb") as f:
+                _TW_CACHE["v"] = hashlib.sha256(f.read()).hexdigest()[:12]
+        except OSError:
+            return ""
+        _TW_CACHE["firma"] = firma
+    return _TW_CACHE["v"]
+
+def _tw_link():
+    v = _tw_version()
+    return "<link rel=stylesheet href=/vendor/tailwind.css%s>" % (("?v=" + v) if v else "")
 
 # Tema claro/oscuro. El script va al principio del body (antes de pintar) y fija
 # html[data-theme]: lo guardado en localStorage ('ids-theme') o, si no hay, el del sistema.
@@ -8915,7 +8880,7 @@ def nav(active=""):
     if selector or elogo or enom:
         empbar = ('<div class="empbar"><div class="empwrap">' + selector
                   + '<span class="push"></span>' + elogo + enom + '</div></div>')
-    return _THEME_JS + _TW_LINK + _NAV_CSS + _SORT_JS + _POS_JS + navbar + empbar
+    return _THEME_JS + _tw_link() + _NAV_CSS + _SORT_JS + _POS_JS + navbar + empbar
 
 _ROL_TXT = {"admin": "Administrador", "operador": "Operador", "lectura": "Solo lectura"}
 
@@ -15350,17 +15315,7 @@ def cuarentena_page(msg="", es_admin=False):
                 "<div class=card><table><thead><tr><th>Categoria</th>"
                 "<th>Address-list</th><th>Accion en el router</th><th class=num>CPEs dentro</th></tr></thead>"
                 "<tbody>" + filas + "</tbody></table></div>"
-                "<details style='margin-top:8px'><summary style='cursor:pointer;"
-                "font-size:13px;font-weight:600'>Las reglas que necesita cada lista</summary>"
-                "<p class=hint style='margin:6px 0 4px'>Sin una regla que use la lista, el "
-                "panel dice <b>enviado</b> y no pasa nada. Son distintas a proposito: lo que "
-                "hay que cortar, lo que hay que encolar y lo que hay que redirigir. "
-                "<b>Ya no hace falta pegarlas</b>: en <b>Ajustes &rarr; MikroTik</b> eliges la "
-                "accion de cada clase (o pegas tus propias reglas) y el panel las pone en el "
-                "router por la API, con vista previa y respaldo. Esto queda como referencia.</p>"
-                "<pre style='background:#f8f9fa;border:1px solid #eaecf0;border-radius:6px;"
-                "padding:10px;overflow-x:auto;font-size:12px'>"
-                + esc(listas_cpe_reglas()) + "</pre></details></div>")
+                "</div>")
 
     sec_listas = _sec_listas()
 
@@ -16359,15 +16314,24 @@ class H(BaseHTTPRequestHandler):
             self.wfile.write(img)
             return
         if path == "/vendor/tailwind.css":
-            # Tailwind compilado en el build (images/panel/tailwind): estatico, publico, cacheable
+            # Tailwind compilado en el build (images/panel/tailwind): estatico y publico. Si falta,
+            # 404 SIN cache: antes salia un 200 vacio que el navegador guardaba una hora y las
+            # paginas seguian sin estilos aunque el fichero volviera. Con ?v=<huella> la URL
+            # cambia con cada CSS, asi que esa version se puede guardar para siempre.
             try:
                 with open(os.path.join(nodos.SHARE, "tailwind.css"), "rb") as f:
                     data = f.read()
             except OSError:
-                data = b""
+                self.send_response(404)
+                self.send_header("Cache-Control", "no-store")
+                self.send_header("Content-Length", "0")
+                self.end_headers(); return
+            _q = urllib.parse.parse_qs(self.path.split("?", 1)[1]) if "?" in self.path else {}
+            _fija = (_q.get("v") or [""])[0] == _tw_version() != ""
             self.send_response(200)
             self.send_header("Content-Type", "text/css; charset=utf-8")
-            self.send_header("Cache-Control", "public, max-age=3600")
+            self.send_header("Cache-Control", "public, max-age=31536000, immutable" if _fija
+                             else "no-cache")
             self.send_header("Content-Length", str(len(data)))
             self.end_headers(); self.wfile.write(data); return
         if path.startswith("/vendor/mapa/"):
@@ -16443,6 +16407,7 @@ class H(BaseHTTPRequestHandler):
             ahora_ec = datetime.now(TZ_EC).strftime("%d/%m/%Y %H:%M")
             # selector de ventana (solo admin): elegir cuanto tiempo abarca el resumen
             wsel = ""
+            recarga = 20   # s; mientras se genera otra ventana, 3 (el informe tarda segundos)
             if getattr(CTX, "role", None) == "admin":
                 va = ventana_actual()
                 opts = "".join(f"<option value={v}{' selected' if v == va else ''}>{t}</option>"
@@ -16452,7 +16417,9 @@ class H(BaseHTTPRequestHandler):
                         f"<select name='min' onchange='this.form.submit()'>{opts}</select></form>")
                 _vg = ventana_generada()
                 if _vg and _vg != va:
-                    # el resumen en pantalla NO es el de la ventana elegida todavia
+                    # el resumen en pantalla NO es el de la ventana elegida todavia; se mira
+                    # cada 3 s para no dejar el aviso hasta 20 s cuando ya esta hecho
+                    recarga = 3
                     wsel += ("<span class='wpend' title='El resumen se regenera en segundo "
                              "plano; en una caja con trafico tarda unos minutos.'>"
                              "generando %s&hellip; (mostrando %s)</span>"
@@ -16466,7 +16433,7 @@ class H(BaseHTTPRequestHandler):
                     + html.escape(nodos.nombre(nodos.nodo_actual())) + " &middot; alertas graves salientes &middot; "
                     f"actualizado {ahora_ec} (hora local) "
                     "<span class='ph-live'><span class='dotlive'></span>en vivo &middot; "
-                    f"refresca en <span id='cd'>20</span>s</span></p></div>{wsel}</header>")
+                    f"refresca en <span id='cd'>{recarga}</span>s</span></p></div>{wsel}</header>")
                 resumen = f"{cabecera}<main>{resumen_inner}</main>"
             else:
                 cabecera = (
@@ -16477,11 +16444,11 @@ class H(BaseHTTPRequestHandler):
                            "esta generando en segundo plano; aparecera aqui en unos minutos.</p></main>")
             page = (f"<!doctype html><html lang=es><head><meta charset=utf-8><link rel=icon type=image/png href=/favicon.ico>"
                     f"<meta name=viewport content='width=device-width,initial-scale=1'>"
-                    f"<meta http-equiv=refresh content=20><title>Suricata</title>"
+                    f"<meta http-equiv=refresh content={recarga}><title>Suricata</title>"
                     f"{_PAGEH_CSS}{head_css}"
                     "<style>main{max-width:1360px;margin:0 auto;padding-top:8px}</style>"
                     f"</head><body>{nav('/')}{resumen}"
-                    "<script>(function(){var s=20,e=document.getElementById('cd');"
+                    f"<script>(function(){{var s={recarga},e=document.getElementById('cd');"
                     "var t=setInterval(function(){s--;if(s<0)s=0;if(e)e.textContent=s;"
                     "if(s<=0)clearInterval(t);},1000);})();</script></body></html>")
             return self._html(page)
