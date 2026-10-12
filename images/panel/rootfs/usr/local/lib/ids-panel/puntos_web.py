@@ -22,19 +22,22 @@ Rutas (h = manejador H del dashboard; consulta/form = dict con un valor por camp
   POST /puntos/<pid>/{borrar,regenerar,arrancar,parar,reiniciar,ajustar,api,espejo}
 """
 
-import gzip
 import hashlib
 import html
+import inspect
 import ipaddress
 import json
 import os
 import re
 import shutil
+import stat
 import sys
 import threading
 import time
 import uuid
+import zlib
 
+import eventos_web
 import nodos
 from idspanel import operaciones as _operaciones
 from idspanel import orq as _orq
@@ -44,10 +47,12 @@ ORQ_TOKEN = os.environ.get("IDS_ORQ_TOKEN", "/run/secrets/orq_token")
 TRANSPORTE = None            # pruebas: callable(peticion) -> respuesta (sin socket)
 
 RE_NOMBRE = re.compile(r"^[a-z0-9][a-z0-9-]{1,30}$")
-RE_RUTA_PID = re.compile(r"^/puntos/(p\d{3})(?:/([a-z]+))?$")
-RE_RUTA_OP = re.compile(r"^/operaciones/([0-9a-f-]{36})$")
+# solo ASCII y sin salto final (`$` admite un salto; `\d`, digitos de cualquier escritura): B-13
+RE_RUTA_PID = re.compile(r"^/puntos/(p[0-9]{3})(?:/([a-z]+))?\Z")
+RE_RUTA_OP = re.compile(r"^/operaciones/([0-9a-f-]{36})\Z")
 PERFILES = ("reducido", "completo")
 MAX_REDES = 64
+PREFIJO_MINIMO = 8           # una red de abonados mas ancha que /8 es un error (A-28)
 RETENCION_OBJETIVO_DIAS = 30
 
 ESTADOS = {"creando": "creando", "activo": "activo", "parado": "parado", "error": "con error",
@@ -78,6 +83,9 @@ _OPS_LOCK = threading.Lock()
 _ALERTAS = {}            # pid -> (marca, (n, completo), ts)
 _RET = {}                # pid -> (marca, dict)
 TOPE_ALERTAS_BYTES = 8 * 1024 * 1024
+MAX_LINEA = eventos_web.MAX_LINEA
+TOPE_TZSP_BYTES = 1 << 20
+RETENCION_SEGUNDOS = 1.0     # tope de tiempo de la retencion por ficheros (en cada carga de /puntos)
 
 
 def esc(v):
@@ -164,8 +172,9 @@ def validar_redes(texto):
             net = ipaddress.IPv4Network(r, strict=False)
         except ValueError:
             return None, "«%s» no es una red IPv4 valida (ejemplo: 10.0.0.0/24)." % r[:45]
-        if net.prefixlen == 0:
-            return None, "0.0.0.0/0 no es una red de abonados."
+        if net.prefixlen < PREFIJO_MINIMO:
+            return None, ("«%s» es demasiado ancha para una red de abonados (como mucho /%d)."
+                          % (str(net), PREFIJO_MINIMO))
         if str(net) not in redes:
             redes.append(str(net))
     return redes, ""
@@ -246,18 +255,28 @@ def _a_epoch(v):
         return None
 
 
-def _primer_ts(ruta, tope=64 * 1024):
-    """Marca de tiempo del primer evento de un fichero de eventos (gz o plano), leyendo poco."""
+def _primer_ts(real, st, nombre, tope=64 * 1024, limite=None):
+    """Marca de tiempo del primer evento de un fichero de eventos (gz o plano), leyendo poco.
+    `real, st` vienen de `eventos_web._fichero_seguro` (fichero regular dentro de datos/<pid>)
+    y se abre con `eventos_web._abrir` (O_NOFOLLOW|O_NONBLOCK y el mismo inodo). Un .gz se lee
+    con topes de bytes comprimidos, miembros y tiempo (B-09)."""
     try:
-        abre = gzip.open if ruta.endswith(".gz") else open
-        with abre(ruta, "rb") as f:
-            bloque = f.read(tope)
-    except (OSError, EOFError, gzip.BadGzipFile):
+        with eventos_web._abrir(real, st) as f:
+            if nombre.endswith(".gz"):
+                def comprobar(lec):
+                    if limite is not None and time.monotonic() > limite:
+                        raise eventos_web._GzLimite("sin tiempo")
+                g = eventos_web._GzLector(f, comprobar, max_miembros=eventos_web.DISP_MIEMBROS,
+                                          max_comprimidos=eventos_web.DISP_COMPRIMIDOS)
+                bloque = g.read(tope)
+            else:
+                bloque = f.read(tope)
+    except (OSError, EOFError, zlib.error, eventos_web._GzLimite):
         return None
     for linea in bloque.splitlines()[:50]:
         try:
             ev = json.loads(linea.decode("utf-8", "replace"))
-        except ValueError:
+        except (ValueError, RecursionError):
             continue
         t = _a_epoch(ev.get("timestamp")) if isinstance(ev, dict) else None
         if t:
@@ -265,12 +284,29 @@ def _primer_ts(ruta, tope=64 * 1024):
     return None
 
 
+def _ficheros_seguros(pid):
+    """[(nombre, real, st)] de los ficheros de eventos del punto que son regulares y estan de
+    verdad dentro de datos/<pid> (los mismos que acepta la pagina Eventos)."""
+    try:
+        fs = nodos.ficheros_eventos(pid)
+    except (nodos.NodoInvalido, nodos.NodoInexistente):
+        return []
+    out = []
+    for _p, ruta in fs:
+        nombre = os.path.basename(ruta)
+        ok = eventos_web._fichero_seguro(pid, nombre)
+        if ok:
+            out.append((nombre, ok[0], ok[1]))
+    return out
+
+
 def retencion(pid, punto=None):
     """Retencion efectiva de un punto: desde que fecha hay eventos y si hubo borrado anticipado.
 
     Manda lo que publica el orquestador en estado.json (`retencion`: {desde, anticipado});
-    si no viene, se mira el fichero de eventos mas viejo del punto. Nunca se promete el objetivo
-    de 30 dias: se dice desde cuando hay datos de verdad."""
+    si no viene, se mira el fichero de eventos mas viejo del punto (solo ficheros regulares
+    dentro de datos/<pid>, con topes). Nunca se promete el objetivo de 30 dias: se dice desde
+    cuando hay datos de verdad."""
     p = punto if punto is not None else (nodos.punto(pid) or {})
     r = p.get("retencion") if isinstance(p.get("retencion"), dict) else {}
     desde = _a_epoch(r.get("desde"))
@@ -279,17 +315,15 @@ def retencion(pid, punto=None):
         anticipado = r.get("borrado_anticipado")
     fuente = "orquestador" if desde else ""
     if not desde:
-        try:
-            fs = nodos.ficheros_eventos(pid)
-        except (nodos.NodoInvalido, nodos.NodoInexistente):
-            fs = []
-        marca = tuple(sorted((f, os.path.getmtime(f)) for _p, f in fs if os.path.isfile(f)))
+        fs = _ficheros_seguros(pid)
+        marca = tuple(sorted((n, st.st_mtime, st.st_size, st.st_ino) for n, _r, st in fs))
         cache = _RET.get(pid)
         if cache and cache[0] == marca:
             return cache[1]
         viejo = None
-        for _f, mt in sorted(marca, key=lambda x: x[1])[:1]:
-            viejo = _primer_ts(_f) or mt
+        limite = time.monotonic() + RETENCION_SEGUNDOS
+        for nombre, real, st in sorted(fs, key=lambda x: (x[2].st_mtime, x[0]))[:1]:
+            viejo = _primer_ts(real, st, nombre, limite=limite) or st.st_mtime
         desde = viejo
         fuente = "ficheros" if desde else ""
         res = {"desde": desde, "anticipado": anticipado, "fuente": fuente}
@@ -313,51 +347,89 @@ def retencion_html(ret, ahora=None):
     return txt
 
 
+def _cuenta_alertas(f, ahora, inicio_cortado):
+    """(alertas de 24 h, leido todo) de las lineas de `f` hasta TOPE_ALERTAS_BYTES leidos.
+    Lineas de mas de MAX_LINEA, JSON que no es objeto o demasiado anidado: se saltan (B-10)."""
+    n, leidos, larga = 0, 0, inicio_cortado
+    while leidos < TOPE_ALERTAS_BYTES:
+        ln = f.readline(MAX_LINEA + 1)
+        if not ln:
+            return n, True
+        leidos += len(ln)
+        if not ln.endswith(b"\n"):
+            larga = True                   # linea demasiado larga (o la que se esta escribiendo)
+            continue
+        if larga:                          # el final de esa linea
+            larga = False
+            continue
+        if b'"event_type":"alert"' not in ln:
+            continue
+        try:
+            ev = json.loads(ln)
+        except (ValueError, RecursionError):
+            continue
+        if not isinstance(ev, dict):
+            continue
+        t = _a_epoch(ev.get("timestamp"))
+        if t and ahora - t <= 86400:
+            n += 1
+    return n, False
+
+
 def alertas_24h(pid, ahora=None):
-    """(alertas de las ultimas 24 h, completo) leyendo el final del eve.json vivo con tope."""
+    """(alertas de las ultimas 24 h, completo) leyendo el final del eve.json vivo con tope REAL
+    de bytes (no solo el seek inicial). Un eve.json que no es fichero regular o cuya ruta real
+    sale de datos/<pid> no se abre: (0, True) (B-09)."""
     ahora = ahora or time.time()
-    try:
-        ruta = nodos.eve_vivo(pid)
-        st = os.stat(ruta)
-    except (OSError, nodos.NodoInvalido):
+    ok = eventos_web._fichero_seguro(pid, "eve.json")
+    if not ok:
         return 0, True
-    marca = (st.st_mtime_ns, st.st_size)
+    real, st = ok
+    marca = (st.st_mtime_ns, st.st_size, st.st_ino)
     c = _ALERTAS.get(pid)
     if c and c[0] == marca and ahora - c[2] < 60:
         return c[1]
     n, completo = 0, True
     try:
-        with open(ruta, "rb") as f:
-            f.seek(max(0, st.st_size - TOPE_ALERTAS_BYTES))
+        with eventos_web._abrir(real, st) as f:
+            cortado = False
             if st.st_size > TOPE_ALERTAS_BYTES:
-                f.readline()
+                f.seek(st.st_size - TOPE_ALERTAS_BYTES)
+                cortado = not f.readline(MAX_LINEA + 1).endswith(b"\n")
                 completo = False
-            for linea in f:
-                if b'"event_type":"alert"' not in linea:
-                    continue
-                try:
-                    t = _a_epoch(json.loads(linea).get("timestamp"))
-                except ValueError:
-                    continue
-                if t and ahora - t <= 86400:
-                    n += 1
+            n, todo = _cuenta_alertas(f, ahora, cortado)
+            completo = completo and todo
     except OSError:
         pass
     _ALERTAS[pid] = (marca, (n, completo), ahora)
     return n, completo
 
 
+def _leer_json_pequeno(ruta, tope):
+    """JSON de un fichero regular, sin seguir enlaces ni esperar a un FIFO, con tope de bytes."""
+    fl = (os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
+          | getattr(os, "O_NONBLOCK", 0))
+    fd = os.open(ruta, fl)
+    with os.fdopen(fd, "rb") as f:
+        if not stat.S_ISREG(os.fstat(f.fileno()).st_mode):
+            raise ValueError("no es un fichero regular")
+        return json.loads(f.read(tope))
+
+
 def espejo_pps(pid):
     """Paquetes de espejo por segundo aceptados en la ultima ventana del receptor TZSP."""
     try:
-        with open(nodos.tzsp_json(pid), encoding="utf-8") as f:
-            d = json.load(f)
-    except (OSError, ValueError, nodos.NodoInvalido):
+        d = _leer_json_pequeno(nodos.tzsp_json(pid), TOPE_TZSP_BYTES)
+    except (OSError, ValueError, RecursionError, nodos.NodoInvalido):
         return None, None
-    v = d.get("ventana") or {}
-    seg = v.get("segundos") or 0
-    acept = sum(x for x in (v.get("aceptados") or {}).values() if isinstance(x, (int, float)))
-    ult = [x for x in (d.get("ultimo_visto") or {}).values() if isinstance(x, (int, float))]
+    if not isinstance(d, dict):
+        return None, None
+    v = d.get("ventana") if isinstance(d.get("ventana"), dict) else {}
+    seg = v.get("segundos") if isinstance(v.get("segundos"), (int, float)) else 0
+    acep = v.get("aceptados") if isinstance(v.get("aceptados"), dict) else {}
+    vis = d.get("ultimo_visto") if isinstance(d.get("ultimo_visto"), dict) else {}
+    acept = sum(x for x in acep.values() if isinstance(x, (int, float)) and not isinstance(x, bool))
+    ult = [x for x in vis.values() if isinstance(x, (int, float)) and not isinstance(x, bool)]
     return (acept / seg if seg else None), (max(ult) if ult else None)
 
 
@@ -493,6 +565,7 @@ def comandos_html(texto, ros_version, prefijo):
 # --------------------------------------------------------------------------------------------
 def lista(h, consulta):
     d = _dash(h)
+    barrer_bajas(d)              # limpieza de bajas sin depender de quien las pidio (A-09)
     est = nodos.leer_estado() or {}
     ahora = time.time()
     filas = ""
@@ -608,6 +681,13 @@ def crear(h, form):
     token = form.get("op") or ""
     op_id = token if _operaciones.RE_OPID.match(token) else str(uuid.uuid4())
     previa = ops().obtener(op_id)
+    if previa is None:
+        params, err = validar_formulario_punto(form)
+        if err:
+            return form_nuevo(h, form, err, 400)
+        # reserva atomica: dos envios a la vez del mismo formulario no piden dos puntos
+        previa = _reservar_op(op_id, usuario, "punto.crear", nombre=params["nombre"],
+                              ros_version=params["ros_version"])
     if previa is not None:
         if previa.get("usuario") != usuario or previa.get("orden") != "punto.crear":
             return h._html(pagina(d, "Operacion duplicada", aviso("Ese formulario ya se uso para otra "
@@ -615,10 +695,6 @@ def crear(h, form):
         _bit(d, "PUNTO-CREAR", objetivo=previa.get("nombre") or "", resultado="REPETIDA",
              extra="op=%s" % op_id)
         return h._redirect("/operaciones/%s" % op_id)
-    params, err = validar_formulario_punto(form)
-    if err:
-        return form_nuevo(h, form, err, 400)
-    ops().registrar(op_id, usuario, "punto.crear", nombre=params["nombre"], ros_version=params["ros_version"])
     r = cliente().pedir("punto.crear", params, quien="panel:%s" % usuario, ip=_ip(d), op_id=op_id)
     _bit(d, "PUNTO-CREAR", objetivo=params["nombre"], resultado=r.get("codigo"),
          extra="redes=%d perfil=%s ros=%s op=%s" % (len(params["redes_abonados"]), params["perfil"],
@@ -633,8 +709,172 @@ def crear(h, form):
 
 
 # --------------------------------------------------------------------------------------------
+# Formularios de un solo uso (A-08): un doble clic o un reintento no repite la orden
+# --------------------------------------------------------------------------------------------
+# Las ordenes de cola (arrancar, parar, reiniciar, regenerar, ajustar, borrar) usan el token del
+# formulario como op_id, como el alta: el orquestador tambien deduplica por op_id. Las que el
+# panel hace por si mismo (espejo aplicar/pausar/retirar, API guardar/probar/olvidar huella)
+# apuntan el token aqui, en memoria del proceso: el primer envio lo reserva («en curso») y
+# guarda su resultado; los repetidos reciben ese resultado sin repetir nada. Un formulario sin
+# token (cliente viejo) se atiende sin esta proteccion.
+FORMS_TTL = 86400
+FORMS_MAX = 5000
+_FORMS = {}                  # token -> {"clave": (usuario, pid, accion), "estado", "resultado", "ts"}
+_FORMS_LOCK = threading.Lock()
+_RESERVA_LOCK = threading.Lock()
+
+
+def campo_token():
+    """Campo oculto con un token nuevo para un formulario de la ficha."""
+    return "<input type=hidden name=op value='%s'>" % str(uuid.uuid4())
+
+
+def _reservar_op(op_id, usuario, orden, pid=None, nombre=None, ros_version=None):
+    """Registra la operacion si el op_id esta libre (None) o devuelve la que ya lo usa."""
+    with _RESERVA_LOCK:
+        previa = ops().obtener(op_id)
+        if previa is None:
+            with _FORMS_LOCK:
+                if op_id in _FORMS:
+                    return {"usuario": None, "orden": None}
+            ops().registrar(op_id, usuario, orden, pid=pid, nombre=nombre, ros_version=ros_version)
+        return previa
+
+
+def _estado_token(tok, clave):
+    """None si el token esta libre; ("otro",), ("en_curso",) o ("hecho", resultado)."""
+    with _FORMS_LOCK:
+        r = _FORMS.get(tok)
+        if r is not None:
+            if r["clave"] != clave:
+                return ("otro",)
+            return (r["estado"], r.get("resultado"))
+    if ops().obtener(tok) is not None:
+        return ("otro",)
+    return None
+
+
+def _tomar_token(tok, clave):
+    """Reserva atomica del token: None si es nuestro, o el estado de quien lo tiene."""
+    with _FORMS_LOCK:
+        ahora = time.time()
+        if len(_FORMS) >= FORMS_MAX:
+            for k in [k for k, v in _FORMS.items() if ahora - v["ts"] > FORMS_TTL]:
+                _FORMS.pop(k, None)
+            if len(_FORMS) >= FORMS_MAX:
+                hechos = sorted((v["ts"], k) for k, v in _FORMS.items() if v["estado"] == "hecho")
+                for _ts, k in hechos[:len(_FORMS) - FORMS_MAX + 1]:
+                    _FORMS.pop(k, None)
+        r = _FORMS.get(tok)
+        if r is None:
+            _FORMS[tok] = {"clave": clave, "estado": "en_curso", "resultado": None, "ts": ahora}
+            return None
+        if r["clave"] != clave:
+            return ("otro",)
+        return (r["estado"], r.get("resultado"))
+
+
+def _cerrar_token(tok, resultado):
+    with _FORMS_LOCK:
+        r = _FORMS.get(tok)
+        if r is not None:
+            r.update(estado="hecho", resultado=resultado, ts=time.time())
+
+
+def _soltar_token(tok):
+    with _FORMS_LOCK:
+        _FORMS.pop(tok, None)
+
+
+def _responder(h, pid, res):
+    mensaje, codigo, ok, extra = res
+    return ficha(h, pid, mensaje, codigo, ok=ok, extra_espejo=extra)
+
+
+def _repetida(h, pid, accion, est):
+    d = _dash(h)
+    if est[0] == "otro":
+        return ficha(h, pid, "Ese formulario ya se uso para otra orden u otro punto. Recarga la ficha.", 409)
+    if est[0] == "en_curso":
+        _bit(d, "PUNTO-" + accion.upper(), pid=pid, resultado="REPETIDA-EN-CURSO")
+        return ficha(h, pid, "Esa orden ya se esta haciendo (doble clic o reintento): espera unos segundos "
+                             "y recarga la ficha.", 409)
+    _bit(d, "PUNTO-" + accion.upper(), pid=pid, resultado="REPETIDA")
+    mensaje, codigo, ok, extra = est[1]
+    return ficha(h, pid, ((mensaje + " ") if mensaje else "")
+                 + "(Ese formulario ya se habia enviado: no se repitio la orden.)", codigo, ok=ok, extra_espejo=extra)
+
+
+def _con_token(h, pid, accion, form, hacer, validar=None):
+    """Orden de la ficha que hace el panel, de un solo uso por formulario (A-08).
+
+    `validar()` (sin efectos: puede leer el router) devuelve None o la respuesta
+    (mensaje, codigo, ok, extra_espejo) si no se puede hacer; `hacer()` hace la orden y
+    devuelve su respuesta. Con dos envios a la vez del mismo formulario, los dos pueden validar
+    pero solo uno hace la orden; el otro recibe 409 (en curso) o el resultado del primero."""
+    usuario = _usuario(_dash(h))
+    tok = form.get("op") or ""
+    clave = (usuario, pid, accion)
+    if not _operaciones.RE_OPID.match(tok):
+        tok = None
+    else:
+        est = _estado_token(tok, clave)
+        if est is not None:
+            return _repetida(h, pid, accion, est)
+    if validar is not None:
+        pre = validar()
+        if pre is not None:
+            return _responder(h, pid, pre)
+    if tok:
+        est = _tomar_token(tok, clave)
+        if est is not None:
+            return _repetida(h, pid, accion, est)
+    try:
+        res = hacer()
+    except BaseException:
+        if tok:
+            _soltar_token(tok)
+        raise
+    if tok:
+        _cerrar_token(tok, res)
+    return _responder(h, pid, res)
+
+
+# --------------------------------------------------------------------------------------------
 # Operaciones
 # --------------------------------------------------------------------------------------------
+# La pagina de una operacion puede llevar la clave de la VPN de una sola vez: ni el navegador
+# ni un proxy la guardan, y no se puede enmarcar (B-11). Si el nucleo ofrece
+# `H._html(s, code=200, cabeceras=())`, se usa; si no, se responde aqui con los mismos pasos.
+CABECERAS_PRIVADAS = (("Cache-Control", "no-store"), ("Pragma", "no-cache"),
+                      ("X-Frame-Options", "DENY"), ("Content-Security-Policy", "frame-ancestors 'none'"),
+                      ("X-Content-Type-Options", "nosniff"), ("Referrer-Policy", "same-origin"))
+
+
+def _acepta(fn, nombre):
+    try:
+        return nombre in inspect.signature(fn).parameters
+    except (TypeError, ValueError):
+        return False
+
+
+def _html_privado(h, s, code=200):
+    if _acepta(h._html, "cabeceras"):
+        return h._html(s, code, cabeceras=CABECERAS_PRIVADAS)
+    b = s.encode("utf-8")
+    h.send_response(code)
+    h.send_header("Content-Type", "text/html; charset=utf-8")
+    h.send_header("Content-Length", str(len(b)))
+    for k, v in CABECERAS_PRIVADAS:
+        h.send_header(k, v)
+    h.end_headers()
+    h.wfile.write(b)
+
+
+def _pasos_limpios(pasos):
+    return [{k: p.get(k) for k in ("nombre", "estado", "detalle") if p.get(k) is not None} for p in pasos]
+
+
 def vista_op(d, op_id, usuario):
     """Modelo de la pagina de una operacion. None si no existe o no es de este usuario."""
     rec = ops().obtener(op_id)
@@ -668,18 +908,23 @@ def vista_op(d, op_id, usuario):
     res = dd.get("resultado") if isinstance(dd.get("resultado"), dict) else {}
     pid = res.get("pid") or rec.get("pid")
     ya = bool(res.get("ya_entregada"))
-    limpios = [{k: p.get(k) for k in ("nombre", "estado", "detalle") if p.get(k) is not None} for p in pasos]
-    primera = ops().terminar(op_id, codigo=codigo, mensaje=mensaje, pid=pid, pasos=limpios, ya_existia=ya)
+    primera = ops().terminar(op_id, codigo=codigo, mensaje=mensaje, pid=pid, pasos=_pasos_limpios(pasos),
+                             ya_existia=ya)
     if not primera:
-        # otra peticion la cerro a la vez: la clave ya se enseño alli
+        # Otra peticion la cerro a la vez. El orquestador entrega la clave UNA vez, a la primera
+        # op.estado que ve la operacion terminada: si vino en ESTA respuesta, solo esta peticion
+        # la tiene y la ensena aunque haya perdido la carrera de `terminar` (B-12).
         rec = ops().obtener(op_id) or {}
         vm.update({"terminada": True, "ok": rec.get("codigo") == "OK", "pasos": rec.get("pasos"),
                    "mensaje": _orq.traducir(rec.get("codigo"), rec.get("mensaje"))})
+        if res.get("clave"):
+            vm.update({"ok": codigo == "OK", "pid": pid, "resultado": res, "ya_existia": ya,
+                       "mensaje": _orq.traducir(codigo, mensaje, res)})
         return vm
     _bit(d, (rec.get("orden") or "op").upper().replace(".", "-") + "-FIN", pid=pid or "",
          resultado=codigo, extra="op=%s" % op_id)
     if codigo == "OK" and rec.get("orden") == "punto.borrar" and pid:
-        limpiar_punto(d, pid)
+        barrer_bajas(d, esperar=True)
     vm.update({"terminada": True, "ok": codigo == "OK", "pid": pid, "resultado": res, "ya_existia": ya,
                "mensaje": _orq.traducir(codigo, mensaje, res)})
     return vm
@@ -699,10 +944,12 @@ def _pasos(pasos):
 
 def pagina_op(h, op_id):
     d = _dash(h)
+    # la limpieza de las bajas no depende de quien abra la operacion (A-09)
+    barrer_bajas(d)
     vm = vista_op(d, op_id, _usuario(d))
     if vm is None:
-        return h._html(pagina(d, "Operacion", "<h1>Operacion desconocida</h1><p>Esa operacion no existe o "
-                              "no la pediste tu.</p>"), 404)
+        return _html_privado(h, pagina(d, "Operacion", "<h1>Operacion desconocida</h1><p>Esa operacion no "
+                                       "existe o no la pediste tu.</p>"), 404)
     tit = "<h1>%s%s</h1>" % (esc(ORDENES.get(vm.get("orden"), vm.get("orden") or "Operacion")),
                              (" &middot; " + esc(vm.get("titulo"))) if vm.get("titulo") else "")
     if not vm.get("terminada"):
@@ -714,21 +961,21 @@ def pagina_op(h, op_id):
                                         if vm.get("paso") else "Esperando al orquestador...")
         cuerpo += ("<progress max=100 value='%s'></progress>%s<p class=hint>Esta pagina se actualiza sola.</p>"
                    % (esc(vm.get("porcentaje", 0)), _pasos(vm.get("pasos"))))
-        return h._html(pagina(d, "Operacion", cuerpo, refresco=2))
+        return _html_privado(h, pagina(d, "Operacion", cuerpo, refresco=2))
     cuerpo = tit + _pasos(vm.get("pasos"))
     pid = vm.get("pid")
     if not vm.get("ok"):
         cuerpo += aviso(vm.get("mensaje"))
         if vm.get("orden") == "punto.crear":
             cuerpo += "<p><a class=btn href='/puntos/nuevo'>Volver a intentarlo</a></p>"
-        return h._html(pagina(d, "Operacion", cuerpo))
+        return _html_privado(h, pagina(d, "Operacion", cuerpo))
     if vm.get("orden") == "punto.borrar":
         cuerpo += aviso("Punto borrado: se quitaron su VPN, su Suricata y sus datos del servidor y del panel.", "ok")
         cuerpo += ("<p class=hint>En el MikroTik quedan la interfaz <code>ids-vpn</code>, la ruta, el usuario "
                    "<code>ids-api</code> y lo que lleve el comentario <code>IDS ids-maat:%s</code>: "
                    "quitalos a mano (Documentacion &rarr; Puntos).</p>"
                    "<p><a class=btn href='/puntos'>Volver a Puntos</a></p>" % esc(pid))
-        return h._html(pagina(d, "Operacion", cuerpo))
+        return _html_privado(h, pagina(d, "Operacion", cuerpo))
     r = vm.get("resultado") or {}
     if r.get("clave"):
         cuerpo += aviso("Listo. Copia ahora la clave: el panel NO la vuelve a mostrar. Si la pierdes, "
@@ -756,17 +1003,24 @@ def pagina_op(h, op_id):
     if pid and nodos.pid_valido(pid):
         ancla = "#espejo" if vm.get("orden") == "punto.ajustar" else ""
         cuerpo += "<p><a class=btn href='/puntos/%s%s'>Ir a la ficha del punto</a></p>" % (esc(pid), ancla)
-    return h._html(pagina(d, "Operacion", cuerpo))
+    return _html_privado(h, pagina(d, "Operacion", cuerpo))
 
 
-def _encolar(h, pid, orden, params, nombre=None):
-    """Una orden de cola del orquestador con op_id propio -> 303 a su avance."""
+def _encolar(h, pid, orden, params, nombre=None, token=""):
+    """Una orden de cola del orquestador -> 303 a su avance. El op_id es el token del formulario
+    (A-08, como el alta): el mismo formulario enviado dos veces lleva a la misma operacion y el
+    orquestador no la encola dos veces. Sin token valido (cliente viejo), uno nuevo."""
     d = _dash(h)
     usuario = _usuario(d)
     p = nodos.punto(pid) or {}
-    op_id = str(uuid.uuid4())
-    ops().registrar(op_id, usuario, orden, pid=pid, nombre=nombre or p.get("nombre") or pid,
-                    ros_version=p.get("ros_version"))
+    op_id = token if _operaciones.RE_OPID.match(token or "") else str(uuid.uuid4())
+    previa = _reservar_op(op_id, usuario, orden, pid=pid, nombre=nombre or p.get("nombre") or pid,
+                          ros_version=p.get("ros_version"))
+    if previa is not None:
+        if (previa.get("usuario"), previa.get("orden"), previa.get("pid")) != (usuario, orden, pid):
+            return ficha(h, pid, "Ese formulario ya se uso para otra orden u otro punto. Recarga la ficha.", 409)
+        _bit(d, orden.upper().replace(".", "-"), pid=pid, resultado="REPETIDA", extra="op=%s" % op_id)
+        return h._redirect("/operaciones/%s" % op_id)
     r = cliente().pedir(orden, params, quien="panel:%s" % usuario, ip=_ip(d), op_id=op_id)
     _bit(d, orden.upper().replace(".", "-"), pid=pid, resultado=r.get("codigo"), extra="op=%s" % op_id)
     if r.get("codigo") in ("ACEPTADA", "OK"):
@@ -776,15 +1030,193 @@ def _encolar(h, pid, orden, params, nombre=None):
 
 
 # --------------------------------------------------------------------------------------------
-# Baja: lo del panel
+# Baja: lo del panel (A-09)
 # --------------------------------------------------------------------------------------------
-def limpiar_punto(d, pid):
-    """Tras la baja en el orquestador: fuera nodos/<pid>/, su router y sus claves pid|... ."""
-    if not nodos.pid_valido(pid):
-        return
-    hecho = []
+# La limpieza del panel tras una baja no depende de que quien la pidio abra su operacion:
+# `barrer_bajas` mira las bajas que pidio el panel (cualquier usuario) y el estado del
+# orquestador, y la llaman la lista de Puntos (cada 30 s mientras alguien la mira), cualquier
+# pagina de operacion y, si el nucleo lo hace, su tarea de fondo. Un punto se limpia cuando:
+#   - el orquestador confirma su baja (op.estado OK), aunque estado.json aun lo liste;
+#   - el panel pidio su baja y ya no esta en un estado.json reciente (orquestador reiniciado:
+#     la operacion se perdio pero la baja se hizo);
+#   - sin baja del panel (CLI): falta de dos estado.json recientes distintos separados al menos
+#     BAJA_PERSISTENCIA_S (un estado suelto o viejo no borra nada).
+# Nunca se toca un punto que esta en estado.json salvo con la confirmacion del orquestador. Lo
+# limpiado se apunta en estado/bajas-purgadas.json: si una tarea de fondo vuelve a crear
+# nodos/<pid>/ de un punto dado de baja, se quita otra vez sin repetir la purga.
+BAJA_PERSISTENCIA_S = 60
+ESTADO_FRESCO_S = 60
+_BAJAS_LOCK = threading.Lock()
+_AUSENTES = {}               # pid -> (ts del estado.json, instante) de la primera vez que faltaba
+
+
+def _ruta_purgadas():
+    return os.path.join(nodos.ESTADO, "bajas-purgadas.json")
+
+
+def _leer_purgadas():
+    try:
+        with open(_ruta_purgadas(), encoding="utf-8") as f:
+            dd = json.load(f)
+    except (OSError, ValueError):
+        return {}
+    return {k: v for k, v in dd.items() if nodos.pid_valido(k)} if isinstance(dd, dict) else {}
+
+
+def _guardar_purgadas(dd):
+    p = _ruta_purgadas()
+    tmp = "%s.%d.%d.tmp" % (p, os.getpid(), threading.get_ident())
+    try:
+        os.makedirs(nodos.ESTADO, mode=0o700, exist_ok=True)
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(dd, f, sort_keys=True)
+        os.replace(tmp, p)
+    except OSError:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+
+
+def _ops_baja():
+    """[(op_id, registro)] de las bajas que pidio el panel, de cualquier usuario."""
+    o = ops()
+    lock, datos = getattr(o, "_lock", None), getattr(o, "_ops", None)
+    if lock is None or not isinstance(datos, dict):
+        return []
+    with lock:
+        items = [(k, dict(v)) for k, v in datos.items() if isinstance(v, dict)]
+    return [(k, v) for k, v in items if v.get("orden") == "punto.borrar" and nodos.pid_valido(v.get("pid") or "")]
+
+
+def _confirmar_baja(d, op_id, rec):
+    """Pregunta al orquestador por una baja aun abierta. True si termino bien."""
+    r = cliente().pedir("op.estado", {"op_id": op_id}, quien="panel:barrido-bajas", ip=_ip(d))
+    if r.get("codigo") == "NO_EXISTE":
+        ops().terminar(op_id, codigo="FALLO", mensaje="el orquestador no conoce esta operacion")
+        return False
+    dd = (r.get("datos") or {}) if r.get("codigo") == "OK" else {}
+    if dd.get("estado") != "terminada":
+        return False
+    codigo = dd.get("codigo") or "FALLO"
+    pasos = [p for p in (dd.get("pasos") or []) if isinstance(p, dict)]
+    if ops().terminar(op_id, codigo=codigo, mensaje=dd.get("mensaje") or "", pid=rec.get("pid"),
+                      pasos=_pasos_limpios(pasos)):
+        _bit(d, "PUNTO-BORRAR-FIN", pid=rec.get("pid") or "", resultado=codigo, extra="op=%s barrido" % op_id)
+    return codigo == "OK"
+
+
+def _candidatos(d):
+    """pids que tienen algo en el panel: nodos/<pid>/, routers.json y registros de enviados."""
+    pids = set()
+    try:
+        pids |= {x for x in os.listdir(nodos.NODOS) if nodos.pid_valido(x)}
+    except OSError:
+        pass
+    leer = getattr(d, "_routers_guardados", None)
+    if callable(leer):
+        try:
+            pids |= {k for k in leer() if nodos.pid_valido(k)}
+        except Exception:
+            pass
+    if callable(getattr(d, "cargar_enviados", None)):
+        for nom in ("MK_SENT", "MK_SENT_DNS", "MK_SENT_GRAD"):
+            reg = getattr(d, nom, None)
+            if not reg:
+                continue
+            try:
+                pids |= {k.split("|", 1)[0] for k in d.cargar_enviados(reg) if "|" in k}
+            except Exception:
+                pass
+    return {x for x in pids if nodos.pid_valido(x)}
+
+
+def _quitar_restos(pid):
     dirp = os.path.join(nodos.NODOS, pid)
-    if os.path.isdir(dirp) and os.path.dirname(os.path.abspath(dirp)) == os.path.abspath(nodos.NODOS):
+    if os.path.isdir(dirp) and not os.path.islink(dirp):
+        shutil.rmtree(dirp, ignore_errors=True)
+
+
+def barrer_bajas(d, ahora=None, esperar=False):
+    """Limpia del panel los puntos dados de baja (ver arriba). Devuelve los pids limpiados.
+    Si otro hilo esta barriendo, no espera (salvo `esperar`) y devuelve []."""
+    if not _BAJAS_LOCK.acquire(blocking=esperar):
+        return []
+    try:
+        return _barrer(d, time.time() if ahora is None else ahora)
+    except Exception:
+        return []
+    finally:
+        _BAJAS_LOCK.release()
+
+
+def _barrer(d, ahora):
+    est = nodos.leer_estado() or {}
+    vivos = est.get("puntos") if isinstance(est.get("puntos"), dict) else None
+    try:
+        ts_est = float(est.get("ts"))
+    except (TypeError, ValueError):
+        ts_est = None
+    fresco = vivos is not None and ts_est is not None and abs(ahora - ts_est) <= ESTADO_FRESCO_S
+    vivos = set(vivos or ())
+    confirmadas, pedidas = set(), set()
+    for op_id, rec in _ops_baja():
+        pid = rec["pid"]
+        if rec.get("terminada"):
+            (confirmadas if rec.get("codigo") == "OK" else pedidas).add(pid)
+        elif _confirmar_baja(d, op_id, rec):
+            confirmadas.add(pid)
+        else:
+            pedidas.add(pid)
+    pedidas -= confirmadas
+    purgadas = _leer_purgadas()
+    cambio, hechos = False, []
+    for pid in sorted(_candidatos(d) | confirmadas | pedidas | set(purgadas)):
+        vivo = pid in vivos
+        if pid in purgadas:
+            if vivo and pid not in confirmadas:
+                purgadas.pop(pid, None)    # vuelve a estar (los pid no se reutilizan: raro)
+                cambio = True
+            elif not vivo:
+                _quitar_restos(pid)
+            continue
+        if pid in confirmadas:
+            motivo = "baja terminada en el orquestador"
+        elif vivo:
+            _AUSENTES.pop(pid, None)
+            continue
+        elif not fresco:
+            continue
+        elif pid in pedidas:
+            motivo = "baja pedida desde el panel; el punto ya no esta en estado.json"
+        else:
+            prev = _AUSENTES.get(pid)
+            if prev is None:
+                _AUSENTES[pid] = (ts_est, ahora)
+                continue
+            if ts_est == prev[0] or ahora - prev[1] < BAJA_PERSISTENCIA_S:
+                continue
+            motivo = "falta de estado.json desde hace %d s (baja fuera del panel)" % int(ahora - prev[1])
+        if limpiar_punto(d, pid, motivo):
+            purgadas[pid] = int(ahora)
+            cambio = True
+            hechos.append(pid)
+        _AUSENTES.pop(pid, None)
+    if cambio:
+        _guardar_purgadas(purgadas)
+    return hechos
+
+
+def limpiar_punto(d, pid, motivo=""):
+    """Tras la baja en el orquestador: fuera nodos/<pid>/, su router y sus claves pid|... .
+    True si se pudo (la purga del nucleo no fallo)."""
+    if not nodos.pid_valido(pid):
+        return False
+    hecho, ok = [], True
+    dirp = os.path.join(nodos.NODOS, pid)
+    if (os.path.isdir(dirp) and not os.path.islink(dirp)
+            and os.path.dirname(os.path.abspath(dirp)) == os.path.abspath(nodos.NODOS)):
         shutil.rmtree(dirp, ignore_errors=True)
         hecho.append("salidas")
     purgar = getattr(d, "purgar_punto", None)
@@ -793,6 +1225,7 @@ def limpiar_punto(d, pid):
             purgar(pid)
             hecho.append("registros")
         except Exception as e:
+            ok = False
             hecho.append("registros: fallo %s" % str(e)[:80])
     else:
         try:
@@ -811,7 +1244,9 @@ def limpiar_punto(d, pid):
             except Exception:
                 pass
         hecho.append("enviados")
-    _bit(d, "PUNTO-BAJA-PANEL", pid=pid, resultado="ok", extra="borrado=" + ",".join(hecho))
+    _bit(d, "PUNTO-BAJA-PANEL", pid=pid, resultado="ok" if ok else "parcial",
+         extra=("borrado=" + ",".join(hecho) + ((" motivo=" + motivo) if motivo else "")))
+    return ok
 
 
 # --------------------------------------------------------------------------------------------
@@ -827,8 +1262,28 @@ def _router(d, pid):
     return None
 
 
+def _textos(v):
+    if v is None or v == "":
+        return []
+    if isinstance(v, str):
+        return [v]
+    if isinstance(v, dict):
+        v = [v]
+    if not isinstance(v, (list, tuple)):
+        return [str(v)]
+    out = []
+    for x in v:
+        if isinstance(x, dict):
+            x = x.get("que") or x.get("texto") or json.dumps(x, ensure_ascii=False, sort_keys=True)
+        out.append(str(x))
+    return out
+
+
 def plan_lineas(res):
-    """(ok, mensaje, lineas del plan, avisos) de lo que devuelva espejo_plan/aplicar/... ."""
+    """(ok, mensaje, lineas del plan, avisos) de lo que devuelva espejo_plan/aplicar/... .
+    Las ordenes salen de `lineas` y, si no vienen, de `terminal` (lo que devuelve
+    mikrotik_init.plan(): A-01). Una clave que no es texto ni lista (p. ej. el `plan`
+    recalculado que devuelve aplicar) no se toma por ordenes."""
     if isinstance(res, tuple):
         ok = bool(res[0]) if res else False
         msg = str(res[1]) if len(res) > 1 else ""
@@ -839,19 +1294,59 @@ def plan_lineas(res):
         return True, "", res.splitlines(), []
     if not isinstance(res, dict):
         return False, "respuesta ilegible", [], []
-    lin = res.get("lineas") or res.get("plan") or res.get("comandos") or res.get("rsc") or []
-    if isinstance(lin, str):
-        lin = lin.splitlines()
-    avisos = res.get("avisos") or []
-    if isinstance(avisos, str):
-        avisos = [avisos]
+    lin = []
+    for k in ("lineas", "terminal", "comandos", "rsc", "plan"):
+        v = res.get(k)
+        if isinstance(v, str) and v.strip():
+            lin = v.splitlines()
+            break
+        if isinstance(v, (list, tuple)) and v:
+            lin = list(v)
+            break
     return bool(res.get("ok", True)), str(res.get("mensaje") or res.get("msg") or ""), \
-        [str(x) for x in lin], [str(x) for x in avisos]
+        [str(x) for x in lin], _textos(res.get("avisos"))
+
+
+RE_HUELLA_PLAN = re.compile(r"[0-9a-f]{16,64}")
+
+
+def plan_espejo(res):
+    """La vista previa del espejo normalizada para la ficha (A-01):
+    {ok, mensaje, lineas, avisos, bloqueos, fasttrack, huella, huella_nucleo, accept}.
+
+    Contrato con el nucleo (`espejo_plan(pid)`): un dict con al menos ok, mensaje y las ordenes
+    (`lineas`, o `terminal` como lo da mikrotik_init); si trae `bloqueos` (lista de textos),
+    `fasttrack` (lista de {que, accion, ...}) y `huella` (hex de 16 a 64, la de SU plan), se
+    usan; si no, se degrada: sin bloqueos y huella = sha256 de las lineas mostradas."""
+    ok, msg, lineas, avisos = plan_lineas(res)
+    dd = res if isinstance(res, dict) else {}
+    fast = dd.get("fasttrack")
+    if isinstance(fast, dict):            # forma del respaldo: {".id": {...}}
+        fast = [dict(v, **{".id": k}) if isinstance(v, dict) else {"que": "%s: %s" % (k, v)}
+                for k, v in fast.items()]
+    hn = dd.get("huella")
+    hn = hn if isinstance(hn, str) and RE_HUELLA_PLAN.fullmatch(hn) else None
+    return {"ok": ok, "mensaje": msg, "lineas": lineas, "avisos": avisos,
+            "bloqueos": _textos(dd.get("bloqueos")),
+            "fasttrack": [x for x in _textos(fast) if x],
+            "huella": hn or _huella_plan(lineas), "huella_nucleo": hn,
+            "accept": tiene_accept(lineas) or _cambios_con_accept(dd.get("cambios"))}
 
 
 def tiene_accept(lineas):
     """El espejo NUNCA puede autorizar trafico: ninguna linea con action=accept (OPERACION §2)."""
     return any(re.search(r"\baction\s*=\s*accept\b", x) for x in lineas)
+
+
+def _cambios_con_accept(cambios):
+    """Lo mismo sobre los cambios estructurados del plan ({"orden", "args": ["=action=accept"]})."""
+    if not isinstance(cambios, (list, tuple)):
+        return False
+    for c in cambios:
+        args = c.get("args") if isinstance(c, dict) else None
+        if isinstance(args, (list, tuple)) and any(re.fullmatch(r"=action=accept\s*", str(a)) for a in args):
+            return True
+    return False
 
 
 def ficha(h, pid, mensaje="", codigo=200, ok=False, extra_espejo=""):
@@ -894,7 +1389,7 @@ def ficha(h, pid, mensaje="", codigo=200, ok=False, extra_espejo=""):
     huella = (hu.get("datos") or {}).get("sha256") if hu.get("codigo") == "OK" else ""
     fijada = (rt.get("CERT_FP") or "").lower().replace(":", "")
     api_html = (
-        "<form method=post action='/puntos/%s/api'><input type=hidden name=accion value=guardar>"
+        "<form method=post action='/puntos/%s/api'><input type=hidden name=accion value=guardar>%s"
         "<div class=datos><div><label class=l>Usuario de la API</label>"
         "<input class=t name=user value='%s' maxlength=64 autocomplete=off></div>"
         "<div><label class=l>Clave de la API %s</label>"
@@ -907,14 +1402,14 @@ def ficha(h, pid, mensaje="", codigo=200, ok=False, extra_espejo=""):
         "extremo a extremo. La clave se guarda cifrada con la clave maestra y no se vuelve a mostrar.</p>"
         "<p class=hint>Huella del certificado que ve el servidor: <code>%s</code><br>Huella fijada en el panel: "
         "<code>%s</code></p>%s"
-        % (esc(pid), esc(rt.get("USER", "")), "(guardada)" if rt.get("PASS") else "",
+        % (esc(pid), campo_token(), esc(rt.get("USER", "")), "(guardada)" if rt.get("PASS") else "",
            "dejar vacio para conservar" if rt.get("PASS") else "clave del usuario ids-api",
            " checked" if rt.get("ENABLED") == "1" else "", esc(p.get("api_puerto") or 8729),
            esc(huella or "sin dato"), esc(fijada or "ninguna (se fija en la primera conexion)"),
            ("<form method=post action='/puntos/%s/api' onsubmit=\"return ask(this,'Olvidar la huella',"
             "'La proxima conexion fijara la huella que presente el router. Hazlo solo si cambiaste su "
-            "certificado.','Olvidar','danger')\"><input type=hidden name=accion value=olvidar_huella>"
-            "<button class='btn sec' type=submit>Olvidar la huella fijada</button></form>" % esc(pid))
+            "certificado.','Olvidar','danger')\"><input type=hidden name=accion value=olvidar_huella>%s"
+            "<button class='btn sec' type=submit>Olvidar la huella fijada</button></form>" % (esc(pid), campo_token()))
            if fijada else ""))
     # Espejo
     espejo_html = (
@@ -927,26 +1422,27 @@ def ficha(h, pid, mensaje="", codigo=200, ok=False, extra_espejo=""):
         "<button class=btn type=submit>Ver el plan (vista previa)</button></form>"
         "<form method=post action='/puntos/%s/espejo' onsubmit=\"return ask(this,'Pausar el espejo',"
         "'Se deshabilitan las dos reglas mangle del punto. El fasttrack queda como esta.','Pausar')\">"
-        "<input type=hidden name=accion value=pausar><button class='btn sec' type=submit>Pausar</button></form>"
+        "<input type=hidden name=accion value=pausar>%s<button class='btn sec' type=submit>Pausar</button></form>"
         "<form method=post action='/puntos/%s/espejo' onsubmit=\"return ask(this,'Retirar el espejo',"
         "'Se borra lo que lleva el comentario del punto y la regla fasttrack recupera sus valores del "
         "respaldo. No toca reglas ajenas.','Retirar','danger')\">"
-        "<input type=hidden name=accion value=retirar><button class='btn sec' type=submit>Retirar</button></form>"
-        "</div>" % (esc(pid), esc(pid), esc(pid)))
+        "<input type=hidden name=accion value=retirar>%s<button class='btn sec' type=submit>Retirar</button></form>"
+        "</div>" % (esc(pid), esc(pid), campo_token(), esc(pid), campo_token()))
     # Prefijos
     pref_html = (
         "<form method=post action='/puntos/%s/ajustar' onsubmit=\"return ask(this,'Cambiar los prefijos',"
         "'El Suricata del punto se recrea con los prefijos nuevos. Despues vuelve a aplicar el espejo para "
-        "llevarlos al MikroTik.','Cambiar')\">"
+        "llevarlos al MikroTik.','Cambiar')\">%s"
         "<label class=l>Prefijos de abonados (uno por linea)</label>"
         "<textarea class=t name=redes rows=4>%s</textarea>"
         "<div class=acciones><button class=btn type=submit>Guardar prefijos</button></div></form>"
-        % (esc(pid), esc("\n".join(p.get("redes") or []))))
+        % (esc(pid), campo_token(), esc("\n".join(p.get("redes") or []))))
     # Servicio
     serv = "".join(
-        "<form method=post action='/puntos/%s/%s' onsubmit=\"return ask(this,'%s','%s','%s'%s)\">"
+        "<form method=post action='/puntos/%s/%s' onsubmit=\"return ask(this,'%s','%s','%s'%s)\">%s"
         "<button class='btn sec' type=submit>%s</button></form>"
-        % (esc(pid), acc, tit, txt, tit, ",'danger'" if acc == "parar" else "", tit) for acc, tit, txt in (
+        % (esc(pid), acc, tit, txt, tit, ",'danger'" if acc == "parar" else "", campo_token(), tit)
+        for acc, tit, txt in (
             ("arrancar", "Arrancar", "Arranca la VPN y el Suricata del punto."),
             ("reiniciar", "Reiniciar", "Reinicia la VPN y el Suricata del punto: el espejo se corta unos segundos."),
             ("parar", "Parar", "Para la VPN y el Suricata del punto: deja de vigilarse hasta que lo arranques."),
@@ -956,11 +1452,11 @@ def ficha(h, pid, mensaje="", codigo=200, ok=False, extra_espejo=""):
         "<div class=card style='border-color:#f3c4c4'><h2>Dar de baja el punto</h2>"
         "<p>Quita del servidor su VPN, su Suricata y <b>todos sus datos</b>, y del panel sus salidas, su "
         "conexion y sus registros. No se puede deshacer.</p>"
-        "<form method=post action='/puntos/%s/borrar' data-nombre='%s'>"
+        "<form method=post action='/puntos/%s/borrar' data-nombre='%s'>%s"
         "<label class=l>Para confirmar, escribe el nombre del punto: <b>%s</b></label>"
         "<input class=t name=confirmar autocomplete=off maxlength=31 oninput='pnombre(this)'>"
         "<div class=acciones><button class='btn peligro' type=submit disabled>Dar de baja</button></div></form>"
-        "</div>" % (esc(pid), esc(nombre), esc(nombre)))
+        "</div>" % (esc(pid), esc(nombre), campo_token(), esc(nombre)))
     cuerpo = (
         "<div class=ptit><h1>%s <span class=hint>%s</span></h1><a class='btn sec' href='/puntos'>Volver a "
         "Puntos</a></div>%s%s"
@@ -1002,36 +1498,49 @@ def logs(h, pid, consulta):
 # Acciones de la ficha
 # --------------------------------------------------------------------------------------------
 def accion_api(h, pid, form):
+    """Guardar, probar u olvidar la huella de la API del router del punto. Un solo uso por
+    formulario (A-08)."""
     d = _dash(h)
     acc = form.get("accion") or "guardar"
-    rs = d.cargar_routers()
-    r = next((x for x in rs if x.get("id") == pid), None)
-    if r is None:
-        return ficha(h, pid, "Ese punto todavia no tiene router en el panel (espera a que aparezca en el "
-                             "estado del orquestador).", 409)
-    if acc == "olvidar_huella":
-        r["CERT_FP"] = ""
-        d.guardar_routers(rs)
-        _bit(d, "PUNTO-API", pid=pid, objetivo="huella", resultado="olvidada")
-        return ficha(h, pid, "Huella olvidada: la proxima conexion fijara la del router.", ok=True)
+    if acc not in ("guardar", "probar", "olvidar_huella"):
+        return ficha(h, pid, "Accion de la API desconocida.", 400)
     user = (form.get("user") or "").strip()[:64]
-    if user and not re.match(r"^[A-Za-z0-9._@-]+$", user):
-        return ficha(h, pid, "El usuario de la API tiene caracteres no validos.", 400)
-    r["USER"] = user
-    if form.get("pass"):
-        r["PASS"] = form["pass"]                 # guardar_routers la cifra (router:<pid>:PASS)
-    r["ENABLED"] = "1" if form.get("enabled") else "0"
-    try:
-        d.guardar_routers(rs)
-    except Exception as e:
-        return ficha(h, pid, "No se pudo guardar: %s" % str(e)[:160], 500)
-    if acc != "probar":
-        _bit(d, "PUNTO-API", pid=pid, objetivo="conexion", resultado="guardada",
-             extra="usuario=%s enviar=%s" % (user or "-", r["ENABLED"]))
-        return ficha(h, pid, "Conexion de la API guardada.", ok=True)
-    ok, msg = probar_api(d, pid)
-    _bit(d, "PUNTO-API", pid=pid, objetivo="probar", resultado="ok" if ok else "fallo")
-    return ficha(h, pid, ("Prueba: " + msg), 200 if ok else 502, ok=ok)
+
+    def validar():
+        if not any(x.get("id") == pid for x in d.cargar_routers()):
+            return ("Ese punto todavia no tiene router en el panel (espera a que aparezca en el "
+                    "estado del orquestador).", 409, False, "")
+        if acc != "olvidar_huella" and user and not re.match(r"^[A-Za-z0-9._@-]+\Z", user):
+            return "El usuario de la API tiene caracteres no validos.", 400, False, ""
+        return None
+
+    def hacer():
+        rs = d.cargar_routers()
+        r = next((x for x in rs if x.get("id") == pid), None)
+        if r is None:
+            return ("Ese punto todavia no tiene router en el panel (espera a que aparezca en el "
+                    "estado del orquestador).", 409, False, "")
+        if acc == "olvidar_huella":
+            r["CERT_FP"] = ""
+            d.guardar_routers(rs)
+            _bit(d, "PUNTO-API", pid=pid, objetivo="huella", resultado="olvidada")
+            return "Huella olvidada: la proxima conexion fijara la del router.", 200, True, ""
+        r["USER"] = user
+        if form.get("pass"):
+            r["PASS"] = form["pass"]             # guardar_routers la cifra (router:<pid>:PASS)
+        r["ENABLED"] = "1" if form.get("enabled") else "0"
+        try:
+            d.guardar_routers(rs)
+        except Exception as e:
+            return "No se pudo guardar: %s" % str(e)[:160], 500, False, ""
+        if acc != "probar":
+            _bit(d, "PUNTO-API", pid=pid, objetivo="conexion", resultado="guardada",
+                 extra="usuario=%s enviar=%s" % (user or "-", r["ENABLED"]))
+            return "Conexion de la API guardada.", 200, True, ""
+        ok, msg = probar_api(d, pid)
+        _bit(d, "PUNTO-API", pid=pid, objetivo="probar", resultado="ok" if ok else "fallo")
+        return "Prueba: " + msg, 200 if ok else 502, ok, ""
+    return _con_token(h, pid, "api-" + acc, form, hacer, validar)
 
 
 def probar_api(d, pid):
@@ -1058,20 +1567,47 @@ def probar_api(d, pid):
         return False, "no conecto: %s" % str(e)[:200]
 
 
-def _plan_html(ok, msg, lineas, avisos, pid, huella=None):
+def _plan_html(pe, pid, con_boton=False, titulo=""):
+    """La vista previa del espejo (A-01): las ordenes que se aplicarian, los cambios del
+    fasttrack, los avisos y los bloqueos. El boton Aplicar solo con un plan que se puede aplicar
+    (ok, con ordenes, sin bloqueos, sin accept) y con la huella de ESTE plan."""
     out = ""
-    if msg:
-        out += aviso(msg, "info" if ok else "err")
-    for a in avisos:
+    if titulo:
+        out += "<p><b>%s</b></p>" % esc(titulo)
+    if pe["mensaje"]:
+        out += aviso(pe["mensaje"], "info" if pe["ok"] else "err")
+    for b in pe["bloqueos"]:
+        out += aviso("Bloqueo: " + b, "err")
+    for a in pe["avisos"]:
         out += aviso(a, "amb")
-    if lineas:
-        out += "<pre class=cmd id=plan-%s>%s</pre>" % (esc(pid), esc("\n".join(lineas)))
-    if huella:
+    if pe["fasttrack"]:
+        out += ("<p class=hint>Reglas fasttrack del router:</p><ul class=etapas>%s</ul>"
+                % "".join("<li>%s</li>" % esc(x) for x in pe["fasttrack"]))
+    if pe["lineas"]:
+        out += "<pre class=cmd id=plan-%s>%s</pre>" % (esc(pid), esc("\n".join(pe["lineas"])))
+    elif pe["ok"] and not pe["bloqueos"]:
+        out += aviso("El plan no tiene ordenes: el espejo del router ya esta como pide el punto.", "info")
+    if con_boton and pe["ok"] and pe["lineas"] and not pe["bloqueos"] and not pe["accept"]:
         out += ("<form method=post action='/puntos/%s/espejo' onsubmit=\"return ask(this,'Aplicar el espejo',"
-                "'Se respalda el firewall (export en el router y copia en el panel) y se aplica exactamente "
-                "este plan.','Aplicar')\"><input type=hidden name=accion value=aplicar>"
+                "'Se respalda el firewall (export en el router y copia en el panel) y se aplican exactamente "
+                "estas %d ordenes.','Aplicar')\"><input type=hidden name=accion value=aplicar>%s"
                 "<input type=hidden name=plan value='%s'>"
-                "<button class=btn type=submit>Aplicar este plan</button></form>" % (esc(pid), esc(huella)))
+                "<button class=btn type=submit>Aplicar este plan</button></form>"
+                % (esc(pid), len(pe["lineas"]), campo_token(), esc(pe["huella"])))
+    return out
+
+
+def _resultado_html(res, pid):
+    """Lo que hizo aplicar/pausar/retirar: lineas hecho/SIN APLICAR y avisos; si el router cambio
+    desde la vista previa, el plan nuevo (sin boton: hay que volver a pedir la vista previa)."""
+    ok, _msg, lineas, avisos = plan_lineas(res)
+    out = "".join(aviso(a, "amb") for a in avisos)
+    if lineas:
+        out += "<pre class=cmd id=resultado-%s>%s</pre>" % (esc(pid), esc("\n".join(lineas)))
+    nuevo = res.get("plan") if isinstance(res, dict) else None
+    if isinstance(nuevo, dict):
+        out += _plan_html(plan_espejo(nuevo), pid, titulo="El router cambio: este seria el plan ahora "
+                                                          "(pide otra vez la vista previa para aplicarlo)")
     return out
 
 
@@ -1079,7 +1615,17 @@ def _huella_plan(lineas):
     return hashlib.sha256("\n".join(lineas).encode("utf-8")).hexdigest()[:32]
 
 
+MSG_ACCEPT = ("El plan incluye una regla accept y el espejo nunca puede autorizar trafico: no se aplica. "
+              "Avisa al soporte.")
+
+
 def accion_espejo(h, pid, form):
+    """Vista previa, aplicar, pausar y retirar el espejo del punto.
+
+    Contrato con el nucleo: `espejo_plan(pid)` -> dict (ver `plan_espejo`); `espejo_aplicar(pid)`
+    o, si lo admite, `espejo_aplicar(pid, huella=<la de su plan>)` para que aplique ese plan y no
+    uno recalculado distinto (A-21); `espejo_pausar(pid)`, `espejo_retirar(pid)` -> dict con ok,
+    mensaje, lineas, avisos (y `plan` si el router cambio)."""
     d = _dash(h)
     acc = form.get("accion") or "plan"
     nombres = {"plan": "espejo_plan", "aplicar": "espejo_aplicar", "pausar": "espejo_pausar",
@@ -1090,33 +1636,60 @@ def accion_espejo(h, pid, form):
     fn = getattr(d, nombres[acc], None)
     if fn is None or fplan is None:
         return ficha(h, pid, "El montaje del espejo no esta disponible en este panel.", 501)
-    if acc in ("plan", "aplicar"):
+    if acc == "plan":
         try:
-            ok, msg, lineas, avisos = plan_lineas(fplan(pid))
+            pe = plan_espejo(fplan(pid))
         except Exception as e:
             return ficha(h, pid, "No se pudo calcular el plan: %s" % str(e)[:200], 502)
-        if tiene_accept(lineas):
+        if pe["accept"]:
             _bit(d, "ESPEJO-PLAN", pid=pid, resultado="rechazado-accept")
-            return ficha(h, pid, "El plan incluye una regla accept y el espejo nunca puede autorizar trafico: "
-                                 "no se aplica. Avisa al soporte.", 500,
-                         extra_espejo=_plan_html(False, "", lineas, avisos, pid))
-        huella = _huella_plan(lineas)
-        if acc == "plan":
-            _bit(d, "ESPEJO-PLAN", pid=pid, resultado="ok" if ok else "fallo", extra="lineas=%d" % len(lineas))
-            return ficha(h, pid, extra_espejo=_plan_html(ok, msg, lineas, avisos, pid,
-                                                          huella if (ok and lineas) else None))
-        if (form.get("plan") or "") != huella:
+            return ficha(h, pid, MSG_ACCEPT, 500, extra_espejo=_plan_html(pe, pid))
+        _bit(d, "ESPEJO-PLAN", pid=pid, resultado="ok" if pe["ok"] else "fallo",
+             extra="lineas=%d bloqueos=%d" % (len(pe["lineas"]), len(pe["bloqueos"])))
+        return ficha(h, pid, extra_espejo=_plan_html(pe, pid, con_boton=True))
+    visto = {}
+
+    def validar():
+        if acc != "aplicar":
+            return None
+        try:
+            pe = plan_espejo(fplan(pid))
+        except Exception as e:
+            return "No se pudo calcular el plan: %s" % str(e)[:200], 502, False, ""
+        if pe["accept"]:
+            _bit(d, "ESPEJO-APLICAR", pid=pid, resultado="rechazado-accept")
+            return MSG_ACCEPT, 500, False, _plan_html(pe, pid)
+        if not pe["ok"]:
+            return ("No se pudo calcular el plan: %s" % (pe["mensaje"] or "sin detalle"), 502, False,
+                    _plan_html(pe, pid))
+        if pe["bloqueos"]:
+            _bit(d, "ESPEJO-APLICAR", pid=pid, resultado="bloqueado")
+            return ("El plan tiene bloqueos: no se aplica. Resuelvelos en el router y vuelve a pedir la vista "
+                    "previa.", 409, False, _plan_html(pe, pid))
+        if not pe["lineas"]:
+            _bit(d, "ESPEJO-APLICAR", pid=pid, resultado="plan-vacio")
+            return "No hay nada que aplicar: el espejo del router ya esta como pide el plan.", 409, False, \
+                _plan_html(pe, pid)
+        if (form.get("plan") or "") != pe["huella"]:
             _bit(d, "ESPEJO-APLICAR", pid=pid, resultado="plan-cambiado")
-            return ficha(h, pid, "El plan cambio desde la vista previa (el router o los prefijos se movieron). "
-                                 "Revisa el plan nuevo antes de aplicarlo.", 409,
-                         extra_espejo=_plan_html(ok, msg, lineas, avisos, pid, huella if ok else None))
-    try:
-        ok, msg, lineas, avisos = plan_lineas(fn(pid))
-    except Exception as e:
-        ok, msg, lineas, avisos = False, "no se pudo: %s" % str(e)[:200], [], []
-    _bit(d, "ESPEJO-" + acc.upper(), pid=pid, resultado="ok" if ok else "fallo", extra=msg[:120])
-    return ficha(h, pid, msg or ("Hecho." if ok else "No se pudo."), 200 if ok else 502, ok=ok,
-                 extra_espejo=_plan_html(ok, "", lineas, avisos, pid))
+            return ("El plan cambio desde la vista previa (el router o los prefijos se movieron). Revisa el "
+                    "plan nuevo antes de aplicarlo.", 409, False, _plan_html(pe, pid, con_boton=True))
+        visto["pe"] = pe
+        return None
+
+    def hacer():
+        kw = {}
+        pe = visto.get("pe")
+        if pe and pe["huella_nucleo"] and _acepta(fn, "huella"):
+            kw["huella"] = pe["huella_nucleo"]
+        try:
+            res = fn(pid, **kw)
+        except Exception as e:
+            res = {"ok": False, "mensaje": "no se pudo: %s" % str(e)[:200]}
+        ok, msg, _lineas, _avisos = plan_lineas(res)
+        _bit(d, "ESPEJO-" + acc.upper(), pid=pid, resultado="ok" if ok else "fallo", extra=msg[:120])
+        return msg or ("Hecho." if ok else "No se pudo."), 200 if ok else 502, ok, _resultado_html(res, pid)
+    return _con_token(h, pid, "espejo-" + acc, form, hacer, validar)
 
 
 # --------------------------------------------------------------------------------------------
@@ -1180,23 +1753,24 @@ def post(h, ruta, form):
         h._html(pagina(_dash(h), "Punto inexistente", "<h1>Punto inexistente</h1>"), 404)
         return True
     p = nodos.punto(pid) or {}
+    tok = form.get("op") or ""
     if acc == "borrar":
         confirmar = (form.get("confirmar") or "").strip()
         if not confirmar or confirmar != (p.get("nombre") or pid):
             _bit(_dash(h), "PUNTO-BORRAR", pid=pid, resultado="nombre-no-coincide")
             ficha(h, pid, "Para dar de baja hay que escribir exactamente el nombre del punto.", 400)
             return True
-        _encolar(h, pid, "punto.borrar", {"pid": pid, "confirmar": confirmar}, nombre=confirmar)
+        _encolar(h, pid, "punto.borrar", {"pid": pid, "confirmar": confirmar}, nombre=confirmar, token=tok)
     elif acc == "regenerar":
-        _encolar(h, pid, "punto.vpn.regenerar", {"pid": pid})
+        _encolar(h, pid, "punto.vpn.regenerar", {"pid": pid}, token=tok)
     elif acc in ACCIONES_COLA:
-        _encolar(h, pid, ACCIONES_COLA[acc], {"pid": pid})
+        _encolar(h, pid, ACCIONES_COLA[acc], {"pid": pid}, token=tok)
     elif acc == "ajustar":
         redes, err = validar_redes(form.get("redes") or "")
         if err:
             ficha(h, pid, err, 400)
             return True
-        _encolar(h, pid, "punto.ajustar", {"pid": pid, "redes_abonados": redes})
+        _encolar(h, pid, "punto.ajustar", {"pid": pid, "redes_abonados": redes}, token=tok)
     elif acc == "api":
         accion_api(h, pid, form)
     else:

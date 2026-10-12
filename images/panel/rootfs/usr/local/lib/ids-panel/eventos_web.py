@@ -33,7 +33,6 @@ admite un desorden de `DESORDEN_US` (60 s). Mas desorden que ese puede dejar fue
 """
 
 import calendar
-import gzip
 import hashlib
 import heapq
 import hmac
@@ -64,6 +63,14 @@ MAX_LINEA = 1 << 20                # una linea mas larga se salta (y se cuenta)
 DESORDEN_US = 60 * 1000000         # desorden admitido entre marcas de un mismo fichero
 VENTANA_DEFECTO = 3600             # sin fechas: la ultima hora
 CLAVE_HMAC = "eventos.hmac"        # secreto del panel para firmar las referencias del detalle
+TOPE_MIEMBROS_GZ = 1000            # miembros gzip por fichero (logrotate escribe 1)
+TROZO_GZ = 64 * 1024               # bytes comprimidos por lectura (el tiempo se mira entre trozos)
+# disponible_desde() corre en cada carga de la pagina: topes pequeños por fichero y en total
+DISP_COMPRIMIDOS = 1 << 20
+DISP_MIEMBROS = 64
+DISP_SEGUNDOS = 1.0
+CONCURRENCIA = 2                   # busquedas/detalles a la vez (cada una: TOPE_BYTES y TOPE_SEGUNDOS)
+ESPERA_OCUPADO = 2.0               # segundos que espera una consulta a que quede una plaza libre
 
 TIPOS = (("alert", "Alertas"), ("dns", "DNS"), ("http", "HTTP"), ("tls", "TLS"),
          ("stats", "Estadisticas"), ("todos", "Todos"))
@@ -88,11 +95,112 @@ class FiltroInvalido(ValueError):
 
 
 class RefInvalida(ValueError):
-    """Referencia de detalle manipulada o caducada: nunca se lee nada con ella."""
+    """Referencia de detalle manipulada o que ya no apunta a un evento: nunca se lee nada con
+    ella. No caduca ni va ligada a la sesion: todos los roles ven todos los eventos (§10.2), asi
+    que un enlace no da nada que el usuario no pueda buscar."""
 
 
 class _Tope(Exception):
     """Se alcanzo el tope de bytes o de tiempo de la consulta."""
+
+
+class _GzLimite(Exception):
+    """Un .gz que pasa de un tope propio (miembros o bytes comprimidos): se omite con aviso."""
+
+
+# --------------------------------------------------------------------------------------------
+# .gz por trozos (sin GzipFile.readline, que no vuelve hasta tener una linea)
+# --------------------------------------------------------------------------------------------
+class _GzLector:
+    """Lee un .gz (uno o varios miembros, con relleno de ceros como admite gzip) por trozos de
+    TROZO_GZ con zlib. Al contrario que `GzipFile.readline`, que puede recorrer miles de
+    miembros vacios o una cabecera FNAME de decenas de MB sin volver, aqui se llama a
+    `comprobar(lector)` entre trozos (tiempo y bytes comprimidos de la consulta) y se cuentan
+    los miembros y los bytes comprimidos. `readline(limite)` y `read(n)` como los de un fichero.
+    Un final sin el cierre del miembro es EOFError (comprimido cortado), como en gzip."""
+
+    def __init__(self, fh, comprobar=None, max_miembros=TOPE_MIEMBROS_GZ, max_comprimidos=None):
+        self.fh = fh
+        self.comprobar = comprobar
+        self.max_miembros = max_miembros
+        self.max_comprimidos = max_comprimidos
+        self.d = None
+        self.pend = b""
+        self.fin = False
+        self.miembros = 0
+        self.comprimidos = 0
+        self.buf = b""
+        self.i = 0
+
+    def _entrada(self):
+        if self.pend:
+            e, self.pend = self.pend, b""
+            return e
+        e = self.fh.read(TROZO_GZ)
+        self.comprimidos += len(e)
+        if self.max_comprimidos is not None and self.comprimidos > self.max_comprimidos:
+            raise _GzLimite("mas de %d KB comprimidos" % (self.max_comprimidos // 1024))
+        return e
+
+    def _mas(self):
+        """El siguiente trozo descomprimido (no vacio), o b"" al final."""
+        while not self.fin:
+            if self.comprobar is not None:
+                self.comprobar(self)
+            if self.d is None:
+                e = self._entrada()
+                if not e:
+                    self.fin = True
+                    break
+                if self.miembros:
+                    e = e.lstrip(b"\x00")       # relleno tras un miembro (lo admite gzip)
+                    if not e:
+                        continue
+                self.miembros += 1
+                if self.miembros > self.max_miembros:
+                    raise _GzLimite("mas de %d miembros gzip" % self.max_miembros)
+                self.d = zlib.decompressobj(16 + zlib.MAX_WBITS)
+            else:
+                e = self.d.unconsumed_tail or self._entrada()
+                if not e:
+                    raise EOFError("comprimido cortado antes del final")
+            out = self.d.decompress(e, BLOQUE)
+            if self.d.eof:
+                self.pend = self.d.unused_data
+                self.d = None
+            if out:
+                return out
+        return b""
+
+    def readline(self, limite):
+        while True:
+            k = self.buf.find(b"\n", self.i, self.i + limite)
+            if k >= 0:
+                ln = self.buf[self.i:k + 1]
+                self.i = k + 1
+                return ln
+            if len(self.buf) - self.i >= limite:
+                ln = self.buf[self.i:self.i + limite]
+                self.i += limite
+                return ln
+            mas = self._mas()
+            if not mas:
+                ln = self.buf[self.i:]
+                self.buf, self.i = b"", 0
+                return ln
+            self.buf = self.buf[self.i:] + mas
+            self.i = 0
+
+    def read(self, n):
+        while len(self.buf) - self.i < n:
+            mas = self._mas()
+            if not mas:
+                break
+            self.buf = self.buf[self.i:] + mas
+            self.i = 0
+        out = self.buf[self.i:self.i + n]
+        self.i += len(out)
+        return out
 
 
 # --------------------------------------------------------------------------------------------
@@ -376,14 +484,23 @@ def _fichero_seguro(pid, nombre):
 
 def _abrir(real, st):
     """Abre en binario y comprueba que es el MISMO fichero que se valido (nadie lo cambio por un
-    enlace entre medias)."""
-    fl = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    enlace entre medias). Con O_NONBLOCK: si entre la validacion y el open alguien pone un FIFO
+    con ese nombre, el open no se queda esperando a un escritor (B-16); se quita despues de
+    comprobar que es un fichero regular."""
+    nb = getattr(os, "O_NONBLOCK", 0)
+    fl = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0) | nb
     fd = os.open(real, fl)
     try:
         st2 = os.fstat(fd)
         if (not stat.S_ISREG(st2.st_mode)
                 or (st.st_ino and st2.st_ino and (st.st_dev, st.st_ino) != (st2.st_dev, st2.st_ino))):
             raise OSError("el fichero cambio al abrirlo")
+        if nb:
+            try:
+                import fcntl
+                fcntl.fcntl(fd, fcntl.F_SETFL, fcntl.fcntl(fd, fcntl.F_GETFL) & ~nb)
+            except (ImportError, OSError):
+                pass                       # en un fichero regular O_NONBLOCK no cambia nada
         return os.fdopen(fd, "rb")
     except BaseException:
         os.close(fd)
@@ -568,6 +685,13 @@ class _Fuente:
                     self.larga = True
                 return
             self.cola = buf[:k + 1]
+            if len(self.cola) > MAX_LINEA:
+                # El unico salto era el del final de la cola: es la misma linea larga, que va
+                # hacia atras sin principio. Se descarta (y se cuenta) sin seguir acumulandola:
+                # la memoria queda en MAX_LINEA + BLOQUE aunque la linea mida cientos de MB (B-07).
+                self.cola = b""
+                self.larga = True
+                return
             inicio, cuerpo = ini + k + 1, buf[k + 1:]
         else:
             self.cola = b""
@@ -616,40 +740,53 @@ class _Fuente:
         local, claves = [], set()
         leidos, pos, seguir_larga = 0, 0, False
         incompletas = sin_fecha = 0
+        visto = [0]
+
+        def comprobar(lec):
+            # los bytes COMPRIMIDOS tambien cuentan para el tope de la consulta, y el tiempo se
+            # mira entre trozos: una cabecera enorme o miles de miembros vacios no producen
+            # lineas pero si gastan (B-08)
+            ctx.bytes += lec.comprimidos - visto[0]
+            visto[0] = lec.comprimidos
+            ctx.comprobar()
+        g = _GzLector(self.fh, comprobar)
         try:
-            with gzip.GzipFile(fileobj=self.fh, mode="rb") as g:
-                while True:
-                    ln = g.readline(MAX_LINEA + 1)
-                    if not ln:
-                        break
-                    off = pos
-                    pos += len(ln)
-                    leidos += len(ln)
-                    ctx.bytes += len(ln)
-                    if leidos > TOPE_GZ:
-                        self.agotada = True
-                        ctx.omitidos.append((self.pid, self.nombre, self.cota,
-                                             "descomprime mas de %d MB" % (TOPE_GZ // (1024 * 1024))))
-                        return
-                    if ctx.bytes > TOPE_BYTES or (ctx.leidos & 1023) == 0:
-                        ctx.comprobar()
-                    ctx.leidos += 1
-                    if not ln.endswith(b"\n"):
-                        incompletas += 1   # linea demasiado larga o final cortado
-                        seguir_larga = True
-                        continue
-                    if seguir_larga:       # resto de una linea demasiado larga
-                        seguir_larga = False
-                        continue
-                    i0, s0 = ctx.incompletas, ctx.sin_fecha
-                    r = _candidata(ctx, self.pid, ln, ctx.heap if ctx.lleno() else local)
-                    incompletas += ctx.incompletas - i0
-                    sin_fecha += ctx.sin_fecha - s0
-                    ctx.incompletas, ctx.sin_fecha = i0, s0
-                    if r:
-                        clave, ev = r
-                        _meter(local, claves, clave,
-                               {"pid": self.pid, "fichero": self.nombre, "offset": off, "ev": ev}, POR_PAGINA + 1)
+            while True:
+                ln = g.readline(MAX_LINEA + 1)
+                if not ln:
+                    break
+                off = pos
+                pos += len(ln)
+                leidos += len(ln)
+                ctx.bytes += len(ln)
+                if leidos > TOPE_GZ:
+                    self.agotada = True
+                    ctx.omitidos.append((self.pid, self.nombre, self.cota,
+                                         "descomprime mas de %d MB" % (TOPE_GZ // (1024 * 1024))))
+                    return
+                if ctx.bytes > TOPE_BYTES or (ctx.leidos & 1023) == 0:
+                    ctx.comprobar()
+                ctx.leidos += 1
+                if not ln.endswith(b"\n"):
+                    incompletas += 1       # linea demasiado larga o final cortado
+                    seguir_larga = True
+                    continue
+                if seguir_larga:           # resto de una linea demasiado larga
+                    seguir_larga = False
+                    continue
+                i0, s0 = ctx.incompletas, ctx.sin_fecha
+                r = _candidata(ctx, self.pid, ln, ctx.heap if ctx.lleno() else local)
+                incompletas += ctx.incompletas - i0
+                sin_fecha += ctx.sin_fecha - s0
+                ctx.incompletas, ctx.sin_fecha = i0, s0
+                if r:
+                    clave, ev = r
+                    _meter(local, claves, clave,
+                           {"pid": self.pid, "fichero": self.nombre, "offset": off, "ev": ev}, POR_PAGINA + 1)
+        except _GzLimite as e:
+            self.agotada = True
+            ctx.omitidos.append((self.pid, self.nombre, self.cota, str(e)))
+            return
         except (OSError, EOFError, zlib.error):
             self.agotada = True
             ctx.omitidos.append((self.pid, self.nombre, self.cota, "comprimido danado o a medio escribir"))
@@ -714,14 +851,19 @@ def buscar(f, nodo):
             for fu in fuentes:
                 fu.cerrar()
             ctx.rechazados = []
+            ctx.omitidos = []
             fuentes = _listar(pids_, familias, ctx)
             abiertas = []
             for fu in fuentes:
                 try:
                     fu.abrir(ctx)
                     abiertas.append(fu)
-                except (OSError, ValueError):
-                    ctx.rechazados.append((fu.pid, fu.nombre))
+                except (OSError, ValueError) as e:
+                    # un fichero de la ventana que no se puede leer deja la busqueda PARCIAL
+                    # (§10.5): nunca «sin coincidencias» sin haberlo mirado (A-25)
+                    ctx.omitidos.append((fu.pid, fu.nombre, min(fu.mtime + DESORDEN_US, ctx.U),
+                                         "no se pudo abrir (%s)" % (getattr(e, "strerror", None)
+                                                                    or type(e).__name__)))
             fuentes = abiertas
             if _firma_listado(_listar(pids_, familias, _Ctx(f, pids_))) == _firma_listado(fuentes):
                 break
@@ -885,7 +1027,12 @@ def _linea_en(pid, nombre, offset, t0):
         if nombre.endswith(".gz"):
             if offset > TOPE_GZ:
                 raise RefInvalida("desplazamiento fuera de rango")
-            with gzip.GzipFile(fileobj=fh, mode="rb") as g:
+
+            def comprobar(lec):
+                if time.monotonic() - t0 > TOPE_SEGUNDOS:
+                    raise RefInvalida("el comprimido tarda demasiado en leerse")
+            g = _GzLector(fh, comprobar, max_comprimidos=TOPE_BYTES)
+            try:
                 previo, falta = b"\n", offset
                 while falta > 0:
                     trozo = g.read(min(falta, BLOQUE))
@@ -893,11 +1040,11 @@ def _linea_en(pid, nombre, offset, t0):
                         raise RefInvalida("desplazamiento fuera de rango")
                     falta -= len(trozo)
                     previo = trozo[-1:]
-                    if time.monotonic() - t0 > TOPE_SEGUNDOS:
-                        return None
                 if previo != b"\n":
                     raise RefInvalida("desplazamiento no es un inicio de linea")
                 ln = g.readline(MAX_LINEA + 1)
+            except _GzLimite as e:
+                raise RefInvalida("comprimido no valido: %s" % e)
         else:
             tam = os.fstat(fh.fileno()).st_size
             if offset >= tam:
@@ -1069,34 +1216,69 @@ def _formulario(consulta, nodo, f):
         + "</form>")
 
 
+_DISP = {}                        # directorio del punto -> (firma del listado, resultado)
+_DISP_LOCK = threading.Lock()
+
+
+def primera_marca(real, st, nombre, limite=None):
+    """Marca (µs) de la primera linea de un fichero ya validado por `_fichero_seguro`, o None.
+    Un .gz se lee con `_GzLector` y topes pequeños (bytes comprimidos, miembros y, con
+    `limite` = instante monotonic, tiempo): un .gz patologico no cuesta mas que eso."""
+    try:
+        with _abrir(real, st) as fh:
+            if nombre.endswith(".gz"):
+                def comprobar(lec):
+                    if limite is not None and time.monotonic() > limite:
+                        raise _GzLimite("sin tiempo")
+                g = _GzLector(fh, comprobar, max_miembros=DISP_MIEMBROS, max_comprimidos=DISP_COMPRIMIDOS)
+                ln = g.readline(65536)
+            else:
+                ln = fh.readline(65536)
+    except (OSError, EOFError, zlib.error, _GzLimite):
+        return None
+    return _ts_linea(ln)
+
+
 def disponible_desde(pid):
     """Marca del primer evento que queda del punto (retencion efectiva), o None. Lee solo la
-    primera linea del fichero mas viejo."""
-    mejor = None
+    primera linea del fichero mas viejo de cada familia, con topes (B-08), y recuerda el
+    resultado mientras no cambie el listado de ficheros (corre en cada carga de la pagina)."""
     fs = []
     for _, ruta in nodos.ficheros_eventos(pid):
         ok = _fichero_seguro(pid, os.path.basename(ruta))
         if ok:
             fs.append((ok[1].st_mtime_ns, os.path.basename(ruta), ok))
+    fs.sort(key=lambda x: (x[0], x[1]))
+    # el vivo cambia de tamaño y mtime a cada evento pero su primera linea no (salvo al rotar,
+    # que cambia el inodo): no invalida la memoria
+    firma = tuple((n, ok[1].st_ino) + ((0, 0) if n in ("eve.json", "dns.json") else (m, ok[1].st_size))
+                  for m, n, ok in fs)
+    clave = nodos.dir_eventos(pid)
+    with _DISP_LOCK:
+        c = _DISP.get(clave)
+        if c and c[0] == firma:
+            return c[1]
+    mejor = None
     vistos = set()
-    for _, nombre, ok in sorted(fs):
+    completo = True
+    limite = time.monotonic() + DISP_SEGUNDOS
+    for _, nombre, ok in fs:
         fam = nombre.split(".", 1)[0]
         if fam in vistos:                  # basta el mas viejo de cada familia que tenga marca
             continue
-        try:
-            with _abrir(*ok) as fh:
-                if nombre.endswith(".gz"):
-                    with gzip.GzipFile(fileobj=fh, mode="rb") as g:
-                        ln = g.readline(65536)
-                else:
-                    ln = fh.readline(65536)
-        except (OSError, EOFError, zlib.error):
-            continue
-        t = _ts_linea(ln)
+        if time.monotonic() > limite:
+            completo = False
+            break
+        t = primera_marca(ok[0], ok[1], nombre, limite)
         if t is not None:
             vistos.add(fam)
             if mejor is None or t < mejor:
                 mejor = t
+    if completo:
+        with _DISP_LOCK:
+            if len(_DISP) > 1000:
+                _DISP.clear()
+            _DISP[clave] = (firma, mejor)
     return mejor
 
 
@@ -1108,7 +1290,32 @@ def _retencion(pids_):
     return "<p class='retencion muted'>Eventos disponibles desde: %s</p>" % " &nbsp; ".join(partes)
 
 
-def pagina(consulta, nodo):
+_CONSULTAS = threading.BoundedSemaphore(CONCURRENCIA)
+
+
+def _ocupado(titulo, extra=""):
+    return ("<main class='evw'>" + _CSS + "<h1>%s</h1>" % _e(titulo) + extra
+            + "<div class='banner err'>El buscador de eventos esta ocupado: hay %d consultas en curso, "
+              "que es el maximo a la vez. Reintenta en unos segundos.</div></main>" % CONCURRENCIA)
+
+
+def _con_plaza(fn, titulo):
+    """Como mucho CONCURRENCIA consultas a la vez (cada una puede leer TOPE_BYTES durante
+    TOPE_SEGUNDOS): la siguiente espera ESPERA_OCUPADO y, si no hay plaza, no lee nada (B-14)."""
+    def envuelta(consulta, nodo):
+        nodos.nodos_de(nodo)               # nodo invalido o inexistente: 400/404 antes de esperar
+        if not _CONSULTAS.acquire(timeout=ESPERA_OCUPADO):
+            return _ocupado(titulo)
+        try:
+            return fn(consulta, nodo)
+        finally:
+            _CONSULTAS.release()
+    envuelta.__doc__ = fn.__doc__
+    envuelta.__name__ = fn.__name__
+    return envuelta
+
+
+def _pagina(consulta, nodo):
     """Cuerpo HTML de la pagina Eventos."""
     pids_ = nodos.nodos_de(nodo)
     todos = nodos.es_todos(nodo)
@@ -1178,7 +1385,7 @@ def pagina(consulta, nodo):
             + tabla + "".join(pag) + pie + "</main>")
 
 
-def detalle(consulta, nodo):
+def _detalle(consulta, nodo):
     """Cuerpo HTML con el JSON completo de un evento (formateado y escapado)."""
     nodos.nodos_de(nodo)
     volver = _url(RUTA, _params_filtro(consulta, nodo) + [("cursor", _q(consulta, "cursor", 64))])
@@ -1203,3 +1410,7 @@ def detalle(consulta, nodo):
             + "<p class='sub'>%s · %s · fichero <span class='mono'>%s</span>, byte %d</p>"
             % (_nodo_html(pid), _e(_fmt(ts)), _e(nombre), offset)
             + enlace + bloque + "</main>")
+
+
+pagina = _con_plaza(_pagina, "Eventos")
+detalle = _con_plaza(_detalle, "Evento")
