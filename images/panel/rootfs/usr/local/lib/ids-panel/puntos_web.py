@@ -1181,6 +1181,8 @@ def _barrer(d, ahora):
         cod = (rec2 or rec).get("codigo") if (rec2 or rec).get("terminada") else None
         if cod and cod != "OK" and cancelar is not None:
             cancelar(pid, op=op_id)
+        elif not cod and hasattr(d, "baja_renovar"):
+            d.baja_renovar(pid, op_id)     # sigue en curso: su marca no caduca a mitad
     pedidas -= confirmadas
     purgadas = _leer_purgadas()
     cambio, hechos = False, []

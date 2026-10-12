@@ -274,7 +274,43 @@ class BajaLimpiaRouter(Base):
         self.assertEqual(self.orden, [])
 
 
+    def test_segunda_baja_seguida_no_pisa_la_primera(self):
+        """Correccion de defecto (auditoria ap2 N1): con la baja A esperando al orquestador, una baja B del
+        mismo punto no limpia ni pisa la marca de A; si B falla, la marca de A sigue."""
+        self.assertTrue(self.d.baja_limpiar_router("p001", "ana", op="op-A")["ok"])
+        self.orden.clear()
+        res = self.d.baja_limpiar_router("p001", "ana", op="op-B")
+        self.assertIn("ya hay una baja", res["mensaje"])
+        self.assertEqual(self.orden, [])
+        self.d.baja_cancelada("p001", op="op-B")
+        self.assertEqual(self.d._PREBAJA["p001"][1], "op-A")
+        self.assertNotIn("p001", self.d.pids_activos())
+
+    def test_lista_de_fabrica_tambien(self):
+        """Correccion de defecto (auditoria ap2 H10): una entrada vieja sin lista guardada con la lista
+        renombrada se busca tambien en la de fabrica."""
+        self.api["LIST"] = "lista-renombrada"
+        self.d.guardar_enviados({"p001|10.0.0.9": {"cuando": 1, "router": "p001"}}, self.d.MK_SENT)
+        self.d.baja_limpiar_router("p001", "ana")
+        self.assertIn(("10.0.0.9", "suricata-cuarentena"), self.quitadas())
+        self.assertIn(("10.0.0.9", "lista-renombrada"), self.quitadas())
+
+
 class MarcaDeBaja(Base):
+    def test_renovar_solo_la_de_su_operacion(self):
+        """Capacidad nueva (auditoria ap2): una baja que sigue en curso renueva su marca; otra no."""
+        self.d._PREBAJA["p001"] = (time.time() + 1, "op-1")
+        self.d.baja_renovar("p001", "op-2")
+        self.assertLess(self.d._PREBAJA["p001"][0], time.time() + 5)
+        self.d.baja_renovar("p001", "op-1")
+        self.assertGreater(self.d._PREBAJA["p001"][0], time.time() + 600)
+
+    def test_no_cuenta_para_puntos_que_no_existen(self):
+        """Correccion de defecto (auditoria ap2 H8): un nodo= de un punto que no existe solo suma al total."""
+        self.d.mk_log("QUITADO", IP, "op", "nodo=p009")
+        with open(self.d.ACCIONES_FILE, encoding="utf-8") as f:
+            self.assertNotIn("p009", json.load(f).get("nodos", {}))
+
     def test_envio_durante_la_baja_se_niega(self):
         """Correccion de defecto (auditoria ap2 H4): mientras se da de baja, mk_add (manual o de fondo) no
         manda nada a ese router; a otro punto si."""

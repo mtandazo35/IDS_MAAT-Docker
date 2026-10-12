@@ -2619,7 +2619,7 @@ def contar_accion(accion, pid=""):
             if "nodos" not in d and isinstance(d.get("dias"), dict) and len(nodos.pids()) == 1:
                 # acciones.json de antes de contar por punto: con un solo punto, lo hecho es suyo
                 por_nodo[nodos.pids()[0]] = json.loads(json.dumps(d["dias"]))
-            if nodos.pid_valido(pid):
+            if nodos.pid_valido(pid) and pid in nodos.pids():      # nunca cuentas de puntos que no existen
                 por_nodo[pid] = _sumar(por_nodo.get(pid))
             tmp = "%s.%d.tmp" % (ACCIONES_FILE, os.getpid())
             with open(tmp, "w", encoding="utf-8") as f:
@@ -9292,7 +9292,8 @@ def _quitar_de_router(s_, pid, m, quien, acum):
                 continue
             ip = ip_de(k)
             lst = (v or {}).get("lista") or m.get(campo) or defecto
-            ok, err = _quitar(ip, (lst, m.get(campo) or defecto))
+            # la guardada, la configurada hoy y la de fabrica (entradas viejas sin lista guardada)
+            ok, err = _quitar(ip, (lst, m.get(campo) or defecto, defecto))
             if ok:
                 quitar_enviados([k], path)
                 acum["quitadas"] += 1
@@ -9352,6 +9353,11 @@ def baja_limpiar_router(pid, usuario=None, op=None):
     mio = False
     try:
         with cerrojo_operacion(pid, "baja", espera=0):
+            if _en_prebaja(pid) and _PREBAJA[pid][1] not in (None, op):
+                # otra baja del punto ya limpio el router y espera al orquestador: no se pisa su
+                # marca (si esta segunda fallara, soltaria la de la primera: auditoria ap2 N1)
+                res["mensaje"] = "ya hay una baja de este punto en curso"
+                return res
             mio = True
             _PREBAJA[pid] = (time.time() + PREBAJA_S, op)
             try:
@@ -9397,6 +9403,12 @@ def baja_limpiar_router(pid, usuario=None, op=None):
             _PREBAJA.pop(pid, None)
         bitacora("BAJA-ROUTER", "punto=%s %s: %s" % (pid, "ok" if res["ok"] else "fallo",
                                                      res["mensaje"][:200]), quien=quien)
+
+def baja_renovar(pid, op):
+    """La baja `op` sigue en curso en el orquestador: la marca no caduca mientras tanto."""
+    v = _PREBAJA.get(pid)
+    if v is not None and v[1] == op:
+        _PREBAJA[pid] = (time.time() + PREBAJA_S, op)
 
 def baja_cancelada(pid, op=None):
     """La baja no se hizo tras limpiar el router (el orquestador no la acepto o termino mal): el
