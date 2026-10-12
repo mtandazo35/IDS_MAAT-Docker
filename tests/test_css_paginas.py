@@ -68,10 +68,10 @@ class CSS(unittest.TestCase):
         centrados bajo su titulo; en movil, donde la fila se apila, vuelven a la izquierda."""
         r = self.p.pedir("GET", "/cuarentena?nodo=_todos", cookie=self.ana)
         css = "\n".join(re.findall(r"<style[^>]*>(.*?)</style>", r.texto, flags=re.S))
-        self.assertIn("th.num,td.num{text-align:center}", css)
+        self.assertIn("th.num,td.num,th.cen,td.cen{text-align:center}", css)
         # el bloque movil de la propia pagina (el que apila las filas como tarjetas)
         movil = css[css.index("@media(max-width:820px){h1{font-size:19px}"):]
-        self.assertIn(".num,td.num{text-align:left}", movil)
+        self.assertIn(".num,td.num,td.cen{text-align:left}", movil)
 
     def test_detalle_con_el_ancho_del_panel(self):
         """Correccion de defecto: /detalle trae el CSS del reporte (main a 1200px) y salia mas

@@ -14871,6 +14871,34 @@ def ficha_page(ip, embed=False):
         c = c or (ent or {}).get("motivo", {}) or {}
         conf = c.get("confianza", "")
         conf_b = _cfb(conf, int(c.get("n_evidencias", 0) or 0))
+        # Riesgo con su escala y su banda, con los colores de la tabla de Cuarentena
+        _banda = str(c.get("banda") or "").upper()
+        _rcol = {"ALTO": "#e34948", "MEDIO": "#e58a00"}.get(_banda, "#3a9d5d")
+        riesgo_b = ("<span class=rb style='background:%s'>Riesgo %s/100%s</span>"
+                    % (_rcol, esc(str(c.get("riesgo") or 0)),
+                       (" &middot; " + esc(_banda.lower())) if _banda else "")) if c.get("riesgo") not in (None, "") else ""
+
+        # Franja de resumen: los numeros que el informe ya calculo para este CPE
+        def _hace(t):
+            try:
+                d = int(time.time()) - int(t or 0)
+            except (TypeError, ValueError):
+                return ""
+            if not t or d < 0:
+                return ""
+            if d < 3600:
+                return "hace %d min" % max(1, d // 60)
+            if d < 86400:
+                return "hace %d h" % (d // 3600)
+            return "hace %d d" % (d // 86400)
+        _kp = [(lbl, c.get(k)) for lbl, k in (("Alertas", "total_alertas"), ("Firmas CnC", "firmas_cnc"),
+                                              ("Destinos", "destinos"), ("Puertos", "puertos"))
+               if c.get(k) not in (None, "")]
+        if _hace(c.get("ultima")):
+            _kp.append(("Ultima alerta", _hace(c.get("ultima"))))
+        kpis = ("<div class=fkpis>" + "".join(
+            "<div class=fkpi><div class=fkl>%s</div><div class=fkv>%s</div></div>" % (esc(l), esc(str(v)))
+            for l, v in _kp) + "</div>") if _kp else ""
         # Actividad (de las pruebas)
         act = []
         for p in (c.get("pruebas") or [])[:8]:
@@ -14910,7 +14938,8 @@ def ficha_page(ip, embed=False):
             # como referencia de la fila y no como una columna de ocho numeros iguales
             _ref = (" title='flow_id %s'" % esc(g["flow"])) if g["flow"] else ""
             al += (f"<tr{_ref}><td>{esc(sig)}"
-                   f"<div class=rowmeta>SID {esc(sid)} &middot; rev {esc(rev)}</div></td>"
+                   f"<div class=rowmeta>SID {esc(sid)}"
+                   + (f" &middot; rev {esc(rev)}" if rev not in ("", "-") else "") + "</div></td>"
                    f"<td class=num>{g['n']}</td>"
                    f"<td class=mono>{cuando}</td>"
                    f"<td class=mono>{'<br>'.join(_d) or '&mdash;'}</td></tr>")
@@ -14920,23 +14949,23 @@ def ficha_page(ip, embed=False):
               f"<th>Cuando</th><th>Destino</th></tr></thead><tbody>{al}</tbody></table>"
               + _tope) if al else "&mdash; (sin alertas guardadas)"
         # Coincidencia + Vigencia (reputacion)
+        # Reputacion del destino: coincidencia y vigencia en UNA tabla (antes eran dos filas que,
+        # sin coincidencias, salian casi vacias)
         rep = c.get("reputacion") or []
         if rep:
-            co = ""; vg = ""
+            co = ""
             for r in rep:
                 co += (f"<tr><td class=mono>{esc(r.get('cidr') or r.get('ip', ''))}</td>"
                        f"<td>{esc(r.get('fuente', ''))}</td><td>{esc(r.get('categoria', ''))}"
                        + (" <b>&middot; por su puerto de C2</b>" if r.get("puerto_c2") else "")
                        + (" <span class=rowmeta>(contexto: no suma al riesgo)</span>" if r.get("contexto") else "")
-                       + "</td></tr>")
-                vg += (f"<tr><td>{esc(r.get('fuente', ''))}</td><td class=mono>{_fecha(r.get('fetched_valid', 0))}</td>"
+                       + f"</td><td class=mono>{_fecha(r.get('fetched_valid', 0))}</td>"
                        f"<td class=mono>{_fecha(r.get('expira', 0))}</td>"
-                       f"<td>{'vigente' if r.get('vigente') else 'CADUCADA'}</td></tr>")
-            coincidencia = f"<table class=fichat><thead><tr><th>IP/CIDR</th><th>Fuente</th><th>Categoria</th></tr></thead><tbody>{co}</tbody></table>"
-            vigencia = f"<table class=fichat><thead><tr><th>Fuente</th><th>Ultima valida</th><th>Caduca</th><th>Estado</th></tr></thead><tbody>{vg}</tbody></table>"
+                       f"<td>{'vigente' if r.get('vigente') else '<b>CADUCADA</b>'}</td></tr>")
+            reputacion = ("<table class=fichat><thead><tr><th>IP/CIDR</th><th>Fuente</th><th>Categoria</th>"
+                          f"<th>Ultima valida</th><th>Caduca</th><th>Estado</th></tr></thead><tbody>{co}</tbody></table>")
         else:
-            coincidencia = "&mdash; (ningun destino en listas de reputacion)"
-            vigencia = "&mdash;"
+            reputacion = "<span class=rowmeta>Ningun destino aparece en las listas de reputacion.</span>"
         # Corroboracion
         evs = c.get("evidencias") or []
         corr = ("<ul class=evlist>" + "".join(f"<li>{esc(e)}</li>" for e in evs) + "</ul>"
@@ -14945,12 +14974,15 @@ def ficha_page(ip, embed=False):
         # Decision
         if en_lista:
             decision = f"<b>En cuarentena</b> desde {_fecha((ent or {}).get('cuando', 0))} (lista del MikroTik)"
+            dtono = "cuar"
         elif conf == "alta":
             decision = ("<b>Investigar / poner en cuarentena</b>: varias pruebas "
                         "independientes apuntan al mismo abonado")
+            dtono = "alta"
         else:
             decision = ("<b>Vigilar</b>: una sola pista. Falta que algo distinto lo "
                         "corrobore antes de cortarle")
+            dtono = "vig"
         def _row(k, v):
             return f"<tr><th>{k}</th><td>{v}</td></tr>"
         # Lectura de la IA: va DESPUES de la evidencia y ANTES de la decision, que es el
@@ -14983,6 +15015,9 @@ def ficha_page(ip, embed=False):
                 + ". <b>Es una opinion, no una medicion</b>: la decision y el corte siguen "
                   "siendo tuyos. No se le manda ninguna IP ni dato del abonado.</div>")
         ab = abonado_de(ip_de(ip), _pid)
+        # la IP con su nodo («10.0.0.5 · norte (p001)»), nunca la clave interna pid|ip
+        _ipn = esc(ip_de(ip)) + ((" &middot; " + esc(nodos.nombre(_pid) if nodos.pid_valido(_pid) else _pid)
+                                  + " <span class=rowmeta>(" + esc(_pid) + ")</span>") if _pid else "")
         _abinfo = cargar_abonados()
         _snap = time.strftime("%d/%m %H:%M", time.localtime(_abinfo.get("ts", 0))) if _abinfo.get("ts") else "—"
         # Punto-en-el-tiempo: quien tenia esta IP cuando ocurrio el evento
@@ -15009,36 +15044,52 @@ def ficha_page(ip, embed=False):
         if ab:
             cliente = (f"<b>{esc(ab.get('nombre') or '(sin nombre)')}</b> "
                        f"<span class=cfb style='background:#e7f0fb;color:#1c5cab'>{esc(ab.get('tipo', ''))}</span>"
-                       f"<div class=rowmeta>IP {esc(ip)} · MAC {esc(ab.get('mac', '') or '—')}"
+                       f"<div class=rowmeta>IP {_ipn} · MAC {esc(ab.get('mac', '') or '—')}"
                        f"{(' · ' + esc(ab.get('extra', ''))) if ab.get('extra') else ''}"
                        f" · asignacion actual (snapshot {_snap})</div>")
         elif _abinfo.get("mapa") is not None:
-            cliente = f"{esc(ip)} <span class=rowmeta>sin asignacion PPPoE/DHCP conocida (snapshot {_snap})</span>"
+            cliente = f"{_ipn}<div class=rowmeta>sin asignacion PPPoE/DHCP conocida (snapshot {_snap})</div>"
         else:
-            cliente = f"{esc(ip)} <span class=rowmeta>configura el MikroTik en Ajustes para ver el abonado</span>"
+            cliente = f"{_ipn}<div class=rowmeta>configura el MikroTik en Ajustes para ver el abonado</div>"
         cliente += pit
         cuerpo = (
             f"<div class=fichah><h2 style='margin:0'>{esc(ip_de(ip))}{_chip_nodo_panel(ip)}</h2>{conf_b}"
-            f"<span class=sub2 style='margin-left:auto'>{esc(categoria)} · riesgo {c.get('riesgo', '')}</span></div>"
-            "<table class=ficha>"
+            f"<span class=fcat>{esc(categoria)}</span>{riesgo_b}</div>"
+            # la conclusion va primero: es lo que se viene a buscar
+            f"<div class='fdec {dtono}'>{decision}</div>"
+            + kpis
+            + "<table class=ficha>"
             + _row("Cliente", cliente)
             + _row("Actividad", act_html)
             + _row("Alerta", al)
-            + _row("Coincidencia", coincidencia)
-            + _row("Vigencia", vigencia)
+            + _row("Reputacion del destino", reputacion)
             + _row("Corroboracion", corr)
             + (_row("Lectura de la IA", ia_html) if ia_html else "")
-            + _row("Decision", decision)
             + "</table>")
     css = (BASE_CSS +
            "main{max-width:820px;padding:18px 20px 40px}h1{font-size:19px;margin:0 0 10px}.sub2{color:#6b6a66}"
            ".fichah{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin:0 0 12px}"
            ".ficha{width:100%;border-collapse:collapse}"
-           ".ficha th{text-align:left;vertical-align:top;width:130px;color:#52514e;font-weight:700;padding:10px 12px;border-top:1px solid #eee;background:#faf9f6}"
+           ".ficha th{text-align:left;vertical-align:top;width:150px;color:#52514e;font-weight:700;padding:10px 12px;border-top:1px solid #eee;background:#faf9f6}"
            ".ficha td{padding:10px 12px;border-top:1px solid #eee}"
            ".fichat{width:100%;border-collapse:collapse;font-size:12.5px;margin:2px 0}"
            ".fichat th{background:#f4f4f2;text-align:left;padding:6px 8px;color:#52514e;border-bottom:1px solid #e7e6e2}"
            ".fichat td{padding:6px 8px;border-bottom:1px solid #f2f1ee;vertical-align:top}"
+           # numeros centrados bajo su titulo (el th de .fichat pisaba a .num)
+           ".fichat th.num,.fichat td.num{text-align:center}"
+           # en el modal no hay menu, y el estilo de la etiqueta de nodo venia con el menu
+           ".nodochip{display:inline-block;margin-left:8px;padding:1px 8px;border-radius:20px;background:#eef2f7;"
+           "color:#33322f;font:600 11px system-ui;vertical-align:middle}"
+           ".rb{color:#fff;font-weight:800;font-size:12px;padding:2px 9px;border-radius:20px;white-space:nowrap}"
+           ".fcat{margin-left:auto;color:#52514e;font-size:13px}"
+           ".fdec{border-radius:10px;padding:10px 14px;margin:0 0 12px;font-size:13.5px;border:1px solid}"
+           ".fdec.vig{background:#fff7ed;border-color:#f2d3ad;color:#5c3a0f}"
+           ".fdec.alta{background:#fdecec;border-color:#f3c4c4;color:#7d1d1d}"
+           ".fdec.cuar{background:#eef4fd;border-color:#cfe0f6;color:#1c4f8f}"
+           ".fkpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(110px,1fr));gap:8px;margin:0 0 12px}"
+           ".fkpi{border:1px solid #eee;border-radius:10px;background:#fff;padding:8px 10px}"
+           ".fkl{font-size:11px;text-transform:uppercase;letter-spacing:.04em;color:#6b6a66;font-weight:600}"
+           ".fkv{font-size:18px;font-weight:800;font-variant-numeric:tabular-nums;margin-top:2px}"
            ".cfb{font-size:11px;font-weight:800;padding:2px 9px;border-radius:20px}"
            ".cfb.alta{background:#fdecec;color:#b52a2a;border:1px solid #f3c4c4}"
            ".cfb.sosp{background:#fff7ed;color:#7a4a12;border:1px solid #f2d3ad}"
@@ -15118,6 +15169,12 @@ def cuarentena_page(msg="", es_admin=False):
     enviados_dns = {k: v for k, v in cargar_enviados(MK_SENT_DNS).items() if _en_vista(k)}
     def _col(b):
         return {"ALTO": "#e34948", "MEDIO": "#e58a00"}.get(b, "#3a9d5d")
+
+    def _router_celda(rid):
+        if not rid:
+            return "<span class=rowmeta>&mdash;</span>"
+        nom = nodos.nombre(rid) if nodos.pid_valido(rid) else rid
+        return "<span class=rnom>%s</span>" % html.escape(nom)
 
     _mapa_ab = cargar_abonados().get("mapa") or {}      # una vez, no por fila
 
@@ -15204,8 +15261,11 @@ def cuarentena_page(msg="", es_admin=False):
             return "<span class='dry' title='Configura y habilita el MikroTik en Ajustes para activar el envio'>solo sugerencia</span>"
         filas = "".join(
             f"<tr><td data-label='CPE' class='mono ipx'>{esc(c.get('ip',''))}"
-            f"{_chip_nodo_panel(_k(c))}{_cli(c.get('ip',''), c.get('router',''))}</td>"
-            f"<td data-label='Riesgo'><span class='rb' style='background:{_col(c.get('banda',''))}'>{c.get('riesgo',0)} · {esc(c.get('banda',''))}</span>"
+            f"{_cli(c.get('ip',''), c.get('router',''))}</td>"
+            # el router (punto) en su propia columna, al lado del CPE: la misma IP privada
+            # puede estar en varios routers y son abonados distintos
+            f"<td data-label='Router'>{_router_celda(c.get('router',''))}</td>"
+            f"<td data-label='Riesgo' class='cen'><span class='rb' style='background:{_col(c.get('banda',''))}'>{c.get('riesgo',0)} · {esc(c.get('banda',''))}</span>"
             f"<div style='margin-top:4px'>{_conf_badge(c)}</div></td>"
             # la firma primero: es el QUE. El recuento es el cuanto y va debajo, mas
             # discreto. Entera en el title, porque recortada a 70 se pierde justo el final,
@@ -15219,9 +15279,9 @@ def cuarentena_page(msg="", es_admin=False):
             f"{_ev_html(c)}</td>"
             f"<td data-label='Destinos' class='num'>{c.get('destinos',0)}</td><td data-label='Puertos' class='num'>{c.get('puertos',0)}</td>"
             f"<td data-label='Alertas' class='num'>{c.get('total_alertas',0):,}</td>"
-            f"<td data-label='Accion'>{_acc(c)}</td></tr>" for c in candidatos)
+            f"<td data-label='Accion' class='cen'>{_acc(c)}</td></tr>" for c in candidatos)
         if not filas:
-            filas = f"<tr><td colspan=7 class='muted' style='padding:18px;text-align:center'>{vacio}</td></tr>"
+            filas = f"<tr><td colspan=8 class='muted' style='padding:18px;text-align:center'>{vacio}</td></tr>"
         # 'Enviar todos' solo actua sobre los CONFIRMADOS (2+ pruebas independientes)
         pend_alta = [c for c in pend if c.get("confianza") == "alta"]
         btn = ""
@@ -15241,12 +15301,12 @@ def cuarentena_page(msg="", es_admin=False):
                 f"Cada CPE va a la address-list de <b>su categoria</b>, que sale en su fila."
                 f"</p></div>{btn}</div>"
                 "<div class='card'><table><thead><tr>"
-                "<th>CPE (IP origen)</th><th>Riesgo / confianza</th><th>Motivo y evidencia</th>"
+                "<th>CPE (IP origen)</th><th>Router</th><th class='cen'>Riesgo / confianza</th><th>Motivo y evidencia</th>"
                 "<th class='num'>Destinos</th><th class='num'>Puertos</th>"
                 # la columna es el TOTAL del CPE; el motivo cuenta solo las de su
                 # categoria. Ver "380 alertas DNS" al lado de un 382 despista si no se dice.
                 "<th class='num' title='Todas las alertas de este CPE en la ventana, "
-                "no solo las de esta categoria'>Alertas</th><th>Accion</th>"
+                "no solo las de esta categoria'>Alertas</th><th class='cen'>Accion</th>"
                 f"</tr></thead><tbody>{filas}</tbody></table></div></div>")
 
     def _sec_listas():
@@ -15541,11 +15601,13 @@ def cuarentena_page(msg="", es_admin=False):
            ".evlink:hover{color:#1c5cab}"
            # conteos cortos (1, 3, 12) centrados bajo su titulo: alineados a la derecha el
            # numero quedaba pegado al borde y parecia no ser de su columna (igual que en Top)
-           "th.num,td.num{text-align:center}"
+           "th.num,td.num,th.cen,td.cen{text-align:center}"
+           ".rnom{font-weight:600;white-space:nowrap}"
            ".fichaov{display:none;position:fixed;inset:0;background:rgba(11,11,11,.5);z-index:120;align-items:center;justify-content:center;padding:20px}"
-           ".fichabox{position:relative;background:#fcfcfb;border-radius:14px;max-width:880px;width:100%;height:min(88vh,820px);box-shadow:0 14px 50px rgba(0,0,0,.4);overflow:hidden}"
+           # alto segun el contenido (fichaAlto): con alto fijo una ficha corta dejaba media caja vacia
+           ".fichabox{position:relative;background:#fcfcfb;border-radius:14px;max-width:880px;width:100%;max-height:88vh;box-shadow:0 14px 50px rgba(0,0,0,.4);overflow:hidden}"
            ".fichax{position:absolute;top:8px;right:8px;z-index:2;border:0;background:#eceae6;width:30px;height:30px;border-radius:50%;font-size:19px;line-height:1;cursor:pointer}.fichax:hover{background:#e34948;color:#fff}"
-           ".fichafr{width:100%;height:100%;border:0}"
+           ".fichafr{width:100%;height:60vh;max-height:88vh;border:0;display:block}"
            ".destchip{display:inline-flex;align-items:center;gap:4px;background:#eef4fd;border:1px solid #cfe0f6;color:#2a5fa0;border-radius:20px;padding:2px 4px 2px 10px;margin:2px 4px 2px 0;font-size:12px}"
            ".destx{border:0;background:transparent;color:#2a5fa0;cursor:pointer;font-size:15px;line-height:1;padding:0 4px}.destx:hover{color:#e34948}"
            ".dry{background:#eef4fd;color:#2a5fa0;border:1px solid #cfe0f6;font-size:11px;font-weight:700;padding:2px 8px;border-radius:20px;white-space:nowrap}"
@@ -15599,7 +15661,7 @@ def cuarentena_page(msg="", es_admin=False):
            "@media(max-width:820px){"
            "h1{font-size:19px}"
            ".shead{align-items:stretch}.shead .qbtn{margin-left:0}"
-           ".fichabox{height:calc(100vh - 28px);max-width:100%}"
+           ".fichabox{height:calc(100vh - 28px);max-height:none;max-width:100%}.fichafr{height:100%!important;max-height:none}"
            ".notifm{left:14px;right:14px;transform:translateY(-16px);max-width:none}"
            ".notifm.show{transform:translateY(0)}"
            # tablas densas -> se apilan como tarjetas (Etiqueta: valor) en vez de aplastarse.
@@ -15615,7 +15677,7 @@ def cuarentena_page(msg="", es_admin=False):
            "tbody td.mot{padding-left:0}"
            "tbody td.mot::before{position:static;display:block;width:auto;margin-bottom:4px}"
            "tbody td[colspan]{padding-left:0;text-align:center}tbody td[colspan]::before{display:none}"
-           ".mot{max-width:none}.num,td.num{text-align:left}"
+           ".mot{max-width:none}.num,td.num,td.cen{text-align:left}"
            "}"
            "</style>")
     body = ("<!doctype html><html lang=es><head><meta charset=utf-8><link rel=icon type=image/png href=/favicon.ico>"
@@ -15631,8 +15693,10 @@ def cuarentena_page(msg="", es_admin=False):
             "<div id=fichamodal class=fichaov onmousedown=\"this._dn=event.target\" onclick=\"if(event.target===this&&this._dn===this){this.style.display='none'}\">"
             "<div class=fichabox><button type=button class=fichax "
             "onclick=\"document.getElementById('fichamodal').style.display='none'\">&times;</button>"
-            "<iframe id=fichafr class=fichafr></iframe></div></div>"
-            "<script>function verFicha(ip){var m=document.getElementById('fichamodal');"
+            "<iframe id=fichafr class=fichafr onload='fichaAlto(this)'></iframe></div></div>"
+            "<script>function fichaAlto(f){try{var d=f.contentDocument;if(!d||!d.body)return;"
+            "f.style.height=Math.min(d.documentElement.scrollHeight+2,Math.floor(window.innerHeight*.88))+'px';}catch(e){}}"
+            "function verFicha(ip){var m=document.getElementById('fichamodal');"
             "document.getElementById('fichafr').src='/cuarentena/ficha?embed=1&ip='+encodeURIComponent(ip)"
             + ("+'" + qs_nodo() + "'" if qs_nodo() else "") + ";"
             "m.style.display='flex';}"
