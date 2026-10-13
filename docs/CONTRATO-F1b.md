@@ -86,7 +86,8 @@ Con `/srv/ids/panel` en `root:10500` 2770 (I.1) el panel (10500) crea y reemplaz
 ### P.4 Entorno y montajes que lee
 
 Los de la interfaz fija (I.2): `IDS_PROXY`, `IDS_EMPRESA` (se muestra en la barra y en el login,
-escapado), `IDS_PUERTO`, `IDS_TZ` (zona para **mostrar** fechas; desconocida o sin tzdata → UTC),
+escapado), `IDS_PUERTO`, `IDS_TZ` (zona para **mostrar** fechas; por defecto `America/Guayaquil`; sin tzdata, Ecuador es
+UTC−5 fijo y otra zona desconocida → UTC),
 `IDS_ORQ_SOCK`, `IDS_ORQ_TOKEN` (ruta; el token se relee en cada petición), `IDS_PANEL_DIR`,
 `IDS_DATOS`, `IDS_RUN`. `IDS_PROXY` mal escrito o `IDS_PUERTO` no numérico → sale con 2.
 
@@ -266,7 +267,7 @@ services:
       IDS_PROXY: "203.0.113.50"
       IDS_EMPRESA: "ids.empresa.example"
       IDS_PUERTO: "5637"
-      IDS_TZ: "UTC"
+      IDS_TZ: "America/Guayaquil"
       TZ: "UTC"
       IDS_ORQ_SOCK: "/run/ids-orq/orq.sock"
       IDS_ORQ_TOKEN: "/run/secrets/orq_token"
@@ -304,7 +305,7 @@ networks:
 - Etiqueta `ids-maat.parte=panel` y **sin** `ids-maat.punto`: el panel no es un punto (ni huérfano
   ni supervisado como tal), y `install.sh` no lo toma por un contenedor ajeno con puertos.
 - `IDS_PROXY` = `IPS_PROXY` de `ids.conf` (IPs sueltas sin `/32`); `IDS_EMPRESA` = `NOMBRE_DNS`;
-  `IDS_TZ` = `ZONA_HORARIA` o `UTC`; `TZ` del contenedor siempre `UTC` (la zona solo al mostrar).
+  `IDS_TZ` = `ZONA_HORARIA` o `America/Guayaquil` (hora de Ecuador); `TZ` del contenedor siempre `UTC` (la zona solo al mostrar).
 - `IDS_ORQ_TOKEN` es la **ruta** del fichero del token (montaje de un fichero `root:10500` 0640);
   el token nunca va en el entorno ni en el compose.
 - Red `ids-core`: `10.210.255.0/24` (reservada en F1a; fuera de las /28 de los puntos y del `bip`

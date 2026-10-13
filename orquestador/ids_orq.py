@@ -372,8 +372,9 @@ class Config:
         self.pool = ipaddress.IPv4Network(kv["POOL_DOCKER"], strict=False)
         if not self.redes_gestion or not self.ips_proxy:
             raise ErrorOrden("FALLO", "ids.conf: REDES_GESTION e IPS_PROXY no pueden estar vacías")
-        # F1b: zona horaria con la que el panel muestra las fechas (opcional; por defecto UTC)
-        self.zona = kv.get("ZONA_HORARIA") or "UTC"
+        # F1b: zona horaria con la que el panel muestra las fechas (opcional; por defecto la de
+        # Ecuador: los clientes son ISP de Ecuador y todo se lee en su hora)
+        self.zona = kv.get("ZONA_HORARIA") or "America/Guayaquil"
         if not RE_ZONA.match(self.zona):
             raise ErrorOrden("FALLO", "ids.conf: ZONA_HORARIA inválida")
 

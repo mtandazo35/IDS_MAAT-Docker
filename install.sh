@@ -15,7 +15,7 @@
 #        --imagenes vpn=<ref>,suricata=<ref>,panel=<ref> --nombre … --gestion … --proxy …
 #
 # Otras opciones:
-#   --zona             zona horaria con la que el panel muestra las fechas (por defecto UTC)
+#   --zona             zona horaria con la que el panel muestra las fechas (por defecto America/Guayaquil)
 #   --solo-validar     valida los argumentos y sale sin tocar nada
 #   --confirmar        desde una sesión SSH NUEVA: confirma el acceso y anula la reversión
 #   --sin-reversion    sin modo seguro (instalación desde la consola del proveedor)

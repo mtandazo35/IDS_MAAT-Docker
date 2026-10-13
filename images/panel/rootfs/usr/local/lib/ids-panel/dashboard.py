@@ -22,15 +22,18 @@ if _AQUI not in sys.path:
     sys.path.insert(0, _AQUI)
 import nodos, secretos   # noqa: E402  (rutas/nodo del hilo y secretos cifrados: CONTRATO-F2 §2, §10.3)
 
-IDS_TZ = (os.environ.get("IDS_TZ") or "UTC").strip() or "UTC"
+IDS_TZ = (os.environ.get("IDS_TZ") or "America/Guayaquil").strip() or "America/Guayaquil"
 
 def _zona(nombre):
-    """Zona horaria de IDS_TZ (el contenedor corre con TZ=UTC). Sin tzdata: UTC."""
+    """Zona horaria de IDS_TZ (el contenedor corre con TZ=UTC). Sin tzdata: Ecuador es UTC-5
+    fijo (no tiene horario de verano); cualquier otra, UTC."""
+    if nombre.upper() == "UTC":
+        return timezone.utc
     try:
         from zoneinfo import ZoneInfo
         return ZoneInfo(nombre)
     except Exception:
-        return timezone.utc
+        return timezone(timedelta(hours=-5)) if nombre == "America/Guayaquil" else timezone.utc
 
 TZ_EC = _zona(IDS_TZ)   # nombre heredado: es la zona de la empresa (IDS_TZ), no la de Ecuador
 
@@ -18200,8 +18203,10 @@ class H(BaseHTTPRequestHandler):
 def _aplicar_tz():
     """El contenedor corre con TZ=UTC: el panel y sus subprocesos (generador, informe) usan
     la zona de la empresa (IDS_TZ)."""
-    os.environ["TZ"] = IDS_TZ
+    # Windows no tiene tzset (solo pruebas/local): ahi TZ con un nombre IANA confunde al CRT
+    # y se queda la hora del sistema
     if hasattr(time, "tzset"):
+        os.environ["TZ"] = IDS_TZ
         time.tzset()
 
 def crear_servidor(bind=None, port=None):

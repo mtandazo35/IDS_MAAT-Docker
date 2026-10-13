@@ -46,7 +46,7 @@ import stat
 import threading
 import time
 import zlib
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from urllib.parse import urlencode
 
 import nodos
@@ -210,7 +210,7 @@ _ZONAS = {}
 
 
 def _zona():
-    n = (os.environ.get("IDS_TZ") or "UTC").strip() or "UTC"
+    n = (os.environ.get("IDS_TZ") or "America/Guayaquil").strip() or "America/Guayaquil"
     z = _ZONAS.get(n)
     if z is None:
         z = timezone.utc
@@ -218,8 +218,8 @@ def _zona():
             try:
                 from zoneinfo import ZoneInfo
                 z = ZoneInfo(n)
-            except Exception:              # zona desconocida o sin tzdata: UTC (CONTRATO-F1b)
-                z = timezone.utc
+            except Exception:              # sin tzdata: Ecuador UTC-5 fijo; otra desconocida, UTC
+                z = timezone(timedelta(hours=-5)) if n == "America/Guayaquil" else timezone.utc
         _ZONAS[n] = z
     return z
 

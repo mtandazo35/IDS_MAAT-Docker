@@ -75,6 +75,6 @@ class Config:
             puerto=puerto,
             escucha=env.get("IDS_ESCUCHA") or "0.0.0.0",
             empresa=(env.get("IDS_EMPRESA") or "").strip()[:80],
-            tz=(env.get("IDS_TZ") or "UTC").strip() or "UTC",
+            tz=(env.get("IDS_TZ") or "America/Guayaquil").strip() or "America/Guayaquil",
             proxies=redes_proxy(env.get("IDS_PROXY", "")),
         )

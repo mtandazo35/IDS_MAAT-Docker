@@ -96,7 +96,8 @@ class ComposeCore(Base):
         self.assertEqual(env["IDS_PROXY"], "203.0.113.50")
         self.assertEqual(env["IDS_EMPRESA"], "ids.empresa.example")
         self.assertEqual(env["IDS_PUERTO"], "5637")
-        self.assertEqual((env["IDS_TZ"], env["TZ"]), ("UTC", "UTC"))
+        # sin ZONA_HORARIA: hora de Ecuador al mostrar; el contenedor sigue en UTC
+        self.assertEqual((env["IDS_TZ"], env["TZ"]), ("America/Guayaquil", "UTC"))
         self.assertEqual(env["IDS_ORQ_SOCK"], "/run/ids-orq/orq.sock")
         self.assertEqual(env["IDS_ORQ_TOKEN"], "/run/secrets/orq_token")
         self.assertEqual((env["IDS_PANEL_DIR"], env["IDS_DATOS"], env["IDS_RUN"]),
