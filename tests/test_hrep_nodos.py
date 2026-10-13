@@ -179,6 +179,8 @@ class PorNodo(Entorno):
                            r"data-s='[^']*'>([^<]+)</td>", tabla)
         self.assertEqual(sorted(set(filas)), [("10.0.0.5", "Nodo A"), ("10.0.0.5", "Nodo B")])
         self.assertNotIn("nodochip", tabla)
+        # y todas las columnas alineadas a la izquierda, tambien las numericas
+        self.assertIn("#detalle th,#detalle td{text-align:left}", doc)
 
         self.ok("60", "--nodo", "p001")
         tabla1 = re.search(r'<table id="detalle">.*?</table>', self.html("p001"), re.S).group(0)
