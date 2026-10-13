@@ -13789,10 +13789,14 @@ _CD_CSS = """<style>
 .bars .row,.mini .row{display:flex;align-items:center;gap:11px;margin:0 0 6px;
                       border-radius:6px;transition:background .12s}
 .bars .row:hover,.mini .row:hover{background:color-mix(in srgb,var(--azul) 6%, transparent)}
-.bars .lb{flex:0 0 142px;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:13px}
+.bars .lb{flex:0 0 220px;display:flex;align-items:center;gap:10px;font-size:13px}
+.bars .lb .lip{flex:0 0 128px;text-align:left;font-family:ui-monospace,Menlo,Consolas,monospace;
+               color:var(--tinta);font-weight:600;overflow:hidden;text-overflow:ellipsis}
+.bars .lb .lnodo{flex:1 1 auto;min-width:0;text-align:left;color:var(--suave);overflow:hidden;
+                 text-overflow:ellipsis}
 .mini .lb{flex:0 0 252px;font-size:13px}
-.bars .lb,.mini .lb{text-align:right;color:var(--tinta2);overflow:hidden;
-                    text-overflow:ellipsis;white-space:nowrap}
+.mini .lb{text-align:right}
+.bars .lb,.mini .lb{color:var(--tinta2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .bars .tr,.mini .tr{flex:1 1 auto;background:var(--pista);border-radius:4px}
 .bars .tr{height:24px}
 .mini .tr{height:17px}
@@ -13837,7 +13841,9 @@ a.pg:hover{border-color:var(--linea);background:color-mix(in srgb,var(--azul) 7%
 
 @media(max-width:700px){
   .inf h2{font-size:19px}
-  .bars .lb,.mini .lb{flex-basis:112px;font-size:12px}
+  .mini .lb{flex-basis:112px;font-size:12px}
+  .bars .lb{flex-basis:170px;font-size:12px}
+  .bars .lb .lip{flex-basis:108px}
   .bars .vl,.mini .vl{flex-basis:52px}
   .cdcuerpo{grid-template-columns:1fr}
 }
@@ -13974,12 +13980,14 @@ def conducta_barras(filas, titulo, n=10, sub=""):
     tope = max(f["alertas"] for f in top)
     fil = "".join(
         "<div class=row title='%s: %s alertas, %s'>"
-        "<div class=lb>%s</div><div class=tr>"
+        "<div class=lb><span class=lip>%s</span><span class=lnodo>%s</span></div><div class=tr>"
         "<div class=fi style='width:%.1f%%'></div></div>"
         "<div class=vl>%s</div></div>"
         % (esc(f["ip"]), "{:,}".format(f["alertas"]).replace(",", "."),
            esc(nombre_categoria(f.get("_cat", "otros")).lower()),
-           esc(f["ip"]) + ((" &middot; " + esc(nodos.nombre(f["nodo"]))) if f.get("nodo") else ""),
+           # IP y nodo en columnas: con «IP · nodo» alineado a la derecha las IPs no caian
+           # una debajo de otra
+           esc(f["ip"]), esc(nodos.nombre(f["nodo"])) if f.get("nodo") else "",
            max(100.0 * f["alertas"] / tope, 1.0),
            "{:,}".format(f["alertas"]).replace(",", "."))
         for f in top)

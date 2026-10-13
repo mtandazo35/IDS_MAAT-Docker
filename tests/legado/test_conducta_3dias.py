@@ -239,6 +239,10 @@ def main():
     check("la barra mas alta ocupa el 100%", "width:100.0%" in barras, barras)
     check("y el resto va en proporcion, no todas iguales",
           "width:25.0%" in barras, barras)
+    check("la IP va en su propia columna, alineada (el user, 2026-10-12)",
+          "<span class=lip>192.168.1.1</span><span class=lnodo></span>" in barras, barras)
+    check("con la IP en una columna de ancho fijo",
+          ".bars .lb .lip{flex:0 0 128px;text-align:left" in ns["_CD_CSS"], "")
     check("un CPE sin alertas no pinta barra",
           ns["conducta_barras"]([{"ip": "192.168.1.3", "alertas": 0}], "T") == "")
 
