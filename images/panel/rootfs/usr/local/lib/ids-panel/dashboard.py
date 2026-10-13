@@ -921,52 +921,6 @@ GRAD_REGLAS = [
     ("tcp", "7547,37215", "TR-069 e IoT (botnets)"),
 ]
 
-# --- Higiene de salida: reglas para TODOS los abonados -----------------------------
-# Distinto de la cuarentena graduada: esto no señala a un CPE, cambia la politica del nodo.
-# Por eso aqui el correo es SOLO el 25: cortar tambien el 587/465 romperia a los clientes
-# de correo legitimos, que usan envio autenticado.
-GRUPOS_SALIDA = [
-    ("correo", "Correo saliente sin autenticar", ["25"], "tcp",
-     "Es la causa numero uno de que un ISP acabe en Spamhaus. El estandar del sector es "
-     "cortar el 25 saliente y dejar el 587 y 465 (envio autenticado), que es lo que usan "
-     "los clientes de correo de verdad.",
-     "Tu servidor de correo tiene que quedar excluido."),
-    ("admin", "Administracion remota", ["22", "2222", "23", "2323", "3389", "5900"], "tcp",
-     "Escaneo y fuerza bruta contra SSH, Telnet y RDP de todo internet. Es lo que mas "
-     "denuncias genera despues del spam.",
-     "Si algun abonado administra servidores propios, excluilo antes."),
-    ("smb", "Compartir archivos de Windows", ["445", "139"], "tcp",
-     "No tiene ningun uso legitimo saliendo a internet: es como se propagan los gusanos.",
-     ""),
-    ("iot", "TR-069 e IoT", ["7547", "37215", "5555"], "tcp",
-     "Botnets tipo Mirai buscando routers y camaras ajenos.", ""),
-    ("bd", "Bases de datos ajenas", ["3306", "1433", "5432", "6379", "27017"], "tcp",
-     "Ataques contra bases de datos de terceros.", ""),
-]
-
-# --- Reglas por CONDUCTA ----------------------------------------------------------
-# Un escaner NO se corta con una regla por puerto: prueba muchos, y el que hoy usa el 22
-# manana usa el 23. Hay que detectarlo por como se comporta -muchos puertos en poco
-# tiempo, o demasiadas conexiones nuevas- y meterlo en una address-list.
-#
-# Estas reglas se entregan con el DROP desactivado a proposito. El P2P, algunos juegos y
-# ciertas apps abren muchas conexiones y darian falso positivo: primero se mira quien cae
-# en la lista durante unos dias y despues se activa el corte. Entregarlas cortando de
-# entrada seria dejar sin internet a gente que no hizo nada.
-GRUPOS_CONDUCTA = [
-    ("escaneo", "Escaneo de puertos y barridos",
-     ["Escaneo de puertos", "Escaneo saliente", "Escaneo SSH", "Escaneo Telnet",
-      "Escaneo TR-069"],
-     "Es lo que mas denuncias genera y lo que mete tus publicas en las listas. No se "
-     "puede cortar por puerto porque el escaner los prueba todos: se detecta por "
-     "conducta (muchos puertos seguidos, o demasiadas conexiones nuevas) y se manda al "
-     "que lo hace a una address-list."),
-    ("fuerza", "Fuerza bruta de credenciales",
-     ["Fuerza bruta", "RDP/VNC"],
-     "Reintentos contra SSH, RDP, FTP o SIP ajenos. Se limita el ritmo de conexiones "
-     "nuevas hacia esos puertos en vez de cortarlos del todo."),
-]
-
 _RE_ROS_RARO = re.compile(r"[^A-Za-z0-9_.:-]")
 
 def ros_lista(nombre):
@@ -982,66 +936,6 @@ def ros_lista(nombre):
     if n and not _RE_ROS_RARO.search(n):
         return n
     return '"%s"' % n.replace("\\", "\\\\").replace('"', '\\"')
-
-# --- Trafico que NO es abuso pero igual se quiere controlar ------------------------
-# El P2P no hace que te baneen una IP: por eso no cuenta como abuso saliente. Pero se
-# come la banda y suele ser lo que mas alertas genera, asi que hay que poder VERLO y
-# decidir aparte.
-GRUPOS_CONTROL = [
-    ("p2p", "BitTorrent y P2P",
-     ["BitTorrent / P2P"],
-     ["6881", "6882", "6883", "6884", "6885", "6886", "6887", "6888", "6889",
-      "6969", "51413"],
-     "No ensucia tus IPs publicas, asi que no cuenta como abuso. Pero suele ser el "
-     "grueso del trafico y de las alertas."),
-]
-
-def analisis_control(rid=None, tope=12):
-    """Que CPEs hacen P2P y cuanto. Sale de las categorias de firma, que SI lo cuentan."""
-    cpes = _cpes_de_reporte(rid)
-    out = []
-    for clave, titulo, cats, puertos, porque in GRUPOS_CONTROL:
-        quienes = []
-        total = 0
-        for c in cpes:
-            suyo = sum(int(v) for cat, v in (c.get("cats_top") or {}).items() if cat in cats)
-            if suyo:
-                total += suyo
-                quienes.append((clave_cpe(c.get("ip", ""), c.get("router", "")), suyo,
-                                c.get("riesgo", 0)))
-        if not total:
-            continue
-        quienes.sort(key=lambda x: x[1], reverse=True)
-        out.append({"clave": clave, "titulo": titulo, "alertas": total,
-                    "cpes": len(quienes), "top": quienes[:tope],
-                    "puertos": puertos, "porque": porque})
-    return out
-
-def analisis_conducta(rid=None):
-    """Cuanto abuso encaja con cada conducta, segun las categorias de firma reales."""
-    cpes = _cpes_de_reporte(rid)
-    total = 0
-    for c in cpes:
-        total += sum(int(v) for v in (c.get("cats_top") or {}).values())
-    grupos = []
-    for clave, titulo, cats, porque in GRUPOS_CONDUCTA:
-        n = 0; quienes = set(); vistas = {}
-        for c in cpes:
-            suyo = 0
-            for cat, v in (c.get("cats_top") or {}).items():
-                if cat in cats:
-                    suyo += int(v); vistas[cat] = vistas.get(cat, 0) + int(v)
-            if suyo:
-                n += suyo
-                quienes.add(clave_cpe(c.get("ip", ""), c.get("router", "")))
-        if not n:
-            continue
-        grupos.append({"clave": clave, "titulo": titulo, "alertas": n, "cpes": len(quienes),
-                       "pct": (n * 100.0 / total) if total else 0.0,
-                       "porque": porque,
-                       "cats": sorted(vistas.items(), key=lambda kv: kv[1], reverse=True)})
-    grupos.sort(key=lambda g: g["alertas"], reverse=True)
-    return grupos
 
 _CPES_CACHE = {}          # ruta de cuarentena.json -> {"sello", "datos"}
 _CPES_LOCK = threading.Lock()
@@ -1089,38 +983,6 @@ def _cpes_de_reporte(rid=None):
     if rid is None:
         return ent["datos"]
     return [c for c in ent["datos"] if (c.get("router") or "") == rid]
-
-def analisis_salida(rid=None):
-    """Cuanto abuso mataria cada regla de salida, con los datos REALES del sensor.
-
-    Devuelve (total_alertas, total_cpes, [grupos]). Cada grupo dice cuantas alertas y
-    cuantos CPEs cubre: sin esos dos numeros, proponer una regla es adivinar."""
-    cpes = _cpes_de_reporte(rid)
-    total = 0
-    for c in cpes:
-        total += sum(int(v) for v in (c.get("puertos_top") or {}).values())
-    grupos = []
-    for clave, titulo, puertos, proto, porque, cuidado in GRUPOS_SALIDA:
-        n = 0; quienes = set(); detalle = {}
-        for c in cpes:
-            suyo = 0
-            for pp, v in (c.get("puertos_top") or {}).items():
-                num = str(pp).split("/", 1)[0]
-                if num in puertos:
-                    suyo += int(v)
-                    detalle[num] = detalle.get(num, 0) + int(v)
-            if suyo:
-                n += suyo
-                quienes.add(clave_cpe(c.get("ip", ""), c.get("router", "")))
-        if not n:
-            continue
-        grupos.append({"clave": clave, "titulo": titulo, "proto": proto,
-                       "puertos": [p for p in puertos if p in detalle],
-                       "alertas": n, "cpes": len(quienes),
-                       "pct": (n * 100.0 / total) if total else 0.0,
-                       "porque": porque, "cuidado": cuidado, "detalle": detalle})
-    grupos.sort(key=lambda g: g["alertas"], reverse=True)
-    return total, len({clave_cpe(c.get("ip", ""), c.get("router", "")) for c in cpes}), grupos
 
 def grad_reglas_texto(lista):
     """Las reglas que hay que pegar en el MikroTik. Sin ellas la address-list no corta
@@ -11160,24 +11022,6 @@ trafico legitimo; se prueba antes con <code>loose</code>.</li>
 crear la conexion, para no llenar la tabla de conntrack.</li>
 </ul>
 
-<h2>P2P: verlo y controlarlo</h2>
-<p>El BitTorrent <b>no</b> hace que te baneen una IP publica, asi que no cuenta como abuso
-saliente &mdash;si contara, el numero que hay que poder enseñar no valdria nada&mdash;. Pero suele
-ser <b>el grueso de las alertas</b> y de la banda, asi que se ve <b>aparte</b>: en <b>Abuso
-saliente</b> sale su propia tarjeta con cuantas alertas son, cuantos CPEs lo hacen y <b>quienes
-son</b>, y el total no abusivo aparece tambien en la cabecera.</p>
-<h3>Que funciona y que no</h3>
-<ul>
-<li><b>Puertos clasicos</b> (6881-6889, 6969, 51413), en TCP <b>y</b> UDP porque el DHT va por UDP.
-Caza al cliente que quedo como venia de fabrica.</li>
-<li><b>Un cliente configurado a mano con puerto aleatorio y cifrado NO cae ahi.</b> Bloquear P2P del
-todo es una pelea perdida y conviene saberlo antes de prometerselo a nadie.</li>
-<li><b>El tope de conexiones simultaneas es lo que de verdad le duele</b>: un cliente de torrent
-abre cientos, y un limite alto no molesta a quien solo navega.</li>
-<li>Si lo que te molesta es <b>la banda</b> y no el trafico en si, sale mucho mejor
-<b>encolarlo</b> con <code>/queue</code> que intentar cortarlo.</li>
-</ul>
-
 <h2>Sensor POST-NAT: analizar lo que hacen tus IPs publicas</h2>
 <p>Lo normal es espejar el <b>bridge</b> del MikroTik: ahi se ve quien es cada abonado (<code>10.x</code>)
 pero <b>nunca</b> la IP publica por la que salio. Hay un montaje distinto para lo contrario: espejar
@@ -11337,29 +11181,6 @@ Meterle miles de entradas una a una por la API tardaria horas.</li>
 </ul>
 <p>Nunca entran en la lista tus propias redes ni las de <b>Nunca bloquear</b>, y cada importacion
 <b>reemplaza</b> la lista entera, asi que lo que deja de atacar desaparece solo.</p>
-
-<h2>Reglas de salida: lo que baja los baneos</h2>
-<p>En <b>Historico</b> el panel muestra que <b>tipo de salida</b> conviene cortar en el MikroTik,
-sacado de lo que el sensor vio <b>de verdad</b>, no de una lista generica. Cada grupo dice
-<b>cuantas alertas corta</b>, <b>cuantos CPEs la provocan</b> y <b>que porcentaje</b> de tu abuso
-representa, ordenadas de mayor a menor.</p>
-<p>Esto es distinto de la cuarentena: no senala a un abonado, cambia la <b>politica del nodo</b> y
-actua sobre <b>todos</b> a la vez, sin esperar a detectar a nadie. Por eso es lo que mas rapido baja
-los baneos.</p>
-<ul>
-<li><b>Correo saliente.</b> Es la causa numero uno de acabar en Spamhaus. Ojo con un detalle que se
-equivoca a menudo: se corta el <b>25</b> y se <b>deja</b> el 587 y el 465, que son el envio
-<b>autenticado</b> que usan los clientes de correo legitimos. Cortar el 587 rompe a gente que no hizo
-nada. Tu servidor de correo tiene que quedar excluido.</li>
-<li><b>Administracion remota</b> (SSH, Telnet, RDP, VNC): un abonado domestico no necesita salir por
-ahi, y es lo que mas denuncias genera despues del spam.</li>
-<li><b>SMB</b> (445, 139), <b>TR-069 e IoT</b> y <b>bases de datos ajenas</b>: sin uso legitimo
-saliendo a internet.</li>
-</ul>
-<p>Solo aparecen los grupos con abuso <b>real</b> en tus datos, y dentro de cada uno solo los puertos
-que efectivamente se usaron. El panel <b>no da reglas para pegar</b>: cada red tiene su propio orden
-de reglas, sus redes de abonados y sus excepciones, y una regla generica pegada a ciegas puede no
-actuar o cortar a quien no debe. Usalo para decidir que cortar y montalo en tu firewall.</p>
 
 <h2>Cuarentena graduada: cortar sin dejar sin internet</h2>
 <p>El corte total tiene un problema practico: el abonado llama a soporte, soporte lo desbloquea y el
@@ -14544,73 +14365,10 @@ def historico_page(dias_n=7):
                 + _diag_cuando(_d.get("ts", 0))
                 + "</p>" + filas + "</section>")
 
-    # --- Reglas de salida: de los eventos que ve el sensor a lo que hay que pegar ----
-    # solo los routers de lo que se mira: un nodo, o todos en la vista acumulada
+    # sin «Reglas de salida» (el user, 2026-10-13): de los routers de lo que se mira solo se
+    # pinta su diagnostico (un nodo, o todos en la vista acumulada)
     _vis = nodos.nodos_de()
     rs = [r for r in cargar_routers() if r.get("id") in _vis]
-    multi = nodos.es_todos() or len(rs) > 1
-    secc_reglas = []
-    for r in (rs if multi else [None]):
-        rid = r.get("id", "") if r else None
-        nom = (r.get("nombre") or r.get("HOST") or rid) if r else ""
-        tot, n_cpes, grupos = analisis_salida(rid)
-        # se calculan UNA vez: antes se pedian dos veces cada uno (una para saber si
-        # habia algo que mostrar y otra para mostrarlo)
-        _conductas = analisis_conducta(rid)
-        _ctls = analisis_control(rid)
-        if not grupos and not _conductas and not _ctls:
-            continue
-        tarjetas_g = []
-        for ctl in _ctls:
-            filas_c = "".join(
-                f"<tr><td class=mono>{esc(ip_de(k))}</td>"
-                f"<td class=num>{n:,}</td><td class=num>{rg}</td></tr>"
-                for k, n, rg in ctl["top"])
-            tarjetas_g.append(
-                "<div class=regla>"
-                f"<div class=rh><b>{esc(ctl['titulo'])}</b>"
-                "<span class=rp>no cuenta como abuso</span></div>"
-                f"<div class=rn><b>{ctl['alertas']:,}</b> alertas de <b>{ctl['cpes']:,}</b> "
-                f"CPE(s). {esc(ctl['porque'])}</div>"
-                "<div class=tablewrap style='margin-top:6px'><table class=tcentro><thead><tr><th>CPE</th>"
-                "<th class=num>Alertas</th><th class=num>Riesgo</th></tr></thead>"
-                # sin «Reglas para controlarlo»: daban por hecha la lista de excepciones
-                # suricata-salida-permitida, que nadie crea (el user, 2026-10-13)
-                f"<tbody>{filas_c}</tbody></table></div></div>")
-        conductas = _conductas
-        for g in conductas:
-            det = ", ".join("%s (%d)" % (c, n) for c, n in g["cats"][:3])
-            tarjetas_g.append(
-                "<div class=regla>"
-                f"<div class=rh><b>{esc(g['titulo'])}</b>"
-                "<span class=rp>por conducta</span>"
-                f"<span class=rpct>{g['pct']:.0f} %</span></div>"
-                f"<div class=rn><b>{g['alertas']:,}</b> alertas de <b>{g['cpes']:,}</b> CPE(s)"
-                + (f" &mdash; {esc(det)}" if det else "") + ". " + esc(g["porque"]) + "</div></div>")
-        for g in grupos:
-            pts = ", ".join(g["puertos"])
-            tarjetas_g.append(
-                "<div class=regla>"
-                f"<div class=rh><b>{esc(g['titulo'])}</b>"
-                f"<span class=rp>{esc(pts)}/{esc(g['proto'])}</span>"
-                f"<span class=rpct>{g['pct']:.0f} %</span></div>"
-                f"<div class=rn><b>{g['alertas']:,}</b> alertas de <b>{g['cpes']:,}</b> CPE(s). "
-                + esc(g["porque"]) + "</div>"
-                + (f"<div class=rcuidado>&#9888; {esc(g['cuidado'])}</div>" if g["cuidado"] else "")
-                + "</div>")
-        secc_reglas.append(
-            "<section class='card cardp'>"
-            + (f"<h2 style='font-size:15px;margin:0 0 4px'>Reglas de salida &mdash; {esc(nom)}</h2>"
-               if multi else "<h2 style='font-size:15px;margin:0 0 4px'>Reglas de salida recomendadas</h2>")
-            + f"<p class=sub2 style='margin:0 0 10px'>Salidas de <b>{n_cpes:,}</b> CPEs con actividad. "
-              "Cada regla dice <b>cuanto de tu abuso corta</b>, medido con lo que el sensor vio de "
-              "verdad, no con una lista generica. Es lo que baja los baneos, porque actua sobre "
-              "<b>todos</b> los abonados a la vez y no espera a detectar a nadie.</p>"
-            # sin bloques de «reglas para pegar»: daban por hecha la address-list de excepciones
-            # suricata-salida-permitida (que nadie crea), solo cubrian la primera red de
-            # abonados y nunca se probaron en un MikroTik (el user, 2026-10-13)
-            + "".join(tarjetas_g)
-            + "</section>")
     # --- cortar a los que nos atacan desde internet ---------------------------------
     bl = blocklist_borde()
     bl_html = ""
@@ -14642,7 +14400,7 @@ def historico_page(dias_n=7):
         if (r.get("HOST") or "") and r.get("ENABLED") == "1":
             diag_html += _diag_html(r, r.get("nombre") or r.get("HOST") or r.get("id", ""),
                                     len(rs) > 1)
-    reglas_html = diag_html + bl_html + "".join(secc_reglas)
+    reglas_html = diag_html + bl_html
 
     sel = "".join(
         f"<a href='?d={n}{qs_nodo()}' class='{'on' if n == dias_n else ''}'>{n} dias</a>"
@@ -14685,17 +14443,10 @@ def historico_page(dias_n=7):
             ".doscol td:first-child,.doscol th:first-child{word-break:break-word;line-height:1.35}"
             ".doscol .num{text-align:right;white-space:nowrap;width:74px}"
             ".doscol td,.doscol th{vertical-align:top;padding:6px 8px}"
-            # relleno de las tarjetas de una columna (Reglas de salida, Cortar a los que te atacan):
+            # relleno de las tarjetas de una columna (Cortar a los que te atacan):
             # sin el, titulo, textos, tablas y porcentajes tocaban el borde (el user, 2026-10-13)
             ".cardp{padding:18px 22px}"
             ".tcentro th,.tcentro td{text-align:center!important}"
-            ".regla{border-top:1px solid #f0efec;padding:12px 0}"
-            ".regla .rh{display:flex;align-items:center;gap:10px;flex-wrap:wrap}"
-            ".regla .rp{font:12px ui-monospace,Consolas,monospace;background:#f1f1ef;"
-            "border:1px solid #e0dfda;border-radius:5px;padding:1px 7px}"
-            ".regla .rpct{margin-left:auto;font-weight:800;color:#2a78d6;font-size:15px}"
-            ".regla .rn{font-size:13px;color:#52514e;margin-top:4px}"
-            ".regla .rcuidado{font-size:12.5px;color:#a15c12;margin-top:4px}"
             ".diagl{display:flex;gap:10px;align-items:flex-start;border-top:1px solid #f0efec;"
             "padding:9px 0;font-size:13px}"
             ".diagfix{background:#f8f9fa;border:1px solid #eaecf0;border-radius:6px;"

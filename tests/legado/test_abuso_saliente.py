@@ -115,10 +115,8 @@ def main():
     d = piezas(DASH, ("ACCIONES_FILE", "ACCIONES_DIAS", "_ACC_LOCK", "_leer_acciones", "cargar_acciones",
                       "contar_accion", "METRICAS_FILE", "cargar_metricas", "_serie",
                       "_media", "tendencia_txt", "_DIAS_SEM", "_grafico", "historico_page",
-                      "GRUPOS_SALIDA", "_CPES_CACHE", "_cpes_de_reporte", "analisis_salida",
+                      "_CPES_CACHE", "_cpes_de_reporte",
                       "DIAG_FILE", "diagnostico_de",
-                      "GRUPOS_CONDUCTA", "analisis_conducta",
-                      "GRUPOS_CONTROL", "analisis_control",
                       "ENTRANTES_FILE", "BL_LISTA", "BL_MIN_ALERTAS", "BL_MIN_DESTINOS",
                       "BL_TOPE", "_REP_CACHE", "_REP_MAX", "rep_fuente", "cargar_entrantes",
                       "blocklist_borde", "blocklist_rsc", "blocklist_reglas",
@@ -268,8 +266,7 @@ def main():
                         "puertos": {}, "cats": {}, "nodos": {}}}, 6000, False)
     check("y tambien suma entre corridas", r6["dias"][hoy]["ruido"] == 1000, r6["dias"][hoy])
 
-    # ---------- reglas de salida a partir de los eventos reales ----------
-    # 3 CPEs mandando spam, 1 escaneando SSH y 1 haciendo solo web (que NO debe generar regla)
+    # ---------- Historico sin «Reglas de salida» (el user, 2026-10-13) ----------
     json.dump({"top_riesgo": [
         {"ip": "10.0.0.1", "router": "", "puertos_top": {"25/tcp": 4000}},
         {"ip": "10.0.0.2", "router": "", "puertos_top": {"25/tcp": 3000, "443/tcp": 50}},
@@ -279,34 +276,10 @@ def main():
     ], "candidatos": [], "dns_candidatos": []},
         open(CUAR, "w", encoding="utf-8"))
 
-    tot, n_cpes, grupos = d["analisis_salida"](None)
-    check("se miran todos los CPEs con actividad", n_cpes == 5, n_cpes)
-    porclave = {g["clave"]: g for g in grupos}
-    check("se detecta el correo saliente", "correo" in porclave, list(porclave))
-    check("con sus alertas sumadas", porclave["correo"]["alertas"] == 8000, porclave.get("correo"))
-    check("y cuantos CPEs lo hacen", porclave["correo"]["cpes"] == 3, porclave.get("correo"))
-    check("dice que porcentaje del abuso corta",
-          40 < porclave["correo"]["pct"] < 45, porclave["correo"]["pct"])
-    check("la administracion remota sale aparte", porclave["admin"]["alertas"] == 2000, porclave.get("admin"))
-    check("lo primero que se propone es lo que mas corta", grupos[0]["clave"] == "correo",
-          [g["clave"] for g in grupos])
-    check("el trafico web normal NO genera ninguna regla",
-          all("443" not in g["puertos"] for g in grupos), [g["puertos"] for g in grupos])
-    check("y solo se nombran los puertos con abuso de VERDAD",
-          porclave["admin"]["puertos"] == ["22", "23"], porclave["admin"]["puertos"])
-
-    check("el correo es SOLO el 25: el 587 es envio autenticado de clientes legitimos",
-          porclave["correo"]["puertos"] == ["25"], porclave["correo"]["puertos"])
-
-    # --- reglas por CONDUCTA: un escaner no se corta con una regla por puerto ---
-    cond = d["analisis_conducta"](None)
-    check("sin categorias no se propone ninguna conducta", cond == [], cond)
-
     # el cache del reporte tiene que darse cuenta de que el archivo cambio, aunque se
     # reescriba dentro del mismo tick del reloj: si no, la pagina muestra datos viejos
     # sin que nada lo delate (paso con getmtime a secas)
     _antes = len(d["_cpes_de_reporte"](None))
-
     json.dump({"top_riesgo": [
         {"ip": "10.0.0.1", "router": "", "puertos_top": {"25/tcp": 4000},
          "cats_top": {"Spam": 4000}},
@@ -319,56 +292,12 @@ def main():
     check("el cache nota que el reporte cambio, aunque sea al instante",
           len(d["_cpes_de_reporte"](None)) != _antes or _antes == 3,
           (_antes, len(d["_cpes_de_reporte"](None))))
-    cond = {g["clave"]: g for g in d["analisis_conducta"](None)}
-    check("el escaneo se detecta como conducta", "escaneo" in cond, list(cond))
-    check("sumando sus categorias", cond["escaneo"]["alertas"] == 1800, cond["escaneo"]["alertas"])
-    check("la fuerza bruta va aparte", cond["fuerza"]["alertas"] == 200, cond.get("fuerza"))
-    check("el trafico normal no genera conducta",
-          all("Anomalia" not in c for g in cond.values() for c, _n in g["cats"]), cond)
-
 
     pag_r = d["historico_page"](30)
-    check("las reglas se ven en Abuso saliente", "Reglas de salida" in pag_r)
-    check("con el porcentaje que corta cada una", "rpct" in pag_r)
-    check("y el aviso de excluir el servidor de correo",
-          "servidor de correo" in pag_r, "")
-    # sin reglas para pegar: daban por hecha la address-list suricata-salida-permitida (que
-    # nadie crea), solo cubrian la primera red de abonados y nunca se probaron en un MikroTik
-    check("sin bloques de reglas para pegar en el MikroTik",
-          "Reglas para pegar" not in pag_r and "suricata-salida-permitida" not in pag_r
-          and "/ip firewall filter" not in pag_r, "")
-
-    # ---------- P2P: se ve aparte, no cuenta como abuso ----------
-    json.dump({"top_riesgo": [
-        {"ip": "10.0.0.7", "router": "", "riesgo": 20,
-         "puertos_top": {"51413/tcp": 900}, "cats_top": {"BitTorrent / P2P": 900}},
-        {"ip": "10.0.0.8", "router": "", "riesgo": 15,
-         "puertos_top": {"6881/udp": 300}, "cats_top": {"BitTorrent / P2P": 300}},
-        {"ip": "10.0.0.9", "router": "", "riesgo": 70,
-         "puertos_top": {"22/tcp": 500}, "cats_top": {"Escaneo SSH": 500}},
-    ], "candidatos": [], "dns_candidatos": []},
-        open(CUAR, "w", encoding="utf-8"))
-
-    ctl = d["analisis_control"](None)
-    check("el P2P se detecta y se lista aparte", len(ctl) == 1 and ctl[0]["clave"] == "p2p", ctl)
-    check("con el total de alertas", ctl[0]["alertas"] == 1200, ctl[0]["alertas"])
-    # CONTRATO-F2 §1: la identidad del CPE es SIEMPRE pid|ip (clave_cpe real); el reporte
-    # de un punto sin `router` es de ese punto. La pagina pinta ip_de(clave).
-    check("y QUIEN lo hace, que es lo que se pidio",
-          [k for k, _n, _r in ctl[0]["top"]] == ["p001|10.0.0.7", "p001|10.0.0.8"], ctl[0]["top"])
-    check("el que escanea NO aparece como P2P",
-          all(d["ip_de"](k) != "10.0.0.9" for k, _n, _r in ctl[0]["top"]), ctl[0]["top"])
-
-    # y sigue sin contar como abuso: el escaneo si, el P2P no
-    cond = {g["clave"]: g for g in d["analisis_conducta"](None)}
-    check("el escaneo sigue contando como conducta abusiva", "escaneo" in cond, list(cond))
-
-    pag_p2p = d["historico_page"](30)
-    check("el P2P se ve en la pagina con sus CPEs", "BitTorrent y P2P" in pag_p2p)
-    check("marcado como que no cuenta como abuso", "no cuenta como abuso" in pag_p2p)
-    check("y el total no abusivo sale en la cabecera", "no abusivo" in pag_p2p)
-    check("sin 'Reglas para controlarlo': daban por hecha una address-list que nadie crea",
-          "Reglas para controlarlo" not in pag_p2p and "reglas_p2p_texto" not in DASH, "")
+    check("Historico ya no tiene la tarjeta 'Reglas de salida' ni sus reglas",
+          "Reglas de salida" not in pag_r and "/ip firewall filter" not in pag_r
+          and "analisis_salida" not in DASH and "GRUPOS_CONTROL" not in DASH, "")
+    check("y el total no abusivo sigue en la cabecera", "no abusivo" in pag_r)
 
     # ---------- bloqueo en el borde: cortar a los que nos atacan ----------
     check("sin datos de entrantes no se propone bloquear a nadie",
