@@ -95,6 +95,19 @@ class AtacantesPorPuerto(Entorno):
         self.assertIn("<b>solo 1 atacante</b> en 3 alertas (muestra pequeña)", t)
         self.assertNotIn("van empatados", doc)
 
+    def test_firmas_alineadas_a_la_izquierda(self):
+        """Correccion de defecto: las firmas van alineadas a la izquierda, como las graficas en
+        columnas de al lado; antes iban a la derecha y cada una empezaba en otro sitio (el user,
+        2026-10-13)."""
+        self.eventos("p001", "eve.json",
+                     [alerta("10.0.0.5", "192.0.2.10", dport=23, flow_id=80 + i) for i in range(3)])
+        self.ok("60", "--nodo", "p001")
+        t = tarjeta(self.html("p001"), "Firmas mas frecuentes (tipo de ataque)")
+        etiquetas = re.findall(r'<text ([^>]*) class="lbl">', t)
+        self.assertTrue(etiquetas, t)
+        self.assertTrue(all(e.startswith('x="2" ') and "text-anchor" not in e for e in etiquetas),
+                        etiquetas)
+
 
 if __name__ == "__main__":
     unittest.main()

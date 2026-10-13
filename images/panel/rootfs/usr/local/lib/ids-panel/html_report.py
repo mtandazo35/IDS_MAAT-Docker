@@ -1021,14 +1021,15 @@ def _cardq(tip):
     return f'<span class="chq">?<span class="chtip">{esc(tip)}</span></span>' if tip else ""
 
 def hbar(titulo, pares, unidad="alertas", fmt=str, lblw=125, barw=470, card_class="card",
-         label_above=False, tip="", piso=8, que="valor"):
+         label_above=False, tip="", piso=8, que="valor", izq=False):
     """Barras horizontales rankeadas, un solo tono, etiqueta de valor directa.
     label_above=True: el nombre va ENCIMA de la barra (a todo el ancho), no en una
     columna a la izquierda; asi los nombres largos (firmas) no se recortan nunca.
     Escala HONESTA: el largo y el color van contra `ref = max(mx, piso)`, no contra el
     maximo. Asi una sola alerta NO llena la barra ni la pinta de rojo (antes, con todo en
     1, salia todo full y rojo como si fueran ataques intensos). `que` = nombre singular
-    de la fila (puerto/IP/firma) para el aviso de 'sin dominante'."""
+    de la fila (puerto/IP/firma) para el aviso de 'sin dominante'. izq=True: la etiqueta alineada
+    a la izquierda, como las graficas en columnas que van al lado."""
     q = _cardq(tip)
     if not pares:
         return f'<section class="{card_class}"><h2>{esc(titulo)}{q}</h2><p class="muted">Sin datos.</p></section>'
@@ -1100,8 +1101,9 @@ def hbar(titulo, pares, unidad="alertas", fmt=str, lblw=125, barw=470, card_clas
                     f'<text x="{lblw+w+6}" y="{ty}" class="val">{esc(fmt(v))}</text></g>')
                 continue
             etq = name if len(name) <= maxch else name[:maxch - 1] + "…"
+            pos = 'x="2"' if izq else f'x="{lblw-8}" text-anchor="end"'
             rows.append(
-                f'<text x="{lblw-8}" y="{ty}" text-anchor="end" class="lbl">{esc(etq)}</text>'
+                f'<text {pos} y="{ty}" class="lbl">{esc(etq)}</text>'
                 f'<rect x="{lblw}" y="{y}" width="{w}" height="{rowh}" rx="4" fill="{heat(v/ref)}"/>'
                 f'<text x="{lblw+w+6}" y="{ty}" class="val">{esc(fmt(v))}</text>')
     # aviso honesto cuando la muestra es plana/pequeña (no hay un dominante real)
@@ -2535,7 +2537,7 @@ td.num{{text-align:right;font-variant-numeric:tabular-nums}}
     {hbar("Atacantes por puerto", src_dport_top, "alertas", que="atacante", lblw=300, barw=300, tip="Pares IP origen -> puerto destino con mas alertas: QUIEN golpea QUE servicio (23 Telnet, 445 SMB, 22 SSH, 443 HTTPS...). Una misma IP sale en varias filas si ataca varios puertos. Solo el top; el total de puertos distintos esta en el recuadro de arriba.")}
     {hbar("IPs origen (atacantes)", top(by_src, fmt=lambda k: _cols_cpe(k, "")), "alertas", que="IP", lblw=230, barw=365, tip="IPs de ORIGEN que mas alertas dispararon (los equipos/CPE que generan el trafico). Ojo: muchas pueden ser solo consultas DNS sospechosas, no ataque real. Solo el top; el total esta arriba.")}
     {hbar("IPs destino (objetivos)", dst_top, "alertas", que="IP", lblw=300, barw=300, tip="IPs de DESTINO mas frecuentes: hacia donde va el trafico alertado (el objetivo) y por que puerto (el mas usado; +N = otros puertos). Los resolutores DNS conocidos NO cuentan aqui: una consulta maliciosa es culpa del CPE, no un ataque al DNS; van aparte, mas abajo, como resolutores usados (Ajustes -> DNS).")}
-    {hbar("Firmas mas frecuentes (tipo de ataque)", firmas_top, "alertas", que="firma", tip="Tipos de ataque (firmas de Suricata) mas frecuentes, agrupados y traducidos al espanol. Indica que clase de amenaza predomina.")}
+    {hbar("Firmas mas frecuentes (tipo de ataque)", firmas_top, "alertas", que="firma", lblw=165, barw=430, izq=True, tip="Tipos de ataque (firmas de Suricata) mas frecuentes, agrupados y traducidos al espanol. Indica que clase de amenaza predomina.")}
   </div>
   {top_sec}
   <section class="card">
