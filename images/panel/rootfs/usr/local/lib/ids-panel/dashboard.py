@@ -983,53 +983,6 @@ def ros_lista(nombre):
         return n
     return '"%s"' % n.replace("\\", "\\\\").replace('"', '\\"')
 
-def reglas_conducta_texto(clave, redes=None, permitidos="suricata-salida-permitida"):
-    """Las reglas de MikroTik para una conducta. Texto listo para pegar."""
-    redes = redes or [str(r) for r in mis_redes()]
-    origen = " ".join(f"src-address={r}" for r in redes[:1]) or "src-address=0.0.0.0/0"
-    if clave == "escaneo":
-        return "\n".join([
-            "/ip firewall filter",
-            "# 1) el que prueba muchos puertos seguidos (psd = detector de escaneo de RouterOS)",
-            f'add chain=forward protocol=tcp psd=21,3s,3,1 {origen} '
-            f'src-address-list=!{ros_lista(permitidos)} action=add-src-to-address-list '
-            'address-list=suricata-escaneo address-list-timeout=1d '
-            'comment="Suricata: escaneo de puertos saliente"',
-            "",
-            "# 2) el que abre demasiadas conexiones nuevas (barrido de muchas IPs)",
-            f'add chain=forward connection-state=new {origen} '
-            f'src-address-list=!{ros_lista(permitidos)} action=jump jump-target=det-barrido '
-            'comment="Suricata: medir ritmo de conexiones nuevas"',
-            'add chain=det-barrido limit=50,100:packet action=return '
-            'comment="Suricata: ritmo normal, seguir"',
-            'add chain=det-barrido action=add-src-to-address-list '
-            'address-list=suricata-escaneo address-list-timeout=1h '
-            'comment="Suricata: barrido (demasiadas conexiones nuevas)"',
-            "",
-            "# 3) el corte. DESACTIVADO: mira unos dias quien cae en la lista",
-            "#    (/ip firewall address-list print where list=suricata-escaneo)",
-            "#    y cuando estes seguro, ponlo en disabled=no",
-            'add chain=forward src-address-list=suricata-escaneo action=drop disabled=yes '
-            'comment="Suricata: cortar a los que escanean"',
-        ])
-    return "\n".join([
-        "/ip firewall filter",
-        "# limitar el ritmo de intentos hacia puertos de acceso remoto y correo",
-        f'add chain=forward connection-state=new protocol=tcp '
-        f'dst-port=22,23,21,3389,5900,5060,25 {origen} '
-        f'src-address-list=!{ros_lista(permitidos)} action=jump jump-target=det-fuerza '
-        'comment="Suricata: medir intentos de credenciales"',
-        'add chain=det-fuerza limit=10,20:packet action=return '
-        'comment="Suricata: ritmo normal, seguir"',
-        'add chain=det-fuerza action=add-src-to-address-list '
-        'address-list=suricata-fuerza-bruta address-list-timeout=1h '
-        'comment="Suricata: fuerza bruta saliente"',
-        "",
-        "# el corte, DESACTIVADO hasta que revises la lista",
-        'add chain=forward src-address-list=suricata-fuerza-bruta action=drop disabled=yes '
-        'comment="Suricata: cortar la fuerza bruta saliente"',
-    ])
-
 # --- Trafico que NO es abuso pero igual se quiere controlar ------------------------
 # El P2P no hace que te baneen una IP: por eso no cuenta como abuso saliente. Pero se
 # come la banda y suele ser lo que mas alertas genera, asi que hay que poder VERLO y
@@ -1063,35 +1016,6 @@ def analisis_control(rid=None, tope=12):
                     "cpes": len(quienes), "top": quienes[:tope],
                     "puertos": puertos, "porque": porque})
     return out
-
-def reglas_p2p_texto(puertos, redes=None, permitidos="suricata-salida-permitida"):
-    """Reglas para el P2P, con lo que de verdad funciona y lo que no.
-
-    Honestidad por delante: bloquear puertos conocidos caza al cliente perezoso, pero uno
-    con cifrado y puertos aleatorios se escapa. Lo que si le duele a cualquier cliente de
-    torrent es el tope de conexiones simultaneas, porque abre cientos."""
-    redes = redes or [str(r) for r in mis_redes()]
-    origen = f"src-address={redes[0]}" if redes else "src-address=0.0.0.0/0"
-    pts = ",".join(puertos)
-    return "\n".join([
-        "/ip firewall filter",
-        "# 1) puertos clasicos de BitTorrent. Caza al cliente por defecto; uno configurado",
-        "#    a mano con puerto aleatorio y cifrado NO cae aqui.",
-        f'add chain=forward protocol=tcp dst-port={pts} {origen} '
-        f'src-address-list=!{ros_lista(permitidos)} action=drop comment="Suricata: P2P (TCP)"',
-        f'add chain=forward protocol=udp dst-port={pts} {origen} '
-        f'src-address-list=!{ros_lista(permitidos)} action=drop comment="Suricata: P2P (UDP/DHT)"',
-        "",
-        "# 2) esto es lo que de verdad le duele: un cliente de torrent abre CIENTOS de",
-        "#    conexiones simultaneas. Un tope alto no molesta a quien navega.",
-        f'add chain=forward protocol=tcp connection-state=new {origen} '
-        f'src-address-list=!{ros_lista(permitidos)} connection-limit=150,32 action=drop '
-        'comment="Suricata: tope de conexiones simultaneas por abonado"',
-        "",
-        "# NOTA: bloquear P2P del todo es una pelea perdida (cifrado, puertos aleatorios,",
-        "# DHT). Si lo que te molesta es la banda y no el trafico en si, sale mucho mejor",
-        "# encolarlo con /queue que intentar cortarlo.",
-    ])
 
 def analisis_conducta(rid=None):
     """Cuanto abuso encaja con cada conducta, segun las categorias de firma reales."""
@@ -1197,27 +1121,6 @@ def analisis_salida(rid=None):
                        "porque": porque, "cuidado": cuidado, "detalle": detalle})
     grupos.sort(key=lambda g: g["alertas"], reverse=True)
     return total, len({clave_cpe(c.get("ip", ""), c.get("router", "")) for c in cpes}), grupos
-
-def regla_salida(grupo, redes=None, permitidos="suricata-salida-permitida"):
-    """La regla de MikroTik para un grupo, con TUS redes de abonado como origen."""
-    redes = redes or [str(r) for r in mis_redes()]
-    puertos = ",".join(grupo["puertos"])
-    out = []
-    for red in (redes or ["0.0.0.0/0"]):
-        out.append(f'add chain=forward src-address={red} src-address-list=!{ros_lista(permitidos)} '
-                   f'protocol={grupo["proto"]} dst-port={puertos} action=drop '
-                   f'comment="Suricata salida: {grupo["titulo"]}"')
-    return "\n".join(out)
-
-def reglas_salida_texto(grupos, redes=None):
-    if not grupos:
-        return ""
-    cab = ["# Excepciones (servidor de correo propio, abonados con servidores, etc.):",
-           "/ip firewall address-list",
-           'add list=suricata-salida-permitida address=192.0.2.10 comment="ejemplo: cambialo"',
-           "",
-           "/ip firewall filter"]
-    return "\n".join(cab + [regla_salida(g, redes) for g in grupos])
 
 def grad_reglas_texto(lista):
     """Las reglas que hay que pegar en el MikroTik. Sin ellas la address-list no corta
@@ -11436,8 +11339,8 @@ Meterle miles de entradas una a una por la API tardaria horas.</li>
 <b>reemplaza</b> la lista entera, asi que lo que deja de atacar desaparece solo.</p>
 
 <h2>Reglas de salida: lo que baja los baneos</h2>
-<p>Al final de <b>Abuso saliente</b> el panel propone <b>reglas de firewall para el MikroTik</b>
-sacadas de lo que el sensor vio <b>de verdad</b>, no de una lista generica. Cada una dice
+<p>En <b>Historico</b> el panel muestra que <b>tipo de salida</b> conviene cortar en el MikroTik,
+sacado de lo que el sensor vio <b>de verdad</b>, no de una lista generica. Cada grupo dice
 <b>cuantas alertas corta</b>, <b>cuantos CPEs la provocan</b> y <b>que porcentaje</b> de tu abuso
 representa, ordenadas de mayor a menor.</p>
 <p>Esto es distinto de la cuarentena: no senala a un abonado, cambia la <b>politica del nodo</b> y
@@ -11447,16 +11350,16 @@ los baneos.</p>
 <li><b>Correo saliente.</b> Es la causa numero uno de acabar en Spamhaus. Ojo con un detalle que se
 equivoca a menudo: se corta el <b>25</b> y se <b>deja</b> el 587 y el 465, que son el envio
 <b>autenticado</b> que usan los clientes de correo legitimos. Cortar el 587 rompe a gente que no hizo
-nada. Tu servidor de correo va en la lista de excepciones.</li>
+nada. Tu servidor de correo tiene que quedar excluido.</li>
 <li><b>Administracion remota</b> (SSH, Telnet, RDP, VNC): un abonado domestico no necesita salir por
 ahi, y es lo que mas denuncias genera despues del spam.</li>
 <li><b>SMB</b> (445, 139), <b>TR-069 e IoT</b> y <b>bases de datos ajenas</b>: sin uso legitimo
 saliendo a internet.</li>
 </ul>
 <p>Solo aparecen los grupos con abuso <b>real</b> en tus datos, y dentro de cada uno solo los puertos
-que efectivamente se usaron. Las reglas salen con <b>tus</b> redes de abonado como origen y una
-address-list <code>suricata-salida-permitida</code> para las excepciones. <b>Revisa las excepciones
-antes de pegarlas</b>: afectan a todos.</p>
+que efectivamente se usaron. El panel <b>no da reglas para pegar</b>: cada red tiene su propio orden
+de reglas, sus redes de abonados y sus excepciones, y una regla generica pegada a ciegas puede no
+actuar o cortar a quien no debe. Usalo para decidir que cortar y montalo en tu firewall.</p>
 
 <h2>Cuarentena graduada: cortar sin dejar sin internet</h2>
 <p>El corte total tiene un problema practico: el abonado llama a soporte, soporte lo desbloquea y el
@@ -14671,12 +14574,9 @@ def historico_page(dias_n=7):
                 f"CPE(s). {esc(ctl['porque'])}</div>"
                 "<div class=tablewrap style='margin-top:6px'><table class=tcentro><thead><tr><th>CPE</th>"
                 "<th class=num>Alertas</th><th class=num>Riesgo</th></tr></thead>"
-                f"<tbody>{filas_c}</tbody></table></div>"
-                "<details style='margin-top:6px'><summary style='cursor:pointer;font-size:12.5px'>"
-                "Reglas para controlarlo</summary>"
-                f"<pre style='background:#f8f9fa;border:1px solid #eaecf0;border-radius:6px;"
-                f"padding:10px;overflow-x:auto;font-size:12px'>"
-                f"{esc(reglas_p2p_texto(ctl['puertos']))}</pre></details></div>")
+                # sin «Reglas para controlarlo»: daban por hecha la lista de excepciones
+                # suricata-salida-permitida, que nadie crea (el user, 2026-10-13)
+                f"<tbody>{filas_c}</tbody></table></div></div>")
         conductas = _conductas
         for g in conductas:
             det = ", ".join("%s (%d)" % (c, n) for c, n in g["cats"][:3])
@@ -14686,15 +14586,7 @@ def historico_page(dias_n=7):
                 "<span class=rp>por conducta</span>"
                 f"<span class=rpct>{g['pct']:.0f} %</span></div>"
                 f"<div class=rn><b>{g['alertas']:,}</b> alertas de <b>{g['cpes']:,}</b> CPE(s)"
-                + (f" &mdash; {esc(det)}" if det else "") + ". " + esc(g["porque"]) + "</div>"
-                "<details style='margin-top:6px'><summary style='cursor:pointer;font-size:12.5px'>"
-                "Reglas para pegar</summary>"
-                "<p class=hint style='margin:6px 0'>El <b>drop va desactivado</b>: mira unos dias "
-                "quien cae en la address-list y actívalo cuando estes seguro. El P2P y algunos "
-                "juegos abren muchas conexiones y darian falso positivo.</p>"
-                f"<pre style='background:#f8f9fa;border:1px solid #eaecf0;border-radius:6px;"
-                f"padding:10px;overflow-x:auto;font-size:12px'>"
-                f"{esc(reglas_conducta_texto(g['clave']))}</pre></details></div>")
+                + (f" &mdash; {esc(det)}" if det else "") + ". " + esc(g["porque"]) + "</div></div>")
         for g in grupos:
             pts = ", ".join(g["puertos"])
             tarjetas_g.append(
@@ -14714,14 +14606,11 @@ def historico_page(dias_n=7):
               "Cada regla dice <b>cuanto de tu abuso corta</b>, medido con lo que el sensor vio de "
               "verdad, no con una lista generica. Es lo que baja los baneos, porque actua sobre "
               "<b>todos</b> los abonados a la vez y no espera a detectar a nadie.</p>"
+            # sin bloques de «reglas para pegar»: daban por hecha la address-list de excepciones
+            # suricata-salida-permitida (que nadie crea), solo cubrian la primera red de
+            # abonados y nunca se probaron en un MikroTik (el user, 2026-10-13)
             + "".join(tarjetas_g)
-            + "<details style='margin-top:10px'><summary style='cursor:pointer;font-weight:600;"
-              "font-size:13px'>Reglas para pegar en el MikroTik</summary>"
-              "<p class=hint style='margin:6px 0'>Revisa las excepciones ANTES de pegarlas: "
-              "esto afecta a todos tus abonados, no a uno.</p>"
-              f"<pre style='background:#f8f9fa;border:1px solid #eaecf0;border-radius:6px;"
-              f"padding:10px;overflow-x:auto;font-size:12px'>{esc(reglas_salida_texto(grupos))}</pre>"
-              "</details></section>")
+            + "</section>")
     # --- cortar a los que nos atacan desde internet ---------------------------------
     bl = blocklist_borde()
     bl_html = ""

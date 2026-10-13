@@ -117,9 +117,8 @@ def main():
                       "_media", "tendencia_txt", "_DIAS_SEM", "_grafico", "historico_page",
                       "GRUPOS_SALIDA", "_CPES_CACHE", "_cpes_de_reporte", "analisis_salida",
                       "DIAG_FILE", "diagnostico_de",
-                      "regla_salida", "reglas_salida_texto",
-                      "GRUPOS_CONDUCTA", "analisis_conducta", "reglas_conducta_texto",
-                      "GRUPOS_CONTROL", "analisis_control", "reglas_p2p_texto",
+                      "GRUPOS_CONDUCTA", "analisis_conducta",
+                      "GRUPOS_CONTROL", "analisis_control",
                       "ENTRANTES_FILE", "BL_LISTA", "BL_MIN_ALERTAS", "BL_MIN_DESTINOS",
                       "BL_TOPE", "_REP_CACHE", "_REP_MAX", "rep_fuente", "cargar_entrantes",
                       "blocklist_borde", "blocklist_rsc", "blocklist_reglas",
@@ -296,11 +295,8 @@ def main():
     check("y solo se nombran los puertos con abuso de VERDAD",
           porclave["admin"]["puertos"] == ["22", "23"], porclave["admin"]["puertos"])
 
-    txt = d["reglas_salida_texto"](grupos)
-    check("la regla sale con TUS redes de abonado", "src-address=10.0.0.0/8" in txt, txt[:200])
-    check("y con una lista de excepciones", "src-address-list=!suricata-salida-permitida" in txt)
-    check("el correo se corta SOLO en el 25: cortar el 587 rompe a los clientes legitimos",
-          "dst-port=25 " in txt and "587" not in txt, txt)
+    check("el correo es SOLO el 25: el 587 es envio autenticado de clientes legitimos",
+          porclave["correo"]["puertos"] == ["25"], porclave["correo"]["puertos"])
 
     # --- reglas por CONDUCTA: un escaner no se corta con una regla por puerto ---
     cond = d["analisis_conducta"](None)
@@ -330,20 +326,17 @@ def main():
     check("el trafico normal no genera conducta",
           all("Anomalia" not in c for g in cond.values() for c, _n in g["cats"]), cond)
 
-    esc_txt = d["reglas_conducta_texto"]("escaneo")
-    check("la regla de escaneo usa el detector psd de RouterOS", "psd=" in esc_txt, esc_txt[:120])
-    check("y tambien limita las conexiones nuevas (barrido horizontal)",
-          "connection-state=new" in esc_txt and "limit=" in esc_txt)
-    check("mete al que escanea en una address-list",
-          "add-src-to-address-list" in esc_txt and "suricata-escaneo" in esc_txt)
-    check("el DROP viene DESACTIVADO: el P2P daria falso positivo",
-          "action=drop disabled=yes" in esc_txt, esc_txt[-200:])
 
     pag_r = d["historico_page"](30)
     check("las reglas se ven en Abuso saliente", "Reglas de salida" in pag_r)
     check("con el porcentaje que corta cada una", "rpct" in pag_r)
     check("y el aviso de excluir el servidor de correo",
           "servidor de correo" in pag_r, "")
+    # sin reglas para pegar: daban por hecha la address-list suricata-salida-permitida (que
+    # nadie crea), solo cubrian la primera red de abonados y nunca se probaron en un MikroTik
+    check("sin bloques de reglas para pegar en el MikroTik",
+          "Reglas para pegar" not in pag_r and "suricata-salida-permitida" not in pag_r
+          and "/ip firewall filter" not in pag_r, "")
 
     # ---------- P2P: se ve aparte, no cuenta como abuso ----------
     json.dump({"top_riesgo": [
@@ -370,22 +363,12 @@ def main():
     cond = {g["clave"]: g for g in d["analisis_conducta"](None)}
     check("el escaneo sigue contando como conducta abusiva", "escaneo" in cond, list(cond))
 
-    p2p = d["reglas_p2p_texto"](ctl[0]["puertos"])
-    check("las reglas cubren los puertos clasicos de BitTorrent",
-          "6881" in p2p and "51413" in p2p, p2p[:150])
-    check("TCP y UDP, porque el DHT va por UDP",
-          "protocol=tcp" in p2p and "protocol=udp" in p2p)
-    check("y el tope de conexiones, que es lo que de verdad le duele",
-          "connection-limit=" in p2p, p2p)
-    check("se dice que con cifrado y puerto aleatorio se escapa",
-          "cifrado" in p2p and "aleatorio" in p2p, "")
-    check("y que si el problema es la banda, mejor encolar que cortar",
-          "queue" in p2p, "")
-
     pag_p2p = d["historico_page"](30)
     check("el P2P se ve en la pagina con sus CPEs", "BitTorrent y P2P" in pag_p2p)
     check("marcado como que no cuenta como abuso", "no cuenta como abuso" in pag_p2p)
     check("y el total no abusivo sale en la cabecera", "no abusivo" in pag_p2p)
+    check("sin 'Reglas para controlarlo': daban por hecha una address-list que nadie crea",
+          "Reglas para controlarlo" not in pag_p2p and "reglas_p2p_texto" not in DASH, "")
 
     # ---------- bloqueo en el borde: cortar a los que nos atacan ----------
     check("sin datos de entrantes no se propone bloquear a nadie",
