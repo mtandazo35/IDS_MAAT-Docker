@@ -9,6 +9,7 @@ import glob
 import gzip
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -161,6 +162,28 @@ class PorNodo(Entorno):
         # con un solo nodo no hay chip (seria ruido), pero la identidad sigue siendo pid|ip
         self.assertNotIn("class='nodochip'", self.html("p001"))
         self.assertFalse(os.path.exists(os.path.join(self.panel, "nodos", "p002")))
+
+    def test_detalle_con_columna_nodo(self):
+        """Correccion de defecto: en --todos la tabla Detalle lleva el nodo en su propia columna,
+        detras de la IP origen (antes iba pegado a la IP como etiqueta y descuadraba la tabla;
+        el user, 2026-10-13); con un solo nodo no hay columna."""
+        self.tres_cnc("p001")
+        self.tres_cnc("p002")
+        self.ok("60", "--todos")
+        doc = self.html("_todos")
+        tabla = re.search(r'<table id="detalle">.*?</table>', doc, re.S).group(0)
+        cab = re.findall(r'data-col="(\d+)">([^<]+)<', tabla)
+        self.assertEqual([t for _, t in cab][:3], ["IP origen", "Nodo", "Puerto"])
+        self.assertEqual([int(i) for i, _ in cab], list(range(len(cab))))
+        filas = re.findall(r"<tr><td class='mono' data-s='\d+'>([^<]+)</td><td class='nodo' "
+                           r"data-s='[^']*'>([^<]+)</td>", tabla)
+        self.assertEqual(sorted(set(filas)), [("10.0.0.5", "Nodo A"), ("10.0.0.5", "Nodo B")])
+        self.assertNotIn("nodochip", tabla)
+
+        self.ok("60", "--nodo", "p001")
+        tabla1 = re.search(r'<table id="detalle">.*?</table>', self.html("p001"), re.S).group(0)
+        self.assertNotIn(">Nodo<", tabla1)
+        self.assertNotIn("class='nodo'", tabla1)
 
     def test_ultima_alerta_por_clave(self):
         """Capacidad nueva (§10.4, pedida por N): cada entrada de candidatos y top_riesgo lleva

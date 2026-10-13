@@ -1212,8 +1212,12 @@ for (src, sport, dst, dport, proto, sig), (cnt, first, last) in top_flujos:
     dursec = int((last - first)) if (first and last) else 0
     sig_es = traducir(sig)
     filas.append(
-        f"<tr><td class='mono' data-s='{ipnum(ip_de(src))}'>{esc(ip_de(src))}{_chip_nodo(src)}</td>"
-        f"<td class='mono num' data-s='{int(sport) if str(sport).isdigit() else -1}'>{esc(sport)}</td>"
+        f"<tr><td class='mono' data-s='{ipnum(ip_de(src))}'>{esc(ip_de(src))}</td>"
+        # el nodo en su columna (en «Todos»): pegado a la IP como etiqueta descuadraba la tabla
+        # (el user, 2026-10-13)
+        + (f"<td class='nodo' data-s='{esc(nombre_router(rid_de(src)))}'>{esc(nombre_router(rid_de(src)))}</td>"
+           if MULTI_ROUTER else "")
+        + f"<td class='mono num' data-s='{int(sport) if str(sport).isdigit() else -1}'>{esc(sport)}</td>"
         f"<td class='mono dst' data-s='{ipnum(dst)}'>{esc(dst)}</td>"
         f"<td class='mono num' data-s='{int(dport) if str(dport).isdigit() else -1}'>{esc(dport)}</td>"
         f"<td data-s='{esc(proto)}'>{esc(proto)}</td>"
@@ -1221,6 +1225,16 @@ for (src, sport, dst, dport, proto, sig), (cnt, first, last) in top_flujos:
         f"<td class='num' data-s='{cnt}'>{cnt}</td>"
         f"<td class='mono' data-s='{int(first or 0)}'>{hp} &rarr; {hu}</td>"
         f"<td data-s='{dursec}'>{dur(first,last)}</td></tr>")
+
+# columnas de la tabla Detalle (clase, titulo); «Nodo» solo en «Todos», como en las filas
+_COLS_DETALLE = ([("", "IP origen")] + ([("", "Nodo")] if MULTI_ROUTER else [])
+                 + [("num", "Puerto"), ("", "IP destino (atacada)"), ("num", "Puerto"), ("", "Protocolo"),
+                    ("", "Firma (tipo de ataque)"), ("num", "Veces"), ("", "Primera &rarr; ultima"),
+                    ("", "Duracion")])
+
+def _cabecera_detalle():
+    return "".join('<th class="%s" data-col="%d">%s<span class="ar">&#8597;</span></th>'
+                   % ((c + " sortable").strip(), i, t) for i, (c, t) in enumerate(_COLS_DETALLE))
 
 def top(counter, n=12, fmt=str):
     return [(fmt(k), v) for k, v in counter.most_common(n)]
@@ -2510,6 +2524,7 @@ td.num{{text-align:right;font-variant-numeric:tabular-nums}}
 .pager button:disabled{{opacity:.4;cursor:default}}
 .pager #pgi{{font-weight:600;font-size:13px}}
 .pgnote{{margin-left:auto}}
+#detalle td.nodo{{color:#6b6a66;white-space:nowrap}}
 @media print{{.pager{{display:none!important}} #detalle tbody tr{{display:table-row!important}}}}
 @media(max-width:820px){{.tiles{{grid-template-columns:repeat(2,1fr)}}.grid{{grid-template-columns:1fr}}}}
 @media print{{.card,.tile{{break-inside:avoid}}header{{position:static}}}}
@@ -2544,17 +2559,8 @@ td.num{{text-align:right;font-variant-numeric:tabular-nums}}
     <h2>Detalle: quien ataca, a donde, por que puerto, cuando y por cuanto tiempo</h2>
     <div class="detbar"><input id="detbuscar" class="detsearch" placeholder="Filtrar por IP, puerto, protocolo, firma..."><span id="detcount" class="muted"></span></div>
     <div class="tablewrap"><table id="detalle">
-      <thead><tr>
-      <th class="sortable" data-col="0">IP origen<span class="ar">&#8597;</span></th>
-      <th class="num sortable" data-col="1">Puerto<span class="ar">&#8597;</span></th>
-      <th class="sortable" data-col="2">IP destino (atacada)<span class="ar">&#8597;</span></th>
-      <th class="num sortable" data-col="3">Puerto<span class="ar">&#8597;</span></th>
-      <th class="sortable" data-col="4">Protocolo<span class="ar">&#8597;</span></th>
-      <th class="sortable" data-col="5">Firma (tipo de ataque)<span class="ar">&#8597;</span></th>
-      <th class="num sortable" data-col="6">Veces<span class="ar">&#8597;</span></th>
-      <th class="sortable" data-col="7">Primera &rarr; ultima<span class="ar">&#8597;</span></th>
-      <th class="sortable" data-col="8">Duracion<span class="ar">&#8597;</span></th></tr></thead>
-      <tbody>{"".join(filas) if filas else '<tr><td colspan="9" class="muted">Sin ataques en la ventana.</td></tr>'}</tbody>
+      <thead><tr>{_cabecera_detalle()}</tr></thead>
+      <tbody>{"".join(filas) if filas else '<tr><td colspan="%d" class="muted">Sin ataques en la ventana.</td></tr>' % len(_COLS_DETALLE)}</tbody>
     </table></div>
     <div class="pager" id="pager">
       <button id="prev" type="button">&larr; Anterior</button>
