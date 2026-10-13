@@ -9740,19 +9740,39 @@ def perfil_page(msg="", ok=False, edit_user=None):
         emp = cargar_empresa()
         elogo = emp.get("logo", "")
         tiene_logo = elogo.startswith("data:image/")
+        # Modal compacto (el user, 2026-10-13): antes 980 px para dos campos, doble marco, el
+        # selector de archivo del navegador cortado, «Quitar imagen» aunque no hubiera logo y sin
+        # vista previa. Ahora: el logo actual, un boton propio, formatos admitidos y una vista
+        # previa en vivo de la franja donde de verdad salen (bajo el menu, a la derecha).
+        _nom = emp.get("nombre", "")
         card_empresa = (
-            "<section class=card><h2>Empresa</h2>"
-            "<p class=sub2>El nombre y el logo aparecen en la barra superior, al lado de las pestañas.</p>"
+            "<section class='card emp'><h2>Empresa</h2>"
+            "<p class=sub2>El nombre y el logo salen en la franja blanca de debajo del menu, a la derecha.</p>"
             "<form method=post action='/empresa'>"
-            "<div class=grid2>"
-            f"<div class=field><label>Nombre de la empresa</label>"
-            f"<input type=text name=nombre maxlength=60 value=\"{esc(emp.get('nombre',''))}\"></div>"
-            "<div class=field><label>Logo</label><div class=avup>"
-            f"<img id=lpreview class='avprev logo' src=\"{esc(elogo)}\" alt=''{'' if tiene_logo else ' style=display:none'}>"
-            "<input id=lfile type=file accept=image/* onchange=\"foto(this,'l')\">"
-            "<button class=cancelbtn type=button onclick=\"quitarimg('l')\">Quitar imagen</button></div>"
-            "<input type=hidden name=logo id=lavatar></div></div>"
-            "<div class=actions><button class=primary type=submit>Guardar</button></div>"
+            "<div class=field><label for=enombre>Nombre de la empresa</label>"
+            f"<input id=enombre type=text name=nombre maxlength=60 value=\"{esc(_nom)}\" "
+            "placeholder='Ej.: ISP Ejemplo' oninput='empSync()'>"
+            "<div class=hint>Hasta 60 caracteres. Vacio, no se muestra.</div></div>"
+            "<div class=field><label>Logo</label><div class=logobox>"
+            "<div class=logoprev>"
+            f"<img id=lpreview src=\"{esc(elogo)}\" alt='' onload='window.empSync&&empSync()'{'' if tiene_logo else ' style=display:none'}>"
+            f"<span id=lvacio class=vacio{' hidden' if tiene_logo else ''}>Sin logo</span></div>"
+            "<div class=logoacc><div class=logobtns>"
+            "<label class=filepick><input id=lfile type=file "
+            "accept='image/png,image/jpeg,image/svg+xml,image/webp' onchange=\"foto(this,'l');empArchivo(this)\">"
+            "<span class=fbtn>Elegir imagen</span></label>"
+            f"<button class=cancelbtn type=button id=lquitar onclick='empQuitar()'{'' if tiene_logo else ' hidden'}>"
+            "Quitar logo</button></div>"
+            "<span class=fname id=lfname>ningun archivo elegido</span>"
+            "<div class=hint>PNG, JPG, SVG o WebP. Se reduce a 160 px; queda mejor horizontal y con fondo "
+            "transparente.</div></div></div>"
+            "<input type=hidden name=logo id=lavatar></div>"
+            "<div class=vistabar><div class=vt>Asi se vera</div><div class=vb>"
+            f"<span id=vvacia class=vacio{' hidden' if (tiene_logo or _nom) else ''}>Sin nombre ni logo: la franja queda vacia</span>"
+            f"<img id=vlogo src=\"{esc(elogo)}\" alt=''{'' if tiene_logo else ' hidden'}>"
+            f"<span id=vnom class=vn>{esc(_nom)}</span></div></div>"
+            "<div class=mfoot><button class=cancelbtn type=button onclick=closem()>Cancelar</button>"
+            "<button class=primary type=submit>Guardar</button></div>"
             "</form></section>")
     # --- tarjeta: version (la de la imagen, solo lectura) -----------------------------
     # El panel ya no se actualiza a si mismo: la version es la de la imagen del contenedor y
@@ -10247,7 +10267,33 @@ def perfil_page(msg="", ok=False, edit_user=None):
         ".avprev{width:46px;height:46px;border-radius:50%;object-fit:cover;border:1px solid #e0dfda;background:#fafafa;flex:none}"
         ".avprev.logo{width:auto;height:40px;max-width:150px;border-radius:6px;object-fit:contain;padding:2px;background:#fff}"
         ".fotoform{display:flex;gap:10px;align-items:center;flex-wrap:wrap}.fotoform input[type=file]{flex:1;min-width:160px}"
-        ".fotoform .primary,.fotoform .cancelbtn{margin-top:0}")
+        ".fotoform .primary,.fotoform .cancelbtn{margin-top:0}"
+        # modal de Empresa (y cualquier modal «chico»): compacto y sin marco doble
+        ".aptmodal .aptbox.chico{max-width:560px}.aptbox.chico .aptscroll{padding:0}"
+        ".aptbox.chico section.card{border:0;box-shadow:none;margin:0;padding:22px 24px 0;background:transparent;border-radius:0}"
+        ".emp h2{margin:0 0 4px;font-size:17px}.emp .sub2{margin:0 0 4px}"
+        ".emp .logobox{display:flex;gap:14px;align-items:center}"
+        ".emp .logoprev{width:104px;height:68px;border:1px dashed #d7d6d2;border-radius:10px;display:flex;align-items:center;"
+        "justify-content:center;background:#fafafa;flex:none;overflow:hidden}"
+        ".emp .logoprev img{max-width:96px;max-height:60px;object-fit:contain}"
+        ".emp .vacio{color:#9a9a95;font-size:12px}"
+        ".emp .logoacc{display:flex;flex-direction:column;gap:6px;min-width:0;flex:1}"
+        ".emp .logobtns{display:flex;gap:8px;flex-wrap:wrap;align-items:center}"
+        ".emp .filepick{position:relative;display:inline-flex;cursor:pointer;margin:0}"
+        ".emp .filepick input{position:absolute;inset:0;width:100%;opacity:0;cursor:pointer}"
+        ".emp .filepick .fbtn{padding:8px 14px;border:1px solid #cfe0f6;background:#eef4fd;color:#1f65bd;border-radius:9px;"
+        "font:600 13px system-ui}.emp .filepick:hover .fbtn{background:#e2edfb}"
+        ".emp .fname{font-size:12px;color:#8a8a86;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}"
+        ".emp .hint{margin-top:2px}"
+        ".emp .vistabar{margin-top:16px;border:1px solid #ececec;border-radius:10px;overflow:hidden}"
+        ".emp .vistabar .vt{font:700 11px system-ui;color:#8a8a86;padding:6px 12px;background:#fafafa;"
+        "border-bottom:1px solid #f0efec;text-transform:uppercase;letter-spacing:.04em}"
+        ".emp .vistabar .vb{display:flex;align-items:center;justify-content:flex-end;gap:10px;padding:7px 14px;background:#fff;min-height:30px}"
+        ".emp .vistabar img{height:30px;width:auto;max-width:150px;object-fit:contain}"
+        ".emp .vistabar .vn{color:#33322f;font-size:14px;font-weight:700;white-space:nowrap;max-width:280px;overflow:hidden;text-overflow:ellipsis}"
+        ".emp .vistabar .vacio{margin-right:auto}"
+        ".emp .mfoot{margin:20px -24px 0}"
+        "@media(max-width:520px){.emp .logobox{flex-direction:column;align-items:flex-start}}")
     script = ("<script>"
               "function foto(inp,p){var f=inp.files&&inp.files[0];if(!f)return;var r=new FileReader();"
               "r.onload=function(){var im=new Image();im.onload=function(){var mx=160,w=im.width,h=im.height;"
@@ -10256,6 +10302,17 @@ def perfil_page(msg="", ok=False, edit_user=None):
               "var d=c.toDataURL('image/png');var hid=document.getElementById(p+'avatar');if(hid)hid.value=d;"
               "var pv=document.getElementById(p+'preview');if(pv){pv.src=d;pv.style.display='';}};im.src=r.result;};"
               "r.readAsDataURL(f);}"
+              "function empSync(){var im=document.getElementById('lpreview');if(!im)return;"
+              "var hay=!!im.getAttribute('src')&&im.style.display!=='none';"
+              "var v=document.getElementById('lvacio');if(v)v.hidden=hay;"
+              "var q=document.getElementById('lquitar');if(q)q.hidden=!hay;"
+              "var bi=document.getElementById('vlogo');if(bi){if(hay){bi.src=im.src;bi.hidden=false;}else{bi.hidden=true;}}"
+              "var n=document.getElementById('enombre'),vn=document.getElementById('vnom'),t=n?n.value.trim():'';"
+              "if(vn)vn.textContent=t;var vv=document.getElementById('vvacia');if(vv)vv.hidden=hay||!!t;}"
+              "function empArchivo(i){var s=document.getElementById('lfname');"
+              "if(s)s.textContent=(i.files&&i.files[0])?i.files[0].name:'ningun archivo elegido';}"
+              "function empQuitar(){quitarimg('l');var s=document.getElementById('lfname');"
+              "if(s)s.textContent='se quitara al guardar';empSync();}"
               "function quitarimg(p){var h=document.getElementById(p+'avatar');if(h)h.value='__BORRAR__';"
               "var pv=document.getElementById(p+'preview');if(pv){pv.removeAttribute('src');pv.style.display='none';}"
               "var fi=document.getElementById(p+'file');if(fi)fi.value='';}"
@@ -10313,13 +10370,13 @@ def perfil_page(msg="", ok=False, edit_user=None):
              + _tile("bitacora", "Bitacora", _IC_AUDIT, es_admin)
              + _tile("doc", "Documentacion", _IC_BOOK, True))
     hub = f"<div class='tw-my-5 tw-grid tw-gap-3.5 tw-grid-cols-[repeat(auto-fill,minmax(250px,1fr))]'>{tiles}</div>"
-    def _modal(sid, contenido):
+    def _modal(sid, contenido, clase=""):
         return (f"<div class=aptmodal id=m-{sid} onmousedown=\"this._dn=event.target\" onclick=\"if(event.target===this&&this._dn===this){{closem()}}\">"
-                f"<div class=aptbox><button type=button class=aptx onclick=closem() title=Cerrar>&times;</button>"
+                f"<div class='aptbox {clase}'><button type=button class=aptx onclick=closem() title=Cerrar>&times;</button>"
                 f"<div class=aptscroll>{contenido}</div></div></div>")
-    def _mcard(sid, card):
-        return _modal(sid, card) if card else ""
-    modals = (_mcard("perfil", card_pw) + _mcard("empresa", card_empresa) + _mcard("usuarios", card_users)
+    def _mcard(sid, card, clase=""):
+        return _modal(sid, card, clase) if card else ""
+    modals = (_mcard("perfil", card_pw) + _mcard("empresa", card_empresa, "chico") + _mcard("usuarios", card_users)
               + _mcard("acceso", card_acceso) + _mcard("mikrotik", card_mk)
               + _mcard("dns", card_dns) + _mcard("feeds", card_feeds)
               + _mcard("update", card_update))
