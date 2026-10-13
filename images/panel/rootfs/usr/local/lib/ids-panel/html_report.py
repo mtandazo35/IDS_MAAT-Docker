@@ -1061,7 +1061,7 @@ def hbar(titulo, pares, unidad="alertas", fmt=str, lblw=125, barw=470, card_clas
                 f'<text x="{w+8}" y="{top+labh+barh*0.7:.0f}" class="val">{esc(fmt(v))}</text>')
     else:
         rowh, gap = 26, 8
-        col_ip, col_pto = 104, 72              # columnas de las filas (ip, nodo, puerto)
+        col_ip, col_pto = 104, 80              # columnas de las filas (ip, nodo, puerto)
         if all(isinstance(n, tuple) and not n[1] for n, _ in pares):
             # con un solo nodo no hay columna de nodo: la etiqueta se estrecha y la barra gana
             # ese sitio (el ancho total no cambia)
@@ -1089,7 +1089,10 @@ def hbar(titulo, pares, unidad="alertas", fmt=str, lblw=125, barw=470, card_clas
                     f'<text x="2" y="{ty}" class="lbl">{esc(corta(ip, col_ip))}</text>'
                     + (f'<text x="{2+col_ip+8}" y="{ty}" class="lbl lnodo">{esc(corta(nodo, col_nodo))}</text>'
                        if nodo else "")
-                    + (f'<text x="{lblw-8}" y="{ty}" text-anchor="end" class="lbl lpto">→ {esc(pto)}</text>'
+                    # la flecha en su columna y el puerto alineado a la izquierda detras: con
+                    # «→ 22/TCP» alineado a la derecha las flechas quedaban en escalera
+                    + (f'<text x="{lblw-8-col_pto}" y="{ty}" class="lbl lflecha">→</text>'
+                       f'<text x="{lblw-8-col_pto+16}" y="{ty}" class="lbl lpto">{esc(pto)}</text>'
                        if pto else "")
                     + f'<rect x="{lblw}" y="{y}" width="{w}" height="{rowh}" rx="4" fill="{heat(v/ref)}"/>'
                     f'<text x="{lblw+w+6}" y="{ty}" class="val">{esc(fmt(v))}</text></g>')
@@ -2469,7 +2472,7 @@ h2{{position:relative}}
 .card{{border:1px solid {GRID};border-radius:10px;padding:16px;background:#fff;margin-bottom:16px;display:flex;flex-direction:column;min-width:0}}
 .card>*{{min-width:0;max-width:100%}}  /* los hijos flex encogen y no desbordan la tarjeta (tablas anchas scrollean en su .tablewrap) */
 .card.wide{{grid-column:1/-1}}
-.lbl{{font-size:12.5px;fill:#2b2a27;font-weight:600}} .lbl.lnodo{{fill:#6b6a66;font-weight:500}} .lbl.lpto{{font-variant-numeric:tabular-nums}} .val{{font-size:12px;fill:{INK};font-weight:600}}
+.lbl{{font-size:12.5px;fill:#2b2a27;font-weight:600}} .lbl.lnodo{{fill:#6b6a66;font-weight:500}} .lbl.lpto{{font-variant-numeric:tabular-nums}} .lbl.lflecha{{fill:#9a9a95;font-weight:500}} .val{{font-size:12px;fill:{INK};font-weight:600}}
 .tick{{font-size:11px;fill:{INK2}}}
 .tlwrap{{position:relative}}
 .tl-bar{{transform-box:fill-box;transform-origin:bottom;animation:tlgrow .6s cubic-bezier(.2,.75,.3,1) both;transition:filter .12s}}
