@@ -424,6 +424,14 @@ def main():
           bl["1.1.1.1"]["alertas"] == 900 and bl["1.1.1.1"]["destinos"] == 40,
           bl["1.1.1.1"])
 
+    # la tabla de la pagina va con todas las columnas centradas (el user, 2026-10-13)
+    hp = d["historico_page"](7)
+    check("la tabla de atacantes de internet sale centrada",
+          "Cortar a los que te atacan desde internet" in hp and "<table class=tcentro>" in hp
+          and ".tcentro th,.tcentro td{text-align:center!important}" in hp, "")
+    check("y sin el bloque 'Como montarlo en el MikroTik' (ya no aplica)",
+          "Como montarlo en el MikroTik" not in hp, "")
+
     rsc = d["blocklist_rsc"]()
     check("el script limpia la lista vieja antes de escribir",
           "remove $i" in rsc and "find list=suricata-atacantes" in rsc, rsc[:200])

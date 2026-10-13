@@ -14740,23 +14740,14 @@ def historico_page(dias_n=7):
             + ". Cortarlas no limpia lo que ya esta infectado, pero <b>corta las infecciones "
               "nuevas</b>: el atacante de fuera es el que infecta al CPE, y el CPE infectado es "
               "el que ensucia tus publicas.</p>"
-            "<div class=tablewrap><table><thead><tr><th>IP</th><th>Pais</th>"
+            # todas las columnas centradas, como la tabla de Detalle (el user, 2026-10-13): con
+            # IP y Pais a la izquierda y los numeros a la derecha la fila no se leia de un vistazo
+            "<style>.tcentro th,.tcentro td{text-align:center!important}</style>"
+            "<div class=tablewrap><table class=tcentro><thead><tr><th>IP</th><th>Pais</th>"
             "<th class=num>Alertas</th><th class=num>Destinos</th><th>Feed</th></tr></thead>"
             f"<tbody>{top}</tbody></table></div>"
             + (f"<p class=hint>Las 10 peores de {len(bl):,}.</p>" if len(bl) > 10 else "")
-            + "<details style='margin-top:10px'><summary style='cursor:pointer;font-weight:600;"
-              "font-size:13px'>Como montarlo en el MikroTik</summary>"
-              "<p class=hint style='margin:6px 0'>Meterle miles de entradas por la API tardaria "
-              "horas, y el MikroTik no llega al panel por el tunel. Descarga "
-              f"<a href='/blocklist.rsc{qs_nodo('?')}'>blocklist.rsc</a> (administrador), subela al router "
-              "y aplicala con <code>/import blocklist.rsc</code>. Cada importacion reemplaza la lista "
-              "entera. La regla que la usa (solo conexiones nuevas: las respuestas a tus abonados "
-              "siguen pasando):</p>"
-              f"<pre style='background:#f8f9fa;border:1px solid #eaecf0;border-radius:6px;"
-              f"padding:10px;overflow-x:auto;font-size:12px'>/ip firewall filter add chain=forward "
-              f"connection-state=new src-address-list={esc(BL_LISTA)} action=drop "
-              f"comment=\"Suricata: atacantes\"</pre>"
-              "</details></section>")
+            + "</section>")
 
     diag_html = ""
     for r in rs:
