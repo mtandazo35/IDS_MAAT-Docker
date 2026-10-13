@@ -8144,6 +8144,7 @@ def _provisionar_geo():
 
 # --- tareas de fondo ----------------------------------------------------------------------
 _PARAR = threading.Event()          # SIGTERM: los hilos de fondo terminan su vuelta y salen
+_DESPERTAR = threading.Event()      # cambio de ventana: el refrescador no espera a su siguiente vuelta
 LATIDO = {}                         # hilo -> ultima vuelta (epoch): la salud lo puede mirar
 _HILOS = {}                         # nombre -> (funcion, Thread) de los hilos supervisados
 SUPERVISAR_CADA = 30
@@ -8294,7 +8295,9 @@ def refrescador():
                 bitacora("FONDO-ERROR", "refrescador: %s" % det.strip().splitlines()[-1][:200], quien="panel")
             except Exception:
                 pass
-        _PARAR.wait(10)   # poll corto para atender un cambio de ventana casi al instante
+        # poll corto; un cambio de ventana (o la parada) lo despierta al momento
+        if _DESPERTAR.wait(10):
+            _DESPERTAR.clear()
 
 def _vuelta_refrescador(estado):
     """Una vuelta del refrescador; `estado` guarda las marcas de tiempo entre vueltas."""
@@ -8358,6 +8361,19 @@ def _vuelta_refrescador(estado):
     # una regeneracion FORZADA se atiende como mucho cada REGEN_MIN_SECS; la marca no
     # se pierde, solo se agrupa (un lote de cambios = una sola generacion)
     forzado = FORCE_REGEN and (time.time() - ult_forzado >= REGEN_MIN_SECS)
+    # Ventana pendiente: la elegida no es la del resumen que se muestra. Pasa al cambiar el
+    # selector y tambien tras un reinicio (FORCE_REGEN vive en memoria y se perdia: el aviso
+    # «generando…» seguia hasta el ciclo de 5 min). Una ventana NUEVA se genera ya, sin el
+    # minuto de REGEN_MIN_SECS (es una accion del operador y es rara); volver a intentar la
+    # MISMA si espera ese minuto, para no relanzar el generador cada 10 s si falla.
+    if pids:
+        _va = ventana_actual()
+        _vg = ventana_generada(nodos.TODOS)
+        if _vg and _vg != _va:
+            _ult_v, _ult_t = estado.get("vpend", (0, 0.0))
+            if _va != _ult_v or time.time() - _ult_t >= REGEN_MIN_SECS:
+                forzado = True
+                estado["vpend"] = (_va, time.time())
     stale = forzado
     for nodo in pids + ([nodos.TODOS] if pids else []):
         if stale:
@@ -16777,7 +16793,8 @@ class H(BaseHTTPRequestHandler):
             bitacora("CONFIG-VENTANA", "%s -> %d min%s" % (
                 _antes, m, " (OJO: 30 min deja casi ciego al detector)" if m <= 30 else ""))
             global FORCE_REGEN
-            FORCE_REGEN = True   # el refrescador regenera el resumen con la nueva ventana en <=10 s
+            FORCE_REGEN = True   # y la ventana pendiente se atiende sin esperar el minuto de REGEN_MIN_SECS
+            _DESPERTAR.set()     # al momento, no en la siguiente vuelta de 10 s
             return self._redirect("/")
         if ruta == "/exclusiones":
             if not self._admin():
@@ -18206,6 +18223,7 @@ def main():
     def _fin(*_):
         # docker stop: los hilos de fondo terminan su vuelta y el servidor deja de aceptar
         _PARAR.set()
+        _DESPERTAR.set()
         threading.Thread(target=httpd.shutdown, daemon=True).start()
     try:
         import signal

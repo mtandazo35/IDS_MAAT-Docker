@@ -351,6 +351,7 @@ class Fondo(Base):
                 return self.ev.wait(0.01)
 
         d._PARAR = Parar()
+        d._DESPERTAR = Parar()          # la espera entre vueltas (10 s), corta en la prueba
         d._provisionar_geo = lambda: None
 
         def vuelta(estado):
@@ -365,6 +366,7 @@ class Fondo(Base):
         self.assertEqual(len(vueltas), 2)                 # siguio tras la vuelta fallida
         self.assertIn("FONDO-ERROR", open(d.BITACORA_LOG, encoding="utf-8").read())
         d._PARAR = threading.Event()
+        d._DESPERTAR = threading.Event()
         d.lanzar_hilo("prueba", lambda: None)
         d._HILOS["prueba"][1].join(5)
         self.assertEqual(d.supervisar_hilos(), ["prueba"])
