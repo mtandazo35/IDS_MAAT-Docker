@@ -14669,7 +14669,7 @@ def historico_page(dias_n=7):
                 "<span class=rp>no cuenta como abuso</span></div>"
                 f"<div class=rn><b>{ctl['alertas']:,}</b> alertas de <b>{ctl['cpes']:,}</b> "
                 f"CPE(s). {esc(ctl['porque'])}</div>"
-                "<div class=tablewrap style='margin-top:6px'><table><thead><tr><th>CPE</th>"
+                "<div class=tablewrap style='margin-top:6px'><table class=tcentro><thead><tr><th>CPE</th>"
                 "<th class=num>Alertas</th><th class=num>Riesgo</th></tr></thead>"
                 f"<tbody>{filas_c}</tbody></table></div>"
                 "<details style='margin-top:6px'><summary style='cursor:pointer;font-size:12.5px'>"
@@ -14707,7 +14707,7 @@ def historico_page(dias_n=7):
                 + (f"<div class=rcuidado>&#9888; {esc(g['cuidado'])}</div>" if g["cuidado"] else "")
                 + "</div>")
         secc_reglas.append(
-            "<section class=card>"
+            "<section class='card cardp'>"
             + (f"<h2 style='font-size:15px;margin:0 0 4px'>Reglas de salida &mdash; {esc(nom)}</h2>"
                if multi else "<h2 style='font-size:15px;margin:0 0 4px'>Reglas de salida recomendadas</h2>")
             + f"<p class=sub2 style='margin:0 0 10px'>Salidas de <b>{n_cpes:,}</b> CPEs con actividad. "
@@ -14732,7 +14732,7 @@ def historico_page(dias_n=7):
             f"<td class=num>{x['alertas']:,}</td><td class=num>{x['destinos']:,}</td>"
             f"<td>{esc(x['fuente'] or '')}</td></tr>" for x in bl[:10])
         bl_html = (
-            "<section class=card><h2 style='font-size:15px;margin:0 0 4px'>"
+            "<section class='card cardp'><h2 style='font-size:15px;margin:0 0 4px'>"
             "Cortar a los que te atacan desde internet</h2>"
             f"<p class=sub2 style='margin:0 0 8px'><b>{len(bl):,}</b> IPs de internet estan "
             f"atacando tu red"
@@ -14742,7 +14742,6 @@ def historico_page(dias_n=7):
               "el que ensucia tus publicas.</p>"
             # todas las columnas centradas, como la tabla de Detalle (el user, 2026-10-13): con
             # IP y Pais a la izquierda y los numeros a la derecha la fila no se leia de un vistazo
-            "<style>.tcentro th,.tcentro td{text-align:center!important}</style>"
             "<div class=tablewrap><table class=tcentro><thead><tr><th>IP</th><th>Pais</th>"
             "<th class=num>Alertas</th><th class=num>Destinos</th><th>Feed</th></tr></thead>"
             f"<tbody>{top}</tbody></table></div>"
@@ -14797,7 +14796,11 @@ def historico_page(dias_n=7):
             ".doscol td:first-child,.doscol th:first-child{word-break:break-word;line-height:1.35}"
             ".doscol .num{text-align:right;white-space:nowrap;width:74px}"
             ".doscol td,.doscol th{vertical-align:top;padding:6px 8px}"
-            ".regla{border-top:1px solid #f0efec;padding:10px 0}"
+            # relleno de las tarjetas de una columna (Reglas de salida, Cortar a los que te atacan):
+            # sin el, titulo, textos, tablas y porcentajes tocaban el borde (el user, 2026-10-13)
+            ".cardp{padding:18px 22px}"
+            ".tcentro th,.tcentro td{text-align:center!important}"
+            ".regla{border-top:1px solid #f0efec;padding:12px 0}"
             ".regla .rh{display:flex;align-items:center;gap:10px;flex-wrap:wrap}"
             ".regla .rp{font:12px ui-monospace,Consolas,monospace;background:#f1f1ef;"
             "border:1px solid #e0dfda;border-radius:5px;padding:1px 7px}"

@@ -429,6 +429,8 @@ def main():
     check("la tabla de atacantes de internet sale centrada",
           "Cortar a los que te atacan desde internet" in hp and "<table class=tcentro>" in hp
           and ".tcentro th,.tcentro td{text-align:center!important}" in hp, "")
+    check("y con relleno interior: nada pegado al borde de la tarjeta",
+          "<section class='card cardp'>" in hp and ".cardp{padding:18px 22px}" in hp, "")
     check("y sin el bloque 'Como montarlo en el MikroTik' (ya no aplica)",
           "Como montarlo en el MikroTik" not in hp, "")
 
