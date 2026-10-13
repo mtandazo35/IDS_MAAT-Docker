@@ -10,7 +10,7 @@ Uso: html_report.py [ventana_min] (--nodo pNNN | --todos)   (ventana por defecto
 Lee los eventos de cada punto (nodos.ficheros_eventos: DATOS/<pid>/eve.json*, dns.json*).
 Salida: nodos.dir_salida(nodo)/report-AAAAMMDD-HHMM.html (PANEL/nodos/<pid>/ o nodos/_todos/)
 """
-import glob, gzip, io, json, os, re, sys, html, time, socket, urllib.request, urllib.error
+import glob, gzip, io, json, os, re, sys, html, time, socket, threading, urllib.request, urllib.error
 import array, struct, bisect, argparse
 from collections import Counter, defaultdict
 from datetime import datetime, timezone, timedelta
@@ -1280,6 +1280,19 @@ dst_top = [(_etq_dst(_d), n) for _d, n in _dst_top]
 _IPINFO_CACHE = os.path.join(nodos.CACHE, "ipinfo-cache.json")
 _IPINFO_TTL = 7 * 24 * 3600          # 7 dias: pasado eso se vuelve a resolver
 _IPINFO_MAX_NUEVOS = 60              # tope de PTR nuevos por corrida (no colgar la generacion)
+# Lo que la corrida ESPERA a la red, en total y por IP. Las consultas van en hilos y en paralelo;
+# la que no llega a tiempo sale «-» y queda en la cache si acaba antes de guardarla (o la proxima
+# corrida). Sin esto cada IP sin PTR bloqueaba lo que quisiera el resolvedor (setdefaulttimeout NO
+# vale para gethostbyaddr): ~12 s por IP en serie, minutos por punto, y el cambio de ventana del
+# panel esperaba detras de todo eso (el user, 2026-10-13)
+_IPINFO_PRESUPUESTO_S = 8.0
+_IPINFO_ESPERA_IP_S = 3.0
+_IPINFO_PARALELO = 8                 # consultas a la vez (rdap.org limita a quien abusa)
+# Un PTR que no existe tarda 5-16 s en fallar (medido en local, 2026-10-13) y RDAP contesta en ~1 s:
+# el PTR se espera como mucho esto y, si no llega, se pasa a RDAP. Sin este tope la consulta seguia
+# colgada del PTR cuando el proceso acababa y esas IPs no llegaban nunca a la cache.
+_IPINFO_PTR_S = 1.5
+_IPINFO_FIN_S = 4.0                  # al acabar, espera a las consultas aun en vuelo antes de guardar
 _SIN_RED = os.environ.get("IDS_HREP_SIN_RED") == "1"   # sin PTR ni RDAP (pruebas; no se cachea nada)
 # dominio PTR conocido -> nombre humano de la empresa (trafico casi siempre legitimo)
 _ORG_DOM = {
@@ -1317,6 +1330,10 @@ def _cargar_ipinfo():
 _ipinfo = _cargar_ipinfo()
 _ipinfo_nuevos = 0
 _ipinfo_sucio = False
+_ipinfo_gasto = 0.0                  # s ya esperados a la red en esta corrida
+_ipinfo_vuelo = {}                   # ip -> threading.Event de la consulta en curso
+_IPINFO_LOCK = threading.Lock()      # los hilos escriben en _ipinfo mientras se guarda
+_IPINFO_SEM = threading.BoundedSemaphore(_IPINFO_PARALELO)
 
 def _rdap_org(ip):
     """Operador/red de una IP (util cuando NO tiene PTR) via RDAP publico (rdap.org, sin clave).
@@ -1343,44 +1360,110 @@ def _rdap_org(ip):
     etq = org or name
     return (etq[:44], cc)
 
+def _resolver_red(ip):
+    """(org, legitimo, via) por la red: PTR -> dominio -> marca conocida; sin PTR, el operador
+    del bloque por RDAP. Lenta y sin tope propio: solo se llama desde un hilo (_lanzar)."""
+    caja = {}
+    def ptr():
+        try:
+            caja["host"] = socket.gethostbyaddr(ip)[0]
+        except Exception:
+            pass
+    h = threading.Thread(target=ptr, daemon=True)
+    h.start()
+    h.join(_IPINFO_PTR_S)
+    host = caja.get("host")
+    if host:
+        dom = _reg_dom(host)
+        return (_ORG_DOM[dom], True, "ptr") if dom in _ORG_DOM else (dom, False, "ptr")
+    # sin DNS inverso (o tarda demasiado): buscar el OPERADOR de red del bloque IP (RDAP, cacheado)
+    aso, cc = _rdap_org(ip)
+    if aso:
+        return (aso + (f" · {cc}" if cc else ""), False, "rdap")
+    return ("sin PTR", False, "")
+
+def _lanzar(ip):
+    """Consulta `ip` en un hilo daemon (no retiene la salida del proceso si el resolvedor se
+    cuelga) y devuelve el Event que se marca al terminar."""
+    ev = threading.Event()
+    def trabajo():
+        global _ipinfo_sucio
+        with _IPINFO_SEM:
+            try:
+                org, legit, via = _resolver_red(ip)
+            except Exception:
+                org, legit, via = "sin PTR", False, ""
+        with _IPINFO_LOCK:
+            _ipinfo[ip] = {"org": org, "legit": legit, "ts": time.time(), "via": via}
+            _ipinfo_sucio = True
+        ev.set()
+    threading.Thread(target=trabajo, daemon=True).start()
+    return ev
+
+def _hace_falta(ip):
+    if not ip or ip in ("?", "-"):
+        return False
+    ent = _ipinfo.get(ip)
+    return not (ent and time.time() - ent.get("ts", 0) < _IPINFO_TTL)
+
+def precargar_duenios(ips):
+    """Lanza ya, en paralelo, las consultas de las IPs que se van a pintar (sin esperar):
+    cuando duenio() las pida, casi todas habran vuelto."""
+    global _ipinfo_nuevos
+    if _SIN_RED:
+        return
+    for ip in ips:
+        if _ipinfo_nuevos >= _IPINFO_MAX_NUEVOS:
+            break
+        if ip not in _ipinfo_vuelo and _hace_falta(ip):
+            _ipinfo_nuevos += 1
+            _ipinfo_vuelo[ip] = _lanzar(ip)
+
 def duenio(ip):
     """(etiqueta, legitimo) del dueno de una IP: PTR -> dominio -> marca conocida.
-    Cachea a disco con TTL. Los CDN/grandes se marcan legitimo=True (verde)."""
-    global _ipinfo_nuevos, _ipinfo_sucio
+    Cachea a disco con TTL. Los CDN/grandes se marcan legitimo=True (verde). Nunca espera a la
+    red mas de _IPINFO_ESPERA_IP_S por IP ni _IPINFO_PRESUPUESTO_S en toda la corrida: lo que
+    no llega a tiempo sale «-» y se resuelve en la proxima."""
+    global _ipinfo_nuevos, _ipinfo_gasto
     if not ip or ip in ("?", "-"):
         return ("-", False)
-    ent = _ipinfo.get(ip)
-    now = time.time()
-    if ent and now - ent.get("ts", 0) < _IPINFO_TTL:
-        return (ent.get("org", "-"), ent.get("legit", False))
-    if _ipinfo_nuevos >= _IPINFO_MAX_NUEVOS or _SIN_RED:
-        return ("-", False)          # se resolvera en la proxima corrida
-    _ipinfo_nuevos += 1
-    org, legit, via = "sin PTR", False, ""
-    try:
-        socket.setdefaulttimeout(1.5)
-        host = socket.gethostbyaddr(ip)[0]
-        dom = _reg_dom(host)
-        org, legit, via = (_ORG_DOM[dom], True, "ptr") if dom in _ORG_DOM else (dom, False, "ptr")
-    except Exception:
-        # sin DNS inverso: buscar el OPERADOR de red del bloque IP (RDAP, cacheado)
-        aso, cc = _rdap_org(ip)
-        if aso:
-            org, legit, via = (aso + (f" · {cc}" if cc else ""), False, "rdap")
-        else:
-            org, legit, via = "sin PTR", False, ""
-    finally:
-        socket.setdefaulttimeout(None)
-    _ipinfo[ip] = {"org": org, "legit": legit, "ts": now, "via": via}
-    _ipinfo_sucio = True
-    return (org, legit)
+    if _hace_falta(ip):
+        if _SIN_RED:
+            return ("-", False)
+        ev = _ipinfo_vuelo.get(ip)
+        if ev is None:
+            if _ipinfo_nuevos >= _IPINFO_MAX_NUEVOS:
+                return ("-", False)          # se resolvera en la proxima corrida
+            _ipinfo_nuevos += 1
+            ev = _ipinfo_vuelo[ip] = _lanzar(ip)
+        resta = _IPINFO_PRESUPUESTO_S - _ipinfo_gasto
+        if resta > 0 and not ev.is_set():
+            t0 = time.monotonic()
+            ev.wait(min(resta, _IPINFO_ESPERA_IP_S))
+            _ipinfo_gasto += time.monotonic() - t0
+        if not ev.is_set():
+            return ("-", False)
+    ent = _ipinfo.get(ip) or {}
+    return (ent.get("org", "-"), ent.get("legit", False))
+
+def cerrar_duenios():
+    """Al acabar la corrida: espera (como mucho _IPINFO_FIN_S) a las consultas que siguen en vuelo
+    y guarda la cache, para que lo que llego tarde a la pagina sirva en la proxima."""
+    fin = time.monotonic() + _IPINFO_FIN_S
+    for ev in list(_ipinfo_vuelo.values()):
+        resta = fin - time.monotonic()
+        if resta <= 0:
+            break
+        ev.wait(resta)
+    _guardar_ipinfo()
 
 def _guardar_ipinfo():
     if not _ipinfo_sucio:
         return
     try:
         lim = time.time() - _IPINFO_TTL
-        data = {k: v for k, v in _ipinfo.items() if v.get("ts", 0) >= lim}
+        with _IPINFO_LOCK:                    # los hilos de _lanzar pueden estar escribiendo
+            data = {k: v for k, v in _ipinfo.items() if v.get("ts", 0) >= lim}
         os.makedirs(os.path.dirname(_IPINFO_CACHE), mode=0o700, exist_ok=True)
         tmp = _IPINFO_CACHE + ".tmp"
         with open(tmp, "w", encoding="utf-8") as f:
@@ -1609,6 +1692,13 @@ def top_origenes_section(n_src=5, n_sub=8):
     desde que puerto origen, hacia que IP destino y hacia que puerto destino.
     Se arma con by_src (totales reales) + flujos (ya trae sport/dport/proto)."""
     tops = by_src.most_common(n_src)
+    # los destinos de esas tarjetas, consultados ya y en paralelo (duenio() solo los recoge)
+    _suyos = {s for s, _ in tops}
+    _ds = Counter()
+    for (s, sp, dst, dp, pr, sig), v in flujos.items():
+        if s in _suyos:
+            _ds[dst] += v[0]
+    precargar_duenios([d for d, _ in _ds.most_common()])
     if not tops:
         return ("<!--TOP_INI--><section class=\"card\"><h2>Top 5 IPs origen que mas peticionan</h2>"
                 "<p class=\"muted\">Sin ataques en la ventana.</p></section><!--TOP_FIN-->")
@@ -2013,6 +2103,7 @@ def top_destinos_section(n_dst=5, n_sub=8):
     """Espejo del anterior: IPs DESTINO mas atacadas (las mas golpeadas) y QUE CPEs las
     atacan. Sirve para ver blancos comunes (un mismo C2/servidor tocado por varios CPEs)."""
     tops = [(d, c) for d, c in by_dst.most_common() if d and d != "?"][:n_dst]
+    precargar_duenios([d for d, _ in tops])
     if not tops:
         return ("<section class=\"card\"><h2>Top IPs destino mas atacadas</h2>"
                 "<p class=\"muted\">Sin ataques en la ventana.</p></section>")
@@ -2732,4 +2823,5 @@ try:
 except OSError:
     pass
 
+cerrar_duenios()   # despues de publicar el reporte: no retrasa lo que ve el operador
 print(out)

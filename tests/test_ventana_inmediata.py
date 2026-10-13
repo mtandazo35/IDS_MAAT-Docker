@@ -73,6 +73,20 @@ class VentanaInmediata(unittest.TestCase):
         self.estado["vpend"] = (v, time.time() - self.d.REGEN_MIN_SECS - 1)
         self.assertEqual(self.vuelta(30), [30])
 
+    def test_el_freno_no_retiene_la_ventana_elegida(self):
+        """Correccion de defecto: tras una corrida lenta (558 s medidos en local) el freno dejaba
+        la ventana elegida en «generando…» otro tanto (el user, 2026-10-13). La elegida pasa."""
+        self.estado.update(ult_dur=self.d.REFRESH_SECS + 300, ult_fin=time.time() - 10)
+        self.assertEqual(self.vuelta(30), [30])
+
+    def test_el_freno_sigue_frenando_el_ciclo_normal(self):
+        """Lo que el freno protege sigue igual: sin ventana pendiente, una regeneracion vencida
+        espera lo que tardo la anterior (no se encadenan corridas de 9 min)."""
+        self.estado.update(ult_dur=self.d.REFRESH_SECS + 300, ult_fin=time.time() - 10)
+        self.d.FORCE_REGEN = True
+        self.estado["ult_forzado"] = 0
+        self.assertEqual(self.vuelta(1440), [])
+
     def test_sin_cambio_no_genera(self):
         """Con la ventana elegida ya generada y nada vencido, la vuelta no genera nada."""
         self.assertEqual(self.vuelta(1440), [])

@@ -731,7 +731,21 @@ CONF = nodos.ruta("conf", "panel.conf")
 REFRESH_SECS = 300    # regeneracion del resumen en segundo plano: cada 5 min (tiles, graficos, linea de tiempo y Top 5)
 FORCE_REGEN = False   # el selector de ventana lo pone True para regenerar el resumen ya
 REGEN_MIN_SECS = 60   # separacion minima entre regeneraciones FORZADAS (ver pedir_regen)
-VENTANA_ESPERA = 10   # s que el POST de la ventana espera al resumen nuevo antes de volver a "/"
+VENTANA_ESPERA = 2    # s que el POST de la ventana espera al resumen nuevo antes de volver a "/"
+                      # (con 10 el navegador se quedaba 10 s congelado tras elegir; si no esta,
+                      # la pagina enseña el progreso y se recarga sola al terminar)
+
+# Mientras se genera otra ventana: cada 2 s pregunta /ventana-estado (JSON pequeño), pinta
+# «N de M · T s» y recarga UNA vez cuando ya esta. Si la red falla, reintenta mas despacio.
+_JS_VENTANA_PEND = (
+    "<script>(function(){var t0=Date.now(),e=document.getElementById('wprog');"
+    "function mira(){fetch('/ventana-estado'+location.search,{credentials:'same-origin',cache:'no-store'})"
+    ".then(function(r){if(!r.ok)throw r.status;return r.json();})"
+    ".then(function(d){if(!d.pendiente){location.reload();return;}"
+    "if(e)e.textContent=d.listos+' de '+d.total+' · '+Math.round((Date.now()-t0)/1000)+' s';"
+    "setTimeout(mira,2000);})"
+    ".catch(function(){setTimeout(mira,5000);});}"
+    "setTimeout(mira,2000);})();</script>")
 
 def pedir_regen():
     """Pide regenerar el resumen cuanto antes. Es solo una marca: el hilo de fondo la
@@ -5392,6 +5406,17 @@ def ventana_generada(nodo=None):
         return int(_cargar_cuarentena(nodo).get("ventana_min") or 0)
     except (ValueError, TypeError):
         return 0
+def estado_ventana(nodo=None):
+    """Si el resumen que se mira ya es de la ventana elegida y cuantos reportes van hechos con
+    ella (los puntos activos y «Todos», que se genera el ultimo). Lo consulta la pagina cada 2 s
+    mientras se genera, en vez de recargarse entera cada segundo."""
+    va = ventana_actual()
+    vg = ventana_generada(nodo)
+    todos = pids_activos() + [nodos.TODOS]
+    listos = sum(1 for n in todos if ventana_generada(n) == va)
+    return {"elegida": va, "generada": vg, "pendiente": bool(vg and vg != va),
+            "listos": listos, "total": len(todos)}
+
 def etiqueta_ventana(minutos):
     for v, t in VENTANAS:
         if v == minutos:
@@ -8357,13 +8382,14 @@ def _vuelta_refrescador(estado):
     # «generando…» seguia hasta el ciclo de 5 min). Una ventana NUEVA se genera ya, sin el
     # minuto de REGEN_MIN_SECS (es una accion del operador y es rara); volver a intentar la
     # MISMA si espera ese minuto, para no relanzar el generador cada 10 s si falla.
+    ventana_pend = False
     if pids:
         _va = ventana_actual()
         _vg = ventana_generada(nodos.TODOS)
         if _vg and _vg != _va:
             _ult_v, _ult_t = estado.get("vpend", (0, 0.0))
             if _va != _ult_v or time.time() - _ult_t >= REGEN_MIN_SECS:
-                forzado = True
+                forzado = ventana_pend = True
                 estado["vpend"] = (_va, time.time())
     stale = forzado
     for nodo in pids + ([nodos.TODOS] if pids else []):
@@ -8379,7 +8405,10 @@ def _vuelta_refrescador(estado):
     # 9 minutos y el ciclo son 5, se encadenan una tras otra y queda un nucleo al
     # 100 % de forma permanente; el reporte no sale antes por eso, y la maquina que
     # tiene que analizar el trafico se queda sin CPU. Como mucho, medio nucleo.
-    if stale and ult_dur > REFRESH_SECS and (time.time() - ult_fin) < ult_dur:
+    # La ventana que acaba de elegir el operador NO se frena: con el freno, tras una corrida de
+    # 9 min el cambio de ventana se quedaba otros 9 min en «generando…» (el user, 2026-10-13).
+    # Sigue acotado: la misma ventana fallida no se reintenta antes de REGEN_MIN_SECS.
+    if stale and not ventana_pend and ult_dur > REFRESH_SECS and (time.time() - ult_fin) < ult_dur:
         stale = False
     if stale and pids:
         if forzado:
@@ -10946,7 +10975,10 @@ con el resumen (cada 5 min), pero hay un <b>barrido rapido cada ~60 s</b> que en
 con <b>infeccion confirmada</b> (no esperan los 5 min). Ver "Cuarentena automatica" mas abajo.</li>
 <li><b>Ventana del resumen</b>: por defecto <b>24 h</b>. Se puede acortar para ver solo la
 <b>actividad reciente</b> (asi una IP ya atendida se cae sola del top al no tener alertas
-nuevas). Se cambia en <b>En vivo</b> con el selector <b>Ventana</b> (solo administrador).</li>
+nuevas). Se cambia en <b>En vivo</b> con el selector <b>Ventana</b> (solo administrador). Al
+cambiarla se regenera cada punto y al final Todos; mientras tanto la pagina dice
+<b>generando&hellip; N de M</b> con los segundos que lleva y se recarga sola una vez al terminar
+(suele ser menos de un minuto).</li>
 <li><b>Reglas ET</b>: las actualiza el orquestador cada dia para todos los puntos. <b>Informe por
 Telegram</b>: 07:30.</li>
 <li>Todas las horas del panel estan en la <b>hora local</b> configurada en el servidor.</li>
@@ -11579,7 +11611,9 @@ ruidosa que dispara mil veces sigue siendo una sola prueba. Es lo que manda el b
 con su SID/firma/fecha/flow_id, las <b>coincidencias de reputacion</b> con su fuente/CIDR y su
 <b>vigencia</b> (si el feed sigue vigente o caduco), la <b>corroboracion</b> independiente y la
 <b>decision</b>. Si el destino no tiene DNS inverso, se muestra el <b>operador de red</b> del bloque
-(via RDAP) en vez de "sin PTR".</p>
+(via RDAP) en vez de "sin PTR". Estas consultas van en paralelo y con tiempo maximo, para no
+retrasar el resumen: una IP nueva que aun no se resolvio sale como <b>-</b> y aparece en la
+siguiente regeneracion.</p>
 <p><b>Quien tenia la IP en el momento del evento:</b> el panel guarda un historico de asignaciones
 (PPPoE/DHCP). Si la IP cambio de dueño entre el ataque y ahora, la ficha lo avisa &mdash; asi no se
 culpa al cliente que hoy tiene esa IP por lo que hizo otro antes.</p>
@@ -16516,7 +16550,8 @@ class H(BaseHTTPRequestHandler):
             ahora_ec = datetime.now(TZ_EC).strftime("%d/%m/%Y %H:%M")
             # selector de ventana (solo admin): elegir cuanto tiempo abarca el resumen
             wsel = ""
-            recarga = 20   # s; mientras se genera otra ventana, 1 (el informe tarda segundos)
+            recarga = 20   # s; mientras se genera otra ventana no hay recarga: la pagina pregunta
+            pendiente = False   # por /ventana-estado y se recarga UNA vez al terminar
             if getattr(CTX, "role", None) == "admin":
                 va = ventana_actual()
                 opts = "".join(f"<option value={v}{' selected' if v == va else ''}>{t}</option>"
@@ -16524,16 +16559,20 @@ class H(BaseHTTPRequestHandler):
                 wsel = ("<form method=post action='/ventana' class='wsel'>"
                         "<span class='wlbl'>Ventana</span>"
                         f"<select name='min' onchange='this.form.submit()'>{opts}</select></form>")
-                _vg = ventana_generada()
-                if _vg and _vg != va:
-                    # el resumen en pantalla NO es el de la ventana elegida todavia; se mira
-                    # cada segundo para no dejar el aviso cuando ya esta hecho
-                    recarga = 1
+                _ev = estado_ventana()
+                if _ev["pendiente"]:
+                    # el resumen en pantalla NO es el de la ventana elegida todavia. Antes se
+                    # recargaba la pagina entera cada segundo: parecia un bucle, cada recarga
+                    # rehacia todo y un clic en el selector a mitad de recarga se reenviaba
+                    # (el user, 2026-10-13). Ahora se pregunta por /ventana-estado y se dice
+                    # cuanto va.
+                    pendiente = True
                     wsel += ("<span class='wpend' title='El resumen se regenera en segundo "
-                             "plano; en una caja con trafico tarda unos minutos.'>"
-                             "generando %s&hellip; (mostrando %s)</span>"
+                             "plano: primero cada punto y al final Todos.'>"
+                             "generando %s&hellip; (mostrando %s) &middot; <span id='wprog'>%d de %d</span></span>"
                              % (html.escape(etiqueta_ventana(va)),
-                                html.escape(etiqueta_ventana(_vg))))
+                                html.escape(etiqueta_ventana(_ev["generada"])),
+                                _ev["listos"], _ev["total"]))
             if resumen_inner.strip():
                 cabecera = (
                     "<header class='pageh'><div>"
@@ -16541,8 +16580,9 @@ class H(BaseHTTPRequestHandler):
                     "<p class='ph-sub'>Panel IDS Suricata &middot; "
                     + html.escape(nodos.nombre(nodos.nodo_actual())) + " &middot; alertas graves salientes &middot; "
                     f"actualizado {ahora_ec} (hora local) "
-                    "<span class='ph-live'><span class='dotlive'></span>en vivo &middot; "
-                    f"refresca en <span id='cd'>{recarga}</span>s</span></p></div>{wsel}</header>")
+                    "<span class='ph-live'><span class='dotlive'></span>en vivo"
+                    + ("" if pendiente else f" &middot; refresca en <span id='cd'>{recarga}</span>s")
+                    + f"</span></p></div>{wsel}</header>")
                 resumen = f"{cabecera}<main>{resumen_inner}</main>"
             else:
                 cabecera = (
@@ -16551,16 +16591,21 @@ class H(BaseHTTPRequestHandler):
                     + f" &middot; actualizado {ahora_ec} (hora local)</p></div>{wsel}</header>")
                 resumen = (cabecera + "<main style='padding:8px 28px 24px'><p style='color:#52514e'>El resumen se "
                            "esta generando en segundo plano; aparecera aqui en unos minutos.</p></main>")
-            page = (f"<!doctype html><html lang=es><head><meta charset=utf-8><link rel=icon type=image/png href=/favicon.ico>"
-                    f"<meta name=viewport content='width=device-width,initial-scale=1'>"
-                    f"<meta http-equiv=refresh content={recarga}><title>Suricata</title>"
+            page = ("<!doctype html><html lang=es><head><meta charset=utf-8><link rel=icon type=image/png href=/favicon.ico>"
+                    "<meta name=viewport content='width=device-width,initial-scale=1'>"
+                    + ("" if pendiente else f"<meta http-equiv=refresh content={recarga}>")
+                    + "<title>Suricata</title>"
                     f"{_PAGEH_CSS}{head_css}"
                     "<style>main{max-width:1360px;margin:0 auto;padding-top:8px}</style>"
                     f"</head><body>{nav('/')}{resumen}"
-                    f"<script>(function(){{var s={recarga},e=document.getElementById('cd');"
-                    "var t=setInterval(function(){s--;if(s<0)s=0;if(e)e.textContent=s;"
-                    "if(s<=0)clearInterval(t);},1000);})();</script></body></html>")
+                    + (_JS_VENTANA_PEND if pendiente else
+                       f"<script>(function(){{var s={recarga},e=document.getElementById('cd');"
+                       "var t=setInterval(function(){s--;if(s<0)s=0;if(e)e.textContent=s;"
+                       "if(s<=0)clearInterval(t);},1000);})();</script>")
+                    + "</body></html>")
             return self._html(page)
+        if path == "/ventana-estado":
+            return self._json(estado_ventana())
         if path == "/top":
             return self._html(top_page())
         if path == "/detalle":
@@ -16812,7 +16857,9 @@ class H(BaseHTTPRequestHandler):
                 m = 1440
             if m not in [v for v, _ in VENTANAS]:
                 m = 1440
-            _antes = ventana_generada() if "ventana_generada" in globals() else "?"
+            # «antes» = la ventana que estaba ELEGIDA; con la del resumen generado salia siempre
+            # la misma mientras se generaba («30 -> 60», «30 -> 30»...)
+            _antes = ventana_actual()
             set_ventana(m)
             # queda anotado: una ventana de 30 min deja casi ciego al detector y hasta
             # ahora se cambiaba sin dejar rastro de quien ni cuando

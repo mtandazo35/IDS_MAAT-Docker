@@ -3,7 +3,8 @@
 Tipo: correccion de defecto. Sin tailwind.css el panel respondia 200 con un fichero vacio que el
 navegador guardaba una hora: las paginas seguian sin estilos aunque el fichero volviera, y tras
 una actualizacion del CSS se seguia viendo el viejo. Y al cambiar la ventana el aviso «generando…»
-se quedaba hasta 20 s aunque el informe nuevo tardara 4 (visto en local, 2026-10-12).
+se quedaba hasta 20 s aunque el informe nuevo tardara 4 (visto en local, 2026-10-12); despues, la
+recarga de 1 s parecia un bucle (2026-10-13): ahora se pregunta a /ventana-estado.
 """
 import json
 import os
@@ -60,19 +61,59 @@ class Recarga(unittest.TestCase):
         self.ana = self.p.entrar("ana")
 
     def recarga(self):
+        """(segundos de la recarga o None si no se recarga sola, html)."""
         h = self.p.pedir("GET", "/?nodo=_todos", cookie=self.ana).texto
-        return re.search(r"<meta http-equiv=refresh content=(\d+)>", h).group(1), h
+        m = re.search(r"<meta http-equiv=refresh content=(\d+)>", h)
+        return (m.group(1) if m else None), h
 
-    def test_20_s_normal_y_1_s_mientras_genera_otra_ventana(self):
-        """Correccion de defecto: con la ventana elegida ya generada se recarga cada 20 s; si se
-        eligio otra y aun se muestra la vieja («generando…»), cada segundo."""
+    def estado(self):
+        r = self.p.pedir("GET", "/ventana-estado?nodo=_todos", cookie=self.ana)
+        self.assertEqual(r.status, 200)
+        return json.loads(r.texto)
+
+    def test_20_s_normal_y_sin_recarga_mientras_genera_otra_ventana(self):
+        """Correccion de defecto: con la ventana elegida ya generada se recarga cada 20 s. Si se
+        eligio otra y aun se muestra la vieja («generando…»), la pagina NO se recarga entera cada
+        segundo (parecia un bucle y un clic en el selector a mitad de recarga se reenviaba; el
+        user, 2026-10-13): pregunta a /ventana-estado y enseña cuanto va."""
         self.p.d.CFG["VENTANA_MIN"] = "1440"
         self.assertEqual(self.recarga()[0], "20")
         self.p.d.CFG["VENTANA_MIN"] = "30"
         seg, h = self.recarga()
-        self.assertEqual(seg, "1")
+        self.assertIsNone(seg)
         self.assertIn("generando 30 min", h)
-        self.assertIn("var s=1,", h)
+        self.assertIn("fetch('/ventana-estado'", h)
+        self.assertIn("<span id='wprog'>0 de ", h)
+        self.assertNotIn("id='cd'", h)
+
+    def test_ventana_estado_dice_si_falta_y_cuanto_va(self):
+        """Capacidad nueva: /ventana-estado dice la ventana elegida, la que se muestra, si falta
+        y cuantos reportes (puntos activos y «Todos») van ya hechos con la elegida."""
+        self.p.d.CFG["VENTANA_MIN"] = "1440"
+        e = self.estado()
+        self.assertFalse(e["pendiente"])
+        self.p.d.CFG["VENTANA_MIN"] = "30"
+        e = self.estado()
+        self.assertEqual((e["pendiente"], e["elegida"], e["generada"]), (True, 30, 1440))
+        self.assertEqual(e["total"], len(self.p.d.pids_activos()) + 1)
+        self.assertEqual(e["listos"], 0)
+        self.generar_en(0, 30)
+        time.sleep(0.3)
+        e = self.estado()
+        self.assertFalse(e["pendiente"])
+        self.assertEqual(e["listos"], 1)
+
+    def test_la_bitacora_apunta_la_ventana_que_habia_elegida(self):
+        """Correccion de defecto: «antes» salia de la ventana del resumen ya generado, asi que
+        mientras se generaba apuntaba siempre lo mismo («30 -> 60», «30 -> 30»...)."""
+        self.p.d.VENTANA_ESPERA = 0
+        self.p.d.CFG["VENTANA_MIN"] = "1440"
+        self.p.pedir("POST", "/ventana?nodo=_todos", {"min": "30"}, cookie=self.ana)
+        self.p.pedir("POST", "/ventana?nodo=_todos", {"min": "60"}, cookie=self.ana)
+        with open(os.path.join(self.p.tmp.name, "panel", "log", "bitacora.log"), encoding="utf-8") as f:
+            b = f.read()
+        self.assertIn("CONFIG-VENTANA	1440 -> 30 min", b)
+        self.assertIn("CONFIG-VENTANA	30 -> 60 min", b)
 
     def generar_en(self, segundos, vmin):
         """Simula el refrescador: escribe el resumen de «Todos» con esa ventana al cabo de un rato."""
@@ -102,13 +143,20 @@ class Recarga(unittest.TestCase):
 
     def test_si_tarda_mas_vuelve_igual(self):
         """Capacidad nueva: con trafico real puede tardar; pasado VENTANA_ESPERA se vuelve igual y
-        la pagina sigue mirando cada segundo."""
+        la pagina sigue mirando sola (por /ventana-estado, sin recargarse entera)."""
         self.p.d.VENTANA_ESPERA = 0.5
         t = time.time()
         r = self.p.pedir("POST", "/ventana?nodo=_todos", {"min": "30"}, cookie=self.ana)
         self.assertEqual(r.status, 303)
         self.assertLess(time.time() - t, 5)
-        self.assertEqual(self.recarga()[0], "1")
+        seg, h = self.recarga()
+        self.assertIsNone(seg)
+        self.assertIn("fetch('/ventana-estado'", h)
+
+    def test_elegir_no_congela_el_navegador_10_s(self):
+        """Correccion de defecto: el POST esperaba hasta 10 s al resumen nuevo con el navegador
+        congelado; ahora como mucho VENTANA_ESPERA (2 s) y luego la pagina enseña el progreso."""
+        self.assertLessEqual(self.p.d.VENTANA_ESPERA, 2)
 
 
 if __name__ == "__main__":
