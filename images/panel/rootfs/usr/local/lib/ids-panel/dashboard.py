@@ -13741,29 +13741,34 @@ _CD_CSS = """<style>
        border:1px solid color-mix(in srgb,var(--acento) 34%, transparent)}
 .pill{font-size:12px;font-weight:600;color:var(--suave);border:1px solid var(--linea);
       border-radius:999px;padding:3px 10px;font-variant-numeric:tabular-nums}
-.seccion .qes{color:var(--tinta2);margin:0 0 3px;font-size:14px;line-height:1.55;max-width:75ch}
-.seccion .qhacer{color:var(--suave);font-size:13px;margin:0 0 16px;line-height:1.55;max-width:75ch}
+.seccion .qes{color:var(--tinta2);margin:0 0 4px;font-size:14px;line-height:1.55}
+.seccion .qhacer{color:var(--suave);font-size:13px;margin-left:6px}
 
-.cpe{background:var(--fondo);border:1px solid var(--linea);border-left:4px solid var(--acento);
-     border-radius:11px;padding:14px 17px;margin:0 0 10px;
-     transition:box-shadow .16s ease,transform .16s ease}
-.cpe:hover{box-shadow:0 5px 16px rgba(16,24,40,.09);transform:translateY(-1px)}
-.cpe .top{display:flex;flex-wrap:wrap;align-items:center;gap:9px}
-.cpe .ip{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:17px;font-weight:700;
-         letter-spacing:-.02em;color:var(--tinta)}
-.cpe .b{background:#f3f6fa;border:1px solid #e7ecf2;border-radius:7px;padding:3px 9px;
-        font-size:12px;color:var(--tinta2);font-variant-numeric:tabular-nums;white-space:nowrap}
-.cpe .resumen{margin:11px 0 0;font-size:14.5px;color:var(--tinta2);line-height:1.6;max-width:80ch}
-.cpe details{margin-top:11px}
-.cpe summary{cursor:pointer;color:var(--azul);font-size:13px;font-weight:600;padding:4px 0;
-             list-style:none;user-select:none}
-.cpe summary::-webkit-details-marker{display:none}
-.cpe summary::before{content:"";display:inline-block;width:0;height:0;margin-right:9px;
-                     border:5px solid transparent;border-left-color:currentColor;
-                     vertical-align:1px;transition:transform .16s ease}
-.cpe details[open]>summary::before{transform:rotate(90deg)}
-.cpe h4{margin:15px 0 5px;font-size:11px;color:var(--suave);text-transform:uppercase;
+/* Una fila por abonado: antes cada uno era una tarjeta de tres lineas y la pagina se
+   hacia eterna con pocos abonados. Lo que hizo va en la fila de debajo, plegado. */
+.cdtw{overflow-x:auto;margin-top:12px}
+.cdt{width:100%;border-collapse:collapse;font-size:13.5px}
+.cdt th{text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:.07em;
+        color:var(--suave);font-weight:700;padding:7px 10px;border-bottom:1px solid var(--linea);
+        white-space:nowrap}
+.cdt td{padding:8px 10px;border-top:1px solid var(--linea);color:var(--tinta2);vertical-align:middle}
+.cdt th.num,.cdt td.num{text-align:center;font-variant-numeric:tabular-nums}
+.cdt tr.cpe:hover td{background:color-mix(in srgb,var(--azul) 5%, transparent)}
+.cdt td.ip{font-family:ui-monospace,Menlo,Consolas,monospace;font-weight:700;color:var(--tinta);white-space:nowrap}
+.cdt td.mono{font-family:ui-monospace,Menlo,Consolas,monospace;white-space:nowrap}
+.cdt .rnom{font-weight:600;white-space:nowrap}
+.cdt td.ver{text-align:right;white-space:nowrap}
+.cdver{border:1px solid var(--linea);background:var(--fondo);color:var(--azul);font:600 12.5px system-ui;
+       border-radius:8px;padding:5px 11px;cursor:pointer}
+.cdver:hover{border-color:var(--azul)}
+.cdver[aria-expanded=true]{background:var(--azul);border-color:var(--azul);color:#fff}
+.cdt tr.cddet>td{border-top:0;padding:4px 10px 16px;background:color-mix(in srgb,var(--azul) 3%, transparent)}
+.cdt .resumen{margin:6px 0 4px;font-size:14px;color:var(--tinta2);line-height:1.6}
+.cdcuerpo{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:0 28px}
+.cdt h4{margin:12px 0 5px;font-size:11px;color:var(--suave);text-transform:uppercase;
         letter-spacing:.08em;font-weight:700}
+.cdt .vacio{color:var(--suave);font-size:13px;margin:2px 0 6px}
+
 .glos{margin:10px 0 0;background:color-mix(in srgb,var(--azul) 5%, transparent);
       border:1px solid color-mix(in srgb,var(--azul) 18%, transparent);
       border-radius:9px;padding:8px 12px}
@@ -13778,7 +13783,6 @@ _CD_CSS = """<style>
 .indicios tr.i-quiza td.v{color:#b9770e}
 .indicios tr.i-no td.v{color:var(--suave);font-weight:500}
 .conf{margin:8px 0 2px;font-size:13.5px;color:var(--tinta2)}
-.cpe .vacio{color:var(--suave);font-size:13px;margin:2px 0 10px}
 
 /* barras: mismo tono, extremo de dato redondeado, origen a ras */
 .bars,.mini{margin:2px 0 0}
@@ -13835,11 +13839,10 @@ a.pg:hover{border-color:var(--linea);background:color-mix(in srgb,var(--azul) 7%
   .inf h2{font-size:19px}
   .bars .lb,.mini .lb{flex-basis:112px;font-size:12px}
   .bars .vl,.mini .vl{flex-basis:52px}
-  .cpe{padding:12px 13px}
+  .cdcuerpo{grid-template-columns:1fr}
 }
 @media(prefers-reduced-motion:reduce){
   .bars .fi,.mini .fi{animation:none}
-  .cpe{transition:none}
 }
 @media print{
   /* El PDF lo pagina el navegador; aqui solo se le dice que es cada cosa en papel. */
@@ -13850,7 +13853,8 @@ a.pg:hover{border-color:var(--linea);background:color-mix(in srgb,var(--azul) 7%
   .inf summary{display:none !important}
   /* overflow:hidden recorta el contenido al alto de la pagina y lo que sobra
      DESAPARECE, que es lo que dejaba las fichas en blanco */
-  .inf,.inf .card,.inf .seccion,.inf .cpe,.inf details{overflow:visible !important}
+  .inf,.inf .card,.inf .seccion,.inf .cdtw,.inf details{overflow:visible !important}
+  .cdver{display:none !important}
   /* la franja de gravedad iba en position:absolute de arriba a abajo: al partirse la
      seccion entre dos paginas se estiraba sola por el hueco. En papel va como borde,
      que si fluye con la paginacion */
@@ -13863,21 +13867,18 @@ a.pg:hover{border-color:var(--linea);background:color-mix(in srgb,var(--azul) 7%
      anterior en blanco y empuja el contenido fuera. Se parte la seccion, nunca la
      ficha de un abonado */
   .card{border:1px solid #d7dce3 !important;box-shadow:none !important;margin-bottom:8mm}
-  /* UNA HOJA POR ABONADO: cada ficha es un documento en si misma, y asi se puede
-     arrancar la pagina de un cliente y mandarsela sin que salga la de otro.
-     Es '.cpe + .cpe' y no '.cpe' a secas para que la PRIMERA ficha se quede con el
-     encabezado de su categoria -que es su contexto- en vez de dejarlo solo en una
-     hoja con tres lineas. */
-  .cpe + .cpe{break-before:page;page-break-before:always}
-  .cpe{transform:none !important;box-shadow:none !important;
-       break-inside:avoid;page-break-inside:avoid}
-  /* si una ficha no cabe ni en una hoja entera, se parte; pero ni un encabezado
-     huerfano ni una fila cortada por la mitad */
-  .cpe .top,.cpe .resumen,.cpe h4{break-after:avoid;page-break-after:avoid}
+  /* Los abonados van SEGUIDOS, uno debajo de otro: antes cada uno arrancaba hoja nueva
+     y el reporte gastaba una hoja por abonado aunque su ficha ocupara un tercio.
+     Lo que no se parte es una fila ni su detalle; la cabecera de la tabla se repite. */
+  .cdt thead{display:table-header-group}
+  .cdt tr.cpe{break-inside:avoid;page-break-inside:avoid;break-after:avoid;page-break-after:avoid}
+  .cdt tr.cddet{break-inside:avoid;page-break-inside:avoid}
+  .cdt .resumen,.cdt h4{break-after:avoid;page-break-after:avoid}
+  .cdcuerpo{grid-template-columns:1fr 1fr}
   .indicios tr,.bars .row,.mini .row{break-inside:avoid;page-break-inside:avoid}
   .glos{break-inside:avoid;page-break-inside:avoid}
-  /* el ranking general va en su hoja, antes de las fichas */
-  .bloque{break-after:page;page-break-after:always}
+  /* el ranking general, antes de las categorias (sin hoja propia: se gastaba media) */
+  .bloque{break-inside:avoid;page-break-inside:avoid}
   .seccion{break-before:auto}
   .seccion h3{break-after:avoid;page-break-after:avoid}
   .tile .n{font-size:22pt}
@@ -13993,14 +13994,27 @@ _CD_JS = """<script>
 // -que es lo normal- no se pasa por el boton y las fichas salen vacias. Y el CSS no
 // puede suplirlo, porque <details> oculta su contenido por el shadow DOM y no por el
 // display de sus hijos.
+function cdVer(b){
+  var tr = b.closest('tr').nextElementSibling;
+  if (!tr) return;
+  tr.hidden = !tr.hidden;
+  b.setAttribute('aria-expanded', tr.hidden ? 'false' : 'true');
+  b.textContent = tr.hidden ? 'Ver detalle' : 'Ocultar';
+}
 function cdAbrirTodo(){
   document.querySelectorAll('#informe details').forEach(function(d){
     if (!d.open) { d.open = true; d.dataset.cdAuto = '1'; }
+  });
+  document.querySelectorAll('#informe tr.cddet[hidden]').forEach(function(tr){
+    tr.hidden = false; tr.dataset.cdAuto = '1';
   });
 }
 function cdCerrarAuto(){
   document.querySelectorAll('#informe details[data-cd-auto]').forEach(function(d){
     d.open = false; delete d.dataset.cdAuto;
+  });
+  document.querySelectorAll('#informe tr.cddet[data-cd-auto]').forEach(function(tr){
+    tr.hidden = true; delete tr.dataset.cdAuto;
   });
 }
 window.addEventListener('beforeprint', cdAbrirTodo);
@@ -14345,7 +14359,7 @@ def conducta_page(q="", msg="", pag=1, por=None, es_operador=True):
             continue
         total_cat = len(porcat[c])
         que, hacer, color, nivel = CONDUCTA_GUIA[c]
-        tarjetas = []
+        filas_t = []
         for f in grupo:
             acts = _cd_agrupa(f.get("firmas"), traducir)
             puertos = _cd_agrupa(f.get("puertos"), nombre_puerto)
@@ -14358,27 +14372,30 @@ def conducta_page(q="", msg="", pag=1, por=None, es_operador=True):
             if acts:
                 resumen += " Lo mas repetido: <b>%s</b>." % esc(acts[0][0].lower())
             tec = ", ".join("%s (%d)" % (esc(str(a)), b) for a, b in (f.get("destinos") or []))
-            tarjetas.append(
-                "<div class=cpe style='--acento:%s'>"
-                "<div class=top><span class=ip>%s</span>%s"
-                "<span class=b>%s alertas</span><span class=b>%s</span>"
-                "<span class=b>ultima vez %s</span></div>"
-                "<p class=resumen>%s</p>"
-                "<details><summary>Ver que estuvo haciendo</summary>"
-                "<h4>&iquest;Por que lo decimos?</h4>%s"
-                "<h4>Que hizo</h4>%s"
-                "<h4>Para que usa internet</h4>%s"
-                "<h4>Dominios sospechosos que consulto</h4>%s"
+            # Una FILA por abonado (antes una tarjeta de tres lineas, y al imprimir una hoja
+            # entera por abonado). Lo que hizo va debajo, plegado, en dos columnas.
+            filas_t.append(
+                "<tr class=cpe>"
+                "<td class=ip>%s</td><td>%s</td>"
+                "<td class=num>%s</td><td class=num>%d</td><td class=mono>%s</td>"
+                "<td>%s</td>"
+                "<td class=ver><button type=button class=cdver aria-expanded=false "
+                "onclick='cdVer(this)'>Ver detalle</button></td></tr>"
+                "<tr class=cddet hidden><td colspan=7><p class=resumen>%s</p><div class=cdcuerpo>"
+                "<div><h4>&iquest;Por que lo decimos?</h4>%s</div>"
+                "<div><h4>Que hizo</h4>%s</div>"
+                "<div><h4>Para que usa internet</h4>%s</div>"
+                "<div><h4>Dominios sospechosos que consulto</h4>%s</div></div>"
                 "<details class=tecnico><summary>Detalle tecnico (para el ISP)</summary>"
                 "<div class=kv>%d destinos distintos: %s<br>"
-                "Dominios mas consultados (todos): %s</div></details>"
-                "</details></div>"
-                % (color, esc(f["ip"]),
-                   # en «Todos» cada fila es de un nodo: la misma IP en dos nodos son dos fichas
-                   ("<span class=nodochip>%s</span>" % esc(nodos.nombre(f["nodo"]))) if f.get("nodo") else "",
-                   "{:,}".format(f["alertas"]).replace(",", "."),
-                   "1 dia activo" if f["dias"] == 1 else "%d dias activo" % f["dias"],
-                   fmt(f["ultima"]), resumen, indicios_html(f, esc),
+                "Dominios mas consultados (todos): %s</div></details></td></tr>"
+                % (esc(f["ip"]),
+                   # en «Todos» cada fila es de un nodo: la misma IP en dos nodos son dos filas
+                   ("<span class=rnom>%s</span>" % esc(nodos.nombre(f["nodo"]))) if f.get("nodo") else "&mdash;",
+                   "{:,}".format(f["alertas"]).replace(",", "."), f["dias"],
+                   fmt(f["ultima"]),
+                   esc(acts[0][0]) if acts else "&mdash;",
+                   resumen, indicios_html(f, esc),
                    _cd_minibarras(acts),
                    _cd_minibarras(puertos),
                    _cd_minibarras(malos),
@@ -14387,12 +14404,16 @@ def conducta_page(q="", msg="", pag=1, por=None, es_operador=True):
         secciones.append(
             "<div class='card seccion' id='c-%s' style='--acento:%s'>"
             "<h3>%s <span class=nivel>%s</span> <span class=pill>%s</span></h3>"
-            "<p class=qes>%s</p><p class=qhacer><b>Que hacer:</b> %s</p>%s%s%s</div>"
+            "<p class=qes>%s <span class=qhacer><b>Que hacer:</b> %s</span></p>%s"
+            "<div class=cdtw><table class=cdt><thead><tr>"
+            "<th>Abonado</th><th>Router</th><th class=num>Alertas</th>"
+            "<th class=num>Dias activo</th><th>Ultima vez</th><th>Lo mas repetido</th><th></th>"
+            "</tr></thead><tbody>%s</tbody></table></div></div>"
             % (c, color, esc(nombre_categoria(c)), esc(nivel),
                ("1 abonado" if total_cat == 1 else "%d abonados" % total_cat)
                + ("" if len(grupo) == total_cat else " &middot; %d en esta pagina" % len(grupo)),
                esc(que), esc(hacer), glosario_html(c, esc),
-               "".join(tarjetas), ""))
+               "".join(filas_t)))
 
     if not secciones:
         secciones = ["<div class=card><p class=sub2>Ningun abonado coincide con el filtro.</p></div>"]

@@ -366,18 +366,20 @@ def main():
           "print-color-adjust:exact" in imp)
     check("no se imprime la navegacion ni los botones",
           ".nav" in imp and ".acciones" in imp and "display:none" in imp)
-    # Una hoja por abonado: cada ficha es un documento en si misma y se puede arrancar
-    # la pagina de un cliente sin que salga la de otro. La primera comparte hoja con el
-    # encabezado de su categoria, que es su contexto.
+    # Los abonados van SEGUIDOS (el user, 2026-10-12): una hoja por abonado gastaba el
+    # papel aunque cada ficha ocupara un tercio. Lo que no se parte es una fila ni su detalle.
     check("una fila de la tabla o de un grafico nunca se corta",
           "break-inside:avoid" in imp)
     check("el encabezado de la ficha no se queda huerfano al final de la hoja",
           "break-after:avoid" in imp)
-    check("cada abonado arranca en su propia hoja",
-          "break-before:page" in imp.replace(" ", ""), "")
-    check("pero la PRIMERA ficha se queda con el encabezado de su categoria",
-          ".cpe+.cpe{break-before:page" in imp.replace(" ", ""),
-          imp[imp.find(".cpe +"):imp.find(".cpe +") + 70])
+    check("ningun abonado fuerza una hoja nueva",
+          "break-before:page" not in imp.replace(" ", ""), "")
+    check("el ranking tampoco se queda solo en su hoja",
+          "break-after:page" not in imp.replace(" ", ""), "")
+    check("la fila del abonado no se separa de su detalle",
+          "tr.cpe{break-inside:avoid" in imp.replace(" ", ""), "")
+    check("al imprimir se despliegan tambien las filas de detalle",
+          "tr.cddet[hidden]" in ns["_CD_JS"] and "tr.cddet[data-cd-auto]" in ns["_CD_JS"], "")
     check("pero una seccion entera SI puede partirse: si no, deja hojas en blanco",
           "break-inside:avoid" not in imp.split(".card{")[1].split("}")[0],
           imp.split(".card{")[1].split("}")[0])
@@ -502,15 +504,22 @@ def main():
     pg1 = ns["conducta_page"](pag=1, por=50)
     pg3 = ns["conducta_page"](pag=3, por=50)
     check("pidiendo 50, la primera pagina trae 50 fichas y no las 120",
-          pg1.count("<div class=cpe") == 50, pg1.count("<div class=cpe"))
-    check("la ultima trae el resto", pg3.count("<div class=cpe") == 20,
-          pg3.count("<div class=cpe"))
+          pg1.count("<tr class=cpe>") == 50, pg1.count("<tr class=cpe>"))
+    check("la ultima trae el resto", pg3.count("<tr class=cpe>") == 20,
+          pg3.count("<tr class=cpe>"))
+    # una tabla por categoria (el user, 2026-10-12: las tarjetas hacian la pagina eterna)
+    check("cada categoria es una tabla con sus columnas",
+          "<th>Abonado</th><th>Router</th><th class=num>Alertas</th>" in pg1, "")
+    check("cada abonado lleva su detalle debajo, plegado",
+          pg1.count("<tr class=cddet hidden>") == pg1.count("<tr class=cpe>") == 50,
+          (pg1.count("<tr class=cddet hidden>"), pg1.count("<tr class=cpe>")))
+    check("y un boton para desplegarlo", pg1.count("onclick='cdVer(this)'") == 50, "")
 
     # --- cuantos por pagina ---------------------------------------------------------------
     # 50 fichas de golpe no se leen. Por defecto entra una pantalla y el resto se pide.
     check("por defecto son 10 por pagina",
-          ns["conducta_page"](pag=1).count("<div class=cpe") == 10,
-          ns["conducta_page"](pag=1).count("<div class=cpe"))
+          ns["conducta_page"](pag=1).count("<tr class=cpe>") == 10,
+          ns["conducta_page"](pag=1).count("<tr class=cpe>"))
     check("el selector ofrece los tamanos", ns["CONDUCTA_OPCIONES"] == (10, 25, 50, 100),
           ns["CONDUCTA_OPCIONES"])
     check("y sale marcado el que se esta usando",
@@ -535,12 +544,12 @@ def main():
     check("el paginador se pinta una sola vez, al final",
           pg1.count("<div class=pager id=pgbar>") == 1, pg1.count("<div class=pager id=pgbar>"))
     check("y va despues de las fichas, no antes",
-          pg1.rfind("<div class=pager id=pgbar>") > pg1.rfind("<div class=cpe"), "")
+          pg1.rfind("<div class=pager id=pgbar>") > pg1.rfind("<tr class=cpe>"), "")
     check("una pagina fuera de rango no revienta: se acota",
-          ns["conducta_page"](pag=999, por=50).count("<div class=cpe") == 20)
+          ns["conducta_page"](pag=999, por=50).count("<tr class=cpe>") == 20)
     # el ranking de arriba es global y sale en todas las paginas, asi que hay que
     # mirar las FICHAS, no la pagina entera
-    _ficha = "<span class=ip>192.168.0.0</span>"
+    _ficha = "<td class=ip>192.168.0.0</td>"
     check("la ficha de la mas ruidosa esta en la primera pagina, no en la ultima",
           _ficha in pg1 and _ficha not in pg3, (_ficha in pg1, _ficha in pg3))
     check("y el ranking general se ve desde cualquier pagina",
