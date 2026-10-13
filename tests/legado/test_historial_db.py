@@ -45,7 +45,10 @@ ARBOL = ast.parse(DASH)
 PIEZAS = ("HIST_DB", "HIST_DIAS", "HIST_TOP", "HIST_CADA", "CONDUCTA_DIAS",
           "CONDUCTA_TOPE", "_cd_abrir", "_CD_TS", "_cd_ts", "_cd_top",
           "_hist_con", "hist_marca", "_hist_huella", "_hist_offsets", "hist_ingerir",
-          "hist_podar", "hist_conducta")
+          "hist_podar", "hist_conducta",
+          # el ruido no cuenta (ET INFO y lo no abusivo; el user, 2026-10-13)
+          "_TRAD", "_TRAD_CACHE", "_TRAD_CACHE_MAX", "_traducir_lento", "traducir",
+          "CD_NO_CUENTA", "cd_es_ruido", "_cd_firmas_reales")
 
 fallos = 0
 
@@ -114,8 +117,16 @@ def main():
     open(ruta_eve(ns), "w").close()                       # logrotate se lo llevo
     check("el historial sobrevive a que se vacie el log",
           alertas_de(ns, "192.168.1.10") == 5, alertas_de(ns, "192.168.1.10"))
-    check("y el CPE de DNS tambien sigue ahi",
-          any(f["ip"] == "192.168.1.11" for f in ns["hist_conducta"](3)["filas"]))
+    # el CPE que solo hizo DNS (0 alertas) sigue en la BASE, pero ya no sale en el reporte: solo
+    # se listan abonados con alertas reales (el user, 2026-10-13)
+    _c = ns["_hist_con"]("p001")
+    try:
+        _en_base = _c.execute("SELECT COUNT(*) FROM resumen WHERE cpe=?", ("192.168.1.11",)).fetchone()[0]
+    finally:
+        _c.close()
+    check("y el CPE de DNS tambien sigue en la base", _en_base > 0, _en_base)
+    check("aunque, sin alertas, no salga en el reporte",
+          not any(f["ip"] == "192.168.1.11" for f in ns["hist_conducta"](3)["filas"]))
 
     # --- reinicio: reingerir no puede duplicar ---------------------------------------
     escribir(ns, [ev("192.168.1.10", 30, dest_ip="8.8.8.8", dest_port=53,

@@ -10942,6 +10942,12 @@ mirara el log actual, el reporte diria 3 dias y en realidad seria el de hoy. Los
 viejos que la ventana se saltan por su fecha, sin abrirlos.</p>
 <p>Solo entran <b>tus abonados</b> (los rangos de <code>MIS_REDES</code>). Una IP de internet
 no es un CPE: llenaria la tabla de servidores ajenos y no serviria para decidir a quien cortar.</p>
+<p><b>Que cuenta como alerta.</b> Igual que En vivo, el reporte <b>descarta el ruido</b>: las
+firmas informativas (<code>ET INFO</code>) y lo que no es abuso (videollamadas, chequeos de
+conectividad, anomalias de protocolo, User-Agents raros). Ni suman alertas ni sirven para poner
+categoria, y un abonado que solo tiene eso <b>no aparece</b>. El P2P si cuenta, en su propia
+categoria. Sin este filtro, un abonado limpio podia salir como <b>DNS de malware</b> por consultar
+un dominio <code>.cloud</code>.</p>
 <p>Recorrer 3 dias de logs cuesta, asi que <b>no se genera al abrir la pagina</b>: lo hace el
 hilo de fondo cada 6 horas con prioridad baja. Si se generara dentro de la peticion, el
 navegador cortaria por timeout en cualquier caja con trafico de verdad. La linea de arriba
@@ -13148,7 +13154,7 @@ def hist_ingerir(pid=None, limite_lineas=4000000):
                         if fir:
                             det[(dia, ip, "firma", fir)] = det.get((dia, ip, "firma", fir), 0) + 1
                         mal = ((ev.get("dns") or {}).get("rrname") or "")[:80]
-                        if mal:
+                        if mal and not cd_es_ruido(fir):   # el de una ET INFO no es sospechoso
                             det[(dia, ip, "malo", mal)] = det.get((dia, ip, "malo", mal), 0) + 1
                     elif tipo == "dns":
                         dom = ((ev.get("dns") or {}).get("rrname") or "")[:80]
@@ -13249,14 +13255,19 @@ def hist_conducta(dias=None, pid=None):
             acc.setdefault(cpe, {}).setdefault(tipo, {})[clave] = n
         for cpe, f in filas.items():
             t = acc.get(cpe, {})
-            f["firmas"] = _cd_top(t.get("firma", {}))
+            reales = _cd_firmas_reales(t.get("firma", {}))
+            f["alertas"] = sum(reales.values())         # sin ruido: ver CD_NO_CUENTA
+            f["firmas"] = _cd_top(reales)
             f["destinos"] = _cd_top(t.get("destino", {}))
             f["puertos"] = _cd_top(t.get("puerto", {}))
             f["dominios"] = _cd_top(t.get("dominio", {}))
             f["malos"] = _cd_top(t.get("malo", {}))
             f["destinos_n"] = len(t.get("destino", {}))
             f["puertos_n"] = len(t.get("puerto", {}))
-        out = sorted(filas.values(), key=lambda f: (-f["alertas"], -f["eventos"]))
+        # solo abonados con alertas reales: los que solo navegaron llenaban «Otros — revisar a
+        # mano» con 0 alertas (30 de 36 en un punto) e inflaban «abonados con actividad»
+        out = sorted((f for f in filas.values() if f["alertas"] > 0),
+                     key=lambda f: (-f["alertas"], -f["eventos"]))
         lineas = c.execute("SELECT COUNT(*) FROM resumen WHERE hora >= ?",
                            (corte,)).fetchone()[0]
         return {"generado": int(time.time()), "dias": dias, "lineas": lineas,
@@ -13329,7 +13340,7 @@ def conducta_recolectar(dias=CONDUCTA_DIAS, pid=None):
                     # lo que el abonado consulta. Mezclarlos deja una lista de google y
                     # facebook donde deberia estar el dominio del malware
                     mal = ((ev.get("dns") or {}).get("rrname") or "")[:80]
-                    if mal:
+                    if mal and not cd_es_ruido(fir):
                         d["malos"][mal] = d["malos"].get(mal, 0) + 1
                 elif tipo == "dns":
                     dom = ((ev.get("dns") or {}).get("rrname") or "")[:80]
@@ -13339,6 +13350,10 @@ def conducta_recolectar(dias=CONDUCTA_DIAS, pid=None):
                 d["bytes"] += int(fl.get("bytes_toserver") or 0)
     filas = []
     for ip, d in cpes.items():
+        d["firmas"] = _cd_firmas_reales(d["firmas"])     # mismo criterio que hist_conducta
+        d["alertas"] = sum(d["firmas"].values())
+        if d["alertas"] <= 0:
+            continue
         filas.append({"ip": ip, "nodo": pid, "eventos": d["eventos"], "alertas": d["alertas"],
                       "bytes": d["bytes"], "dias": len(d["dias"]),
                       "primera": int(d["primera"]), "ultima": int(d["ultima"]),
@@ -13434,6 +13449,25 @@ CONDUCTA_GUIA = {
     "otros": ("Actividad que no encaja en las categorias anteriores.",
               "Revisar a mano antes de decidir.", "#8a9199", "Sin clasificar"),
 }
+
+# Lo que el Reporte NO cuenta ni usa para clasificar, igual que En vivo y el reporte de 24 h: el
+# ruido informativo (firmas ET INFO) y lo que no es abuso (videollamadas, chequeos de
+# conectividad, anomalias de protocolo...). Con todo eso dentro, un abonado limpio salia
+# «DNS de malware — GRAVE», confianza «Probable», por consultas a un dominio .cloud mezcladas con
+# videollamadas (el user, 2026-10-13). El P2P SI cuenta: tiene su propia categoria (vigilar).
+# Es CATS_NO_ABUSO de html_report menos el P2P (una prueba comprueba que no se separen).
+CD_NO_CUENTA = frozenset({"STUN (video)", "Chequeo de conectividad", "Anomalia QUIC",
+                          "Anomalia TLS/SSL", "Anomalia HTTP", "Anomalia TCP", "Cliente HTTP Go",
+                          "User-Agent raro", "User-Agent falso", "DNS dinamico",
+                          "Acceso denegado (403)"})
+
+def cd_es_ruido(firma):
+    """True si esa firma no cuenta como actividad sospechosa en el Reporte."""
+    return firma.startswith("ET INFO") or traducir(firma) in CD_NO_CUENTA
+
+def _cd_firmas_reales(firmas):
+    """{firma: n} sin el ruido."""
+    return {k: v for k, v in firmas.items() if not cd_es_ruido(k)}
 
 def conducta_categoria(f):
     """En que categoria cae un CPE segun lo que hizo en los dias del informe.
@@ -14129,8 +14163,8 @@ def conducta_page(q="", msg="", pag=1, por=None, es_operador=True):
     cab = ("<div class=card><h2>Informe de %d dias &mdash; conducta por abonado</h2>"
            "<p class=per>Del %s al %s &middot; generado hace %d min &middot; %s lineas de log</p>"
            "<div class=tiles>"
-           "<div class=tile><div class=n>%d</div><div class=l>abonados con actividad</div></div>"
-           "<div class=tile><div class=n>%d</div><div class=l>alertas en el periodo</div></div>"
+           "<div class=tile><div class=n>%d</div><div class=l>abonados con alertas</div></div>"
+           "<div class=tile><div class=n>%d</div><div class=l>alertas en el periodo (sin ruido informativo)</div></div>"
            "<div class=tile><div class=n style='color:#c0392b'>%d</div>"
            "<div class=l>para cortar (botnet, escaneo, fuerza bruta)</div></div>"
            "</div><div class=chips>%s</div>%s%s</div>"
