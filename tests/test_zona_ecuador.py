@@ -67,6 +67,27 @@ class ZonaPorDefecto(unittest.TestCase):
         self.assertIn('os.environ.get("IDS_TZ") or "America/Guayaquil"', src)
 
 
+class MarcasDeSuricata(unittest.TestCase):
+    def test_historial_respeta_la_zona_de_la_marca(self):
+        """Correccion de defecto: el historial (y con el la conducta y «ultima vez») leia la
+        marca de Suricata como hora local e ignoraba su zona: con Suricata en UTC y el panel en
+        Ecuador, todo salia 5 h adelantado."""
+        import time
+        src = open(os.path.join(LIB, "dashboard.py"), encoding="utf-8").read()
+        ini = src.index("def _cd_ts(s):")
+        ns = {"time": time, "datetime": datetime, "_CD_TS": {}}
+        exec(src[ini:src.index("def _cd_top(")], ns)
+        cd_ts = ns["_cd_ts"]
+        self.assertEqual(cd_ts("2026-10-12T17:00:00.123456+0000"), UTC_MEDIODIA.timestamp())
+        self.assertEqual(cd_ts("2026-10-12T12:00:00.123456-0500"), UTC_MEDIODIA.timestamp())
+        self.assertEqual(cd_ts("2026-10-12T17:00:00Z"), UTC_MEDIODIA.timestamp())
+        # el mismo segundo en otra zona no reutiliza la memoria del anterior
+        self.assertEqual(cd_ts("2026-10-12T17:00:00.000001-0500"), UTC_MEDIODIA.timestamp() + 5 * 3600)
+        # sin zona: hora local, como antes
+        self.assertEqual(cd_ts("2026-10-12T12:00:00"), time.mktime(time.strptime("2026-10-12T12:00:00",
+                                                                             "%Y-%m-%dT%H:%M:%S")))
+
+
 class Orquestador(unittest.TestCase):
     def test_sin_zona_en_ids_conf_es_ecuador(self):
         src = open(os.path.join(REPO, "orquestador", "ids_orq.py"), encoding="utf-8").read()

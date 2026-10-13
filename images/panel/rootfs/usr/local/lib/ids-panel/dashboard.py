@@ -13141,14 +13141,24 @@ def _cd_ts(s):
     """Marca de Suricata -> epoch, con memoria por segundo.
 
     Son millones de lineas y todas las de un mismo segundo comparten los 19 primeros
-    caracteres: sin esta memoria, strptime se lleva mas tiempo que leer los logs."""
+    caracteres: sin esta memoria, strptime se lleva mas tiempo que leer los logs.
+
+    Con la ZONA de la marca ("+0000", "-0500", "Z"): Suricata corre en UTC y el panel en la
+    hora de la empresa; leerla como local adelantaba 5 h el historial y la conducta. Sin zona,
+    hora local (como antes)."""
     if not s or len(s) < 19:
         return 0
-    k = s[:19]
+    resto = s[19:]
+    i = max(resto.rfind("+"), resto.rfind("-"))
+    z = resto[i:].replace(":", "") if i >= 0 else ("+0000" if resto.endswith("Z") else "")
+    k = s[:19] + z
     t = _CD_TS.get(k)
     if t is None:
         try:
-            t = time.mktime(time.strptime(k, "%Y-%m-%dT%H:%M:%S"))
+            if z:
+                t = datetime.strptime(k, "%Y-%m-%dT%H:%M:%S%z").timestamp()
+            else:
+                t = time.mktime(time.strptime(k, "%Y-%m-%dT%H:%M:%S"))
         except ValueError:
             t = 0
         if len(_CD_TS) > 200000:
@@ -13440,7 +13450,8 @@ def hist_conducta(dias=None, pid=None):
                 "WHERE hora >= ? GROUP BY cpe", (corte,)):
             filas[cpe] = {"ip": cpe, "nodo": pid, "alertas": al or 0, "eventos": ev_ or 0,
                           "bytes": by or 0, "dias": hs or 0,
-                          "primera": int(pri or 0), "ultima": int((ult or 0) + 3599),
+                          # fin de la ultima hora con actividad, pero nunca en el futuro
+                          "primera": int(pri or 0), "ultima": int(min((ult or 0) + 3599, time.time())),
                           "destinos": [], "puertos": [], "firmas": [], "dominios": [],
                           "malos": [], "destinos_n": 0, "puertos_n": 0}
         corte_d = time.strftime("%Y-%m-%d", time.localtime(corte))
