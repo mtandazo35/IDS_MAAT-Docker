@@ -83,8 +83,14 @@ class Recarga(unittest.TestCase):
         self.assertIsNone(seg)
         self.assertIn("generando 30 min", h)
         self.assertIn("fetch('/ventana-estado'", h)
-        self.assertIn("<span id='wprog'>0 de ", h)
+        self.assertIn("<span id='wprog' data-l='0' data-t='", h)
         self.assertNotIn("id='cd'", h)
+        # una consulta colgada no puede congelar la pagina (se quedo en «0 de 5 · 2 s» con el
+        # servidor ya terminado; el user, 2026-10-13): tope de 5 s, contador propio y, tras 3
+        # fallos seguidos, recarga entera
+        self.assertIn("c.abort();},5000)", h)
+        self.assertIn("setInterval(pinta,1000)", h)
+        self.assertIn("if(fallos>=3){location.reload()", h)
 
     def test_ventana_estado_dice_si_falta_y_cuanto_va(self):
         """Capacidad nueva: /ventana-estado dice la ventana elegida, la que se muestra, si falta

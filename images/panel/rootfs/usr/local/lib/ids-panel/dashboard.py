@@ -736,16 +736,25 @@ VENTANA_ESPERA = 2    # s que el POST de la ventana espera al resumen nuevo ante
                       # la pagina enseña el progreso y se recarga sola al terminar)
 
 # Mientras se genera otra ventana: cada 2 s pregunta /ventana-estado (JSON pequeño), pinta
-# «N de M · T s» y recarga UNA vez cuando ya esta. Si la red falla, reintenta mas despacio.
+# «N de M · T s» y recarga UNA vez cuando ya esta. Cada consulta tiene 5 s como mucho: sin ese tope
+# una sola peticion colgada dejaba la pagina en «0 de 5 · 2 s» para siempre aunque el servidor ya
+# hubiera terminado (el user, 2026-10-13). El contador de segundos corre solo; tras 3 fallos
+# seguidos se recarga la pagina entera (el servidor manda).
 _JS_VENTANA_PEND = (
-    "<script>(function(){var t0=Date.now(),e=document.getElementById('wprog');"
-    "function mira(){fetch('/ventana-estado'+location.search,{credentials:'same-origin',cache:'no-store'})"
+    "<script>(function(){var t0=Date.now(),e=document.getElementById('wprog'),"
+    "l=e?+e.getAttribute('data-l'):0,t=e?+e.getAttribute('data-t'):0,fallos=0;"
+    "function pinta(){if(e)e.textContent=l+' de '+t+' · '+Math.round((Date.now()-t0)/1000)+' s'"
+    "+(fallos?' · reintentando':'');}"
+    "setInterval(pinta,1000);"
+    "function mira(){var c=window.AbortController?new AbortController():null,"
+    "k=setTimeout(function(){if(c)c.abort();},5000);"
+    "fetch('/ventana-estado'+location.search,{credentials:'same-origin',cache:'no-store',signal:c?c.signal:undefined})"
     ".then(function(r){if(!r.ok)throw r.status;return r.json();})"
-    ".then(function(d){if(!d.pendiente){location.reload();return;}"
-    "if(e)e.textContent=d.listos+' de '+d.total+' · '+Math.round((Date.now()-t0)/1000)+' s';"
-    "setTimeout(mira,2000);})"
-    ".catch(function(){setTimeout(mira,5000);});}"
-    "setTimeout(mira,2000);})();</script>")
+    ".then(function(d){clearTimeout(k);fallos=0;if(!d.pendiente){location.reload();return;}"
+    "l=d.listos;t=d.total;pinta();setTimeout(mira,2000);})"
+    ".catch(function(){clearTimeout(k);fallos++;pinta();if(fallos>=3){location.reload();return;}"
+    "setTimeout(mira,2000);});}"
+    "setTimeout(mira,1500);})();</script>")
 
 def pedir_regen():
     """Pide regenerar el resumen cuanto antes. Es solo una marca: el hilo de fondo la
@@ -16569,10 +16578,10 @@ class H(BaseHTTPRequestHandler):
                     pendiente = True
                     wsel += ("<span class='wpend' title='El resumen se regenera en segundo "
                              "plano: primero cada punto y al final Todos.'>"
-                             "generando %s&hellip; (mostrando %s) &middot; <span id='wprog'>%d de %d</span></span>"
+                             "generando %s&hellip; (mostrando %s) &middot; <span id='wprog' data-l='%d' data-t='%d'>%d de %d</span></span>"
                              % (html.escape(etiqueta_ventana(va)),
                                 html.escape(etiqueta_ventana(_ev["generada"])),
-                                _ev["listos"], _ev["total"]))
+                                _ev["listos"], _ev["total"], _ev["listos"], _ev["total"]))
             if resumen_inner.strip():
                 cabecera = (
                     "<header class='pageh'><div>"
