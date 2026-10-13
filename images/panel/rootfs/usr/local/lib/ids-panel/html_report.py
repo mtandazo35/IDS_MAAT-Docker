@@ -2525,7 +2525,7 @@ td.num{{text-align:right;font-variant-numeric:tabular-nums}}
 .pager #pgi{{font-weight:600;font-size:13px}}
 .pgnote{{margin-left:auto}}
 #detalle td.nodo{{color:#6b6a66;white-space:nowrap}}
-#detalle th,#detalle td{{text-align:left}}   /* todo a la izquierda, tambien puertos y veces (el user, 2026-10-13) */
+#detalle th,#detalle td{{text-align:center}}   /* todo centrado, tambien puertos y veces (el user, 2026-10-13) */
 @media print{{.pager{{display:none!important}} #detalle tbody tr{{display:table-row!important}}}}
 @media(max-width:820px){{.tiles{{grid-template-columns:repeat(2,1fr)}}.grid{{grid-template-columns:1fr}}}}
 @media print{{.card,.tile{{break-inside:avoid}}header{{position:static}}}}
