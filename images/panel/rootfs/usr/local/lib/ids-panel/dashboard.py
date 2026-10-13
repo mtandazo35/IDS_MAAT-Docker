@@ -14140,17 +14140,17 @@ def indicios_html(f, esc=None):
     esc = esc or html.escape
     ind = indicios_cpe(f)
     _cl, texto, n = confianza_cpe(ind)
-    icono = {"si": "&#10004;", "quiza": "&#9888;", "no": "&#10007;"}
+    icono = {"si": "&#10004;", "quiza": "&#9888;"}
+    # Solo lo que SI se vio: la lista entera con nueve "No" debajo del unico "Si" tapaba
+    # justo lo que importa (el user, 2026-10-12)
     filas = "".join(
         "<tr class=i-%s><td>%s</td><td class=v>%s %s</td></tr>"
-        % (v, esc(e), icono[v],
-           {"si": "Si", "quiza": "Detectado", "no": "No"}[v])
-        for _c, e, v in ind)
-    return ("<table class=indicios><thead><tr><th>Indicio</th><th>Resultado</th></tr>"
-            "</thead><tbody>%s</tbody></table>"
-            "<p class=conf>Nivel de confianza: <b>%s</b> &mdash; %s senal(es) "
-            "independiente(s) apuntan a lo mismo.</p>"
-            % (filas, esc(texto), ("%g" % n)))
+        % (v, esc(e), icono[v], {"si": "Si", "quiza": "Detectado"}[v])
+        for _c, e, v in ind if v in icono)
+    tabla = ("<table class=indicios><tbody>%s</tbody></table>" % filas if filas else
+             "<p class=vacio>Ningun indicio concreto: solo la repeticion de alertas.</p>")
+    return (tabla + "<p class=conf>Nivel de confianza: <b>%s</b> &mdash; %s senal(es) "
+            "independiente(s) apuntan a lo mismo.</p>" % (esc(texto), ("%g" % n)))
 
 def _cd_doc(cuerpo):
     """El documento completo, como el resto de paginas del panel.

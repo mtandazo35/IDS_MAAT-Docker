@@ -445,8 +445,13 @@ def main():
 
     tabla = ns["indicios_html"]({"firmas": [["ET MALWARE Botnet CnC checkin", 9]],
                                  "puertos": [["23", 5]], "destinos_n": 90, "dias": 3})
-    check("la tabla dice que indicios se cumplen y cuales no",
-          "Si" in tabla and "No" in tabla, "")
+    check("la tabla dice que indicios se cumplen",
+          "Si" in tabla and "Comunicacion con servidor de control" in tabla, tabla[:300])
+    check("y SOLO esos: sin la lista de los que no se cumplen (el user, 2026-10-12)",
+          "&#10007;" not in tabla and ">&#10007; No<" not in tabla
+          and "Envio de correo" not in tabla, tabla)
+    vacia = ns["indicios_html"]({"firmas": [], "puertos": [], "destinos_n": 0, "dias": 1})
+    check("sin ningun indicio lo dice en una linea", "Ningun indicio concreto" in vacia, vacia)
     check("y cierra con el nivel de confianza", "Nivel de confianza" in tabla)
 
     # --- paginacion ------------------------------------------------------------------
