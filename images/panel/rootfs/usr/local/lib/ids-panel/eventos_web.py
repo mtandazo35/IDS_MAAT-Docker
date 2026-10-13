@@ -1101,9 +1101,14 @@ _CSS = (
     ".evw form.evf input,.evw form.evf select{font:13px system-ui;padding:6px 8px;border:1px solid #d7d6d2;"
     "border-radius:8px;background:#fff;color:#0b0b0b}"
     ".evw form.evf input.corto{width:90px}"
-    ".evw form.evf button{font:600 13px system-ui;padding:8px 16px;border:0;border-radius:8px;"
+    ".evw form.evf button{font:600 13px system-ui;line-height:18px;padding:8px 16px;border:0;border-radius:8px;"
     "background:#1f65bd;color:#fff;cursor:pointer}"
-    ".evw form.evf a{font-size:13px;color:#2a5fa0;align-self:center}"
+    # «Limpiar» como boton secundario, misma altura y misma linea que «Buscar»: como enlace suelto
+    # centrado a media altura quedaba mas arriba que el boton (el user, 2026-10-13)
+    ".evw form.evf a.limpiar{font:600 13px system-ui;line-height:18px;padding:7px 16px;"
+    "border:1px solid #d7d6d2;border-radius:8px;background:#fff;color:#0b0b0b;text-decoration:none;"
+    "align-self:flex-end}"
+    ".evw form.evf a.limpiar:hover{background:#eef4fd;border-color:#2a78d6}"
     ".evw .nodochip{display:inline-block;background:#eef4fd;color:#2a5fa0;border:1px solid #cfe0f6;"
     "border-radius:20px;padding:1px 9px;font-size:11px;font-weight:700;white-space:nowrap}"
     ".evw .pager{display:flex;gap:10px;align-items:center;margin:10px 0;flex-wrap:wrap}"
@@ -1217,7 +1222,7 @@ def _formulario(consulta, nodo, f):
         + "<label>Puerto como%s</label>" % sel("pdir", DIRS_IP, _q(consulta, "pdir"))
         + "<label>Protocolo<input class='corto' name='proto' value='%s' placeholder='TCP'></label>" % _e(_q(consulta, "proto"))
         + "<button type='submit'>Buscar</button>"
-        + "<a href='%s'>Limpiar</a>" % _e(_url(RUTA, [("nodo", nodo)]))
+        + "<a class='limpiar' href='%s'>Limpiar</a>" % _e(_url(RUTA, [("nodo", nodo)]))
         + "</form>")
 
 
