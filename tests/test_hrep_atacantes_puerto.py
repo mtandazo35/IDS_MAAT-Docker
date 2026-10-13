@@ -20,15 +20,19 @@ def tarjeta(doc, titulo):
 
 
 def filas_cols(t):
-    """Filas de una grafica en columnas: [(ip, nodo o None, puerto)] y las x de cada columna."""
-    filas, xs = [], {"ip": set(), "flecha": set(), "pto": set()}
+    """Filas de una grafica en columnas: [(ip, nodo o None, puerto o None[, extra])] y, por
+    columna, el conjunto de x en que empieza (una sola x = alineada en todas las filas)."""
+    filas, xs = [], {"ip": set(), "nodo": set(), "flecha": set(), "pto": set(), "extra": set()}
     for g in re.findall(r"<g><title>.*?</g>", t, re.S):
-        ip = re.search(r'<text x="([\d.]+)" y="\d+" class="lbl">([^<]+)</text>', g)
-        nodo = re.search(r'class="lbl lnodo">([^<]+)</text>', g)
-        flecha = re.search(r'<text x="([\d.]+)" y="\d+" class="lbl lflecha">→</text>', g)
-        pto = re.search(r'<text x="([\d.]+)" y="\d+" class="lbl lpto">([^<]+)</text>', g)
-        xs["ip"].add(ip.group(1)); xs["flecha"].add(flecha.group(1)); xs["pto"].add(pto.group(1))
-        filas.append((ip.group(2), nodo.group(1) if nodo else None, pto.group(2)))
+        col = {}
+        for clase, k in (("lbl", "ip"), ("lbl lnodo", "nodo"), ("lbl lflecha", "flecha"),
+                         ("lbl lpto", "pto"), ("lbl lextra", "extra")):
+            m = re.search(r'<text x="([\d.]+)" y="\d+" class="%s">([^<]+)</text>' % clase, g)
+            if m:
+                xs[k].add(m.group(1))
+                col[k] = m.group(2)
+        fila = (col.get("ip"), col.get("nodo"), col.get("pto"))
+        filas.append(fila + ((col["extra"],) if "extra" in col else ()))
     return filas, xs
 
 
@@ -57,7 +61,10 @@ class AtacantesPorPuerto(Entorno):
         self.assertIn("<title>10.0.0.5 · Nodo A → 23/TCP</title>", t)
         origen = tarjeta(doc, "IPs origen (atacantes)")
         self.assertNotIn("p001|", origen)
-        self.assertIn("10.0.0.5 · Nodo A", origen)
+        filas, xs = filas_cols(origen)
+        self.assertEqual(filas, [("10.0.0.5", "Nodo A", None), ("10.0.0.5", "Nodo B", None)])
+        self.assertEqual((len(xs["ip"]), len(xs["nodo"])), (1, 1), xs)
+        self.assertIn("<title>10.0.0.5 · Nodo A</title>", origen)
 
     def test_ips_destino_con_su_puerto(self):
         """Capacidad nueva: cada IP destino lleva el puerto por el que la atacan (el mas usado) y
@@ -68,8 +75,13 @@ class AtacantesPorPuerto(Entorno):
                      + [alerta("10.0.0.5", "192.0.2.11", dport=443, flow_id=70 + i) for i in range(2)])
         self.ok("60", "--nodo", "p001")
         t = tarjeta(self.html("p001"), "IPs destino (objetivos)")
-        self.assertEqual(re.findall(r'class="lbl">([^<]+)</text>', t),
-                         ["192.0.2.10 · 23/TCP +1", "192.0.2.11 · 443/TCP"])
+        filas, xs = filas_cols(t)
+        self.assertEqual(filas, [("192.0.2.10", None, "23/TCP", "+1"),
+                                 ("192.0.2.11", None, "443/TCP")])
+        # en columnas, sin flecha (no es «IP ataca puerto») y el +N aparte (el user, 2026-10-13)
+        self.assertEqual((len(xs["ip"]), len(xs["pto"])), (1, 1), xs)
+        self.assertEqual(xs["flecha"], set())
+        self.assertIn("<title>192.0.2.10 · 23/TCP +1</title>", t)
 
     def test_un_solo_nodo_sin_nombre_y_una_fila_no_empata(self):
         """Correccion de defecto: con una sola fila no sale «los 1 van empatados», sino «solo 1

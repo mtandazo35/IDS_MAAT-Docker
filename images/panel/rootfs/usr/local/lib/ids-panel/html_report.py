@@ -299,14 +299,6 @@ def rid_de(clave):
     """El router (pid) de una identidad de CPE ("" si no lo trae)."""
     return clave.split("|", 1)[0] if "|" in clave else ""
 
-def etiqueta_cpe(clave):
-    """Texto plano de un CPE para las graficas (SVG, sin HTML): «10.0.0.5 · Nodo A» en «Todos»,
-    la IP sola con un solo nodo. Nunca la clave interna pid|ip."""
-    r = rid_de(clave)
-    if r and MULTI_ROUTER:
-        return f"{ip_de(clave)} · {nombre_router(r)}"
-    return ip_de(clave)
-
 def _etq_cpe(clave):
     """Texto de un CPE para el mapa: la IP, y en --todos tambien el nombre de su nodo."""
     r = rid_de(clave)
@@ -1061,11 +1053,14 @@ def hbar(titulo, pares, unidad="alertas", fmt=str, lblw=125, barw=470, card_clas
                 f'<text x="{w+8}" y="{top+labh+barh*0.7:.0f}" class="val">{esc(fmt(v))}</text>')
     else:
         rowh, gap = 26, 8
-        col_ip, col_pto = 104, 80              # columnas de las filas (ip, nodo, puerto)
+        # filas en columnas: (ip, nodo, puerto[, extra[, flecha]]); extra = «+N» en gris
+        col_ip = 104
+        col_pto = 80 if any(isinstance(n, tuple) and n[2] for n, _ in pares) else 0
+        col_ext = 30 if any(isinstance(n, tuple) and len(n) > 3 and n[3] for n, _ in pares) else 0
         if all(isinstance(n, tuple) and not n[1] for n, _ in pares):
             # con un solo nodo no hay columna de nodo: la etiqueta se estrecha y la barra gana
             # ese sitio (el ancho total no cambia)
-            angosto = col_ip + col_pto + 24
+            angosto = col_ip + col_pto + col_ext + 24
             barw, lblw = barw + max(0, lblw - angosto), min(lblw, angosto)
         maxch = max(8, int(lblw / 6.3))
         h = len(pares) * (rowh + gap) + 8
@@ -1075,25 +1070,32 @@ def hbar(titulo, pares, unidad="alertas", fmt=str, lblw=125, barw=470, card_clas
             w = max(2, int(barw * v / ref))
             ty = f"{y+rowh*0.68:.0f}"
             if isinstance(name, tuple):
-                # (ip, nodo, puerto) en columnas: la IP y el nodo alineados a la izquierda, el
-                # puerto a la derecha pegado a la barra. Con «IP · nodo → puerto» en un solo texto
-                # alineado a la derecha nada caia una fila debajo de otra (el user, 2026-10-13)
-                ip, nodo, pto = name
-                col_nodo = lblw - 8 - col_ip - col_pto - 16
+                # en columnas: la IP y el nodo alineados a la izquierda; la flecha (si va), el
+                # puerto y el «+N» cada uno en su columna fija pegada a la barra. Con todo en un
+                # solo texto alineado a la derecha nada caia una fila debajo de otra y las flechas
+                # quedaban en escalera (el user, 2026-10-13)
+                ip, nodo, pto = name[:3]
+                extra = name[3] if len(name) > 3 else ""
+                flecha = name[4] if len(name) > 4 else "→"
+                col_nodo = lblw - 8 - col_ip - col_pto - col_ext - 16
                 def corta(t, ancho):
                     n = max(4, int(ancho / 6.6))
                     return t if len(t) <= n else t[:n - 1] + "…"
-                completo = " · ".join(x for x in (ip, nodo) if x) + (f" → {pto}" if pto else "")
+                completo = (" · ".join(x for x in (ip, nodo) if x)
+                            + ((f" {flecha} " if flecha else " · ") + pto if pto else "")
+                            + (f" {extra}" if extra else ""))
+                x_pto = lblw - 8 - col_ext - col_pto
                 rows.append(
                     f'<g><title>{esc(completo)}</title>'
                     f'<text x="2" y="{ty}" class="lbl">{esc(corta(ip, col_ip))}</text>'
                     + (f'<text x="{2+col_ip+8}" y="{ty}" class="lbl lnodo">{esc(corta(nodo, col_nodo))}</text>'
                        if nodo else "")
-                    # la flecha en su columna y el puerto alineado a la izquierda detras: con
-                    # «→ 22/TCP» alineado a la derecha las flechas quedaban en escalera
-                    + (f'<text x="{lblw-8-col_pto}" y="{ty}" class="lbl lflecha">→</text>'
-                       f'<text x="{lblw-8-col_pto+16}" y="{ty}" class="lbl lpto">{esc(pto)}</text>'
+                    + (f'<text x="{x_pto}" y="{ty}" class="lbl lflecha">{esc(flecha)}</text>'
+                       if pto and flecha else "")
+                    + (f'<text x="{x_pto + (16 if flecha else 0)}" y="{ty}" class="lbl lpto">{esc(pto)}</text>'
                        if pto else "")
+                    + (f'<text x="{lblw-8-col_ext+6}" y="{ty}" class="lbl lextra">{esc(extra)}</text>'
+                       if extra else "")
                     + f'<rect x="{lblw}" y="{y}" width="{w}" height="{rowh}" rx="4" fill="{heat(v/ref)}"/>'
                     f'<text x="{lblw+w+6}" y="{ty}" class="val">{esc(fmt(v))}</text></g>')
                 continue
@@ -1233,7 +1235,8 @@ for _s, _c in dport_cnt_by_src.items():
     for _p, _n in _c.items():
         by_src_dport[(_s, _p)] = _n
 def _cols_cpe(clave, pto):
-    """(ip, nodo, puerto) para las columnas de hbar; el nodo solo en «Todos», como etiqueta_cpe."""
+    """(ip, nodo, puerto) de un CPE para las columnas de hbar: el nodo solo en «Todos» (con un solo
+    nodo seria ruido) y nunca la clave interna pid|ip."""
     r = rid_de(clave)
     return (ip_de(clave), nombre_router(r) if (r and MULTI_ROUTER) else "", pto)
 
@@ -1248,11 +1251,12 @@ for (_s, _sp, _d, _dp, _pr, _sig), _v in flujos.items():
         _dst_pto[_d][f"{_dp}/{(_pr or '').upper()}"] += _v[0]
 
 def _etq_dst(d):
+    """(ip, "", puerto mas usado, «+N» otros puertos, sin flecha) para las columnas de hbar."""
     c = _dst_pto.get(d)
     if not c:
-        return d
+        return (d, "", "", "", "")
     p = c.most_common(1)[0][0]
-    return f"{d} · {p}" + (f" +{len(c) - 1}" if len(c) > 1 else "")
+    return (d, "", p, f"+{len(c) - 1}" if len(c) > 1 else "", "")
 
 dst_top = [(_etq_dst(_d), n) for _d, n in _dst_top]
 
@@ -2472,7 +2476,7 @@ h2{{position:relative}}
 .card{{border:1px solid {GRID};border-radius:10px;padding:16px;background:#fff;margin-bottom:16px;display:flex;flex-direction:column;min-width:0}}
 .card>*{{min-width:0;max-width:100%}}  /* los hijos flex encogen y no desbordan la tarjeta (tablas anchas scrollean en su .tablewrap) */
 .card.wide{{grid-column:1/-1}}
-.lbl{{font-size:12.5px;fill:#2b2a27;font-weight:600}} .lbl.lnodo{{fill:#6b6a66;font-weight:500}} .lbl.lpto{{font-variant-numeric:tabular-nums}} .lbl.lflecha{{fill:#9a9a95;font-weight:500}} .val{{font-size:12px;fill:{INK};font-weight:600}}
+.lbl{{font-size:12.5px;fill:#2b2a27;font-weight:600}} .lbl.lnodo{{fill:#6b6a66;font-weight:500}} .lbl.lpto{{font-variant-numeric:tabular-nums}} .lbl.lflecha{{fill:#9a9a95;font-weight:500}} .lbl.lextra{{fill:#9a9a95;font-weight:500;font-size:11.5px}} .val{{font-size:12px;fill:{INK};font-weight:600}}
 .tick{{font-size:11px;fill:{INK2}}}
 .tlwrap{{position:relative}}
 .tl-bar{{transform-box:fill-box;transform-origin:bottom;animation:tlgrow .6s cubic-bezier(.2,.75,.3,1) both;transition:filter .12s}}
@@ -2529,8 +2533,8 @@ td.num{{text-align:right;font-variant-numeric:tabular-nums}}
   {mapa_ataques_section()}
   <div class="grid">
     {hbar("Atacantes por puerto", src_dport_top, "alertas", que="atacante", lblw=300, barw=300, tip="Pares IP origen -> puerto destino con mas alertas: QUIEN golpea QUE servicio (23 Telnet, 445 SMB, 22 SSH, 443 HTTPS...). Una misma IP sale en varias filas si ataca varios puertos. Solo el top; el total de puertos distintos esta en el recuadro de arriba.")}
-    {hbar("IPs origen (atacantes)", top(by_src, fmt=etiqueta_cpe), "alertas", que="IP", lblw=165, barw=430, tip="IPs de ORIGEN que mas alertas dispararon (los equipos/CPE que generan el trafico). Ojo: muchas pueden ser solo consultas DNS sospechosas, no ataque real. Solo el top; el total esta arriba.")}
-    {hbar("IPs destino (objetivos)", dst_top, "alertas", que="IP", lblw=190, barw=405, tip="IPs de DESTINO mas frecuentes: hacia donde va el trafico alertado (el objetivo) y por que puerto (el mas usado; +N = otros puertos). Los resolutores DNS conocidos NO cuentan aqui: una consulta maliciosa es culpa del CPE, no un ataque al DNS; van aparte, mas abajo, como resolutores usados (Ajustes -> DNS).")}
+    {hbar("IPs origen (atacantes)", top(by_src, fmt=lambda k: _cols_cpe(k, "")), "alertas", que="IP", lblw=230, barw=365, tip="IPs de ORIGEN que mas alertas dispararon (los equipos/CPE que generan el trafico). Ojo: muchas pueden ser solo consultas DNS sospechosas, no ataque real. Solo el top; el total esta arriba.")}
+    {hbar("IPs destino (objetivos)", dst_top, "alertas", que="IP", lblw=300, barw=300, tip="IPs de DESTINO mas frecuentes: hacia donde va el trafico alertado (el objetivo) y por que puerto (el mas usado; +N = otros puertos). Los resolutores DNS conocidos NO cuentan aqui: una consulta maliciosa es culpa del CPE, no un ataque al DNS; van aparte, mas abajo, como resolutores usados (Ajustes -> DNS).")}
     {hbar("Firmas mas frecuentes (tipo de ataque)", firmas_top, "alertas", que="firma", tip="Tipos de ataque (firmas de Suricata) mas frecuentes, agrupados y traducidos al espanol. Indica que clase de amenaza predomina.")}
   </div>
   {top_sec}
