@@ -1137,6 +1137,11 @@ def timeline(by_hour):
     W, H, pad = 1120, 190, 30
     bw = (W - 2 * pad) / n
     tick_every = max(1, n // 8)     # ~8 etiquetas de hora repartidas en la ventana
+    # la primera barra (el borde izquierdo) lleva SIEMPRE su hora: anclando solo a la derecha,
+    # el eje empezaba sin hora y habia que suponerla (el user, 2026-10-13). Si la etiqueta
+    # anclada mas cercana quedaria encima (menos de ~48 px), se quita esa y no la del borde.
+    primera_anclada = (n - 1) % tick_every
+    tapa_borde = 0 < primera_anclada and primera_anclada * bw < 48
     bars, ticks = [], []
     for i, v in enumerate(vals):
         x = pad + i * bw
@@ -1152,10 +1157,11 @@ def timeline(by_hour):
             f'<title>{tip}</title></rect>')
         # etiquetas ancladas a la DERECHA: la ultima barra (intervalo actual) siempre
         # lleva su hora, para que se vea que el eje llega hasta "ahora" y no se corta antes
-        if (n - 1 - i) % tick_every == 0:
+        anclada = (n - 1 - i) % tick_every == 0 and not (tapa_borde and i == primera_anclada)
+        if i == 0 or anclada:
             ticks.append(f'<text x="{x+bw/2:.1f}" y="{H-pad+14:.0f}" text-anchor="middle" class="tick">{t0.strftime("%H:%M")}</text>')
     pico_t = datetime.fromtimestamp((lo + vals.index(mxreal)) * BUCKET, TZ_EC).strftime("%H:%M") if mxreal else "-"
-    _tl_tip = ("Numero de alertas en cada intervalo de 30 minutos a lo largo de la ventana. "
+    _tl_tip = (f"Numero de alertas en cada intervalo de {BUCKET_MIN} minutos a lo largo de la ventana. "
                "La altura y el color suben con la intensidad; pasa el raton por una barra para el conteo exacto.")
     return (f'<section class="card wide"><h2>Ataques por hora y minuto ({COB}){_cardq(_tl_tip)}</h2>'
             f'<div class="tlwrap"><div class="tltip"></div>'

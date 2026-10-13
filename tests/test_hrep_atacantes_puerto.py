@@ -109,5 +109,25 @@ class AtacantesPorPuerto(Entorno):
                         etiquetas)
 
 
+class LineaDeTiempo(Entorno):
+    def test_hora_en_ambos_bordes_y_sin_montarse(self):
+        """Correccion de defecto: las horas se anclaban solo a la derecha y el borde izquierdo
+        salia sin hora (el user, 2026-10-13). Con cualquier ventana: la primera y la ultima barra
+        llevan su hora y dos etiquetas nunca quedan a menos de 40 px."""
+        self.eventos("p001", "eve.json", [alerta("10.0.0.5", "192.0.2.10", dport=23, flow_id=90)])
+        for vmin in ("30", "60", "180", "360", "720", "1440"):
+            with self.subTest(ventana=vmin):
+                self.ok(vmin, "--nodo", "p001")
+                doc = self.html("p001")
+                svg = re.search(r'aria-label="alertas por intervalo".*?</svg>', doc, re.S).group(0)
+                xs_b = [float(x) for x in re.findall(r'<rect class="tl-bar" x="([\d.]+)"', svg)]
+                bw = (xs_b[-1] - xs_b[0]) / (len(xs_b) - 1)
+                ticks = [float(x) for x in re.findall(r'<text x="([\d.]+)" y="\d+" text-anchor="middle" class="tick">', svg)]
+                self.assertAlmostEqual(min(ticks), xs_b[0] + bw / 2, delta=0.2)
+                self.assertAlmostEqual(max(ticks), xs_b[-1] + bw / 2, delta=0.2)
+                ticks.sort()
+                self.assertGreaterEqual(min(b - a for a, b in zip(ticks, ticks[1:])), 40, ticks)
+
+
 if __name__ == "__main__":
     unittest.main()
