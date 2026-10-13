@@ -54,7 +54,7 @@ import nodos
 RUTA = "/eventos"
 RUTA_DETALLE = "/eventos/detalle"
 
-POR_PAGINA = 100                   # por defecto
+POR_PAGINA = 10                    # por defecto (el user, 2026-10-13); abajo se elige otro
 TAMANOS = (10, 20, 30, 40, 50, 100)  # lo que se puede elegir abajo, ademas de «todos»
 TODOS_MAX = 2000                   # «todos» = hasta esto por pagina: el eve real tiene millones de
                                    # lineas y la busqueda ya tiene topes de bytes y de tiempo

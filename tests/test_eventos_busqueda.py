@@ -353,6 +353,14 @@ class PorPagina(Paginacion):
             pag = self.ev.pagina(self.q(por="todos"), self.n.TODOS)
             self.assertIn("muestra hasta 100 por pagina", pag)
 
+    def test_por_defecto_10(self):
+        """El user (2026-10-13): por defecto la pagina trae 10 eventos."""
+        self.preparar()
+        self.assertEqual(self.ev.filtros(self.q())["por"], 10)
+        pag = self.ev.pagina(self.q(), self.n.TODOS)
+        self.assertEqual(len(re.findall(r"<tr data-pid=", pag)), 10)
+        self.assertIn("<option value='10' selected>", pag)
+
     def test_tamano_no_valido_no_busca(self):
         for malo in ("7", "0", "abc", "1000"):
             with self.subTest(por=malo):
@@ -418,7 +426,8 @@ class Topes(Base):
         ls = [alerta(T0 - 3000 + i, sid=5000000 + i) if i % 10 == 0 else stats(T0 - 3000 + i) for i in range(3000)]
         self.escribir("p001", "eve.json", ls, mtime=T0)
         esperado = {5000000 + i for i in range(0, 3000, 10)}
-        with mock.patch.object(self.ev, "TOPE_BYTES", 20000), mock.patch.object(self.ev, "BLOQUE", 4096),                 mock.patch.object(self.ev, "DESORDEN_US", 5000000):
+        # 100 por pagina fijo: con el defecto de 10 la pagina se llena antes del tope y no hay corte
+        with mock.patch.object(self.ev, "TOPE_BYTES", 20000), mock.patch.object(self.ev, "BLOQUE", 4096),                 mock.patch.object(self.ev, "DESORDEN_US", 5000000), mock.patch.object(self.ev, "POR_PAGINA", 100):
             r = self.buscar("p001")
             self.assertTrue(r["parcial"])
             self.assertFalse(r["sin_garantia"])
