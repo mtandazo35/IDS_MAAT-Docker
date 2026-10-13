@@ -19,6 +19,18 @@ def tarjeta(doc, titulo):
     return m.group(0)
 
 
+def filas_cols(t):
+    """Filas de una grafica en columnas: [(ip, nodo o None, puerto)] y las x de cada columna."""
+    filas, xs = [], {"ip": set(), "pto": set()}
+    for g in re.findall(r"<g><title>.*?</g>", t, re.S):
+        ip = re.search(r'<text x="([\d.]+)" y="\d+" class="lbl">([^<]+)</text>', g)
+        nodo = re.search(r'class="lbl lnodo">([^<]+)</text>', g)
+        pto = re.search(r'<text x="([\d.]+)" y="\d+" text-anchor="end" class="lbl lpto">([^<]+)</text>', g)
+        xs["ip"].add(ip.group(1)); xs["pto"].add(pto.group(1))
+        filas.append((ip.group(2), nodo.group(1) if nodo else None, pto.group(2)))
+    return filas, xs
+
+
 class AtacantesPorPuerto(Entorno):
     def test_pares_ip_puerto_con_su_nodo(self):
         """Capacidad nueva: la grafica dice QUIEN ataca QUE puerto (par IP -> puerto), ordenada
@@ -32,10 +44,15 @@ class AtacantesPorPuerto(Entorno):
         doc = self.html("_todos")
         self.assertNotIn("Puertos de destino mas atacados</h2>", doc)
         t = tarjeta(doc, "Atacantes por puerto")
-        filas = re.findall(r'class="lbl">([^<]+)</text>', t)
-        self.assertEqual(filas, ["10.0.0.5 · Nodo A → 23/TCP",
-                                 "10.0.0.5 · Nodo B → 443/TCP",
-                                 "10.0.0.5 · Nodo A → 445/TCP"])
+        filas, xs = filas_cols(t)
+        self.assertEqual(filas, [("10.0.0.5", "Nodo A", "→ 23/TCP"),
+                                 ("10.0.0.5", "Nodo B", "→ 443/TCP"),
+                                 ("10.0.0.5", "Nodo A", "→ 445/TCP")])
+        # IP, nodo y puerto en columnas: todas las IPs empiezan en la misma x y todos los
+        # puertos acaban en la misma x, pegados a la barra (el user, 2026-10-13)
+        self.assertEqual(len(xs["ip"]), 1, xs)
+        self.assertEqual(len(xs["pto"]), 1, xs)
+        self.assertIn("<title>10.0.0.5 · Nodo A → 23/TCP</title>", t)
         origen = tarjeta(doc, "IPs origen (atacantes)")
         self.assertNotIn("p001|", origen)
         self.assertIn("10.0.0.5 · Nodo A", origen)
@@ -60,7 +77,7 @@ class AtacantesPorPuerto(Entorno):
         self.ok("60", "--nodo", "p001")
         doc = self.html("p001")
         t = tarjeta(doc, "Atacantes por puerto")
-        self.assertEqual(re.findall(r'class="lbl">([^<]+)</text>', t), ["10.0.0.5 → 23/TCP"])
+        self.assertEqual(filas_cols(t)[0], [("10.0.0.5", None, "→ 23/TCP")])
         self.assertIn("<b>solo 1 atacante</b> en 3 alertas (muestra pequeña)", t)
         self.assertNotIn("van empatados", doc)
 

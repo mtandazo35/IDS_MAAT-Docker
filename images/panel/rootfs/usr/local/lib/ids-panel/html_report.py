@@ -1061,17 +1061,44 @@ def hbar(titulo, pares, unidad="alertas", fmt=str, lblw=125, barw=470, card_clas
                 f'<text x="{w+8}" y="{top+labh+barh*0.7:.0f}" class="val">{esc(fmt(v))}</text>')
     else:
         rowh, gap = 26, 8
+        col_ip, col_pto = 104, 72              # columnas de las filas (ip, nodo, puerto)
+        if all(isinstance(n, tuple) and not n[1] for n, _ in pares):
+            # con un solo nodo no hay columna de nodo: la etiqueta se estrecha y la barra gana
+            # ese sitio (el ancho total no cambia)
+            angosto = col_ip + col_pto + 24
+            barw, lblw = barw + max(0, lblw - angosto), min(lblw, angosto)
         maxch = max(8, int(lblw / 6.3))
         h = len(pares) * (rowh + gap) + 8
         W = lblw + barw + 80
         for i, (name, v) in enumerate(pares):
             y = i * (rowh + gap) + 4
             w = max(2, int(barw * v / ref))
+            ty = f"{y+rowh*0.68:.0f}"
+            if isinstance(name, tuple):
+                # (ip, nodo, puerto) en columnas: la IP y el nodo alineados a la izquierda, el
+                # puerto a la derecha pegado a la barra. Con «IP · nodo → puerto» en un solo texto
+                # alineado a la derecha nada caia una fila debajo de otra (el user, 2026-10-13)
+                ip, nodo, pto = name
+                col_nodo = lblw - 8 - col_ip - col_pto - 16
+                def corta(t, ancho):
+                    n = max(4, int(ancho / 6.6))
+                    return t if len(t) <= n else t[:n - 1] + "…"
+                completo = " · ".join(x for x in (ip, nodo) if x) + (f" → {pto}" if pto else "")
+                rows.append(
+                    f'<g><title>{esc(completo)}</title>'
+                    f'<text x="2" y="{ty}" class="lbl">{esc(corta(ip, col_ip))}</text>'
+                    + (f'<text x="{2+col_ip+8}" y="{ty}" class="lbl lnodo">{esc(corta(nodo, col_nodo))}</text>'
+                       if nodo else "")
+                    + (f'<text x="{lblw-8}" y="{ty}" text-anchor="end" class="lbl lpto">→ {esc(pto)}</text>'
+                       if pto else "")
+                    + f'<rect x="{lblw}" y="{y}" width="{w}" height="{rowh}" rx="4" fill="{heat(v/ref)}"/>'
+                    f'<text x="{lblw+w+6}" y="{ty}" class="val">{esc(fmt(v))}</text></g>')
+                continue
             etq = name if len(name) <= maxch else name[:maxch - 1] + "…"
             rows.append(
-                f'<text x="{lblw-8}" y="{y+rowh*0.68:.0f}" text-anchor="end" class="lbl">{esc(etq)}</text>'
+                f'<text x="{lblw-8}" y="{ty}" text-anchor="end" class="lbl">{esc(etq)}</text>'
                 f'<rect x="{lblw}" y="{y}" width="{w}" height="{rowh}" rx="4" fill="{heat(v/ref)}"/>'
-                f'<text x="{lblw+w+6}" y="{y+rowh*0.68:.0f}" class="val">{esc(fmt(v))}</text>')
+                f'<text x="{lblw+w+6}" y="{ty}" class="val">{esc(fmt(v))}</text>')
     # aviso honesto cuando la muestra es plana/pequeña (no hay un dominante real)
     if len(pares) == 1:
         # una sola fila no "empata" con nadie: se dice que es la unica
@@ -1202,7 +1229,12 @@ by_src_dport = Counter()
 for _s, _c in dport_cnt_by_src.items():
     for _p, _n in _c.items():
         by_src_dport[(_s, _p)] = _n
-src_dport_top = [(f"{etiqueta_cpe(_s)} → {_p}", n) for (_s, _p), n in by_src_dport.most_common(12)]
+def _cols_cpe(clave, pto):
+    """(ip, nodo, puerto) para las columnas de hbar; el nodo solo en «Todos», como etiqueta_cpe."""
+    r = rid_de(clave)
+    return (ip_de(clave), nombre_router(r) if (r and MULTI_ROUTER) else "", pto)
+
+src_dport_top = [(_cols_cpe(_s, _p), n) for (_s, _p), n in by_src_dport.most_common(12)]
 
 # IPs destino con el puerto por el que las atacan: «203.0.113.9 · 443/TCP» (+N si hay mas).
 # Los puertos salen de los flujos (acotados) y solo para el top, no se guarda nada por destino.
@@ -2437,7 +2469,7 @@ h2{{position:relative}}
 .card{{border:1px solid {GRID};border-radius:10px;padding:16px;background:#fff;margin-bottom:16px;display:flex;flex-direction:column;min-width:0}}
 .card>*{{min-width:0;max-width:100%}}  /* los hijos flex encogen y no desbordan la tarjeta (tablas anchas scrollean en su .tablewrap) */
 .card.wide{{grid-column:1/-1}}
-.lbl{{font-size:12.5px;fill:#2b2a27;font-weight:600}} .val{{font-size:12px;fill:{INK};font-weight:600}}
+.lbl{{font-size:12.5px;fill:#2b2a27;font-weight:600}} .lbl.lnodo{{fill:#6b6a66;font-weight:500}} .lbl.lpto{{font-variant-numeric:tabular-nums}} .val{{font-size:12px;fill:{INK};font-weight:600}}
 .tick{{font-size:11px;fill:{INK2}}}
 .tlwrap{{position:relative}}
 .tl-bar{{transform-box:fill-box;transform-origin:bottom;animation:tlgrow .6s cubic-bezier(.2,.75,.3,1) both;transition:filter .12s}}
@@ -2493,7 +2525,7 @@ td.num{{text-align:right;font-variant-numeric:tabular-nums}}
   {timeline(by_hour)}
   {mapa_ataques_section()}
   <div class="grid">
-    {hbar("Atacantes por puerto", src_dport_top, "alertas", que="atacante", lblw=215, barw=380, tip="Pares IP origen -> puerto destino con mas alertas: QUIEN golpea QUE servicio (23 Telnet, 445 SMB, 22 SSH, 443 HTTPS...). Una misma IP sale en varias filas si ataca varios puertos. Solo el top; el total de puertos distintos esta en el recuadro de arriba.")}
+    {hbar("Atacantes por puerto", src_dport_top, "alertas", que="atacante", lblw=300, barw=300, tip="Pares IP origen -> puerto destino con mas alertas: QUIEN golpea QUE servicio (23 Telnet, 445 SMB, 22 SSH, 443 HTTPS...). Una misma IP sale en varias filas si ataca varios puertos. Solo el top; el total de puertos distintos esta en el recuadro de arriba.")}
     {hbar("IPs origen (atacantes)", top(by_src, fmt=etiqueta_cpe), "alertas", que="IP", lblw=165, barw=430, tip="IPs de ORIGEN que mas alertas dispararon (los equipos/CPE que generan el trafico). Ojo: muchas pueden ser solo consultas DNS sospechosas, no ataque real. Solo el top; el total esta arriba.")}
     {hbar("IPs destino (objetivos)", dst_top, "alertas", que="IP", lblw=190, barw=405, tip="IPs de DESTINO mas frecuentes: hacia donde va el trafico alertado (el objetivo) y por que puerto (el mas usado; +N = otros puertos). Los resolutores DNS conocidos NO cuentan aqui: una consulta maliciosa es culpa del CPE, no un ataque al DNS; van aparte, mas abajo, como resolutores usados (Ajustes -> DNS).")}
     {hbar("Firmas mas frecuentes (tipo de ataque)", firmas_top, "alertas", que="firma", tip="Tipos de ataque (firmas de Suricata) mas frecuentes, agrupados y traducidos al espanol. Indica que clase de amenaza predomina.")}
