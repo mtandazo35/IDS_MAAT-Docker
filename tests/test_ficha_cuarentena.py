@@ -80,7 +80,8 @@ class Tabla(unittest.TestCase):
         self.assertIn("<th class='cen'>Accion</th>", h)
         routers = re.findall(r"<td data-label='Router'><span class=rnom>([^<]+)</span>", h)
         self.assertEqual(sorted(routers), ["norte", "sur"])
-        self.assertIn("onload='fichaAlto(this)'", h)
+        # guardado: el iframe vacio dispara onload antes de que exista fichaAlto (error JS)
+        self.assertIn("onload='window.fichaAlto&&fichaAlto(this)'", h)
 
 
 if __name__ == "__main__":

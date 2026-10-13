@@ -59,5 +59,35 @@ class ModalEmpresa(unittest.TestCase):
         self.assertIn("<img id=vlogo src=\"%s\" alt=''>" % PNG, m)    # la vista previa ya lo trae
 
 
+class AvisoCentrado(unittest.TestCase):
+    """El aviso tras guardar es un modal centrado con «Aceptar», no la franja de arriba
+    (el user, 2026-10-13: «esta horrible, mejor al centro»)."""
+
+    def setUp(self):
+        self.p = PanelP()
+        self.addCleanup(self.p.cerrar)
+        self.ana = self.p.entrar("ana")
+
+    def test_guardar_empresa_muestra_modal_ok(self):
+        h = self.p.pedir("POST", "/empresa", {"nombre": "ISP Ejemplo", "logo": ""}, cookie=self.ana).texto
+        self.assertIn("<div id=notif class='avm ok' role=alertdialog", h)
+        self.assertIn("onclick=avmCerrar()>Aceptar</button>", h)
+        self.assertIn(".avm{position:fixed;inset:0;", h)                       # tapa toda la pantalla
+        self.assertIn("align-items:center;justify-content:center", h)          # y centra la caja
+        self.assertIn("setTimeout(function(){window.avmCerrar();},4000);", h)  # el ok se cierra solo
+        self.assertNotIn("notifm", h)
+
+    def test_error_no_se_cierra_solo_y_escapa(self):
+        d = self.p.d
+        h = d.perfil_page("<b>clave</b> corta", ok=False)
+        self.assertIn("class='avm err'", h)
+        self.assertIn("&lt;b&gt;clave&lt;/b&gt; corta", h)
+        self.assertNotIn("window.avmCerrar();},4000", h)
+
+    def test_sin_mensaje_no_hay_aviso(self):
+        self.assertEqual(self.p.d.aviso_modal(""), "")
+        self.assertNotIn("id=notif", self.p.pedir("GET", "/ajustes", cookie=self.ana).texto)
+
+
 if __name__ == "__main__":
     unittest.main()

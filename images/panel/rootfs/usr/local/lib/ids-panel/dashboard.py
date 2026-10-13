@@ -8535,7 +8535,7 @@ html[data-theme=dark] .nav img{filter:none}
 /* velos de modales: son oscuros de diseno; al invertir quedarian claros y lavarian la pagina */
 html[data-theme=dark] .aptmodal,html[data-theme=dark] .askov,html[data-theme=dark] .pbajaov,
 html[data-theme=dark] .masov,html[data-theme=dark] .mkwait,html[data-theme=dark] .ovl,
-html[data-theme=dark] .exmodal,html[data-theme=dark] .fichaov{background:rgba(244,244,244,.6)}
+html[data-theme=dark] .exmodal,html[data-theme=dark] .fichaov,html[data-theme=dark] .avm{background:rgba(244,244,244,.6)}
 /* bloques de comandos: oscuros de diseno, se quedan oscuros */
 html[data-theme=dark] pre.cmd{filter:invert(1) hue-rotate(180deg)}
 @media print{html[data-theme=dark]{filter:none}}
@@ -9696,6 +9696,52 @@ def _card_politicas(m):
             "nada (usa los botones a mano). El barrido rapido (~60 s) de infecciones confirmadas "
             "sigue la politica de <b>Botnet / CnC</b>.</div></div></div>")
 
+def aviso_modal(msg, tipo="ok"):
+    """Aviso tras una accion (guardado, error...) como MODAL centrado, no como franja arriba que
+    tapa el menu (regla del user: las notificaciones van en modal; 2026-10-13 lo pidio otra vez).
+    ok: se cierra solo a los 4 s; err: se queda hasta «Aceptar» para que no se pierda; info.
+    Aceptar, Esc, Intro o clic fuera lo cierran. HTML + estilo + script en uno."""
+    if not msg:
+        return ""
+    ic = {"ok": "&#10003;", "err": "&#10005;"}.get(tipo, "i")
+    tit = {"ok": "Listo", "err": "No se pudo completar"}.get(tipo, "Aviso")
+    return (
+        "<div id=notif class='avm %s' role=alertdialog aria-modal=true aria-labelledby=avmt aria-describedby=avmm "
+        # cierra solo si la pulsacion EMPEZO en el velo: seleccionar texto del aviso y soltar fuera no lo cierra
+        "onmousedown=\"this._dn=event.target\" onclick=\"if(event.target===this&&this._dn===this)avmCerrar()\">"
+        "<div class=avmbox>"
+        "<div class=avmic>%s</div><div class=avmt id=avmt>%s</div><div class=avmm id=avmm>%s</div>"
+        "<button type=button class=avmbtn onclick=avmCerrar()>Aceptar</button></div></div>"
+        "<style>"
+        ".avm{position:fixed;inset:0;z-index:300;display:flex;align-items:center;justify-content:center;padding:16px;"
+        "background:rgba(15,23,42,.38);animation:avmin .18s ease-out}"
+        ".avm.fuera{opacity:0;transition:opacity .18s}"
+        ".avmbox{background:#fff;border-radius:16px;box-shadow:0 18px 60px rgba(0,0,0,.3);width:100%%;max-width:400px;"
+        "padding:26px 26px 22px;text-align:center;font-family:system-ui,-apple-system,'Segoe UI',sans-serif;"
+        "animation:avmpop .2s ease-out}"
+        ".avmic{width:52px;height:52px;border-radius:50%%;margin:0 auto 12px;display:flex;align-items:center;"
+        "justify-content:center;font:700 26px system-ui}"
+        ".avm.ok .avmic{background:#e6f4ea;color:#1a7f37}.avm.err .avmic{background:#fdecec;color:#c0392b}"
+        ".avm.info .avmic{background:#eef4fd;color:#2a5fa0;font-family:Georgia,serif;font-style:italic}"
+        ".avmt{font:700 17px system-ui;color:#141b24;margin:0 0 6px}"
+        ".avmm{font-size:14px;line-height:1.5;color:#3d4856;margin:0 0 20px;overflow-wrap:anywhere}"
+        ".avmbtn{min-width:120px;padding:10px 22px;border:0;border-radius:10px;font:600 14px system-ui;cursor:pointer;"
+        "color:#fff;background:#2a78d6}.avmbtn:hover{background:#1f65bd}"
+        ".avm.err .avmbtn{background:#c0392b}.avm.err .avmbtn:hover{background:#a5301f}"
+        "@keyframes avmin{from{opacity:0}to{opacity:1}}"
+        "@keyframes avmpop{from{transform:translateY(8px) scale(.97);opacity:.6}to{transform:none;opacity:1}}"
+        "</style>"
+        "<script>(function(){var n=document.getElementById('notif');if(!n)return;"
+        "window.avmCerrar=function(){if(!n.parentNode)return;n.classList.add('fuera');"
+        "setTimeout(function(){if(n.parentNode)n.parentNode.removeChild(n);},180);"
+        "document.removeEventListener('keydown',tecla,true);};"
+        "function tecla(e){if(e.key==='Escape'||e.key==='Enter'){e.preventDefault();e.stopPropagation();avmCerrar();}}"
+        "document.addEventListener('keydown',tecla,true);"
+        "var b=n.querySelector('.avmbtn');if(b)setTimeout(function(){try{b.focus();}catch(e){}},30);"
+        "%s})();</script>"
+        % (tipo, ic, tit, html.escape(msg),
+           "setTimeout(function(){window.avmCerrar();},4000);" if tipo == "ok" else ""))
+
 def perfil_page(msg="", ok=False, edit_user=None):
     esc = html.escape
     yo = getattr(CTX, "user", None)
@@ -10391,16 +10437,8 @@ def perfil_page(msg="", ok=False, edit_user=None):
               ".aptmodal .aptx{position:absolute;top:8px;right:8px;border:0;background:#eceae6;color:#33322f;width:30px;height:30px;border-radius:50%;font-size:19px;line-height:1;cursor:pointer;z-index:3}"
               ".aptmodal .aptx:hover{background:#e34948;color:#fff}"
               ".aptmodal .aptframe{width:100%;height:74vh;border:0;border-radius:8px;background:#fff}"
-              ".notifm{position:fixed;top:18px;left:50%;transform:translateX(-50%) translateY(-16px);z-index:140;"
-              "display:flex;align-items:center;gap:10px;max-width:560px;padding:12px 16px;border-radius:12px;"
-              "font-size:14px;box-shadow:0 8px 30px rgba(0,0,0,.25);opacity:0;transition:opacity .25s,transform .25s;pointer-events:none}"
-              ".notifm.show{opacity:1;transform:translateX(-50%) translateY(0)}"
-              ".notifm.ok{background:#e6f4ea;color:#1a7f37;border:1px solid #b7e0c2}"
-              ".notifm.err{background:#fdecec;color:#b52a2a;border:1px solid #f3c4c4}"
-              ".notifm .ni{font-size:18px}"
               "</style>")
-    ntf = ("<div id=notif class='notifm " + ("ok" if ok else "err") + "'>"
-           "<span class=ni>" + ("✅" if ok else "⛔") + "</span><span>" + esc(msg) + "</span></div>") if msg else ""
+    ntf = aviso_modal(msg, "ok" if ok else "err")
     hubjs = ("<script>function openm(id){var mo=document.getElementById('m-'+id);if(!mo)return false;"
              "if(id==='mikrotik'&&typeof accEstado==='function')accEstado();"
              "var fr=mo.querySelector('iframe[data-src]');if(fr&&!fr.src){fr.src=fr.getAttribute('data-src');}"
@@ -10425,10 +10463,9 @@ def perfil_page(msg="", ok=False, edit_user=None):
              "try{history.replaceState(null,'',location.pathname+location.search);}catch(e){}}"
              "_cuenta(location.hash.slice(1));"
              "window.addEventListener('hashchange',function(){_cuenta(location.hash.slice(1));});"
-             "(function(){var n=document.getElementById('notif');if(!n)return;"
-             "var la=null;try{la=sessionStorage.getItem('apt');}catch(e){}if(la)openm(la);"
-             "setTimeout(function(){n.classList.add('show');},60);"
-             "setTimeout(function(){n.classList.remove('show');},3400);})();</script>")
+             # tras guardar se vuelve a abrir el apartado que estaba abierto; el aviso va encima
+             "(function(){if(!document.getElementById('notif'))return;"
+             "var la=null;try{la=sessionStorage.getItem('apt');}catch(e){}if(la)openm(la);})();</script>")
     return ("<!doctype html><html lang=es><head><meta charset=utf-8><link rel=icon type=image/png href=/favicon.ico>"
             "<meta name=viewport content='width=device-width,initial-scale=1'><title>Suricata</title>"
             f"<style>{css}</style>" + hubcss + "</head><body>"
@@ -15557,7 +15594,7 @@ def cuarentena_page(msg="", es_admin=False):
     else:
         estado = ("<div class='banner'><b>Modo sugerencia (dry-run).</b> No se envia nada al MikroTik. "
                   "Para activar el envio, configura y marca <b>Permitir enviar</b> en <b>Ajustes &rarr; MikroTik</b>.</div>")
-    flash = ("<div id=notif class='notifm msg'><span class=ni>&#8505;</span><span>" + esc(msg) + "</span></div>") if msg else ""
+    flash = aviso_modal(msg, "info")
     css = ("<style>" + BASE_CSS +
            # solo lo propio de Cuarentena (lo comun ya viene de BASE_CSS)
            "main{max-width:1360px}.sub{margin:0 0 14px}"
@@ -15638,15 +15675,10 @@ def cuarentena_page(msg="", es_admin=False):
            "font:600 14px system-ui;cursor:pointer}.massi:hover{background:#c93b3a}"
            ".seccion{margin:0 0 26px}.shead{display:flex;align-items:flex-end;gap:12px;flex-wrap:wrap;margin:0 0 10px}"
            ".shead h2{font-size:16px;margin:0}.shead .sub{margin:2px 0 0}"
-           ".notifm{position:fixed;top:18px;left:50%;transform:translateX(-50%) translateY(-16px);z-index:140;display:flex;align-items:center;gap:10px;max-width:560px;padding:12px 16px;border-radius:12px;font-size:14px;box-shadow:0 8px 30px rgba(0,0,0,.25);opacity:0;transition:opacity .25s,transform .25s;pointer-events:none}"
-           ".notifm.show{opacity:1;transform:translateX(-50%) translateY(0)}"
-           ".notifm.msg{background:#eef4fd;color:#2a5fa0;border:1px solid #cfe0f6}.notifm .ni{font-size:18px}"
            "@media(max-width:820px){"
            "h1{font-size:19px}"
            ".shead{align-items:stretch}.shead .qbtn{margin-left:0}"
            ".fichabox{height:calc(100vh - 28px);max-height:none;max-width:100%}.fichafr{height:100%!important;max-height:none}"
-           ".notifm{left:14px;right:14px;transform:translateY(-16px);max-width:none}"
-           ".notifm.show{transform:translateY(0)}"
            # tablas densas -> se apilan como tarjetas (Etiqueta: valor) en vez de aplastarse.
            # Patron de etiqueta absoluta: sirve con cualquier contenido (badges, botones, texto).
            ".card{overflow:visible;border:0;background:transparent;border-radius:0}"
@@ -15676,7 +15708,7 @@ def cuarentena_page(msg="", es_admin=False):
             "<div id=fichamodal class=fichaov onmousedown=\"this._dn=event.target\" onclick=\"if(event.target===this&&this._dn===this){this.style.display='none'}\">"
             "<div class=fichabox><button type=button class=fichax "
             "onclick=\"document.getElementById('fichamodal').style.display='none'\">&times;</button>"
-            "<iframe id=fichafr class=fichafr onload='fichaAlto(this)'></iframe></div></div>"
+            "<iframe id=fichafr class=fichafr onload='window.fichaAlto&&fichaAlto(this)'></iframe></div></div>"
             "<script>function fichaAlto(f){try{var d=f.contentDocument;if(!d||!d.body)return;"
             "f.style.height=Math.min(d.documentElement.scrollHeight+2,Math.floor(window.innerHeight*.88))+'px';}catch(e){}}"
             "function verFicha(ip){var m=document.getElementById('fichamodal');"
@@ -15685,9 +15717,6 @@ def cuarentena_page(msg="", es_admin=False):
             "m.style.display='flex';}"
             "document.addEventListener('keydown',function(e){if(e.key==='Escape')"
             "document.getElementById('fichamodal').style.display='none';});"
-            "(function(){var n=document.getElementById('notif');if(!n)return;"
-            "setTimeout(function(){n.classList.add('show');},60);"
-            "setTimeout(function(){n.classList.remove('show');},3600);})();"
             # --- quitado masivo: seleccion + modal de confirmacion ---
             # mientras se estan quitando no se cierra: cerrarlo esconderia el avance
             # y el proceso seguiria corriendo por detras sin que se vea
