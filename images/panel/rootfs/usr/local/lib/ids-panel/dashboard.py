@@ -727,6 +727,7 @@ CONF = nodos.ruta("conf", "panel.conf")
 REFRESH_SECS = 300    # regeneracion del resumen en segundo plano: cada 5 min (tiles, graficos, linea de tiempo y Top 5)
 FORCE_REGEN = False   # el selector de ventana lo pone True para regenerar el resumen ya
 REGEN_MIN_SECS = 60   # separacion minima entre regeneraciones FORZADAS (ver pedir_regen)
+VENTANA_ESPERA = 10   # s que el POST de la ventana espera al resumen nuevo antes de volver a "/"
 
 def pedir_regen():
     """Pide regenerar el resumen cuanto antes. Es solo una marca: el hilo de fondo la
@@ -16490,7 +16491,7 @@ class H(BaseHTTPRequestHandler):
             ahora_ec = datetime.now(TZ_EC).strftime("%d/%m/%Y %H:%M")
             # selector de ventana (solo admin): elegir cuanto tiempo abarca el resumen
             wsel = ""
-            recarga = 20   # s; mientras se genera otra ventana, 3 (el informe tarda segundos)
+            recarga = 20   # s; mientras se genera otra ventana, 1 (el informe tarda segundos)
             if getattr(CTX, "role", None) == "admin":
                 va = ventana_actual()
                 opts = "".join(f"<option value={v}{' selected' if v == va else ''}>{t}</option>"
@@ -16501,8 +16502,8 @@ class H(BaseHTTPRequestHandler):
                 _vg = ventana_generada()
                 if _vg and _vg != va:
                     # el resumen en pantalla NO es el de la ventana elegida todavia; se mira
-                    # cada 3 s para no dejar el aviso hasta 20 s cuando ya esta hecho
-                    recarga = 3
+                    # cada segundo para no dejar el aviso cuando ya esta hecho
+                    recarga = 1
                     wsel += ("<span class='wpend' title='El resumen se regenera en segundo "
                              "plano; en una caja con trafico tarda unos minutos.'>"
                              "generando %s&hellip; (mostrando %s)</span>"
@@ -16795,6 +16796,14 @@ class H(BaseHTTPRequestHandler):
             global FORCE_REGEN
             FORCE_REGEN = True   # y la ventana pendiente se atiende sin esperar el minuto de REGEN_MIN_SECS
             _DESPERTAR.set()     # al momento, no en la siguiente vuelta de 10 s
+            # Se espera aqui al resumen nuevo (en local tarda menos de 1 s): si se volvia a "/"
+            # enseguida, la pagina salia con el viejo y «generando…» hasta la siguiente recarga.
+            # Con trafico real puede tardar mas: pasado VENTANA_ESPERA se vuelve igual y la
+            # pagina sigue mirando sola.
+            if pids_activos():
+                _fin = time.time() + VENTANA_ESPERA
+                while ventana_generada() != m and time.time() < _fin:
+                    time.sleep(0.2)
             return self._redirect("/")
         if ruta == "/exclusiones":
             if not self._admin():
