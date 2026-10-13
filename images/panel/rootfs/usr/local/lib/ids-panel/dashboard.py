@@ -10465,7 +10465,7 @@ def exclusiones_page(msg="", ok=False, edit_idx=None):
     body = f"""<!doctype html><html lang=es><head><meta charset=utf-8><link rel=icon type=image/png href=/favicon.ico>
 <meta name=viewport content='width=device-width,initial-scale=1'><title>Suricata</title>
 <style>{BASE_CSS}
-main{{max-width:820px;padding:24px 20px}}.sub{{margin:0 0 18px}}h2{{font-size:15px;margin:24px 0 10px}}
+main{{max-width:1360px;padding:20px 28px 40px}}.sub{{margin:0 0 18px}}h2{{font-size:15px;margin:24px 0 10px}}
 .card{{padding:18px}}
 form.add{{display:grid;grid-template-columns:130px 1fr;gap:10px 12px;align-items:center}}
 label{{font-size:13px;color:#52514e;font-weight:600}}
