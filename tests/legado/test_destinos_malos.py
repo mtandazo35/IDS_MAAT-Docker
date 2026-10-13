@@ -36,7 +36,7 @@ DASH = extraer.fuente("DASH")
 ARBOL = ast.parse(DASH)
 
 PIEZAS = ("DESTINOS_FILE", "MK_SENT_DST", "DST_CONFIABLES", "cargar_destinos_malos",
-          "destino_bloqueable", "destinos_malos", "destinos_reglas",
+          "destino_bloqueable", "destinos_malos",
           "ros_lista", "_RE_ROS_RARO",
           "DST_FEED_OK", "DST_FEED_TOPE", "destinos_feed", "destinos_rsc",
           "cargar_publicas",
@@ -162,13 +162,6 @@ def main():
     check("los ya bloqueados salen marcados", any(x["enviado"] for x in r3), r3)
     check("y van al final, para que arriba quede lo que falta decidir",
           not r3[0]["enviado"] and r3[-1]["enviado"], [(x["ip"], x["enviado"]) for x in r3])
-
-    # --- la regla: es de DESTINO, no de origen ---
-    reg = ns["destinos_reglas"]("suricata-destinos-malos")
-    check("la regla usa dst-address-list, no src", "dst-address-list=" in reg and
-          "src-address-list=" not in reg, reg)
-    check("cubre forward y tambien raw, que es mas barato con muchas entradas",
-          "/ip firewall filter" in reg and "/ip firewall raw" in reg)
 
     # --- bloqueo PREVENTIVO desde los feeds --------------------------------------
     # Lo de arriba es reactivo (bloquea lo que YA se contacto). Esto corta antes de que

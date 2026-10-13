@@ -3128,20 +3128,6 @@ def destinos_rsc(lista="suricata-destinos-malos", ttl="1d"):
                    % (lista, ind, ttl, re.sub(r"[^A-Za-z0-9-]", "", fuente)[:20]))
     return "\n".join(out) + "\n"
 
-def destinos_reglas(lista="suricata-destinos-malos"):
-    return "\n".join([
-        "# Cortar la salida hacia infraestructura fichada. Es dst-address-list, no src:",
-        "# aqui no se bloquea a un abonado, se bloquea A DONDE va.",
-        "/ip firewall filter",
-        'add chain=forward dst-address-list=%s action=drop '
-        'comment="Suricata: destinos de mala reputacion"' % ros_lista(lista),
-        "",
-        "# y que ni siquiera cree la conexion (mas barato con muchas entradas):",
-        "/ip firewall raw",
-        'add chain=prerouting dst-address-list=%s action=drop '
-        'comment="Suricata: destinos de mala reputacion"' % ros_lista(lista),
-    ])
-
 def cargar_entrantes():
     try:
         return (json.load(open(_salida_ctx(ENTRANTES_FILE), encoding="utf-8")).get("origenes") or {})
@@ -15487,7 +15473,6 @@ def cuarentena_page(msg="", es_admin=False):
                     f"<td data-label='Alertas' class='num'>{x['alertas']:,}</td>"
                     f"<td data-label='Accion'>{marca}{acc}</td></tr>")
         _filas_dst = "".join(_fila_dst(x) for x in (_pend + _ya))
-        _reglas_dst = destinos_reglas(m.get("LIST_DST", "suricata-destinos-malos"))
         # solo hace falta saber SI hay: pedir las 50.000 para un len() era el resto
         # del coste de esta pagina
         _n_feed = len(destinos_feed(tope=1))
@@ -15515,13 +15500,7 @@ def cuarentena_page(msg="", es_admin=False):
                "Se descarga en <a href='/destinos.rsc'>destinos.rsc</a> (administrador) y se importa "
                "en el router con <code>/import</code>."
                "</div>" if _n_feed else "")
-            + "<details style='margin-top:8px'><summary style='cursor:pointer;font-size:13px;"
-            "font-weight:600'>Regla que hace falta en el MikroTik</summary>"
-            "<p class=hint style='margin:6px 0'>Sin una regla que use esa address-list, el "
-            "panel dice 'bloqueado' y no se bloquea nada.</p>"
-            f"<pre style='background:#f8f9fa;border:1px solid #eaecf0;border-radius:6px;"
-            f"padding:10px;overflow-x:auto;font-size:12px'>{esc(_reglas_dst)}</pre>"
-            "</details></div>")
+            + "</div>")
     else:
         sec_dst = ""
 
