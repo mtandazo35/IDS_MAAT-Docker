@@ -54,7 +54,10 @@ import nodos
 RUTA = "/eventos"
 RUTA_DETALLE = "/eventos/detalle"
 
-POR_PAGINA = 100
+POR_PAGINA = 100                   # por defecto
+TAMANOS = (10, 20, 30, 40, 50, 100)  # lo que se puede elegir abajo, ademas de «todos»
+TODOS_MAX = 2000                   # «todos» = hasta esto por pagina: el eve real tiene millones de
+                                   # lineas y la busqueda ya tiene topes de bytes y de tiempo
 TOPE_BYTES = 200 * 1024 * 1024     # bytes descomprimidos leidos por consulta (todas las fuentes)
 TOPE_GZ = 150 * 1024 * 1024        # bytes descomprimidos por fichero .gz
 TOPE_SEGUNDOS = 8.0                # tiempo por consulta
@@ -75,7 +78,7 @@ ESPERA_OCUPADO = 2.0               # segundos que espera una consulta a que qued
 TIPOS = (("alert", "Alertas"), ("dns", "DNS"), ("http", "HTTP"), ("tls", "TLS"),
          ("stats", "Estadisticas"), ("todos", "Todos"))
 DIRS_IP = (("", "origen o destino"), ("src", "origen"), ("dst", "destino"))
-CAMPOS_FILTRO = ("desde", "hasta", "tipo", "firma", "sev", "ip", "ipdir", "puerto", "pdir", "proto")
+CAMPOS_FILTRO = ("desde", "hasta", "tipo", "firma", "sev", "ip", "ipdir", "puerto", "pdir", "proto", "por")
 
 # Nombres admitidos: eve.json, dns.json y sus rotados (eve.json.1, eve.json.1.gz,
 # eve.json-20261011-1200.gz...). Cada separador va seguido de letras o numeros: ni "..", ni
@@ -369,6 +372,16 @@ def filtros(consulta, ahora=None):
         if not RE_PROTO.fullmatch(proto):
             raise FiltroInvalido("protocolo no valido")
         f["proto"] = proto.upper()
+    por = _q(consulta, "por")
+    f["por_todos"] = por == "todos"
+    if not por:
+        f["por"] = POR_PAGINA
+    elif por == "todos":
+        f["por"] = TODOS_MAX
+    elif por.isascii() and por.isdigit() and int(por) in TAMANOS:
+        f["por"] = int(por)
+    else:
+        raise FiltroInvalido("eventos por pagina no validos")
     cur = _q(consulta, "cursor", 64)
     if cur:
         m = RE_CURSOR.fullmatch(cur)
@@ -542,7 +555,7 @@ class _Ctx:
             raise _Tope()
 
     def lleno(self):
-        return len(self.heap) >= POR_PAGINA + 1
+        return len(self.heap) >= self.f["por"] + 1
 
     def minimo(self):
         return self.heap[0][0][0] if self.heap else None
@@ -573,7 +586,7 @@ def _candidata(ctx, pid, ln, heap):
         return None
     if ts > ctx.U or ts < ctx.L:
         return None
-    if len(heap) >= POR_PAGINA + 1 and ts < heap[0][0][0]:
+    if len(heap) >= ctx.f["por"] + 1 and ts < heap[0][0][0]:
         return None
     cur = ctx.f["cursor"]
     if cur and ts > cur[0]:
@@ -727,7 +740,7 @@ class _Fuente:
             if r:
                 clave, ev = r
                 _meter(ctx.heap, ctx.claves, clave,
-                       {"pid": self.pid, "fichero": self.nombre, "offset": off, "ev": ev}, POR_PAGINA + 1)
+                       {"pid": self.pid, "fichero": self.nombre, "offset": off, "ev": ev}, ctx.f["por"] + 1)
         ctx.leidos += len(lineas)
         if primera is not None:
             # lo que queda sin leer esta antes de esa linea: como mucho, su marca + el desorden
@@ -782,7 +795,7 @@ class _Fuente:
                 if r:
                     clave, ev = r
                     _meter(local, claves, clave,
-                           {"pid": self.pid, "fichero": self.nombre, "offset": off, "ev": ev}, POR_PAGINA + 1)
+                           {"pid": self.pid, "fichero": self.nombre, "offset": off, "ev": ev}, ctx.f["por"] + 1)
         except _GzLimite as e:
             self.agotada = True
             ctx.omitidos.append((self.pid, self.nombre, self.cota, str(e)))
@@ -794,7 +807,7 @@ class _Fuente:
         ctx.incompletas += incompletas
         ctx.sin_fecha += sin_fecha
         for clave, fila in local:
-            _meter(ctx.heap, ctx.claves, clave, fila, POR_PAGINA + 1)
+            _meter(ctx.heap, ctx.claves, clave, fila, ctx.f["por"] + 1)
         self.agotada = True
 
 
@@ -892,13 +905,14 @@ def buscar(f, nodo):
         for fu in fuentes:
             fu.cerrar()
     todas = sorted(ctx.heap, key=lambda x: x[0], reverse=True)
+    por = f["por"]
     res = {"filas": [], "siguiente": None, "parcial": False, "motivo": None, "hasta_us": None,
            "fichero_corte": None, "bytes": ctx.bytes, "incompletas": ctx.incompletas,
            "sin_fecha": ctx.sin_fecha, "rechazados": ctx.rechazados, "omitidos": ctx.omitidos,
            "ficheros": len(fuentes), "desde_us": ctx.L, "techo_us": ctx.U, "sin_garantia": False}
     if motivo:
         # Solo es seguro lo que es mas nuevo que la cota de lo que quedo sin leer.
-        garant = [x for x in todas if x[0][0] > cota_corte][:POR_PAGINA]
+        garant = [x for x in todas if x[0][0] > cota_corte][:por]
         res["sin_garantia"] = False
         if not garant and cota_corte + 1 >= ctx.U:
             # El tope no alcanza ni para cubrir el margen de desorden: con la cota estricta la
@@ -906,21 +920,21 @@ def buscar(f, nodo):
             # a leer (sin el margen) y se avisa: un evento escrito con mas desorden que ese
             # podria quedarse fuera.
             cota_corte = max(x.cota for x in activas) - DESORDEN_US
-            garant = [x for x in todas if x[0][0] > cota_corte][:POR_PAGINA]
+            garant = [x for x in todas if x[0][0] > cota_corte][:por]
             res["sin_garantia"] = True
         res["parcial"] = True
         res["motivo"] = motivo
         res["hasta_us"] = cota_corte
         res["fichero_corte"] = (corte.pid, corte.nombre)
         res["filas"] = [_fila(c, x) for c, x in garant]
-        if len(garant) == POR_PAGINA:
+        if len(garant) == por:
             res["siguiente"] = garant[-1][0]
         else:
             res["siguiente"] = (cota_corte + 1, "", "")
     else:
-        pag = todas[:POR_PAGINA]
+        pag = todas[:por]
         res["filas"] = [_fila(c, x) for c, x in pag]
-        if len(todas) > POR_PAGINA:
+        if len(todas) > por:
             res["siguiente"] = pag[-1][0]
     if ctx.omitidos:
         res["parcial"] = True
@@ -1115,6 +1129,9 @@ _CSS = (
     ".evw .pager a{font:13px system-ui;padding:6px 12px;border:1px solid #d7d6d2;background:#fff;"
     "border-radius:8px;color:#0b0b0b;text-decoration:none}"
     ".evw .pager a:hover{background:#eef4fd;border-color:#2a78d6}"
+    ".evw .pager .porpag{margin-left:auto;font:13px system-ui;color:#52514e}"
+    ".evw .pager .porpag select{font:13px system-ui;padding:5px 8px;margin:0 4px;border:1px solid #d7d6d2;"
+    "border-radius:8px;background:#fff}"
     ".evw td.res{max-width:460px;word-break:break-word}"
     ".evw td.fecha{white-space:nowrap}"
     ".evw .sev1{color:#b52a2a;font-weight:700}.evw .sev2{color:#a15c12;font-weight:700}"
@@ -1200,6 +1217,20 @@ def _resumen(ev):
     return _e(_corta(ev.get("app_proto") or ""))
 
 
+def _selector_por(consulta, nodo, f):
+    """«Ver N por pagina» junto al paginador: 10, 20, 30, 40, 50, 100 o todos (hasta TODOS_MAX).
+    Conserva los filtros y vuelve a la primera pagina (sin cursor)."""
+    actual = "todos" if f.get("por_todos") else str(f.get("por") or POR_PAGINA)
+    ocultos = "".join("<input type='hidden' name='%s' value='%s'>" % (_e(k), _e(v))
+                      for k, v in _params_filtro(consulta, nodo, f) if k != "por" and v)
+    opciones = [(str(n), str(n)) for n in TAMANOS] + [("todos", "Todos")]
+    return ("<form class='porpag' method='get' action='%s'>%s<label>Ver "
+            "<select name='por' onchange='this.form.submit()'>%s</select> por pagina</label>"
+            "<noscript><button type='submit'>Aplicar</button></noscript></form>"
+            % (_e(RUTA), ocultos, "".join("<option value='%s'%s>%s</option>" % (
+                _e(v), " selected" if v == actual else "", _e(t)) for v, t in opciones)))
+
+
 def _formulario(consulta, nodo, f):
     def sel(nombre, opciones, actual):
         return ("<select name='%s'>%s</select>" % (nombre, "".join(
@@ -1221,6 +1252,7 @@ def _formulario(consulta, nodo, f):
         + "<label>Puerto<input class='corto' name='puerto' value='%s' inputmode='numeric'></label>" % _e(_q(consulta, "puerto"))
         + "<label>Puerto como%s</label>" % sel("pdir", DIRS_IP, _q(consulta, "pdir"))
         + "<label>Protocolo<input class='corto' name='proto' value='%s' placeholder='TCP'></label>" % _e(_q(consulta, "proto"))
+        + ("<input type='hidden' name='por' value='%s'>" % _e(_q(consulta, "por")) if _q(consulta, "por") else "")
         + "<button type='submit'>Buscar</button>"
         + "<a class='limpiar' href='%s'>Limpiar</a>" % _e(_url(RUTA, [("nodo", nodo)]))
         + "</form>")
@@ -1380,11 +1412,15 @@ def _pagina(consulta, nodo):
     if _q(consulta, "cursor", 64):
         pag.append("<a href='%s'>&laquo; Mas recientes</a>" % _e(_url(RUTA, base)))
     if res["siguiente"]:
-        txt = "Continuar la busqueda &raquo;" if res["motivo"] and len(res["filas"]) < POR_PAGINA else "Siguientes &raquo;"
+        txt = "Continuar la busqueda &raquo;" if res["motivo"] and len(res["filas"]) < f["por"] else "Siguientes &raquo;"
         pag.append("<a href='%s'>%s</a>" % (_e(_url(RUTA, base + [("cursor", cursor_txt(res["siguiente"]))])), txt))
     if res["filas"]:
         pag.append("<span class='muted'>%d eventos, del %s al %s</span>"
                    % (len(res["filas"]), _e(_fmt(res["filas"][0]["ts_us"])), _e(_fmt(res["filas"][-1]["ts_us"]))))
+    if f["por_todos"] and res["siguiente"] and len(res["filas"]) >= TODOS_MAX:
+        pag.append("<span class='muted'>&middot; «Todos» muestra hasta %s por pagina: hay mas, sigue con "
+                   "«Siguientes» o acota las fechas</span>" % "{:,}".format(TODOS_MAX).replace(",", "."))
+    pag.append(_selector_por(consulta, nodo, f))
     pag.append("</div>")
     pie = ("<p class='muted'>%d fichero(s), %.1f MB leidos%s%s.</p>"
            % (res["ficheros"], res["bytes"] / 1048576.0,

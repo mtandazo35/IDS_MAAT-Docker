@@ -329,6 +329,50 @@ class Paginacion(Base):
         self.assertEqual(len(set(refs)), 260)
 
 
+class PorPagina(Paginacion):
+    """Capacidad nueva (el user, 2026-10-13): abajo se elige cuantos eventos por pagina: 10, 20,
+    30, 40, 50, 100 o todos (hasta TODOS_MAX, porque un eve real tiene millones de lineas)."""
+
+    def test_cada_tamano_pagina_sin_huecos_ni_repetidos(self):
+        esperado = self.preparar()
+        for por in self.ev.TAMANOS:
+            with self.subTest(por=por):
+                filas, resps = self.todas_las_paginas(self.n.TODOS, maximo=400, por=por)
+                self.comprobar(filas, esperado)
+                self.assertTrue(all(len(r["filas"]) == por for r in resps[:-1]))
+
+    def test_todos_trae_todo_hasta_el_tope(self):
+        esperado = self.preparar()
+        r = self.buscar(self.n.TODOS, por="todos")
+        self.assertEqual(len(r["filas"]), 260)            # caben: una sola pagina
+        self.assertIsNone(r["siguiente"])
+        with mock.patch.object(self.ev, "TODOS_MAX", 100):
+            filas, resps = self.todas_las_paginas(self.n.TODOS, por="todos")
+            self.comprobar(filas, esperado)
+            self.assertEqual([len(x["filas"]) for x in resps], [100, 100, 60])
+            pag = self.ev.pagina(self.q(por="todos"), self.n.TODOS)
+            self.assertIn("muestra hasta 100 por pagina", pag)
+
+    def test_tamano_no_valido_no_busca(self):
+        for malo in ("7", "0", "abc", "1000"):
+            with self.subTest(por=malo):
+                with self.assertRaises(self.ev.FiltroInvalido):
+                    self.ev.filtros(self.q(por=malo))
+
+    def test_selector_abajo_y_el_tamano_se_conserva(self):
+        self.preparar()
+        pag = self.ev.pagina(self.q(por="20", ip="10.0.0.3"), self.n.TODOS)
+        sel = re.search(r"<form class='porpag'.*?</form>", pag, re.S).group(0)
+        self.assertEqual(re.findall(r"<option value='([^']+)'", sel),
+                         ["10", "20", "30", "40", "50", "100", "todos"])
+        self.assertIn("<option value='20' selected>", sel)
+        self.assertIn("name='ip' value='10.0.0.3'", sel)       # los filtros siguen al cambiar
+        self.assertNotIn("name='cursor'", sel)                  # y se vuelve a la primera pagina
+        self.assertLess(pag.find("<table"), pag.find("class='porpag'"))   # abajo, con el paginador
+        sig = re.search(r"<a href='(/eventos\?[^']+)'>Siguientes", pag).group(1)
+        self.assertEqual(parse_qs(urlsplit(html.unescape(sig)).query)["por"], ["20"])
+
+
 class Incompletos(Base):
     def test_json_incompleto_se_salta_y_cuenta(self):
         """Correccion de defecto (§10.5 «JSON incompleto»): una linea cortada, basura y la linea
