@@ -675,7 +675,8 @@ def top_page():
                 "recarga en unos minutos para el ranking completo.")
     css = (css_rep +
            "<style>" + BASE_CSS +
-           "main{padding:18px 22px}h1{font-size:20px;margin:0 0 2px}.subx{margin:0 0 18px}"
+           # mismo margen lateral que En vivo (28 px): con 22 los cuadros salian mas anchos que alli
+           "main{padding:18px 28px}h1{font-size:20px;margin:0 0 2px}.subx{margin:0 0 18px}"
            ".topwrap .tcard{border:1px solid #e7e6e2;border-radius:12px;background:#fff;margin:0 0 14px;overflow:hidden}"
            ".topwrap .thd{display:flex;align-items:center;gap:12px;flex-wrap:wrap;padding:11px 15px;background:#f4f4f2;border-bottom:1px solid #e7e6e2}"
            ".topwrap .rank{font-weight:800;color:#2a78d6;font-size:15px}"

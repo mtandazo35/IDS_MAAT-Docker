@@ -73,6 +73,18 @@ class CSS(unittest.TestCase):
         movil = css[css.index("@media(max-width:820px){h1{font-size:19px}"):]
         self.assertIn(".num,td.num,td.cen{text-align:left}", movil)
 
+    def test_mismo_margen_lateral_que_en_vivo(self):
+        """Correccion de defecto: Top dejaba 22 px a los lados y En vivo 28, asi que sus cuadros
+        salian mas anchos que los de En vivo. Las paginas de tablas usan los mismos 28 px."""
+        for ruta in ("/top", "/cuarentena", "/historico", "/eventos", "/puntos"):
+            r = self.p.pedir("GET", ruta + "?nodo=_todos", cookie=self.ana)
+            css = "\n".join(re.findall(r"<style[^>]*>(.*?)</style>", r.texto, flags=re.S))
+            css = re.sub(r"@media[^{]*\{(?:[^{}]*\{[^{}]*\})*[^{}]*\}", "", css)   # solo escritorio
+            lados = [m.split()[1] if len(m.split()) > 1 else m.split()[0]
+                     for m in re.findall(r"(?:^|\})\s*main\{[^}]*?(?<![-\w])padding:([^;}]+)", css)]
+            self.assertTrue(lados, ruta)
+            self.assertEqual(lados[-1], "28px", ruta)
+
     def test_detalle_con_el_ancho_del_panel(self):
         """Correccion de defecto: /detalle trae el CSS del reporte (main a 1200px) y salia mas
         estrecha que el menu y que las demas tablas (1360px); la ultima regla de main manda."""
