@@ -12067,8 +12067,10 @@ no las borra.</p>
 <h2>Mapa: a donde atacan tus CPEs</h2>
 <p>En la pestana <b>En vivo</b>, <b>debajo de la linea de tiempo</b> ("Ataques por hora y minuto"),
 hay un <b>mapa mundial</b> que pinta los <b>paises destino</b> de las alertas (a donde va el
-trafico sospechoso de tus CPEs). El color sube con el nº de alertas y al lado sale el
-<b>Top paises destino</b>.</p>
+trafico sospechoso de tus CPEs). El color sube con el nº de alertas y debajo sale el
+<b>Top paises destino</b>: los 10 paises con mas alertas, por puesto y en dos columnas (1 a 5 y
+6 a 10), cada uno con su barra, el numero de alertas y que parte del total son. Clic en una fila
+acerca ese pais en el mapa.</p>
 <ul>
 <li><b>Geolocalizacion offline:</b> la IP destino se traduce a pais con una base
 <b>IP&rarr;pais DB-IP lite</b> (via ip-location-db, CC-BY-4.0, &copy; db-ip.com) que se guarda en el servidor
