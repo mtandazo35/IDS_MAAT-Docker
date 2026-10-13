@@ -705,7 +705,7 @@ def top_page():
             + nav("/top") +
             f"<main><h1>Top 5 IPs origen que mas peticionan</h1>"
             f"<p class='subx'>Quien ataca mas, hacia que IP destino, desde que puerto origen y hacia que puerto destino. "
-            f"{nota}</p>{cuerpo}</main></body></html>")
+            f"{nota}</p>{cuerpo}</main>{_JS_DUENOS}</body></html>")
     return body
 
 def logdir(nodo=None):
@@ -755,6 +755,36 @@ _JS_VENTANA_PEND = (
     ".catch(function(){clearTimeout(k);fallos++;pinta();if(fallos>=3){location.reload();return;}"
     "setTimeout(mira,2000);});}"
     "setTimeout(mira,1500);})();</script>")
+
+DUENOS_ESPERA = 8.0   # s que /duenos espera a la red; lo que no llega lo vuelve a pedir la pagina
+
+# Top origenes: rellena los «…» del dueño pidiendolos a /duenos (solo los que faltan, hasta 40 por
+# vez); lo que aun no llego se vuelve a pedir, como mucho 4 veces. Mismas insignias que el reporte.
+_JS_DUENOS = (
+    "<script>(function(){"
+    "function esc(s){return String(s).replace(/[&<>\"']/g,function(c){return{'&':'&amp;','<':'&lt;',"
+    "'>':'&gt;','\"':'&quot;',\"'\":'&#39;'}[c];});}"
+    "function insignia(e){if(e&&e.via==='error')return \"<span class='obadge none' title='No se pudo "
+    "consultar ahora (limite o red); se reintenta al volver a abrir'>?</span>\";"
+    "if(!e||e.org==='-'||e.org==='sin PTR')return \"<span class='obadge none' "
+    "title='Sin DNS inverso ni operador identificable'>sin PTR</span>\";"
+    "if(e.legit)return \"<span class='obadge ok' title='Servicio conocido (CDN/gran empresa): trafico casi "
+    "siempre legitimo'>\"+esc(e.org)+'</span>';"
+    "var r=e.via==='rdap';return \"<span class='obadge unk' title='\"+(r?'Operador de red del bloque IP "
+    "(RDAP); no tiene DNS inverso':'Dominio del dueño segun DNS inverso; no es un servicio grande "
+    "conocido')+\"'>\"+(r?'&#127760; ':'')+esc(e.org)+'</span>';}"
+    "var intentos=0;"
+    "function pide(){var els=[].slice.call(document.querySelectorAll('[data-dueno]'));if(!els.length)return;"
+    "var ips=[];els.forEach(function(x){var ip=x.getAttribute('data-dueno');if(ips.indexOf(ip)<0)ips.push(ip);});"
+    "var c=window.AbortController?new AbortController():null,k=setTimeout(function(){if(c)c.abort();},15000);"
+    "fetch('/duenos?'+ips.slice(0,40).map(function(i){return 'ip='+encodeURIComponent(i);}).join('&'),"
+    "{credentials:'same-origin',cache:'no-store',signal:c?c.signal:undefined})"
+    ".then(function(r){if(!r.ok)throw r.status;return r.json();})"
+    ".then(function(d){clearTimeout(k);els.forEach(function(x){var e=d[x.getAttribute('data-dueno')];"
+    "if(e)x.outerHTML=insignia(e);});"
+    "if(document.querySelector('[data-dueno]')&&++intentos<4)setTimeout(pide,3000);})"
+    ".catch(function(){clearTimeout(k);if(++intentos<4)setTimeout(pide,5000);});}"
+    "pide();})();</script>")
 
 def pedir_regen():
     """Pide regenerar el resumen cuanto antes. Es solo una marca: el hilo de fondo la
@@ -8497,6 +8527,7 @@ def informe_diario_hilo():
 
 import puntos_web   # noqa: E402  (apartado Puntos; importa nodos y idspanel, no el dashboard)
 import eventos_web  # noqa: E402  (pagina Eventos; tampoco importa el dashboard)
+import duenos       # noqa: E402  (dueño de las IP del Top: PTR/RDAP bajo demanda, con cache)
 
 _NAV_LINKS = [("/", "En vivo"), ("/top", "Top origenes"), ("/detalle", "Detalle"),
               ("/cuarentena", "Cuarentena"), ("/reputacion", "Consultar IP"),
@@ -11620,9 +11651,10 @@ ruidosa que dispara mil veces sigue siendo una sola prueba. Es lo que manda el b
 con su SID/firma/fecha/flow_id, las <b>coincidencias de reputacion</b> con su fuente/CIDR y su
 <b>vigencia</b> (si el feed sigue vigente o caduco), la <b>corroboracion</b> independiente y la
 <b>decision</b>. Si el destino no tiene DNS inverso, se muestra el <b>operador de red</b> del bloque
-(via RDAP) en vez de "sin PTR". Estas consultas van en paralelo y con tiempo maximo, para no
-retrasar el resumen: una IP nueva que aun no se resolvio sale como <b>-</b> y aparece en la
-siguiente regeneracion.</p>
+(via RDAP) en vez de "sin PTR". El dueño de cada IP se consulta <b>solo cuando hace falta</b>: al
+abrir <b>Top origenes</b>, la pagina pide las que faltan (salen como <b>&hellip;</b> unos segundos) y
+quedan guardadas 7 dias. Generar el resumen no consulta nada, asi que cambiar la ventana no
+espera por esto.</p>
 <p><b>Quien tenia la IP en el momento del evento:</b> el panel guarda un historico de asignaciones
 (PPPoE/DHCP). Si la IP cambio de dueño entre el ataque y ahora, la ficha lo avisa &mdash; asi no se
 culpa al cliente que hoy tiene esa IP por lo que hizo otro antes.</p>
@@ -16615,6 +16647,14 @@ class H(BaseHTTPRequestHandler):
             return self._html(page)
         if path == "/ventana-estado":
             return self._json(estado_ventana())
+        if path == "/duenos":
+            # dueño de las IP que el Top dejo pendientes, solo al abrir la pestana (no al generar).
+            # Solo las que el Top actual pide: el panel no consulta IPs arbitrarias para nadie
+            _qd = urllib.parse.parse_qs(self.path.split("?", 1)[1]) if "?" in self.path else {}
+            _pend = set(re.findall(r"data-dueno='([0-9.]+)'", partes_top()[1]))
+            _r = duenos.resolver([ip for ip in _qd.get("ip", []) if ip in _pend], espera=DUENOS_ESPERA)
+            return self._json({ip: {"org": e.get("org", "-"), "legit": bool(e.get("legit")),
+                                    "via": e.get("via", "")} for ip, e in _r.items()})
         if path == "/top":
             return self._html(top_page())
         if path == "/detalle":
