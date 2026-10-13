@@ -476,11 +476,13 @@ _TRAD = [
     (("tor exit", "tor node", "tor "), "Red Tor"),
     (("katana",), "Botnet Katana"),
     (("mirai",), "Botnet Mirai"),
+    # antes que «checkin»: «ET POLICY Cryptocurrency Miner Checkin» (firma real de ET Open) salia
+    # «Botnet CnC» y un minero se acusaba de botnet (visto en el informe PDF, 2026-10-13)
+    (("coinmin", "cryptomin", "miner"), "Criptomineria"),
     (("cnc", "c2 ", "command and control", "checkin", "check-in"), "Botnet CnC"),
     (("botnet",), "Botnet"),
     (("ransom",), "Ransomware"),
     (("trojan",), "Troyano"),
-    (("coinmin", "cryptomin", "miner"), "Criptomineria"),
     (("ssh scan",), "Escaneo SSH"),
     (("brute", "password"), "Fuerza bruta"),
     # Sin esta linea, traducir() nunca producia "Spam": la categoria de CPE 'spam', su
@@ -8293,6 +8295,10 @@ def informe_diario_hilo():
 import puntos_web   # noqa: E402  (apartado Puntos; importa nodos y idspanel, no el dashboard)
 import eventos_web  # noqa: E402  (pagina Eventos; tampoco importa el dashboard)
 import duenos       # noqa: E402  (dueño de las IP del Top: PTR/RDAP bajo demanda, con cache)
+try:
+    import informe_pdf  # noqa: E402  (informe PDF del Reporte; reportlab va en la imagen)
+except ImportError:     # sin reportlab el resto del panel sigue: /informe.pdf lo dice
+    informe_pdf = None
 
 _NAV_LINKS = [("/", "En vivo"), ("/top", "Top origenes"), ("/detalle", "Detalle"),
               ("/cuarentena", "Cuarentena"), ("/reputacion", "Consultar IP"),
@@ -10953,8 +10959,13 @@ hilo de fondo cada 6 horas con prioridad baja. Si se generara dentro de la petic
 navegador cortaria por timeout en cualquier caja con trafico de verdad. La linea de arriba
 del informe dice <b>hace cuantos minutos</b> se genero, que es lo que hay que mirar para
 saber si lo que se ve esta fresco.</p>
-<p>La barra de arriba tiene <b>Generar reporte</b> (abre todas las fichas e imprime, una hoja
-por abonado) y el <b>filtro</b> por IP o por firma. Abajo, junto al paginador, esta el selector
+<p>La barra de arriba tiene el <b>filtro</b> por IP o por firma y <b>Generar informe PDF</b>: eliges
+el periodo (1, 3, 7 o 30 dias) y se descarga un PDF de uso interno del nodo que estes mirando (o de
+todos). Dice <b>que clientes hay en cada categoria y cuando cayeron en ella</b> (la primera y la
+ultima alerta de esa categoria en el periodo), con el nombre del cliente si el MikroTik lo conoce, y
+trae una ficha por abonado con sus firmas (cada una con su primera y ultima vez), destinos, puertos y
+dominios sospechosos. Lo guardado antes de que el panel registrara la hora sale con el dia, marcado
+como aproximado. Abajo, junto al paginador, esta el selector
 de <b>cuantos abonados por pagina</b>: 10 por defecto, porque cincuenta fichas seguidas no se
 leen. Va ahi porque responde a la misma pregunta que el paginador y se usa al terminar de leer,
 y sale <b>aunque haya una sola pagina</b>: si no, al elegir 100 desapareceria el paginador y con
@@ -13012,6 +13023,15 @@ def _hist_con(pid=None):
         n INTEGER NOT NULL DEFAULT 0,
         PRIMARY KEY(dia, cpe, tipo, clave));
       CREATE TABLE IF NOT EXISTS estado(clave TEXT PRIMARY KEY, valor TEXT);
+      -- primera y ultima vez de cada firma por abonado y dia: con ellas el informe dice CUANDO
+      -- cayo cada cliente en su categoria (el user, 2026-10-13); el detalle solo tiene el dia
+      CREATE TABLE IF NOT EXISTS firma_ts(
+        dia  TEXT NOT NULL,
+        cpe  TEXT NOT NULL,
+        firma TEXT NOT NULL,
+        primera INTEGER NOT NULL,
+        ultima  INTEGER NOT NULL,
+        PRIMARY KEY(dia, cpe, firma));
       CREATE INDEX IF NOT EXISTS i_resumen_hora ON resumen(hora);
       CREATE INDEX IF NOT EXISTS i_detalle_dia  ON detalle(dia);
     """)
@@ -13077,6 +13097,7 @@ def hist_ingerir(pid=None, limite_lineas=4000000):
         if not desde:
             desde = time.time() - HIST_DIAS * 86400
         res, det, tope, leidos = {}, {}, desde, 0
+        fts = {}            # (dia, cpe, firma) -> [primera, ultima]
         offs = _hist_offsets(c)
         vistos = {}
 
@@ -13153,6 +13174,11 @@ def hist_ingerir(pid=None, limite_lineas=4000000):
                         fir = ((ev.get("alert") or {}).get("signature") or "")[:90]
                         if fir:
                             det[(dia, ip, "firma", fir)] = det.get((dia, ip, "firma", fir), 0) + 1
+                            pu = fts.get((dia, ip, fir))
+                            if pu is None:
+                                fts[(dia, ip, fir)] = [ts, ts]
+                            else:
+                                pu[0] = min(pu[0], ts); pu[1] = max(pu[1], ts)
                         mal = ((ev.get("dns") or {}).get("rrname") or "")[:80]
                         if mal and not cd_es_ruido(fir):   # el de una ET INFO no es sospechoso
                             det[(dia, ip, "malo", mal)] = det.get((dia, ip, "malo", mal), 0) + 1
@@ -13192,6 +13218,11 @@ def hist_ingerir(pid=None, limite_lineas=4000000):
             "INSERT INTO detalle(dia,cpe,tipo,clave,n) VALUES(?,?,?,?,?) "
             "ON CONFLICT(dia,cpe,tipo,clave) DO UPDATE SET n=n+excluded.n",
             [(d, ip, t, k, n) for (d, ip, t, k), n in det.items()])
+        c.executemany(
+            "INSERT INTO firma_ts(dia,cpe,firma,primera,ultima) VALUES(?,?,?,?,?) "
+            "ON CONFLICT(dia,cpe,firma) DO UPDATE SET primera=MIN(primera,excluded.primera),"
+            "ultima=MAX(ultima,excluded.ultima)",
+            [(d, ip, f, int(v[0]), int(v[1])) for (d, ip, f), v in fts.items()])
         hist_marca(c, tope)
         c.commit()
         hist_podar(c)
@@ -13210,6 +13241,7 @@ def hist_podar(c=None, pid=None):
         corte_d = time.strftime("%Y-%m-%d", time.localtime(corte_h))
         c.execute("DELETE FROM resumen WHERE hora < ?", (corte_h,))
         c.execute("DELETE FROM detalle WHERE dia < ?", (corte_d,))
+        c.execute("DELETE FROM firma_ts WHERE dia < ?", (corte_d,))
         c.execute("""DELETE FROM detalle WHERE rowid NOT IN (
                        SELECT rowid FROM detalle d2 WHERE d2.dia=detalle.dia
                          AND d2.cpe=detalle.cpe AND d2.tipo=detalle.tipo
@@ -13253,7 +13285,22 @@ def hist_conducta(dias=None, pid=None):
                 "SELECT cpe, tipo, clave, SUM(n) FROM detalle WHERE dia >= ? "
                 "GROUP BY cpe, tipo, clave", (corte_d,)):
             acc.setdefault(cpe, {}).setdefault(tipo, {})[clave] = n
+        # cuando se vio cada firma real en el periodo (para «cayo en la categoria»); lo ingerido
+        # antes de existir firma_ts solo tiene el dia (detalle): sale como aproximado
+        tsf, diaf = {}, {}
+        for cpe, fir, pri, ult in c.execute(
+                "SELECT cpe, firma, MIN(primera), MAX(ultima) FROM firma_ts "
+                "WHERE dia >= ? AND ultima >= ? GROUP BY cpe, firma", (corte_d, corte)):
+            if not cd_es_ruido(fir):
+                tsf.setdefault(cpe, {})[fir] = [int(max(pri, corte)), int(ult)]
+        for cpe, fir, dia in c.execute(
+                "SELECT cpe, clave, MIN(dia) FROM detalle WHERE tipo='firma' AND dia >= ? "
+                "GROUP BY cpe, clave", (corte_d,)):
+            if fir not in tsf.get(cpe, {}) and not cd_es_ruido(fir):
+                diaf.setdefault(cpe, {})[fir] = dia
         for cpe, f in filas.items():
+            f["firmas_ts"] = tsf.get(cpe, {})
+            f["firmas_dia"] = diaf.get(cpe, {})
             t = acc.get(cpe, {})
             reales = _cd_firmas_reales(t.get("firma", {}))
             f["alertas"] = sum(reales.values())         # sin ruido: ver CD_NO_CUENTA
@@ -13318,7 +13365,7 @@ def conducta_recolectar(dias=CONDUCTA_DIAS, pid=None):
                         continue
                     d = cpes[ip] = {"eventos": 0, "alertas": 0, "bytes": 0,
                                     "destinos": {}, "puertos": {}, "firmas": {},
-                                    "dominios": {}, "malos": {}, "dias": {},
+                                    "dominios": {}, "malos": {}, "dias": {}, "fts": {},
                                     "primera": ts, "ultima": ts}
                 d["eventos"] += 1
                 d["primera"] = min(d["primera"], ts)
@@ -13336,6 +13383,11 @@ def conducta_recolectar(dias=CONDUCTA_DIAS, pid=None):
                     fir = ((ev.get("alert") or {}).get("signature") or "")[:90]
                     if fir:
                         d["firmas"][fir] = d["firmas"].get(fir, 0) + 1
+                        pu = d["fts"].get(fir)
+                        if pu is None:
+                            d["fts"][fir] = [int(ts), int(ts)]
+                        else:
+                            pu[0] = min(pu[0], int(ts)); pu[1] = max(pu[1], int(ts))
                     # el dominio que venia en la alerta: ese es el sospechoso, no todo
                     # lo que el abonado consulta. Mezclarlos deja una lista de google y
                     # facebook donde deberia estar el dominio del malware
@@ -13360,7 +13412,9 @@ def conducta_recolectar(dias=CONDUCTA_DIAS, pid=None):
                       "destinos_n": len(d["destinos"]), "puertos_n": len(d["puertos"]),
                       "destinos": _cd_top(d["destinos"]), "puertos": _cd_top(d["puertos"]),
                       "firmas": _cd_top(d["firmas"]), "dominios": _cd_top(d["dominios"]),
-                      "malos": _cd_top(d["malos"])})
+                      "malos": _cd_top(d["malos"]),
+                      "firmas_ts": {k: v for k, v in d["fts"].items() if k in d["firmas"]},
+                      "firmas_dia": {}})
     filas.sort(key=lambda f: (-f["alertas"], -f["eventos"]))
     return {"generado": int(time.time()), "dias": dias, "lineas": leidos,
             "cpes": len(filas), "filas": filas}
@@ -13480,6 +13534,26 @@ def conducta_categoria(f):
         if suyas & set(cats):
             return cat
     return CAT_OTROS[0]
+
+def conducta_cuando(f, cat=None):
+    """(desde, hasta, aproximado) de la categoria del abonado en el periodo: la primera y la
+    ultima vez que se vio una firma de esa categoria. `aproximado`: solo se sabe el dia (datos
+    de antes de guardar la hora). (None, None, False) si no hay con que decirlo."""
+    cat = cat or conducta_categoria(f)
+    cats = next((set(c) for k, _n, c, _l in CAT_CPE if k == cat), None)
+    def suya(fir):
+        return cats is None or traducir(fir) in cats
+    ts = [v for fir, v in (f.get("firmas_ts") or {}).items() if suya(fir)]
+    dias = [d for fir, d in (f.get("firmas_dia") or {}).items() if suya(fir)]
+    if ts:
+        return min(v[0] for v in ts), max(v[1] for v in ts), False
+    if dias:
+        try:
+            t = time.mktime(time.strptime(min(dias), "%Y-%m-%d"))
+        except ValueError:
+            return None, None, False
+        return int(t), None, True
+    return None, None, False
 
 _CD_CSS = """<style>
 /* Informe de conducta. Reglas que se siguen aqui, no por gusto:
@@ -13848,7 +13922,6 @@ function cdCerrarAuto(){
 }
 window.addEventListener('beforeprint', cdAbrirTodo);
 window.addEventListener('afterprint', cdCerrarAuto);
-function cdPdf(){ cdAbrirTodo(); window.print(); }
 </script>"""
 
 # --- Glosario ----------------------------------------------------------------------
@@ -14006,6 +14079,69 @@ def _cd_por(n):
         return CONDUCTA_POR_PAGINA
     return n if n in CONDUCTA_OPCIONES else CONDUCTA_POR_PAGINA
 
+INFORME_DIAS = (1, 3, 7, 30)        # periodos que se pueden pedir (el historial guarda 30 dias)
+
+def informe_datos(dias, usuario=""):
+    """Lo que dibuja informe_pdf.generar: quien esta en cada categoria, cuando cayo en ella
+    (primera y ultima alerta real de esa categoria en el periodo) y que hizo. Del nodo que se
+    mira, o de todos en «Todos». Mismos datos y criterio que la pestana Reporte."""
+    dias = dias if dias in INFORME_DIAS else CONDUCTA_DIAS
+    ahora = time.time()
+    filas = hist_conducta(dias).get("filas", [])
+    mapa = cargar_abonados().get("mapa") or {}
+    orden = [c for c, _n, _cs, _l in CAT_CPE] + [CAT_OTROS[0]]
+    cats = []
+    for cat in orden:
+        abon = []
+        for f in filas:
+            if conducta_categoria(f) != cat:
+                continue
+            desde, hasta, aprox = conducta_cuando(f, cat)
+            firmas = []
+            for fir, n in f.get("firmas") or []:
+                t = (f.get("firmas_ts") or {}).get(fir)
+                if t:
+                    firmas.append([traducir(fir), fir, n, t[0], t[1], False])
+                else:                                   # dato viejo: solo el dia
+                    d_ = (f.get("firmas_dia") or {}).get(fir)
+                    try:
+                        t0 = int(time.mktime(time.strptime(d_, "%Y-%m-%d"))) if d_ else None
+                    except ValueError:
+                        t0 = None
+                    firmas.append([traducir(fir), fir, n, t0, None, True])
+            acts = _cd_agrupa(f.get("firmas"), traducir, n=1)
+            abon.append({"ip": f["ip"], "cliente": (abonado_de(f["ip"], f.get("nodo", ""), mapa) or {}).get("nombre", ""),
+                         "nodo": nodos.nombre(f["nodo"]) if f.get("nodo") else "",
+                         "desde": desde, "hasta": hasta or f.get("ultima"), "aprox": aprox,
+                         "alertas": f["alertas"], "dias": f.get("dias", 0),
+                         "repetido": acts[0][0] if acts else "", "firmas": firmas,
+                         "destinos": f.get("destinos") or [], "puertos": f.get("puertos") or [],
+                         "malos": f.get("malos") or []})
+        g = CONDUCTA_GUIA.get(cat, ("", "", "#5b6675", ""))
+        cats.append({"clave": cat, "nombre": nombre_categoria(cat), "que_es": g[0],
+                     "que_hacer": g[1], "color": g[2], "gravedad": g[3], "abonados": abon})
+    cortar = sum(len(c["abonados"]) for c in cats if c["clave"] in ("botnet", "escaneo", "fuerza"))
+    return {"empresa": cargar_empresa().get("nombre", ""),
+            "nodo": nodos.nombre(nodos.nodo_actual()) if nodos.hay_nodo() else "",
+            "desde": ahora - dias * 86400, "hasta": ahora, "dias": dias, "generado": ahora,
+            "usuario": usuario, "zona": TZ_EC,
+            "totales": {"abonados": len(filas), "alertas": sum(f["alertas"] for f in filas),
+                        "cortar": cortar},
+            "categorias": cats,
+            "metodologia": [
+                "Fuente: las alertas de Suricata de cada punto, guardadas en el historial del panel "
+                "(30 días). Solo entran tus abonados (las redes de cada punto), nunca IPs de internet.",
+                "No cuenta como alerta el ruido informativo (firmas ET INFO) ni lo que no es abuso: "
+                "videollamadas, chequeos de conectividad, anomalías de protocolo, User-Agents raros. "
+                "El P2P sí cuenta, en su propia categoría. Un abonado sin alertas reales no aparece.",
+                "Cada abonado va en UNA categoría: la más grave que tenga (botnet, DNS de malware, "
+                "escaneo, fuerza bruta, spam, minado, P2P). «Cayó en la categoría» es la primera "
+                "alerta de esa categoría dentro del período; «Última vez», la última.",
+                "Cuando solo se conoce el día (datos guardados antes de que el panel registrara la "
+                "hora), la fecha sale marcada como aproximada.",
+                "El nombre del cliente sale del MikroTik del punto (PPPoE activo o lease DHCP) cuando "
+                "se conoce."]}
+
 def _nodo_oculto():
     """<input hidden name=nodo> con el nodo que se mira, para los formularios GET de una pagina."""
     if not nodos.hay_nodo():
@@ -14158,8 +14294,13 @@ def conducta_page(q="", msg="", pag=1, por=None, es_operador=True):
                 "<input type=hidden name=n value='%d'>%s"
                 "<input name=q value='%s' placeholder='filtrar por IP o firma'>"
                 "<button class=b>Filtrar</button></form>"
-                "<button class='b pri' type=button onclick='cdPdf()'>Generar reporte</button>"
-                "</div>" % (por, _nodo_oculto(), esc(q)))
+                "<form class=busca method=get action='/informe.pdf'>%s"
+                "<select name=dias title='Periodo del informe'>%s</select>"
+                "<button class='b pri'>Generar informe PDF</button></form>"
+                "</div>" % (por, _nodo_oculto(), esc(q), _nodo_oculto(),
+                            "".join("<option value=%d%s>%s</option>" % (
+                                d_, " selected" if d_ == CONDUCTA_DIAS else "",
+                                "1 dia" if d_ == 1 else "%d dias" % d_) for d_ in INFORME_DIAS)))
     cab = ("<div class=card><h2>Informe de %d dias &mdash; conducta por abonado</h2>"
            "<p class=per>Del %s al %s &middot; generado hace %d min &middot; %s lineas de log</p>"
            "<div class=tiles>"
@@ -16364,6 +16505,27 @@ class H(BaseHTTPRequestHandler):
                                             pag=_pg,
                                             por=_qc.get("n", [""])[0],
                                             es_operador=self._operador()))
+        if path == "/informe.pdf":
+            # el informe de verdad (el user, 2026-10-13): antes «Generar reporte» solo imprimia
+            # la pagina. reportlab va en la imagen (python3-reportlab de Debian); sin el se dice
+            _qi = _up.parse_qs(self.path.split("?", 1)[1]) if "?" in self.path else {}
+            try:
+                _di = int(_qi.get("dias", [str(CONDUCTA_DIAS)])[0])
+            except (ValueError, TypeError):
+                _di = CONDUCTA_DIAS
+            if informe_pdf is None:
+                return self._html("<p>Falta reportlab para generar el PDF.</p>", code=503)
+            cuerpo = informe_pdf.generar(informe_datos(_di, getattr(CTX, "user", "") or ""))
+            _nom = "informe-%s-%dd-%s.pdf" % ("todos" if nodos.es_todos() else re.sub(r"[^a-z0-9]", "", nodos.nodo_actual()),
+                                              _di if _di in INFORME_DIAS else CONDUCTA_DIAS,
+                                              time.strftime("%Y%m%d-%H%M"))
+            self.send_response(200)
+            self.send_header("Content-Type", "application/pdf")
+            self.send_header("Content-Disposition", "attachment; filename=" + _nom)
+            self.send_header("Content-Length", str(len(cuerpo)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers(); self.wfile.write(cuerpo)
+            return
         if path == "/historico":
             _qh = _up.parse_qs(self.path.split("?", 1)[1]) if "?" in self.path else {}
             try:

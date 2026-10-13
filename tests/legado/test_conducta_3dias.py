@@ -41,7 +41,7 @@ PIEZAS = ("CONDUCTA_FILE", "CONDUCTA_DIAS", "CONDUCTA_TOPE", "CONDUCTA_MAX",
           "conducta_recolectar", "conducta_csv", "guardar_conducta", "cargar_conducta",
           "_TRAD", "_TRAD_CACHE", "_TRAD_CACHE_MAX", "_traducir_lento", "traducir", "CAT_CPE", "CAT_OTROS", "nombre_categoria",
           "CONDUCTA_GUIA", "conducta_categoria", "_CD_COLORES", "conducta_barras",
-          "CD_NO_CUENTA", "cd_es_ruido", "_cd_firmas_reales",
+          "CD_NO_CUENTA", "cd_es_ruido", "_cd_firmas_reales", "INFORME_DIAS",
           "PUERTO_NOMBRE", "nombre_puerto", "_cd_agrupa", "_cd_minibarras",
           "_CD_CSS", "_CD_JS", "_CD_AZUL", "conducta_page", "_cd_doc",
           "CONDUCTA_POR_PAGINA", "CONDUCTA_OPCIONES", "_cd_por", "conducta_paginador",
@@ -335,15 +335,17 @@ def main():
           ns["_CD_CSS"].split(".inf{")[1].split("}")[0][-90:])
 
     # --- PDF ---------------------------------------------------------------------
-    check("hay boton para generar el reporte", "cdPdf()" in pag, "")
-    check("el boton se llama Generar reporte, no Guardar en PDF",
-          ">Generar reporte</button>" in pag and ">Guardar en PDF<" not in pag, "")
+    # adaptada (el user, 2026-10-13): «Generar reporte» solo imprimia la pagina; ahora descarga
+    # el informe PDF del servidor (/informe.pdf, test_informe_pdf.py) con periodo elegible
+    check("hay boton para generar el informe PDF",
+          "action='/informe.pdf'" in pag and ">Generar informe PDF</button>" in pag, "")
+    check("y ya no manda a imprimir la pagina", "cdPdf()" not in pag, "")
     # "Regenerar" solo adelantaba el refresco que el hilo de fondo hace igual cada 6 h:
     # un boton que nadie sabia para que servia.
     check("ya no hay boton Regenerar",
           "Regenerar" not in pag and "/conducta/refrescar" not in pag, "")
     check("los dos controles van juntos a la derecha, el filtro primero",
-          pag.find("class=busca") < pag.find("cdPdf()"), "")
+          0 <= pag.find("class=busca") < pag.find("action='/informe.pdf'"), "")
     # "cuantos veo" y "como paso al resto" son la misma pregunta: van juntos, al final.
     _arriba = pag[:pag.rfind("<div class=pager id=pgbar>")]
     _abajo = pag[pag.rfind("<div class=pager id=pgbar>"):]
@@ -356,8 +358,8 @@ def main():
     # sacar 600 abonados de una vez sigue haciendo falta
     check("el CSV ya no ocupa sitio en la barra",
           "/conducta.csv" not in pag, "")
-    check("antes de imprimir se abre lo plegado: en papel no se puede desplegar",
-          "d.open = true" in ns["_CD_JS"] and "window.print()" in ns["_CD_JS"])
+    check("si se imprime la pagina (Ctrl+P) se abre lo plegado: en papel no se puede desplegar",
+          "d.open = true" in ns["_CD_JS"])
     # Con Ctrl+P no se pasa por el boton. Sin engancharse a beforeprint, las fichas
     # salian vacias, que es exactamente como se veia el PDF.
     check("tambien al imprimir con Ctrl+P, no solo desde el boton",

@@ -16,6 +16,8 @@ env:
   # PyYAML real para validar la sintaxis de los workflows y del compose renderizado (auditoría
   # B-01): sus pruebas son obligatorias (tests/obligatorias.txt), así que aquí no pueden omitirse
   PYYAML_CI: "6.0.2"
+  # informe PDF del panel (en la imagen es python3-reportlab de Debian)
+  REPORTLAB_CI: "4.4.4"
 
 jobs:
   lint:
@@ -68,7 +70,7 @@ jobs:
           sudo apt-get install -y -qq --no-install-recommends fail2ban logrotate openssl >/dev/null
       - name: cryptography para secretos.py (en la imagen es python3-cryptography de Debian) y PyYAML
         run: |
-          python -m pip install --quiet --only-binary=:all: "cryptography==${CRYPTOGRAPHY_CI}" "pyyaml==${PYYAML_CI}"
+          python -m pip install --quiet --only-binary=:all: "cryptography==${CRYPTOGRAPHY_CI}" "pyyaml==${PYYAML_CI}" "reportlab==${REPORTLAB_CI}"
       - name: tests/run.sh (resultados y omisiones con su motivo en el resumen del job)
         env:
           IDS_OBLIGATORIAS: linux
@@ -87,7 +89,7 @@ jobs:
           python-version: "3.12"
       - name: cryptography para secretos.py y PyYAML
         run: |
-          python -m pip install --quiet --only-binary=:all: "cryptography==${CRYPTOGRAPHY_CI}" "pyyaml==${PYYAML_CI}"
+          python -m pip install --quiet --only-binary=:all: "cryptography==${CRYPTOGRAPHY_CI}" "pyyaml==${PYYAML_CI}" "reportlab==${REPORTLAB_CI}"
       - name: tests/run.sh (Git Bash; resultados y omisiones con su motivo en el resumen del job)
         env:
           IDS_OBLIGATORIAS: windows
@@ -105,7 +107,7 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq --no-install-recommends fail2ban logrotate openssl >/dev/null
-          python -m pip install --quiet --only-binary=:all: "cryptography==${CRYPTOGRAPHY_CI}" "pyyaml==${PYYAML_CI}"
+          python -m pip install --quiet --only-binary=:all: "cryptography==${CRYPTOGRAPHY_CI}" "pyyaml==${PYYAML_CI}" "reportlab==${REPORTLAB_CI}"
       - name: build de las imágenes (sin publicar)
         run: |
           bash images/build.sh vpn ci

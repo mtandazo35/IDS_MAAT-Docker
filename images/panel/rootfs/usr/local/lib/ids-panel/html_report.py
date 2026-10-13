@@ -505,11 +505,13 @@ _TRAD = [
     (("tor exit", "tor node", "tor "), "Red Tor"),
     (("katana",), "Botnet Katana"),
     (("mirai",), "Botnet Mirai"),
+    # antes que «checkin»: «ET POLICY Cryptocurrency Miner Checkin» (firma real de ET Open) salia
+    # «Botnet CnC» y un minero se acusaba de botnet (visto en el informe PDF, 2026-10-13)
+    (("coinmin", "cryptomin", "miner"), "Criptomineria"),
     (("cnc", "c2 ", "command and control", "checkin", "check-in"), "Botnet CnC"),
     (("botnet",), "Botnet"),
     (("ransom",), "Ransomware"),
     (("trojan",), "Troyano"),
-    (("coinmin", "cryptomin", "miner"), "Criptomineria"),
     (("ssh scan",), "Escaneo SSH"),
     (("brute", "password"), "Fuerza bruta"),
     # Sin esta linea, traducir() nunca producia "Spam": la categoria de CPE 'spam', su

@@ -103,5 +103,40 @@ class ReporteSinRuido(unittest.TestCase):
         self.assertEqual(set(self.d.CD_NO_CUENTA), no_abuso - {"BitTorrent / P2P"})
 
 
+class CuandoCayo(ReporteSinRuido):
+    """Capacidad nueva (el user, 2026-10-13): el informe dice CUANDO cayo cada cliente en su
+    categoria: la primera y la ultima alerta real de esa categoria en el periodo."""
+
+    def test_desde_la_primera_alerta_de_su_categoria(self):
+        import time
+        ahora = time.time()
+        for via, rep in self.informes().items():
+            with self.subTest(via=via):
+                f = next(x for x in rep["filas"] if x["ip"] == INFECTADO)
+                desde, hasta, aprox = self.d.conducta_cuando(f)
+                # las Mirai van de hace 64 s a hace 60 s; el ruido (ET INFO) no mueve la fecha
+                self.assertFalse(aprox)
+                self.assertAlmostEqual(desde, ahora - 64, delta=3)
+                self.assertAlmostEqual(hasta, ahora - 60, delta=3)
+
+    def test_datos_viejos_sin_hora_dan_el_dia_aproximado(self):
+        """Lo ingerido antes de existir firma_ts solo tiene el dia: sale ese dia, marcado."""
+        import time
+        with self.n.contexto("p001"):
+            self.d.hist_ingerir()
+            c = self.d._hist_con("p001")
+            try:
+                c.execute("DELETE FROM firma_ts")
+                c.commit()
+            finally:
+                c.close()
+            f = next(x for x in self.d.hist_conducta()["filas"] if x["ip"] == INFECTADO)
+        desde, hasta, aprox = self.d.conducta_cuando(f)
+        self.assertTrue(aprox)
+        self.assertIsNone(hasta)
+        self.assertEqual(time.strftime("%Y-%m-%d", time.localtime(desde)),
+                         time.strftime("%Y-%m-%d", time.localtime(time.time() - 64)))
+
+
 if __name__ == "__main__":
     unittest.main()
