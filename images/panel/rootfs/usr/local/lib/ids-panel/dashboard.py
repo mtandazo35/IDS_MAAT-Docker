@@ -1547,6 +1547,91 @@ def _mk_quitar_en(s, ip, lst):
             return (False, "%d entrada(s) de %s siguen en %s%s" % (
                 len(quedan), ip, lst, (" (%s)" % errores[0][:120]) if errores else ""))
     return (True, f"{len(ids)} entrada(s) quitada(s) de {lst}")
+
+# --- Pausa de un router que no responde (solo tareas de FONDO) -----------------------------
+# Cada intento contra un router caido cuesta una conexion de hasta ~6 s (y antes una por IP),
+# y las tareas de fondo de TODOS los puntos van en serie en el mismo hilo: un MikroTik caido
+# retrasaba el barrido y las politicas de los demas. Tras MK_PAUSA_FALLOS fallos de conexion
+# seguidos, las tareas de fondo de ese punto no lo intentan durante una espera que crece
+# (base, doble, cuadruple... hasta el tope); el primer exito la levanta. Las acciones
+# MANUALES no miran la pausa: el operador ve el error al momento, y si conectan la levantan.
+MK_PAUSA_FALLOS = 3
+MK_PAUSA_BASE = 120        # s de la primera pausa
+MK_PAUSA_TOPE = 1800       # s como mucho
+_MK_PAUSA = {}             # pid -> {"fallos", "hasta", "desde", "error"}
+_MK_PAUSA_LOCK = threading.Lock()
+
+def mk_pausa(pid):
+    """None si las tareas de fondo pueden hablar con el router de ese punto; si esta en pausa,
+    {"restante": s, "fallos": n, "error": ultimo error de conexion}."""
+    with _MK_PAUSA_LOCK:
+        e = _MK_PAUSA.get(pid)
+        if not e:
+            return None
+        resta = e.get("hasta", 0.0) - time.time()
+        if resta <= 0:
+            return None
+        return {"restante": int(resta) + 1, "fallos": e["fallos"], "error": e["error"]}
+
+def _mk_conexion_fallida(pid, ex):
+    """Apunta un fallo de conexion con el router del punto. Desde MK_PAUSA_FALLOS seguidos pone
+    (o alarga) la pausa. La bitacora lo dice UNA vez, al entrar en pausa: las prorrogas solo
+    van al log del contenedor, para no llenarla con una linea por vuelta."""
+    if not pid:
+        return
+    with _MK_PAUSA_LOCK:
+        e = _MK_PAUSA.setdefault(pid, {"fallos": 0, "hasta": 0.0, "desde": 0.0, "error": ""})
+        e["fallos"] += 1
+        e["error"] = str(ex)[:160]
+        if e["fallos"] < MK_PAUSA_FALLOS:
+            return
+        espera = min(MK_PAUSA_TOPE, MK_PAUSA_BASE * 2 ** min(e["fallos"] - MK_PAUSA_FALLOS, 12))
+        e["hasta"] = time.time() + espera
+        nueva = not e["desde"]
+        if nueva:
+            e["desde"] = time.time()
+        fallos, err = e["fallos"], e["error"]
+    sys.stderr.write("mikrotik %s: %d fallos de conexion seguidos; tareas de fondo en pausa %d s (%s)\n"
+                     % (pid, fallos, espera, err))
+    if nueva:
+        bitacora("MK-PAUSA", "%s: %d fallos de conexion seguidos con su MikroTik (%s); las tareas "
+                 "de fondo no lo intentan durante %d min, y despues con espera creciente hasta "
+                 "que responda (las acciones manuales si lo intentan)"
+                 % (pid, fallos, err, max(1, espera // 60)), quien="panel")
+
+def _mk_conexion_ok(pid):
+    """El router conecto: se olvida la cuenta de fallos y, si estaba en pausa, se dice una vez."""
+    with _MK_PAUSA_LOCK:
+        e = _MK_PAUSA.pop(pid, None)
+    if e and e.get("desde"):
+        bitacora("MK-PAUSA-FIN", "%s: su MikroTik vuelve a responder tras %d fallo(s) de conexion; "
+                 "las tareas de fondo siguen" % (pid, e["fallos"]), quien="panel")
+
+def _mk_tanda(router, trabajo, fondo=True):
+    """Corre trabajo(s, d) con UNA conexion al router (mk_sesion) y lleva la cuenta de la pausa.
+
+    True si el trabajo corrio entero. False si no se pudo hablar con el router (punto en baja,
+    pausa de fondo, no conecta) o si la conexion se corto a medias: lo que el trabajo no llego
+    a confirmar no se apunta y se reintenta en la vuelta siguiente. Tras una excepcion en medio
+    de la tanda no se sigue por la misma conexion (no se sabe que respuesta queda por leer).
+    Con fondo=False (accion del operador) no se mira la pausa."""
+    pid = (router or {}).get("id", "")
+    if fondo and mk_pausa(pid):
+        return False
+    conectado = False
+    try:
+        with mk_sesion(router) as (s, d):
+            conectado = True
+            _mk_conexion_ok(pid)
+            trabajo(s, d)
+    except PuntoEnBaja:
+        return False
+    except Exception as ex:
+        if isinstance(ex, OSError):        # TLS, login, timeout, conexion rota: el router no responde
+            _mk_conexion_fallida(pid, ex)
+        sys.stderr.write("tanda mikrotik %s (%s): %s\n" % (pid, "a medias" if conectado else "sin conexion", ex))
+        return False
+    return True
 # =====================================================================================
 # Politicas de ACCION por categoria: las reglas que usan cada address-list, puestas en
 # el router POR LA API.
@@ -2434,6 +2519,7 @@ def reconciliar_cuarentena(pid=None):
     data = _cargar_cuarentena(pid)
     if not data:
         return                                 # sin reporte de este punto no se libera a nadie
+    pendientes = []                            # (registro, clave, lista) a quitar del router
     for cand_key, sent_path, list_key in (("candidatos", MK_SENT, "LIST"),
                                           ("dns_candidatos", MK_SENT_DNS, "LIST_DNS")):
         # El registro va por identidad (router, IP); los candidatos traen la IP y su nodo
@@ -2441,7 +2527,6 @@ def reconciliar_cuarentena(pid=None):
         # de un sensor con varios routers.
         activas = {clave_cpe(c.get("ip", ""), c.get("router", "") or pid) for c in data.get(cand_key, [])}
         env = cargar_enviados(sent_path)
-        liberadas = []
         for k in list(env.keys()):
             if rid_de(k) != pid:
                 continue                       # de otro punto: no es asunto de este ciclo
@@ -2452,18 +2537,27 @@ def reconciliar_cuarentena(pid=None):
             # de la lista donde se puso DE VERDAD (la de su categoria, guardada al mandarla), no
             # la vieja unica; y solo se suelta si el router confirma (auditoria A-05)
             lst = (env[k] or {}).get("lista") or m.get(list_key, "")
-            if not lst:
-                continue
-            try:
-                ok_r, _err = mk_remove(ip_de(k), lista=lst, router=r)   # dejo de atacar -> liberar
-            except Exception:
-                continue                       # si el router no responde, reintenta el proximo ciclo
-            if not ok_r:
-                continue
-            liberadas.append(k)
-            mk_log("AUTO-LIBERADO", ip_de(k), "auto", f"lista={lst} (dejo de atacar)" + _suf_nodo(k))
-        if liberadas:
-            quitar_enviados(liberadas, sent_path)   # relee dentro del cerrojo: no pisa lo de otros hilos
+            if lst:
+                pendientes.append((sent_path, k, lst))
+    if not pendientes:
+        return                                 # nada que liberar: ni se abre conexion
+    liberadas = []
+
+    def _quitar(s, _d):
+        # una conexion para toda la tanda (antes TLS + login por IP); dejo de atacar -> liberar
+        for sent_path, k, lst in pendientes:
+            ok_r, _err = _mk_quitar_en(s, ip_de(k), lst)
+            if ok_r:                           # sin confirmacion del router se queda (A-05)
+                liberadas.append((sent_path, k, lst))
+    _mk_tanda(r, _quitar)                      # si el router no responde, reintenta el proximo ciclo
+    for sent_path in (MK_SENT, MK_SENT_DNS):
+        suyas = []
+        for sp, k, lst in liberadas:
+            if sp == sent_path:
+                suyas.append(k)
+                mk_log("AUTO-LIBERADO", ip_de(k), "auto", f"lista={lst} (dejo de atacar)" + _suf_nodo(k))
+        if suyas:
+            quitar_enviados(suyas, sent_path)   # relee dentro del cerrojo: no pisa lo de otros hilos
 def mk_lista_en_uso(lista, router=None):
     """True si alguna regla del firewall referencia esa address-list.
 
@@ -3100,10 +3194,21 @@ def guardar_diagnostico():
         if not (r.get("USER") and r.get("PASS") and r.get("ENABLED") == "1"):
             continue
         rid = r.get("id", "")
+        pausa = mk_pausa(rid)
+        if pausa:
+            # router en pausa por fallos de conexion: no se gastan aqui otros ~6 s por router
+            # que retrasarian a los demas puntos; se dice por que no hay diagnostico
+            out[rid] = {"ts": int(time.time()), "error": (
+                "sin conexion con el MikroTik (%d fallos seguidos: %s); se reintenta en %d min"
+                % (pausa["fallos"], pausa["error"], max(1, pausa["restante"] // 60)))[:240]}
+            continue
         try:
             out[rid] = {"ts": int(time.time()), "checks": mk_diagnostico(r)}
+            _mk_conexion_ok(rid)
         except Exception as ex:
             out[rid] = {"ts": int(time.time()), "error": str(ex)[:140]}
+            if isinstance(ex, OSError):        # no conecta (TLS, login, timeout): cuenta para la pausa
+                _mk_conexion_fallida(rid, ex)
     try:
         tmp = "%s.%d.tmp" % (DIAG_FILE, os.getpid())
         with open(tmp, "w", encoding="utf-8") as f:
@@ -3952,9 +4057,9 @@ def excluir_destino(d):
                     cand_dst[clave_cpe(c.get("ip", ""), c.get("router", "") or pid)] = c.get("destinos_ip", [])
                 except ValueError:
                     continue
+    por_router = {}                                # pid -> (router, [(registro, clave, lista)])
     for list_key, sent_path in (("LIST", MK_SENT), ("LIST_DNS", MK_SENT_DNS)):
         env = cargar_enviados(sent_path)
-        sueltas = []
         for k in list(env.keys()):
             dips = (env[k].get("motivo") or {}).get("destinos_ip") or cand_dst.get(k) or []
             if d in dips:                          # 2) atribuible a ese destino -> liberar
@@ -3968,17 +4073,27 @@ def excluir_destino(d):
                 # liberado: el CPE seguiria bloqueado y fuera del panel (auditoria A-05, A-20)
                 if not (lst and mk_listo(dr)):
                     continue
-                try:
-                    ok_r, _err = mk_remove(ip_de(k), lista=lst, router=r)
-                except Exception:
-                    continue                       # no se pudo: se queda registrada, como en el router
-                if not ok_r:
-                    continue
-                sueltas.append(k); liberados += 1
-                mk_log("LIBERADO-FALSO-POSITIVO", ip_de(k), getattr(CTX, "user", "?"),
-                       f"destino={d} lista={lst}" + _suf_nodo(k))
-        if sueltas:
-            quitar_enviados(sueltas, sent_path)
+                por_router.setdefault(rid_de(k), (r, []))[1].append((sent_path, k, lst))
+    sueltas = []                                   # (registro, clave, lista) que el router confirmo
+    for _rid, (r, pendientes) in por_router.items():
+        def _quitar(s, _dm, pendientes=pendientes):
+            for sent_path, k, lst in pendientes:
+                ok_r, _err = _mk_quitar_en(s, ip_de(k), lst)
+                if ok_r:                           # si no, se queda registrada, como en el router
+                    sueltas.append((sent_path, k, lst))
+        # UNA conexion por router (antes TLS + login por CPE). Es accion del operador: la pausa
+        # de las tareas de fondo no la frena, y si el router conecta la levanta.
+        _mk_tanda(r, _quitar, fondo=False)
+    for sent_path in (MK_SENT, MK_SENT_DNS):
+        suyas = []
+        for sp, k, lst in sueltas:
+            if sp != sent_path:
+                continue
+            suyas.append(k); liberados += 1
+            mk_log("LIBERADO-FALSO-POSITIVO", ip_de(k), getattr(CTX, "user", "?"),
+                   f"destino={d} lista={lst}" + _suf_nodo(k))
+        if suyas:
+            quitar_enviados(suyas, sent_path)
     globals()["FORCE_REGEN"] = True                # 3) recalcular candidatos sin ese destino
     bitacora("EXCLUIR-DESTINO", f"{d} -> {liberados} CPE liberado(s)")
     return liberados, f"Destino {d} marcado confiable; {liberados} CPE liberado(s) por falso positivo."
@@ -4812,7 +4927,7 @@ def aplicar_politicas(pid=None):
                 pass
     # --- cuarentena: cada CPE a la lista de SU clase, en SU router ---
     env = cargar_enviados(MK_SENT)
-    nuevas = {}
+    a_enviar = []                      # (clave, riesgo, clase, lista)
     for k, (sc, cat) in deseado.items():
         if k in env:
             continue
@@ -4824,51 +4939,58 @@ def aplicar_politicas(pid=None):
             mk_log("POLITICA-EVIDENCIA-VIEJA", ip_de(k), "politica",
                    f"clase={cat} riesgo={sc} {ev['detalle']} (no se envia)" + _suf_nodo(k))
             continue
-        try:
-            ok, err = mk_add(ip_de(k), comment=f"suricata politica {cat} riesgo {sc} {time.strftime('%Y-%m-%d %H:%M')}",
-                             lista=lst, ttl="", router=r)
-        except Exception:
-            ok = False
-        if ok:
-            nuevas[k] = {"cuando": int(time.time()), "score": sc, "por": "politica", "manual": False, "pol": True,
-                         "router": pid, "categoria": cat, "lista": lst, "motivo": _motivo_bloqueo(k)}
-            notificar_cuarentena(k, "politica de clase %s" % cat, lst, quien="politica")
-            mk_log("POLITICA-ENVIADO", ip_de(k), "politica",
-                   f"lista={lst} clase={cat} riesgo={sc}" + _suf_nodo(k))
-    sueltas = []
+        a_enviar.append((k, sc, cat, lst))
+    a_quitar = []                      # (registro, clave, lista)
     for k in list(env.keys()):        # sacar los que entraron por politica y ya no califican
         if rid_de(k) != pid:
             continue                   # de otro punto: ni se mira
         if env[k].get("pol") and k not in deseado:
             # de la lista en la que ESTA (la guardada), no de la que le tocaria hoy
             lst = env[k].get("lista") or m.get("LIST", "")
-            if not lst:
-                continue
-            try:
-                mk_remove(ip_de(k), lista=lst, router=r)
-            except Exception:
-                continue
-            sueltas.append(k)
-            mk_log("POLITICA-LIBERADO", ip_de(k), "politica", f"lista={lst}" + _suf_nodo(k))
-    _registrar_enviados(MK_SENT, nuevas, sueltas)
+            if lst:
+                a_quitar.append((MK_SENT, k, lst))
     # --- la lista DNS heredada: la accion 'dns' ya no existe (la clase DNS tiene su propia
     # lista), asi que lo que entro por politica ahi se libera y no vuelve a entrar ---
     envd = cargar_enviados(MK_SENT_DNS)
-    sueltas_d = []
     for k in list(envd.keys()):
         if rid_de(k) != pid:
             continue
         if envd[k].get("pol"):
             lst = envd[k].get("lista") or m.get("LIST_DNS", "")
-            if not lst:
-                continue
-            try:
-                mk_remove(ip_de(k), lista=lst, router=r)
-            except Exception:
-                continue
-            sueltas_d.append(k)
-            mk_log("POLITICA-LIBERADO", ip_de(k), "politica", f"lista={lst}" + _suf_nodo(k))
-    _registrar_enviados(MK_SENT_DNS, {}, sueltas_d)
+            if lst:
+                a_quitar.append((MK_SENT_DNS, k, lst))
+    enviadas, quitadas = [], []
+    if a_enviar or a_quitar:
+        def _tanda(s, _d):
+            # UNA conexion para toda la tanda (antes TLS + login por cada IP)
+            for k, sc, cat, lst in a_enviar:
+                ok, _err = _mk_add_en(s, ip_de(k), lst, "",
+                                      f"suricata politica {cat} riesgo {sc} {time.strftime('%Y-%m-%d %H:%M')}")
+                if ok:
+                    enviadas.append((k, sc, cat, lst))
+            for sent_path, k, lst in a_quitar:
+                # solo se da por liberada si el router lo confirma (auditoria A-05): antes se
+                # sacaba del registro aunque siguiera en la lista, y el CPE quedaba cortado y
+                # fuera del panel. Sin confirmacion se queda y se reintenta la vuelta siguiente.
+                ok_r, _err = _mk_quitar_en(s, ip_de(k), lst)
+                if ok_r:
+                    quitadas.append((sent_path, k, lst))
+        _mk_tanda(r, _tanda)           # router caido o en pausa: todo sigue pendiente
+    nuevas = {}
+    for k, sc, cat, lst in enviadas:
+        nuevas[k] = {"cuando": int(time.time()), "score": sc, "por": "politica", "manual": False, "pol": True,
+                     "router": pid, "categoria": cat, "lista": lst, "motivo": _motivo_bloqueo(k)}
+        try: notificar_cuarentena(k, "politica de clase %s" % cat, lst, quien="politica")
+        except Exception: pass         # un aviso que falla no puede dejar la alta sin registrar
+        mk_log("POLITICA-ENVIADO", ip_de(k), "politica",
+               f"lista={lst} clase={cat} riesgo={sc}" + _suf_nodo(k))
+    for sent_path in (MK_SENT, MK_SENT_DNS):
+        sueltas = []
+        for sp, k, lst in quitadas:
+            if sp == sent_path:
+                sueltas.append(k)
+                mk_log("POLITICA-LIBERADO", ip_de(k), "politica", f"lista={lst}" + _suf_nodo(k))
+        _registrar_enviados(sent_path, nuevas if sent_path == MK_SENT else {}, sueltas)
 
 def _registrar_enviados(path, nuevas, sueltas, pisar=False):
     """Anota altas y bajas en el registro RELEYENDOLO dentro del cerrojo: entre que se
@@ -5039,6 +5161,8 @@ def barrido_alto_rapido(pid=None, maxbytes=4_000_000):
     # nivel (la confirmacion ya es la prueba; la banda no hace falta esperarla)
     if politica_de_clase("botnet", m) not in _POL_UMBRAL:
         return
+    if mk_pausa(pid):
+        return                       # su router no responde: ni se lee la cola (ver MK_PAUSA_FALLOS)
     lines = _cola_eventos(nodos.eve_vivo(pid), maxbytes)
     if not lines:
         return
@@ -5094,26 +5218,36 @@ def barrido_alto_rapido(pid=None, maxbytes=4_000_000):
         if hits[src] >= _FAST_UMBRAL or len(sids[src]) >= 2:
             motivos[src] = "infeccion confirmada (%d alertas CnC, %d firmas)" % (
                 hits[src], len(sids[src]))
+    a_enviar = []                                # (clave, clase, lista)
     for src in motivos:
         if src in env or ahora - _FAST_LAST.get(src, 0) < 60:
             continue                             # ya en la lista, o anti-rebote 60s
         _FAST_LAST[src] = ahora
-        _r = r_pid
         try:
             _cat = categoria_cpe(src)
             lst = lista_de_categoria(_cat)      # cada categoria, a su lista
-            ok, _err = mk_add(ip_de(src), comment=f"suricata ALTO inmediato {time.strftime('%Y-%m-%d %H:%M')}",
-                              lista=lst, ttl="", router=_r)
         except Exception:
-            ok = False
-        if ok:
-            nuevas[src] = {"cuando": int(ahora), "score": "", "por": "politica-rapida", "manual": False,
-                           "pol": True, "router": pid, "categoria": _cat, "lista": lst,
-                           "motivo": _motivo_bloqueo(src)}
-            try: notificar_cuarentena(src, "ALTO (envio inmediato)", lst, quien="politica-rapida")
-            except Exception: pass
-            mk_log("POLITICA-RAPIDA", ip_de(src), "politica",
-                   f"lista={lst} {motivos.get(src, '')}" + _suf_nodo(src))
+            continue
+        a_enviar.append((src, _cat, lst))
+    enviadas = []
+    if a_enviar:
+        def _tanda(s, d):
+            # UNA conexion para todos los de esta vuelta (antes TLS + login por cada IP)
+            for src, _cat, lst in a_enviar:
+                lst = lst or d.get("LIST", "suricata-cuarentena")   # lo que hacia mk_add sin lista
+                ok, _err = _mk_add_en(s, ip_de(src), lst, "",
+                                      f"suricata ALTO inmediato {time.strftime('%Y-%m-%d %H:%M')}")
+                if ok:
+                    enviadas.append((src, _cat, lst))
+        _mk_tanda(r_pid, _tanda)
+    for src, _cat, lst in enviadas:
+        nuevas[src] = {"cuando": int(ahora), "score": "", "por": "politica-rapida", "manual": False,
+                       "pol": True, "router": pid, "categoria": _cat, "lista": lst,
+                       "motivo": _motivo_bloqueo(src)}
+        try: notificar_cuarentena(src, "ALTO (envio inmediato)", lst, quien="politica-rapida")
+        except Exception: pass
+        mk_log("POLITICA-RAPIDA", ip_de(src), "politica",
+               f"lista={lst} {motivos.get(src, '')}" + _suf_nodo(src))
     _registrar_enviados(MK_SENT, nuevas, [])
     # limpiar anti-rebote viejo para no crecer sin fin
     for k in [k for k, v in _FAST_LAST.items() if ahora - v > 3600]:

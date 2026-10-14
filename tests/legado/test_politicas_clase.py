@@ -14,6 +14,7 @@ Lo que se protege:
     POL_<CLASE> ignorando valores que no sean de la lista.
 """
 import ast
+import contextlib
 import json
 import os
 import sys
@@ -109,10 +110,16 @@ def main():
                      # (nuevo, §3) uno de OTRO punto que tampoco esta en el Top de p001
                      "p002|10.0.0.98": {"pol": True, "lista": "lista-otro", "router": "p002"}},
             "dns": {}}
-    def mk_add(ip, comment="", lista="", ttl="", router=None):
+    # (adaptada, 2026-10-14) la tanda usa UNA conexion por router (mk_sesion + _mk_add_en /
+    # _mk_quitar_en) en vez de mk_add/mk_remove por IP; los dobles hacen lo mismo que antes
+    conexiones = []
+    @contextlib.contextmanager
+    def mk_sesion(router):
+        conexiones.append(router["id"]); yield object(), {"LIST": "heredada"}
+    def _mk_add_en(s, ip, lista, tt="", comment=""):
         anadidos.append((ip, lista)); return True, ""
-    def mk_remove(ip, lista="", router=None):
-        quitados.append((ip, lista)); return True
+    def _mk_quitar_en(s, ip, lista):
+        quitados.append((ip, lista)); return True, "1 entrada(s) quitada(s)"
     def cargar_enviados(path):
         return dict(envs["sent"] if path == "SENT" else envs["dns"])
     def guardar_enviados(env, path):
@@ -124,7 +131,9 @@ def main():
              "evidencia_reciente": lambda k, cq=None: (
                  {"ok": False, "detalle": "ultima alerta hace 3 dias"} if k.endswith("|10.0.0.11")
                  else {"ok": True, "detalle": ""}),
-             "lista_de_categoria": lambda c: "clientes-" + c, "mk_add": mk_add, "mk_remove": mk_remove,
+             "lista_de_categoria": lambda c: "clientes-" + c, "mk_sesion": mk_sesion,
+             "_mk_add_en": _mk_add_en, "_mk_quitar_en": _mk_quitar_en, "sys": sys,
+             "bitacora": lambda *a, **k: None,
              "cargar_enviados": cargar_enviados, "guardar_enviados": guardar_enviados,
              "MK_SENT": "SENT", "MK_SENT_DNS": "DNS", "_motivo_bloqueo": lambda k: {},
              "notificar_cuarentena": lambda *a, **k: None,
@@ -132,7 +141,11 @@ def main():
     ns2 = piezas(BASE + ("aplicar_politicas", "clave_cpe", "ip_de", "rid_de", "_suf_nodo", "mk_listo",
                          "_registrar_enviados", "_ENV_LOCK", "cuarentena_json", "_cargar_cuarentena",
                          # F1 (auditoria A-15): las bajas del registro quedan fechadas
-                         "_marcar_quitada", "_QUITADAS_TS"),
+                         "_marcar_quitada", "_QUITADAS_TS",
+                         # (adaptada, 2026-10-14) la tanda de una conexion y la pausa de routers caidos
+                         "_mk_tanda", "mk_pausa", "_mk_conexion_ok", "_mk_conexion_fallida",
+                         "_MK_PAUSA", "_MK_PAUSA_LOCK", "MK_PAUSA_FALLOS", "MK_PAUSA_BASE",
+                         "MK_PAUSA_TOPE", "PuntoEnBaja"),
                  extra)
     ns2["aplicar_politicas"]("p001")
     check("la botnet ALTA va a la lista de SU clase, no a la heredada",
@@ -148,6 +161,8 @@ def main():
     check("el que ya no califica sale de la lista GUARDADA, no de la de hoy",
           ("10.0.0.99", "lista-vieja") in quitados and "p001|10.0.0.99" not in envs["sent"], quitados)
     check("nadie va a la lista heredada", not any(l == "heredada" for _ip, l in anadidos), anadidos)
+    # (nuevo, 2026-10-14) altas y bajas de la vuelta van por UNA sola conexion al router del punto
+    check("una sola conexion para toda la tanda, al router del punto", conexiones == ["p001"], conexiones)
     # (nuevo, CONTRATO-F2 §3) corre por punto: lo de otro punto ni entra ni sale
     check("un CPE del Top marcado de otro punto no se envia desde este",
           not any(ip == "10.0.0.12" for ip, _l in anadidos), anadidos)
