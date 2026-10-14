@@ -29,8 +29,9 @@ ARBOL = ast.parse(DASH)
 TMP = tempfile.TemporaryDirectory()
 
 # + _router_destino y sensor_del_punto REALES (CONTRATO-F2 §3/§4)
+# + _mk_reglas_usan_lista (2026-10-14): la comprobacion de «la lista corta» en las cuatro tablas
 PIEZAS = ("_mk_print", "mk_diagnostico", "ros_lista", "_RE_ROS_RARO", "ACCIONES", "CAT_CPE", "CAT_OTROS",
-          "_router_destino", "sensor_del_punto")
+          "_router_destino", "sensor_del_punto", "_mk_reglas_usan_lista")
 R1 = {"id": "p001"}     # el router del punto p001 (sensor 100.64.1.1, TZSP 37008 en _comun.PUNTOS)
 # el espejo del punto (OPERACION §2): dos reglas mangle sniff-tzsp (ida y vuelta) hacia su sensor
 ESPEJO_P001 = [{"action": "sniff-tzsp", "sniff-target": "100.64.1.1", "sniff-target-port": "37008",
@@ -96,23 +97,22 @@ def main():
     check("y se avisa de que la lista de cuarentena no corta nada",
           any(e == "falta" and "cuarentena NO corta" in t for e, t, _d, _f in c), txt)
     fix = [f for _e, t, _d, f in c if "cuarentena NO corta" in t][0]
-    check("con la regla exacta para arreglarlo",
-          "src-address-list=suricata-cuarentena" in fix and "action=drop" in fix, fix)
+    # (adaptada, 2026-10-14) el arreglo ya no es un drop suelto en filter, que duplicaba la
+    # plantilla del panel y quedaba fuera de su gestion: remite a Ajustes -> MikroTik
+    check("con el camino para arreglarlo (la plantilla del panel, no un drop suelto)",
+          "suricata-cuarentena" in fix and "Ver / aplicar en el router" in fix
+          and "action=drop" not in fix, fix)
     # --- una lista con espacios en el nombre -------------------------------------------
-    # "Cliente Virus" es un nombre real de un ISP. Sin comillas RouterOS corta el comando
-    # en el espacio: intenta usar la lista `Cliente` y se atraganta con `Virus`. O sea que
-    # justo la regla que el panel dice que hace falta para cortar de verdad es la unica que
-    # no se puede copiar, y el error del router no menciona el espacio por ningun lado.
+    # "Cliente Virus" es un nombre real de un ISP. (adaptada, 2026-10-14) Ya no se propone
+    # un comando para pegar, asi que el riesgo de partirlo en el espacio desaparece: basta
+    # con que el arreglo nombre la lista entera.
     ns2 = entorno({}, {"LIST": "Cliente Virus", "LIST_GRAD": "suricata-graduada"})
     c2 = ns2["mk_diagnostico"](R1)
     fix2 = [f for _e, t, _d, f in c2 if "cuarentena NO corta" in t][0]
-    check("una lista con espacios sale entrecomillada",
-          'src-address-list="Cliente Virus"' in fix2, fix2)
-    check("y no partida, que es lo que hacia fallar el comando",
-          "src-address-list=Cliente Virus" not in fix2, fix2)
-    # y el caso normal no se ensucia de comillas
-    check("un nombre sin espacios sigue sin comillas",
-          "src-address-list=suricata-graduada" in
+    check("una lista con espacios sale entera en el arreglo",
+          "'Cliente Virus'" in fix2, fix2)
+    check("y la graduada tambien remite a la plantilla",
+          "Ver / aplicar en el router" in
           [f for _e, t, _d, f in c2 if "graduada NO corta" in t][0], "")
 
     ros = ns2["ros_lista"]

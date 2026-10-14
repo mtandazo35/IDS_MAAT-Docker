@@ -2464,22 +2464,40 @@ def reconciliar_cuarentena(pid=None):
             mk_log("AUTO-LIBERADO", ip_de(k), "auto", f"lista={lst} (dejo de atacar)" + _suf_nodo(k))
         if liberadas:
             quitar_enviados(liberadas, sent_path)   # relee dentro del cerrojo: no pisa lo de otros hilos
+# Donde puede estar una regla que use una address-list: filter (lo que pega el ISP a mano)
+# y las tres que llenan las plantillas del panel (raw para cortar, nat para redirigir el DNS,
+# mangle para limitar). Mirar solo filter avisaba de «no corta nada» con la plantilla puesta.
+_MK_TABLAS_LISTA = ("/ip/firewall/filter", "/ip/firewall/raw", "/ip/firewall/nat", "/ip/firewall/mangle")
+
+def _mk_reglas_usan_lista(filas, lista):
+    """True si alguna de esas reglas, ACTIVA, usa la lista como origen o destino.
+
+    Una regla desactivada no corta nada aunque nombre la lista, y `!lista` (negada) casa
+    justo con lo que NO esta dentro: por eso se compara el valor exacto."""
+    if not lista:
+        return False
+    return any(f.get("disabled") != "true"
+               and lista in (f.get("src-address-list"), f.get("dst-address-list"))
+               for f in filas)
+
 def mk_lista_en_uso(lista, router=None):
-    """True si alguna regla del firewall referencia esa address-list.
+    """True si alguna regla activa del firewall (filter, raw, nat o mangle) usa esa address-list.
 
     Una address-list sin regla que la use no bloquea NADA: el panel diria "enviado" y el
     CPE seguiria atacando tan tranquilo. Es el fallo silencioso mas facil de cometer al
-    montar esto, asi que se comprueba y se avisa."""
+    montar esto, asi que se comprueba y se avisa. Si el router rechaza leer una tabla se
+    LANZA: con una tabla sin leer no se puede afirmar que la lista no se usa (quien llama
+    calla el aviso ante una excepcion, en vez de dar uno falso)."""
     d = cargar_mk_de(_router_destino(router))   # sin router no hay a quien preguntar (nada de "el de por defecto")
     s_ = mk_conectar(d)
     try:
-        _mk_send(s_, ["/ip/firewall/filter/print", "=.proplist=src-address-list"])
-        ok, frases, err = _mk_reply(s_)
-        for f in frases:
-            if f and f[0] == "!re":
-                for a in f:
-                    if a.startswith("=src-address-list=") and a.split("=", 2)[2] == lista:
-                        return True
+        for tabla in _MK_TABLAS_LISTA:
+            _mk_send(s_, [tabla + "/print", "=.proplist=src-address-list,dst-address-list,disabled"])
+            ok, frases, err = _mk_reply(s_)
+            if not ok:
+                raise IOError("el router no dejo leer %s: %s" % (tabla, err or "?"))
+            if _mk_reglas_usan_lista(_mk_re_dicts(frases), lista):
+                return True                    # con una basta: no hace falta leer el resto
         return False
     finally:
         try: s_.close()
@@ -3126,16 +3144,20 @@ def mk_diagnostico(router=None):
     d = cargar_mk_de(_router_destino(router))   # sin router no hay a quien preguntar (nada de "el de por defecto")
     s_ = mk_conectar(d)
     try:
+        # cada tabla UNA vez, con todo lo que se le mira despues: las listas pueden estar en
+        # las cuatro (las plantillas del panel usan raw, nat y mangle) y `disabled` hace falta
+        # en todas, porque una regla desactivada no corta nada
+        _l = ["src-address-list", "dst-address-list", "disabled"]
         filtros = _mk_print(s_, "/ip/firewall/filter/print",
-                            ["chain", "action", "src-address-list", "dst-port",
-                             "protocol", "psd", "disabled", "connection-limit"])
-        crudas = _mk_print(s_, "/ip/firewall/raw/print", ["action", "src-address-list"])
+                            ["chain", "action", "dst-port", "protocol", "psd",
+                             "connection-limit"] + _l)
+        crudas = _mk_print(s_, "/ip/firewall/raw/print", ["action"] + _l)
+        nats = _mk_print(s_, "/ip/firewall/nat/print", ["action"] + _l)
         ajustes = _mk_print(s_, "/ip/settings/print", ["rp-filter"])
         # el espejo del punto: mangle sniff-tzsp con el comentario del punto (OPERACION §2)
-        espejo = [f for f in _mk_print(s_, "/ip/firewall/mangle/print",
-                                       ["action", "sniff-target", "sniff-target-port",
-                                        "disabled", "comment"])
-                  if f.get("action") == "sniff-tzsp"]
+        mangles = _mk_print(s_, "/ip/firewall/mangle/print",
+                            ["action", "sniff-target", "sniff-target-port", "comment"] + _l)
+        espejo = [f for f in mangles if f.get("action") == "sniff-tzsp"]
         # 2b) la ACCION configurada por clase: aplicada en este router o le faltan cambios
         _acc_checks = []
         _m = _mk_globales()
@@ -3164,8 +3186,9 @@ def mk_diagnostico(router=None):
         except OSError: pass
 
     activos = [f for f in filtros if f.get("disabled") != "true"]
+    crudas = [f for f in crudas if f.get("disabled") != "true"]   # raw desactivada tampoco corta
     def usa_lista(nombre):
-        return any(f.get("src-address-list") == nombre for f in activos + crudas)
+        return _mk_reglas_usan_lista(filtros + crudas + nats + mangles, nombre)
 
     out = []
     # 1) sin espejo no hay nada que analizar
@@ -3188,21 +3211,31 @@ def mk_diagnostico(router=None):
     #    comprobaban solo LIST y LIST_GRAD, asi que avisaba de listas que no se usan y
     #    callaba sobre las que si. Solo se miran las que tienen a alguien dentro, para no
     #    llenar esto de avisos de listas vacias en una instalacion recien montada.
-    _por_cat = [(l, "categoria %s" % nom.lower())
+    #    El arreglo remite a la plantilla del panel (Ajustes -> MikroTik), que ya pone esas
+    #    reglas en raw/nat/mangle con su comentario y respaldo: antes se proponia un drop
+    #    suelto en filter que duplicaba la plantilla y que el panel no gestiona despues.
+    _por_cat = [(l, "categoria %s" % nom.lower(), nom)
                 for _c, nom, l, n in listas_en_uso([_pid] if _pid else None) if n]
-    for lista, que in ([(d.get("LIST", ""), "cuarentena"),
-                        (d.get("LIST_GRAD", ""), "cuarentena graduada")] + _por_cat):
+    for lista, que, clase in ([(d.get("LIST", ""), "cuarentena", ""),
+                               (d.get("LIST_GRAD", ""), "cuarentena graduada", "")] + _por_cat):
         if not lista:
             continue
         if usa_lista(lista):
-            out.append(("ok", f"La lista de {que} corta", f"Hay una regla usando '{lista}'.", ""))
+            out.append(("ok", f"La lista de {que} corta", f"Hay una regla activa usando '{lista}'.", ""))
         else:
+            if clase:
+                arreglo = ("Ajustes -> MikroTik -> " + clase + " -> elige la accion -> "
+                           "Ver / aplicar en el router")
+            else:
+                # LIST y LIST_GRAD no son de ninguna clase: no tienen plantilla propia, asi
+                # que se pegan como «Mis reglas» de una clase con el nombre de la lista
+                arreglo = ("Ajustes -> MikroTik -> 'Mis reglas' de una clase con "
+                           f"src-address-list='{lista}' -> Ver / aplicar en el router")
             out.append(("falta", f"La lista de {que} NO corta nada",
-                        f"El panel mete CPEs en '{lista}', pero ninguna regla del firewall la "
-                        "usa: el abonado sigue atacando y el panel dice 'enviado'.",
-                        f"/ip firewall filter add chain=forward "
-                        f"src-address-list={ros_lista(lista)} "
-                        f'action=drop comment="Suricata: {que}"'))
+                        f"El panel mete CPEs en '{lista}', pero ninguna regla activa del firewall "
+                        "(filter, raw, nat ni mangle) la usa: el abonado sigue atacando y el "
+                        "panel dice 'enviado'.",
+                        arreglo))
 
     out.extend(_acc_checks)        # 2b, en su sitio: tras las listas, antes del rp-filter
 
@@ -3239,16 +3272,17 @@ def mk_diagnostico(router=None):
                     "connection-state=new connection-limit=200,32 "
                     'action=drop comment="Suricata: tope de conexiones por abonado"'))
 
-    # 6) los drops masivos son mas baratos en raw (no pasan por conntrack)
+    # 6) los drops masivos son mas baratos en raw (no pasan por conntrack). Solo cuentan las
+    #    ACTIVAS, y el arreglo es la plantilla del panel (corta en raw prerouting), no un
+    #    drop suelto que la duplique.
     if crudas:
         out.append(("ok", "Hay reglas en raw", "Los cortes masivos no gastan conntrack.", ""))
     else:
         out.append(("aviso", "Los cortes van por filter, no por raw",
                     "Con muchas IPs en cuarentena conviene cortar en raw: se descarta antes "
-                    "de crear la conexion y la tabla de conntrack no se llena.",
-                    "/ip firewall raw add chain=prerouting "
-                    f"src-address-list={ros_lista(d.get('LIST', 'suricata-cuarentena'))} "
-                    'action=drop comment="Suricata: cortar antes de conntrack"'))
+                    "de crear la conexion y la tabla de conntrack no se llena. Las plantillas "
+                    "del panel ya cortan ahi.",
+                    "Ajustes -> MikroTik -> elige la accion de cada clase -> Ver / aplicar en el router"))
     return out
 
 def mk_list_ips(lista, router=None):
@@ -3285,27 +3319,82 @@ def _mk_re_dicts(frases):
             out.append(r)
     return out
 
+def _ips_de_target(target):
+    """Las IPs sueltas del `target` de una cola simple ("10.0.0.5/32,10.0.0.6").
+
+    Una cola que limita una red entera (/24) o una interfaz no dice de QUIEN es cada IP de
+    dentro: ponerle a todas el nombre de la cola seria inventarse el abonado."""
+    out = []
+    for t in (target or "").split(","):
+        t = t.strip()
+        if not t:
+            continue
+        try:
+            red = ipaddress.ip_network(t, strict=False)
+        except ValueError:
+            continue                                   # interfaz u otra cosa: no es una IP
+        if red.num_addresses == 1:
+            out.append(str(red.network_address))
+    return out
+
+def _mk_abon_leer(s, cmd, props):
+    """Filas de un print para el mapa de abonados; [] si el router lo rechaza.
+
+    Un !trap (el paquete hotspot que no esta instalado: «no such command prefix») solo deja
+    sin esa fuente: el resto del mapa se sigue armando. _mk_reply consume hasta el !done, asi
+    que la conexion queda lista para la siguiente consulta."""
+    _mk_send(s, [cmd, "=.proplist=" + ",".join(props)])
+    ok, frases, _e = _mk_reply(s)
+    return _mk_re_dicts(frases) if ok else []
+
 def mk_abonados(router=None):
-    """Consulta PPPoE activos + leases DHCP y arma {ip: {nombre, tipo, mac, extra}}."""
+    """Consulta el router y arma {ip: {nombre, tipo, mac, extra}}.
+
+    Fuentes, de mas a menos fiable (la primera que da una IP se la queda): PPPoE activos,
+    leases DHCP y, para los abonados con IP ESTATICA (que antes salian sin nombre), las colas
+    simples (nombre de la cola), los usuarios activos del hotspot y la tabla ARP (sin nombre:
+    solo que la IP existe, con su MAC e interfaz)."""
     d = cargar_mk_de(_router_destino(router))   # sin router no hay a quien preguntar (nada de "el de por defecto")
     s = mk_conectar(d)
     mapa = {}
     try:
-        _mk_send(s, ["/ppp/active/print", "=.proplist=name,address,caller-id,uptime"])
-        _ok, frases, _e = _mk_reply(s)
-        for r in _mk_re_dicts(frases):
+        for r in _mk_abon_leer(s, "/ppp/active/print", ["name", "address", "caller-id", "uptime"]):
             ip = r.get("address")
             if ip:
                 mapa[ip] = {"nombre": r.get("name", ""), "tipo": "PPPoE",
                             "mac": r.get("caller-id", ""), "extra": ("uptime " + r.get("uptime", "")).strip()}
-        _mk_send(s, ["/ip/dhcp-server/lease/print",
-                     "=.proplist=address,active-address,mac-address,host-name,comment,status"])
-        _ok, frases, _e = _mk_reply(s)
-        for r in _mk_re_dicts(frases):
+        for r in _mk_abon_leer(s, "/ip/dhcp-server/lease/print",
+                               ["address", "active-address", "mac-address", "host-name", "comment", "status"]):
             ip = r.get("active-address") or r.get("address")
             if ip and ip not in mapa:                      # PPPoE tiene prioridad
                 mapa[ip] = {"nombre": (r.get("comment") or r.get("host-name") or ""), "tipo": "DHCP",
                             "mac": r.get("mac-address", ""), "extra": r.get("status", "")}
+        # colas simples: el ISP con IP estatica suele llamar a la cola como al abonado. Las
+        # DINAMICAS las crean PPPoE y hotspot («hs-usuario», «<pppoe-x>»): su fuente ya da
+        # mejor nombre, asi que no se usan.
+        for r in _mk_abon_leer(s, "/queue/simple/print", ["name", "target", "max-limit", "dynamic"]):
+            if r.get("dynamic") == "true" or not r.get("name"):
+                continue
+            for ip in _ips_de_target(r.get("target")):
+                if ip not in mapa:
+                    mapa[ip] = {"nombre": r["name"], "tipo": "Cola",
+                                "mac": "", "extra": ("max-limit " + r.get("max-limit", "")).strip()}
+        for r in _mk_abon_leer(s, "/ip/hotspot/active/print", ["user", "address", "mac-address", "uptime"]):
+            ip = r.get("address")
+            if ip and ip not in mapa and r.get("user"):
+                mapa[ip] = {"nombre": r["user"], "tipo": "Hotspot",
+                            "mac": r.get("mac-address", ""), "extra": ("uptime " + r.get("uptime", "")).strip()}
+        # ARP: no da nombre, pero dice que la IP esta viva y con que MAC/interfaz. Completa la
+        # MAC de lo que salio de una cola (que no la trae) y apunta lo que no salio en nada.
+        # Sin MAC la entrada esta incompleta (nadie contesto): no prueba que exista.
+        for r in _mk_abon_leer(s, "/ip/arp/print", ["address", "mac-address", "interface"]):
+            ip, mac = r.get("address"), r.get("mac-address", "")
+            if not ip or not mac:
+                continue
+            if ip not in mapa:
+                mapa[ip] = {"nombre": "", "tipo": "ARP", "mac": mac, "extra": r.get("interface", "")}
+            elif mapa[ip]["tipo"] == "Cola" and not mapa[ip]["mac"]:
+                mapa[ip]["mac"] = mac
         return mapa
     finally:
         try: s.close()
