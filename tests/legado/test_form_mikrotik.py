@@ -81,8 +81,14 @@ def main():
     # --- las heredadas ya no se ensenan; los TTL si ---------------------------------------
     # Ningun envio nuevo va a LIST ni a LIST_DNS: ensenarlas como "la lista de cuarentena"
     # era prometer un destino y usar otro. Fuera del formulario.
-    h3 = ns["_card_listas"]({"LIST": "Cliente Virus", "LIST_DNS": "suricata-dns-sospechoso",
-                             "TTL": "2h", "TTL_DNS": "12h"})
+    # (adaptada, 2026-10-14) el TTL vive en cada router y Ajustes lo pone igual en todos: el
+    # campo enseña el que tienen los routers, no un TTL de MK_CONF (que nunca se guardaba ahi)
+    ns["cargar_routers"] = lambda: [{"id": "p001", "TTL": "2h", "TTL_DNS": "12h"},
+                                    {"id": "p002", "TTL": "2h", "TTL_DNS": "12h"}]
+    ns["nodos"] = type("N", (), {"hay_nodo": staticmethod(lambda: False),
+                                 "nodo_actual": staticmethod(lambda: "")})   # selector de router
+    h3 = ns["_card_listas"]({"LIST": "Cliente Virus", "LIST_DNS": "suricata-dns-sospechoso"})
+    ns["cargar_routers"] = lambda: []
     check("la lista de cuarentena heredada ya no esta en el formulario",
           "name=list " not in h3 and "name=list value" not in h3, h3[-400:])
     check("ni la de DNS heredada", "name=list_dns" not in h3, "")
@@ -97,9 +103,11 @@ def main():
     # (adaptada, CONTRATO-F2 §4) /routers/guardar desaparece: la ruta acaba en la siguiente
     ruta_mk = DASH[DASH.index('if ruta == "/mikrotik":'):]
     ruta_mk = ruta_mk[:ruta_mk.index('\n        if ruta == ', 10)]
+    # (adaptada, 2026-10-14) antes la ruta la ponia al defecto y la copiaba al router elegido;
+    # ahora no la toca: ni la escribe en m ni en ningun router
     check("al guardar, LIST se conserva aunque el formulario ya no la traiga",
-          'or m.get("LIST", "suricata-cuarentena")' in ruta_mk
-          or 'or "suricata-cuarentena"' in ruta_mk, "")
+          'm["LIST"]' not in ruta_mk and '_r["LIST"]' not in ruta_mk
+          and 'for _k in ("LIST", "TTL"' not in ruta_mk, "")
 
     # Telegram decia que el CPE fue a LIST cuando fue a la de su categoria
     env = DASH[DASH.index("if ruta == \"/cuarentena/enviar\":"):]
@@ -128,9 +136,11 @@ def main():
     # (adaptada, CONTRATO-F2 §4) ya no hay HOST ni puerto que guardar (el router se alcanza
     # por el rele unix de su punto); la conexion que queda (usuario, clave, enviar si/no) es
     # la del router del NODO del formulario y va a routers.json en el mismo envio
-    check("y la conexion y las listas se guardan en el mismo envio",
-          '_r["USER"]' in ruta and "guardar_routers(_rs)" in ruta and "lista_" in ruta
-          and 'm["HOST"]' not in ruta, "")
+    # (adaptada, 2026-10-14) la conexion (usuario, clave, enviar) ya no esta en Ajustes: es de
+    # la ficha del punto (/puntos/<pid>/api). Esta ruta solo guarda lo comun y el TTL de todos
+    check("y la conexion ya no se guarda aqui (es de la ficha del punto)",
+          '_r["USER"]' not in ruta and '_r["PASS"]' not in ruta and '_r["ENABLED"]' not in ruta
+          and "lista_" in ruta and 'm["HOST"]' not in ruta, "")
 
     # --- guardar de verdad: lo que la ruta mete en m tiene que llegar al archivo ----------
     # (2026-10-09: guardar_mk escribia una lista fija de claves y tiraba LISTA_* y POL_*;
@@ -181,8 +191,10 @@ def main():
           ["routers"]["p001"]["PASS"] not in ("", "p"), crudo)
 
     # --- la tarjeta ya no se llama 'cuarentena' a secas ---------------------------------
+    # (adaptada, 2026-10-14) la tarjeta es «MikroTik — cuarentena» y la conexion queda como un
+    # resumen por nodo con enlace a su ficha
     check("la tarjeta separa la conexion de lo demas",
-          "MikroTik &mdash; conexion" in DASH, "")
+          "Conexion de cada MikroTik" in DASH and "MikroTik &mdash; cuarentena" in DASH, "")
     check("y las listas tienen su propio apartado",
           "Listas por tipo de abuso" in DASH, "")
     check("que explica por que son distintas",
@@ -195,7 +207,7 @@ def main():
 
 class Legado(unittest.TestCase):
     def test_legado(self):
-        """Tipo: conservacion, adaptada (CONTRATO-F2 §4, §5, §10.3): sin HOST/puerto ni /routers/guardar; guardar_mk solo guarda lo global y la conexion del nodo del formulario va a routers.json (clave cifrada). El formulario del MikroTik: conexion por un lado, listas por tipo de abuso por otro."""
+        """Tipo: conservacion, adaptada (CONTRATO-F2 §4, §5, §10.3; 2026-10-14): sin HOST/puerto ni /routers/guardar; guardar_mk solo guarda lo global; la conexion de cada nodo es de la ficha del punto (routers.json, clave cifrada) y Ajustes pone el TTL en todos. El formulario del MikroTik: conexion por un lado, listas por tipo de abuso por otro."""
         _comun.correr_main(self, main)
 
 

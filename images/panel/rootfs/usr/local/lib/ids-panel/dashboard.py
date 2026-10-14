@@ -1210,6 +1210,8 @@ def router_por_id(rid):
 
 _MK_CONEXION = ("HOST", "PORT", "TLS", "USER", "PASS", "CERT_FP", "ENABLED",
                 "LIST", "TTL", "LIST_DNS", "TTL_DNS", "LIST_GRAD", "TTL_GRAD", "LIST_DST", "TTL_DST")
+# un timeout de address-list como lo escribe RouterOS: 30m, 1h, 1d12h, 1w, 00:30:00, 1d00:30:00
+RE_TTL_ROS = re.compile(r"^(?:(?:\d{1,5}[wdhms])+|(?:\d{1,5}d)?\d{1,2}:\d{2}:\d{2})\Z")
 
 def guardar_mk(d):
     """Guarda los ajustes GLOBALES en MK_CONF. Lo de la conexion (host, usuario, clave,
@@ -9512,6 +9514,18 @@ def _card_listas(m):
     esc = html.escape
     filas = ""
     routers = cargar_routers()
+
+    # El TTL vive en cada router (routers.json) y Ajustes lo pone igual en todos. Se enseña el
+    # que tienen: antes salia siempre el defecto (1h / 1d) aunque el router tuviera otro.
+    def _ttl_de_todos(clave, defecto):
+        vals = [(r.get("id", ""), r.get(clave, defecto)) for r in routers]
+        if len({v for _p, v in vals}) <= 1:
+            return (vals[0][1] if vals else defecto), ""
+        return vals[0][1], ("<div class=hint>Ahora no es igual en todos los nodos (%s); al guardar "
+                            "quedara el de este campo en todos.</div>"
+                            % esc(" · ".join("%s: %s" % (p, v or "permanente") for p, v in vals)))
+    ttl, ttl_aviso = _ttl_de_todos("TTL", "1h")
+    ttl_dns, dns_aviso = _ttl_de_todos("TTL_DNS", "1d")
     for cat, nom, _cats, por_defecto in CAT_CPE + [CAT_OTROS]:
         # el nombre por defecto va CARGADO en el campo (editable), no solo como pista: el
         # usuario queria ver y poder cambiar el nombre real, no un gris que no se guarda
@@ -9669,17 +9683,17 @@ def _card_listas(m):
         "esto vuelve a cargar las IPs que el panel tiene en cuarentena. Las que ya estan se omiten.</div></div>"
         "<h3 style='margin:18px 0 2px;font-size:15px'>Caducidad</h3>"
         "<p class=sub2 style='margin:0 0 10px'>Cuanto dura cada entrada en el router si no "
-        "se mantiene sola. Vale para todas las listas de arriba.</p>"
+        "se mantiene sola. Vale para todas las listas de arriba y para <b>todos los nodos</b>.</p>"
         "<div class=grid2>"
         "<div class=field><label>TTL cuarentena (timeout)</label>"
-        "<input type=text name=ttl value=\"%s\" placeholder='1h, 30m, 1d (vacio = permanente)'></div>"
+        "<input type=text name=ttl value=\"%s\" placeholder='1h, 30m, 1d (vacio = permanente)'>%s</div>"
         "<div class=field><label>TTL DNS sospechoso (timeout)</label>"
-        "<input type=text name=ttl_dns value=\"%s\" placeholder='1d, 12h (vacio = permanente)'></div>"
+        "<input type=text name=ttl_dns value=\"%s\" placeholder='1d, 12h (vacio = permanente)'>%s</div>"
         "</div>"
         # LIST y LIST_DNS ya no se enseñan: ningun envio nuevo va ahi. La clave se conserva
         # en el .conf porque sigue sirviendo para liberar entradas anteriores al enrutado
         # por categoria, para el diagnostico y como guardia; se edita a mano si hace falta.
-        % (esc(m.get("TTL", "1h")), esc(m.get("TTL_DNS", "1d"))))
+        % (esc(ttl), ttl_aviso, esc(ttl_dns), dns_aviso))
 
 def _card_politicas(m):
     """Sub-bloque de la tarjeta MikroTik: politica por CLASE de abuso."""
@@ -10024,45 +10038,44 @@ def perfil_page(msg="", ok=False, edit_user=None):
     card_mk = ""
     if es_admin and yo:
         m = cargar_mk()
-        # la conexion es por punto (el router del nodo elegido aqui, por el tunel); listas,
-        # acciones y politicas son globales. Sin HOST ni puerto: el router se alcanza por el
-        # rele API-SSL de su punto, que da de alta el apartado Puntos.
+        # Aqui solo lo COMUN a todos los nodos (listas, acciones, caducidad, politicas). La
+        # conexion de cada MikroTik (usuario y clave de la API, permitir enviar, huella) esta en
+        # la ficha de su punto. Antes tambien habia aqui un formulario de conexion: los mismos
+        # campos que la ficha, y al guardar copiaba la lista y el TTL globales al router elegido
+        # (el user, 2026-10-14: «por que esta si ya tenemos en puntos»).
         rs_mk = [r for r in cargar_routers() if nodos.pid_valido(r.get("id", ""))]
-        r0 = rs_mk[0] if rs_mk else {}
-        tiene_pass = bool(r0.get("PASS"))
-        en = r0.get("ENABLED") == "1"
-        opts_mk = "".join(
-            f"<option value='{esc(r.get('id', ''))}' data-user=\"{esc(r.get('USER', ''))}\" "
-            f"data-pass='{'1' if r.get('PASS') else ''}' data-en='{esc(r.get('ENABLED', '0'))}'>"
-            f"{esc(r.get('nombre') or r.get('id', ''))} ({esc(r.get('id', ''))})</option>" for r in rs_mk)
+
+        def _fila_cx(r):
+            pid = r.get("id", "")
+            if r.get("USER") and r.get("PASS"):
+                api = "<span class='mkcx-ok'>configurada</span> <span class=mkcx-u>(%s)</span>" % esc(r["USER"])
+            else:
+                api = "<span class='mkcx-no'>falta usuario o clave</span>"
+            env = ("<span class='mkcx-ok'>si</span>" if r.get("ENABLED") == "1"
+                   else "<span class=mkcx-u>no (solo sugerencias)</span>")
+            return ("<tr><td><b>%s</b> <span class=mkcx-u>%s</span></td><td>%s</td><td>%s</td>"
+                    "<td style='text-align:right'><a href='/puntos/%s#api'>Configurar en Puntos &rarr;</a></td></tr>"
+                    % (esc(r.get("nombre") or pid), esc(pid), api, env, esc(pid)))
         conexion_mk = (
-            "<div class=grid2>"
-            "<div class=field><label>Nodo (MikroTik)</label>"
-            f"<select name=nodo id=mknodo onchange='mknodo(this)'>{opts_mk}</select>"
-            "<div class=hint>La conexion va por el tunel del punto (API-SSL). El alta del router, su "
-            "VPN y su espejo estan en <a href='/puntos'>Puntos</a>.</div></div>"
-            f"<div class=field><label>Usuario API</label>"
-            f"<input id=mkuser type=text name=user value=\"{esc(r0.get('USER',''))}\" autocomplete=off></div>"
-            f"<div class=field><label>Clave API <span id=mkpassok style=color:#3a9d5d>{'(guardada)' if tiene_pass else ''}</span></label>"
-            "<input id=mkpass type=password name=pass autocomplete=new-password placeholder='"
-            + ("dejar vacio para conservar" if tiene_pass else "clave del usuario API") + "'></div>"
-            "</div>"
-            "<div class=field><label class=chk>"
-            f"<input id=mken type=checkbox name=enabled value=1 {'checked' if en else ''}> "
-            "Permitir enviar IPs a este MikroTik</label>"
-            "<div class=hint>Activado: aparece el boton para poner CPEs en cuarentena (el panel escribe en el router). "
-            "Apagado: la pestana Cuarentena solo muestra sugerencias y no toca ese MikroTik.</div></div>"
+            "<h3 style='margin:4px 0 6px;font-size:15px'>Conexion de cada MikroTik</h3>"
+            "<style>.mkcx{width:100%;border-collapse:collapse;font-size:13px;margin-bottom:6px}"
+            ".mkcx th{text-align:left;font-weight:600;color:#52514e;border-bottom:1px solid #e5e8ec;padding:6px 8px}"
+            ".mkcx td{border-bottom:1px solid #eef0f3;padding:7px 8px}.mkcx-ok{color:#1a7f37;font-weight:600}"
+            ".mkcx-no{color:#b26a00;font-weight:600}.mkcx-u{color:#6b6a66}</style>"
+            "<table class=mkcx><tr><th>Nodo</th><th>API</th><th>Enviar IPs al router</th><th></th></tr>"
+            + "".join(_fila_cx(r) for r in rs_mk) + "</table>"
+            "<div class=hint>El usuario y la clave de la API, el permiso para enviar IPs, la prueba de "
+            "conexion y la huella del certificado estan en la ficha de cada punto (apartado <b>API</b>).</div>"
         ) if rs_mk else (
             "<p class=sub2><b>Todavia no hay puntos.</b> Da de alta el primer MikroTik en "
-            "<a href='/puntos'>Puntos</a>; despues su conexion se configura aqui o en su ficha.</p>")
+            "<a href='/puntos'>Puntos</a>; su conexion (API) se configura en su ficha.</p>")
         card_mk = (
-            "<section class=card><h2>MikroTik &mdash; conexion</h2>"
-            "<p class=sub2>Conexion por <b>API</b> para enviar las IPs de CPEs infectados a una "
-            "<b>address-list</b> del MikroTik. El MikroTik decide que hacer con esa lista (drop, limitar) "
-            "con <b>tus</b> reglas de firewall. La clave se guarda cifrada con la clave maestra del servidor "
-            "y no se vuelve a mostrar.</p>"
+            "<section class=card><h2>MikroTik &mdash; cuarentena</h2>"
+            "<p class=sub2>Listas, acciones, caducidad y politicas de la cuarentena, <b>comunes a todos "
+            "los nodos</b>. El panel pone cada CPE infectado en la <b>address-list</b> de su categoria y "
+            "la accion que elijas abajo decide que hace el router con esa lista.</p>"
+            + conexion_mk +
             "<form method=post action='/mikrotik'>"
-            + conexion_mk
             + _card_listas(m) +
             "<div class=field><label class=chk>"
             f"<input type=checkbox name=auto value=1 {'checked' if m.get('AUTO_MANTENER') == '1' else ''}> "
@@ -10083,10 +10096,11 @@ def perfil_page(msg="", ok=False, edit_user=None):
             + _card_politicas(m) +
             "<div class=actions>"
             "<button class=primary type=submit>Guardar</button>"
-            "<button class=cancelbtn type=button onclick=\"mktest(this)\">Probar conexion</button>"
             "</div></form>"
+            # la ventana de espera/resultado de las acciones de reglas (_accBox: ver plan, aplicar,
+            # quitar, recargar listas, verificar)
             "<div id=mkwait class=mkwait onmousedown=\"this._dn=event.target\" onclick=\"if(event.target===this&&this._dn===this){this.style.display='none'}\">"
-            "<div class=mkbox><div class=mkspin></div><div><b>Probando conexion&hellip;</b></div></div></div>"
+            "<div class=mkbox><div class=mkspin></div><div><b>Un momento&hellip;</b></div></div></div>"
             "<style>.mkwait{display:none;position:fixed;inset:0;background:rgba(11,11,11,.5);z-index:100;"
             "align-items:center;justify-content:center}"
             ".mkwait .mkbox{background:#fff;border-radius:14px;padding:24px 28px;display:flex;align-items:center;gap:16px;"
@@ -10094,25 +10108,6 @@ def perfil_page(msg="", ok=False, edit_user=None):
             ".mkwait .mkspin{width:30px;height:30px;flex:0 0 auto;border:3px solid #e7e6e2;border-top-color:#2a78d6;"
             "border-radius:50%;animation:mkspin .8s linear infinite}"
             "@keyframes mkspin{to{transform:rotate(360deg)}}</style>"
-            "<script>function mknodo(s){var o=s.options[s.selectedIndex];if(!o)return;"
-            "document.getElementById('mkuser').value=o.getAttribute('data-user')||'';"
-            "document.getElementById('mkpass').value='';"
-            "document.getElementById('mkpassok').textContent=o.getAttribute('data-pass')?'(guardada)':'';"
-            "document.getElementById('mken').checked=o.getAttribute('data-en')==='1';}"
-            "function mkclose(){document.getElementById('mkwait').style.display='none';}"
-            "function mktest(btn){var f=btn.form,mo=document.getElementById('mkwait'),bx=mo.querySelector('.mkbox');"
-            "bx.innerHTML=\"<div class='mkspin'></div><div><b>Probando conexion&hellip;</b><br><span style='color:#52514e;font-size:13px'>Espera unos segundos.</span></div>\";"
-            "mo.style.display='flex';"
-            "var d=new URLSearchParams(new FormData(f));d.set('ajax','1');"
-            "fetch('/mikrotik/test',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:d.toString()})"
-            ".then(function(r){return r.text();}).then(function(t){var ok=t.indexOf('OK')===0;"
-            "var msg=t.replace(/^OK /,'').replace(/^ERR: /,'').replace(/</g,'&lt;');"
-            "bx.innerHTML=\"<div style='font-size:30px;line-height:1'>\"+(ok?'\\u2705':'\\u26D4')+\"</div>\"+"
-            "\"<div><b>\"+(ok?'Conexion OK':'No conecto')+\"</b><br>\"+"
-            "\"<span style='color:#52514e;font-size:13px'>\"+msg+\"</span><br>\"+"
-            "\"<button type=button class=cancelbtn style='margin-top:12px' onclick='mkclose()'>Cerrar</button></div>\";})"
-            ".catch(function(e){bx.innerHTML=\"<div><b>Error</b><br>\"+e+"
-            "\"<br><button type=button class=cancelbtn style='margin-top:10px' onclick='mkclose()'>Cerrar</button></div>\";});}</script>"
             "</section>")
     # --- tarjeta: gestion de usuarios estilo tabla (solo admin) ---
     # Rehecha (el user, 2026-10-13): sin columna ID, nombre y usuario en una celda, correo solo si
@@ -11349,7 +11344,8 @@ internet</td><td><code>src-address-list</code> + <code>connection-state=new</cod
 </table>
 <p>Las tres primeras contienen <b>IPs de tus abonados</b>; las dos ultimas, <b>IPs publicas de
 terceros</b> &mdash; y ninguna de esas dos acepta una IP tuya, ni privada ni publica. Cada lista
-tiene su nombre y su TTL configurables <b>por nodo</b> en <b>Ajustes &rarr; MikroTik</b>, y cada una
+tiene su nombre configurable en <b>Ajustes &rarr; MikroTik</b> (la caducidad tambien esta ahi y vale
+para <b>todos los nodos</b>), y cada una
 lleva su propio registro en el panel, asi que quitar algo de una no toca las demas.</p>
 <p>El TTL de los destinos es mas largo (7 d) a proposito: un servidor de control no deja de serlo en
 una hora, y ahi no hay ningun abonado esperando a que se le devuelva el servicio.</p>
@@ -11513,7 +11509,7 @@ tunel. La API no se abre a internet ni a tu LAN.</p>
 
 <h3>2) La clave del usuario API</h3>
 <p>La eliges tu (<code>&lt;CLAVE-API&gt;</code> en los comandos) y la pones en la ficha del punto
-(<b>API</b>) o en <b>Ajustes &rarr; MikroTik</b> eligiendo el nodo. Se guarda cifrada con la clave
+(apartado <b>API</b>). Se guarda cifrada con la clave
 maestra del servidor y no se vuelve a mostrar.</p>
 
 <h3>3) La regla que DECIDE que hacer con la lista (tu la defines)</h3>
@@ -11527,8 +11523,9 @@ con el boton <b>Quitar</b> de la pestana.</p>
 
 <h3>4) Configurar y probar en el panel</h3>
 <ol>
-<li><b>Ficha del punto &rarr; API</b> (o <b>Ajustes &rarr; MikroTik</b> con el nodo elegido): usuario,
-clave y <b>Permitir enviar</b>. Los nombres de las address-list y el TTL estan en Ajustes &rarr; MikroTik.</li>
+<li><b>Puntos &rarr; ficha del punto &rarr; API</b>: usuario, clave y <b>Permitir enviar</b>. Lo comun a
+todos los nodos (nombres de las address-list, acciones, caducidad y politicas) esta en Ajustes &rarr; MikroTik,
+que ademas resume la conexion de cada nodo.</li>
 <li>Pulsa <b>Probar conexion</b>: si conecta, muestra el nombre (identity) del router. La primera vez
 se fija la huella de su certificado; si un dia cambia, la conexion se rechaza hasta que lo revises.</li>
 <li>En <b>Cuarentena</b>, cada CPE infectado confirmado muestra <b>Enviar a cuarentena</b>
@@ -15714,7 +15711,7 @@ def cuarentena_page(msg="", es_admin=False):
                   "y pulsa <b>Probar conexion</b>. Hasta entonces esta pestana no envia nada.</div>")
     else:
         estado = ("<div class='banner'><b>Modo sugerencia (dry-run).</b> No se envia nada al MikroTik. "
-                  "Para activar el envio, configura y marca <b>Permitir enviar</b> en <b>Ajustes &rarr; MikroTik</b>.</div>")
+                  "Para activar el envio, configura la API y marca <b>Permitir enviar</b> en <b>Puntos</b> (ficha &rarr; API).</div>")
     flash = aviso_modal(msg, "info")
     css = ("<style>" + BASE_CSS +
            # solo lo propio de Cuarentena (lo comun ya viene de BASE_CSS)
@@ -16993,18 +16990,27 @@ class H(BaseHTTPRequestHandler):
             if not self._admin():
                 return self._prohibido()
             m = cargar_mk()
-            # La conexion es del router del NODO del formulario (validado; nunca el del selector
-            # ni uno "por defecto"), sin HOST ni puerto: se alcanza por el rele de su punto. Lo
-            # demas del formulario (listas, acciones, politicas) es global.
-            _rid = (q.get("nodo", [""])[0]).strip()
-            if _rid and _router_de_pid(_rid) is None:
-                return self._html(perfil_page("Ese nodo no existe: no se guardo nada.", ok=False), 400)
-            for _k in ("HOST", "PORT", "TLS", "USER", "PASS", "CERT_FP"):
+            # Solo lo comun a todos los nodos. La conexion de cada router (usuario, clave, enviar)
+            # es de la ficha de su punto (POST /puntos/<pid>/api): aqui ya no llega ni se toca,
+            # aunque un formulario viejo mande nodo/user/pass/enabled. Tampoco el nombre LIST /
+            # LIST_DNS de cada router, que este formulario nunca enseño y antes pisaba con el
+            # defecto (2026-10-14).
+            for _k in _MK_CONEXION:
                 m.pop(_k, None)        # la conexion no va en la configuracion global
-            m["LIST"] = (q.get("list", [""])[0]).strip()[:64] or "suricata-cuarentena"
-            m["TTL"] = (q.get("ttl", [""])[0]).strip()[:16]
-            m["LIST_DNS"] = (q.get("list_dns", [""])[0]).strip()[:64] or "suricata-dns-sospechoso"
-            m["TTL_DNS"] = (q.get("ttl_dns", [""])[0]).strip()[:16]
+            # TTL: el mismo en TODOS los routers (vive en cada uno). Vacio = permanente. El cuerpo
+            # se relee con keep_blank_values: `q` descarta los campos vacios, y por eso un TTL
+            # vacio nunca llegaba y «vacio = permanente» no se cumplia.
+            _qv = urllib.parse.parse_qs(body, keep_blank_values=True)
+            _ttls = {}
+            for _campo, _clave, _nom_t in (("ttl", "TTL", "TTL cuarentena"), ("ttl_dns", "TTL_DNS", "TTL DNS sospechoso")):
+                if _campo not in _qv:  # sin el campo (otro formulario) no se cambia
+                    continue
+                _v = (_qv[_campo][0] or "").strip()
+                if _v and not RE_TTL_ROS.match(_v):
+                    return self._html(perfil_page(
+                        "%s: «%s» no es un tiempo de RouterOS (ej. 30m, 1h, 1d, 1d12h; vacio = "
+                        "permanente). No se guardo nada." % (_nom_t, _v[:20]), ok=False), 400)
+                _ttls[_clave] = _v
             # Las listas por categoria. Vacio = se borra la clave y vuelve el nombre por
             # defecto; asi se puede deshacer un cambio sin tener que recordar cual era.
             _err_reglas = []; _av_reglas = []
@@ -17051,45 +17057,32 @@ class H(BaseHTTPRequestHandler):
                 if _v in POL_CLASE_VALORES:
                     m["POL_" + _cat.upper()] = _v
             m["POL_AUTO"] = "1" if q.get("pol_auto") else "0"
-            if _rid and q.get("pass", [""])[0] and not secretos.disponible():
-                # la clave de la API va cifrada: sin clave maestra no se guarda NADA (antes se
-                # escribia la configuracion global y despues reventaba con un 500: B-04)
-                bitacora("CONFIG-MIKROTIK", "punto=%s no guardada (sin clave maestra)" % _rid)
-                return self._html(perfil_page("No se guardo: falta la clave maestra del panel (/run/secrets/master_key), y una clave nunca se guarda en claro. Revisa el montaje de la clave maestra y vuelve a intentarlo.", ok=False))
             try:
                 guardar_mk(m)
-                if _rid:
+                if _ttls:
                     _rs = cargar_routers()
                     for _r in _rs:
-                        if _r.get("id") != _rid:
-                            continue
-                        _r["USER"] = (q.get("user", [""])[0]).strip()[:64]
-                        _np = q.get("pass", [""])[0]
-                        if _np:                     # vacio = conservar; guardar_routers la cifra
-                            _r["PASS"] = _np
-                        _r["ENABLED"] = "1" if q.get("enabled") else "0"
-                        for _k in ("LIST", "TTL", "LIST_DNS", "TTL_DNS"):
-                            if m.get(_k):
-                                _r[_k] = m[_k]
-                    guardar_routers(_rs)
+                        _r.update(_ttls)
+                    if _rs:
+                        guardar_routers(_rs)     # la clave de cada router se conserva tal cual
             except secretos.SecretoNoDisponible:
-                bitacora("CONFIG-MIKROTIK", "punto=%s no guardada (sin clave maestra)" % (_rid or "-"))
-                return self._html(perfil_page("No se guardo: falta la clave maestra del panel (/run/secrets/master_key), y una clave nunca se guarda en claro. Revisa el montaje de la clave maestra y vuelve a intentarlo.", ok=False))
+                bitacora("CONFIG-MIKROTIK", "ttl no guardado (sin clave maestra)")
+                return self._html(perfil_page("No se guardo el TTL: falta la clave maestra del panel (/run/secrets/master_key) para reescribir los routers, y una clave nunca se guarda en claro. Revisa el montaje de la clave maestra y vuelve a intentarlo.", ok=False))
             except OSError as ex:
                 return self._html(perfil_page(f"No se pudo guardar: {ex}", ok=False))
             conf_dash_set("DOBLE_SENAL", "1" if q.get("doble") else "0")   # doble senal (lo lee el generador)
             guardar_nunca(q.get("nunca", [""])[0])                         # allowlist 'nunca bloquear'
-            bitacora("CONFIG-MIKROTIK", f"punto={_rid or '-'} enviar={'si' if q.get('enabled') else 'no'} "
-                                        f"doble_senal={'si' if q.get('doble') else 'no'}")
+            bitacora("CONFIG-MIKROTIK", " ".join(["%s=%s" % (k.lower(), v or "permanente") for k, v in _ttls.items()]
+                                                 + ["doble_senal=%s" % ("si" if q.get("doble") else "no")]))
             if _err_reglas:
                 return self._html(perfil_page(
-                    "Conexion y listas guardadas, pero estas reglas propias NO se guardaron (el "
+                    "Ajustes guardados, pero estas reglas propias NO se guardaron (el "
                     "verificador las rechaza): " + " | ".join(_err_reglas), ok=False))
             if _av_reglas:
                 return self._html(perfil_page(
                     "Guardado. El verificador avisa en tus reglas (se guardaron igual; revisalas "
                     "antes de aplicar): " + " | ".join(_av_reglas[:6]), ok=True))
-            return self._html(perfil_page("Conexion al MikroTik guardada.", ok=True))
+            return self._html(perfil_page("Ajustes de MikroTik guardados.", ok=True))
         if ruta == "/mikrotik/reglas/verificar":
             # Verificar un bloque de reglas propias SIN guardarlo ni aplicarlo: estatico y,
             # si hay router configurado, contra el router. Texto para el modal.
@@ -17186,7 +17179,8 @@ class H(BaseHTTPRequestHandler):
                 return _txt(False, "clase desconocida")
             r = _router_de_pid(rid)     # el nodo de la operacion, validado; nunca uno por defecto
             if not r or not (r.get("USER") and r.get("PASS")):
-                return _txt(False, "ese router no tiene la conexion configurada: guarda primero el usuario y la clave de su API")
+                return _txt(False, "ese router no tiene la conexion configurada: guarda primero el usuario y la clave de su API "
+                                   "(Puntos > ficha del punto > API)")
             quien = getattr(CTX, "user", "?")
             try:
                 if ruta.endswith("/plan"):
@@ -17212,43 +17206,6 @@ class H(BaseHTTPRequestHandler):
                 return _txt(okr, msg)
             except Exception as ex:
                 return _txt(False, "no se pudo hablar con el router: %s" % ex)
-        if ruta == "/mikrotik/test":
-            if not self._admin():
-                return self._prohibido()
-            _rid = (q.get("nodo", [""])[0]).strip()
-            _rs = cargar_routers()
-            _r = next((x for x in _rs if x.get("id") == _rid), None) if _router_de_pid(_rid) else None
-            if _r is None:
-                ok, msg = False, "Elige un nodo existente."
-            else:
-                # guarda lo que este en el formulario antes de probar (vacio = conservar la clave)
-                if (q.get("user", [""])[0]).strip():
-                    _r["USER"] = (q.get("user", [""])[0]).strip()[:64]
-                if q.get("pass", [""])[0]:
-                    _r["PASS"] = q.get("pass", [""])[0]
-                try:
-                    guardar_routers(_rs)
-                    ok = None
-                except secretos.SecretoNoDisponible:
-                    ok, msg = False, ("No se guardo la clave ni se probo: falta la clave maestra del panel "
-                                      "(/run/secrets/master_key) y la clave de la API nunca se guarda en claro.")
-                    bitacora("PROBAR-API", "punto=%s no guardada (sin clave maestra)" % _rid)
-                except OSError:
-                    ok = None
-                if ok is None:
-                    ok, msg = puntos_web.probar_api(sys.modules[__name__], _rid)
-                    bitacora("PROBAR-API", "punto=%s resultado=%s" % (_rid, "ok" if ok else "fallo"))
-            if not ok:
-                msg += (" — Revisa el usuario y la clave de la API, que el punto tenga la VPN conectada "
-                        "y que el router tenga la API-SSL (8729) con el certificado ids-promax "
-                        "(comandos de la ficha del punto).")
-            if q.get("ajax"):   # desde el modal: texto plano, sin recargar la pagina
-                b = (("OK " if ok else "ERR: ") + msg).encode("utf-8")
-                self.send_response(200)
-                self.send_header("Content-Type", "text/plain; charset=utf-8")
-                self.send_header("Content-Length", str(len(b)))
-                self.end_headers(); self.wfile.write(b); return
-            return self._html(perfil_page(("Prueba: " + msg), ok=ok))
         if ruta == "/feeds":
             if not self._admin():
                 return self._prohibido()

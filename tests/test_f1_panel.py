@@ -242,15 +242,15 @@ class SinClaveMaestra(unittest.TestCase):
             self.assertEqual(st, 200, ruta)
             self.assertIn("No se guardo", txt, ruta)
             self.assertNotIn("guardada (solo", txt, ruta)
-        antes = os.path.exists(self.d.MK_CONF) and open(self.d.MK_CONF, encoding="utf-8").read()
-        st, _c, txt = self.p.pedir("POST", "/mikrotik", {"nodo": "p001", "user": "api", "pass": "nueva",
+        # Ajustes > MikroTik ya no recibe la clave de la API (es de la ficha del punto, 2026-10-14):
+        # aunque un formulario viejo la mande, no acaba en ningun fichero, ni en claro ni cifrada
+        st, _c, txt = self.p.pedir("POST", "/mikrotik", {"nodo": "p001", "user": "api", "pass": "clave-nueva-b04",
                                                           "list": "otra-lista", "enabled": "1"})
         self.assertEqual(st, 200)
-        self.assertIn("No se guardo", txt)
-        self.assertEqual(os.path.exists(self.d.MK_CONF) and open(self.d.MK_CONF, encoding="utf-8").read(), antes)
-        st, _c, txt = self.p.pedir("POST", "/mikrotik/test", {"nodo": "p001", "pass": "nueva", "ajax": "1"})
-        self.assertEqual(st, 200)
-        self.assertTrue(txt.startswith("ERR:") and "clave maestra" in txt, txt)
+        for f in (self.d.MK_CONF, self.d.ROUTERS_CONF):
+            if os.path.exists(f):
+                self.assertNotIn("clave-nueva-b04", open(f, encoding="utf-8").read(), f)
+        self.assertNotEqual(self.p.pedir("POST", "/mikrotik/test", {"nodo": "p001", "ajax": "1"})[0], 200)
 
 
 # --------------------------------------------------------------------------------------------
