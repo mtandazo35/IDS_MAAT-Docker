@@ -8551,9 +8551,15 @@ background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.12);transiti
 .nav .themebtn:hover{background:rgba(255,255,255,.14);color:#fff}
 .nav .themebtn svg{width:18px;height:18px;flex:none;display:block}
 .nav .themebtn .ic-sun{display:none}
-.nav .ubtn{flex:none;padding:4px 8px 4px 4px}
-/* la barra tiene que caber: con el boton de tema ya no entraba en anchos medios y recortaba la cuenta */
-@media(max-width:1700px){.nav .ubtn .un{display:none}}
+/* la foto llena la capsula con un margen igual alrededor y sin aro propio: el aro claro de la foto
+   quedaba a 2-3 px del borde de la capsula y parecia un doble anillo descentrado (el user,
+   2026-10-14: «aqui no sale bien»). 2 + 32 + 2 + borde = 38 px, a la altura del boton de tema. */
+.nav .ubtn{flex:none;padding:2px 10px 2px 2px;gap:6px}
+.nav .ubtn .av{box-shadow:none}
+/* el nombre no se ensena en la barra: .navwrap mide como mucho 1360 px y recorta lo que sobra
+   (overflow hidden), asi que en pantallas anchas el nombre salia cortado y la capsula sin su borde
+   derecho. El nombre esta en la cabecera del menu al abrirlo. */
+.nav .ubtn .un{display:none}
 @media(max-width:1560px){.nav a.tab{padding:8px 10px;font-size:14px}
 .nav .brand{font-size:15px;margin-right:6px}.nav .navwrap{padding:0 18px}}
 .nav .burger{display:none;flex:0 0 auto;width:38px;height:38px;border-radius:10px;cursor:pointer;
