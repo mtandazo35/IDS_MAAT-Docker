@@ -15,7 +15,9 @@ import os
 import socket
 import threading
 import time
+import re
 import urllib.error
+import urllib.parse
 import urllib.request
 
 import nodos
@@ -23,9 +25,12 @@ import nodos
 CACHE = os.path.join(nodos.CACHE, "ipinfo-cache.json")
 TTL = 7 * 24 * 3600          # 7 dias: pasado eso se vuelve a resolver
 TTL_ERROR = 15 * 60          # si RDAP fallo: se reintenta pronto (no se guarda «sin PTR» 7 dias)
-PTR_S = 1.5                  # un PTR inexistente tarda 5-16 s en fallar (medido); RDAP contesta en ~1 s
-PARALELO = 8                 # consultas a la vez (rdap.org limita a quien abusa)
+PTR_S = 1.5                  # un PTR inexistente tarda 5-16 s en fallar (medido); RDAP contesta en ~0,5 s
+PTR_VENTAJA = 0.3            # s que el PTR va solo: si contesta antes (marcas grandes) no se pregunta a RDAP
 MAX_POR_PETICION = 40        # IPs por llamada a /duenos (lo que cabe en el Top)
+# IPs resolviendose a la vez. Casi todo es esperar al PTR, que no carga a nadie; lo que va a los
+# registros lo limita RDAP_PARALELO. Con 8 eran tandas de ~2,5 s: 27 IP del Top = 8-11 s de «…».
+PARALELO = MAX_POR_PETICION
 
 # dominio PTR conocido -> nombre humano de la empresa (trafico casi siempre legitimo)
 _ORG_DOM = {
@@ -57,10 +62,17 @@ class ErrorRdap(Exception):
     """RDAP no contesto (limite de rdap.org, tiempo agotado, red): no es «no hay dueño»."""
 
 
-RDAP_PARALELO = 3            # los registros tambien limitan a quien manda rafagas
+RDAP_PARALELO = 3            # por registro: los registros limitan a quien manda rafagas
 _LOCK_BOOT = threading.Lock()
 RDAP_TIMEOUT_S = 4.0
-_RDAP_SEM = threading.BoundedSemaphore(RDAP_PARALELO)
+_RDAP_SEMS = {}              # host del registro -> semaforo (ARIN y APNIC no comparten limite)
+_LOCK_SEMS = threading.Lock()
+
+
+def _sem_rdap(url):
+    host = urllib.parse.urlsplit(url).hostname or ""
+    with _LOCK_SEMS:
+        return _RDAP_SEMS.setdefault(host, threading.BoundedSemaphore(RDAP_PARALELO))
 
 
 # A que registro regional (ARIN, RIPE, APNIC, LACNIC, AFRINIC) preguntar por cada IP: tabla oficial
@@ -123,15 +135,15 @@ def _rdap_org(ip):
     """(operador, pais) del bloque de la IP por RDAP (su registro regional, sin clave); ('', '') si
     contesta sin nombre. Si no contesta lanza ErrorRdap, tras UN reintento a 1 s si fue limite
     (429) o tiempo agotado."""
-    req = urllib.request.Request(url_rdap(ip),
-                                 headers={"User-Agent": "ids-maat-report/1.0",
-                                          "Accept": "application/rdap+json"})
+    url = url_rdap(ip)
+    req = urllib.request.Request(url, headers={"User-Agent": "ids-maat-report/1.0",
+                                               "Accept": "application/rdap+json"})
     ultimo = None
     for intento in range(2):
         if intento:
             time.sleep(1.0)
         try:
-            with _RDAP_SEM:
+            with _sem_rdap(url):
                 with urllib.request.urlopen(req, timeout=RDAP_TIMEOUT_S) as r:
                     d = json.load(r)
             break
@@ -145,19 +157,34 @@ def _rdap_org(ip):
             ultimo = e
     else:
         raise ErrorRdap(str(ultimo))
-    name = (d.get("name") or "").strip()
     cc = (d.get("country") or "").strip()
-    org = ""
-    for e in (d.get("entities") or []):
-        vc = e.get("vcardArray")
-        if vc and len(vc) > 1:
-            for it in vc[1]:
-                if it and it[0] == "fn" and len(it) > 3 and it[3]:
-                    org = str(it[3]).strip(); break
-        if org:
-            break
-    etq = org or name
-    return (etq[:44], cc)
+    return (titular(d)[:44], cc)
+
+
+def _vcard(ent, campo):
+    vc = ent.get("vcardArray")
+    for it in (vc[1] if isinstance(vc, list) and len(vc) > 1 else []):
+        if isinstance(it, list) and len(it) > 3 and it[0] == campo and it[3]:
+            return str(it[3]).strip()
+    return ""
+
+
+def titular(d):
+    """Empresa titular del bloque segun la respuesta RDAP: la entidad «registrant» de tipo
+    organizacion (puede venir anidada); si no hay, el nombre de la red («CHINANET-FJ»). Nunca un
+    contacto: antes se tomaba la primera entidad y salian «Abuse-C Role», «IRT-CHINANET-CN» o el
+    nombre del tecnico de turno (abuse/technical/administrative). '' si no hay nada mejor."""
+    pila = list(d.get("entities") or [])
+    while pila:
+        e = pila.pop(0)
+        if not isinstance(e, dict):
+            continue
+        if "registrant" in (e.get("roles") or []) and _vcard(e, "kind") == "org" and _vcard(e, "fn"):
+            return _vcard(e, "fn")
+        pila += e.get("entities") or []
+    name = (d.get("name") or "").strip()
+    # LACNIC pone el rango como nombre («200.107.0.0 - 200.107.31.255»): eso no es un dueño
+    return "" if re.fullmatch(r"[0-9a-fA-F.:]+\s*-\s*[0-9a-fA-F.:]+", name) else name
 
 
 def cargar():
@@ -170,9 +197,14 @@ def cargar():
         return {}
 
 
+VERSION = 2                  # 2: RDAP da el titular, no el primer contacto (abuse/tecnico)
+
+
 def vigente(ent, ahora=None):
     if not ent:
         return False
+    if ent.get("via") == "rdap" and ent.get("v", 1) < VERSION:
+        return False             # nombre sacado con la regla vieja: se vuelve a preguntar
     ttl = TTL_ERROR if ent.get("via") == "error" else TTL
     return (ahora or time.time()) - ent.get("ts", 0) < ttl
 
@@ -187,7 +219,12 @@ def consultable(ip):
 
 
 def resolver_red(ip):
-    """(org, legitimo, via) preguntando a la red. Lenta: solo desde resolver()."""
+    """(org, legitimo, via) preguntando a la red. Lenta: solo desde resolver().
+
+    PTR y RDAP van a la vez: el PTR sale solo PTR_VENTAJA s (las marcas grandes contestan antes y
+    no se molesta al registro) y luego RDAP corre mientras el PTR sigue hasta PTR_S. Gana el PTR si
+    llega a tiempo. Antes era PTR_S de espera y DESPUES RDAP: ~2 s por IP, casi siempre perdidos
+    esperando un PTR que no existe (medido: 8 de 8 IP del Top sin PTR, 4,6-15,6 s en fallar)."""
     caja = {}
 
     def ptr():
@@ -195,17 +232,29 @@ def resolver_red(ip):
             caja["host"] = socket.gethostbyaddr(ip)[0]
         except Exception:
             pass
+
+    def rdap():
+        try:
+            caja["rdap"] = _rdap_org(ip)
+        except Exception:                       # ErrorRdap o lo que sea: no se sabe
+            caja["rdap"] = None
+    fin = time.monotonic() + PTR_S
     h = threading.Thread(target=ptr, daemon=True)
     h.start()
-    h.join(PTR_S)
+    h.join(min(PTR_VENTAJA, PTR_S))
+    r = None
+    if "host" not in caja:
+        r = threading.Thread(target=rdap, daemon=True)
+        r.start()
+        h.join(max(0.0, fin - time.monotonic()))
     host = caja.get("host")
     if host:
         dom = _reg_dom(host)
         return (_ORG_DOM[dom], True, "ptr") if dom in _ORG_DOM else (dom, False, "ptr")
-    try:
-        aso, cc = _rdap_org(ip)
-    except ErrorRdap:
+    r.join()                                    # _rdap_org tiene su tope (2 x RDAP_TIMEOUT_S + 1 s)
+    if caja.get("rdap") is None:
         return ("?", False, "error")            # no se sabe: vale TTL_ERROR, no 7 dias
+    aso, cc = caja["rdap"]
     if aso:
         return (aso + (f" · {cc}" if cc else ""), False, "rdap")
     return ("sin PTR", False, "")
@@ -248,7 +297,7 @@ def _lanzar(ip):
                 except Exception:
                     org, legit, via = "?", False, "error"
             # se guarda aunque quien la pidio ya no espere: la proxima vez esta
-            _guardar({ip: {"org": org, "legit": legit, "ts": time.time(), "via": via}})
+            _guardar({ip: {"org": org, "legit": legit, "ts": time.time(), "via": via, "v": VERSION}})
         finally:
             with _LOCK:
                 _VUELO.pop(ip, None)

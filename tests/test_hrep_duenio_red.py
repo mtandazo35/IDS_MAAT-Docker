@@ -131,6 +131,80 @@ class Duenos(unittest.TestCase):
         self.assertFalse(self.d.vigente(ent, ahora=ent["ts"] + self.d.TTL_ERROR + 1))
         self.assertTrue(self.d.vigente(dict(ent, via="rdap"), ahora=ent["ts"] + self.d.TTL_ERROR + 1))
 
+    def test_ptr_y_rdap_van_a_la_vez(self):
+        """Correccion de defecto (2026-10-14, «por que se demora tanto»): era PTR_S de espera y
+        DESPUES RDAP. Con PTR colgado y RDAP de 0,8 s: antes 1,8 s, ahora ~1,1 s (RDAP arranca a
+        los PTR_VENTAJA s, en paralelo con el PTR)."""
+        self.d.PTR_S = 1.0
+        self.ptr = self.colgado
+        def rdap(ip):
+            time.sleep(0.8)
+            return ("Operador Ejemplo", "EC")
+        self.rdap = rdap
+        t = time.monotonic()
+        r = self.d.resolver([IPS[0]], espera=5)
+        self.assertLess(time.monotonic() - t, 1.5)
+        self.assertEqual(r[IPS[0]]["via"], "rdap")
+
+    def test_ptr_rapido_no_molesta_al_registro(self):
+        """Un PTR que contesta dentro de PTR_VENTAJA (las marcas grandes) no pregunta a RDAP."""
+        preguntadas = []
+        self.ptr = lambda ip: ("srv.google.com", [], [ip])
+        self.rdap = lambda ip: preguntadas.append(ip) or ("X", "")
+        r = self.d.resolver([IPS[0]], espera=3)
+        self.assertEqual((r[IPS[0]]["org"], r[IPS[0]]["legit"]), ("Google", True))
+        self.assertEqual(preguntadas, [])
+
+    def test_un_top_entero_no_va_por_tandas(self):
+        """30 IP sin PTR (lo normal en atacantes): todas esperan su PTR a la vez, no de 8 en 8.
+        Antes: 4 tandas x PTR_S."""
+        self.d.PTR_S = 0.5
+        self.ptr = self.colgado
+        self.rdap = lambda ip: ("Operador Ejemplo", "")
+        t = time.monotonic()
+        r = self.d.resolver(IPS[:20] + ["192.88.98.%d" % i for i in range(1, 11)], espera=5)
+        self.assertLess(time.monotonic() - t, 1.5)
+        self.assertEqual(len(r), 30)
+
+    def test_limite_rdap_por_registro(self):
+        """El tope de consultas a la vez es por registro: RIPE no espera a que acabe APNIC."""
+        a = self.d._sem_rdap("https://rdap.ejemplo-a.test/ip/192.0.2.1")
+        self.assertIs(a, self.d._sem_rdap("https://rdap.ejemplo-a.test/ip/192.0.2.9"))
+        self.assertIsNot(a, self.d._sem_rdap("https://rdap.ejemplo-b.test/rdap/ip/192.88.99.1"))
+
+    def test_rdap_da_el_titular_no_el_primer_contacto(self):
+        """Correccion de defecto: se tomaba la primera entidad y salian «Abuse-C Role», el IRT o el
+        nombre del tecnico. Ahora: el «registrant» de tipo organizacion (tambien anidado); si no
+        hay, el nombre de la red; nunca el rango que LACNIC pone como nombre."""
+        def ent(roles, kind, fn, sub=()):
+            return {"roles": roles, "entities": list(sub),
+                    "vcardArray": ["vcard", [["version", {}, "text", "4.0"], ["kind", {}, "text", kind],
+                                             ["fn", {}, "text", fn]]]}
+        ripe = {"name": "RED-EJEMPLO-1", "entities": [
+            ent(["technical"], "group", "Abuse-C Role"),
+            ent(["registrant"], "individual", "EJEMPLO-MNT"),
+            ent(["registrant"], "org", "Operador Ejemplo S.A."),
+            ent(["abuse"], "group", "Abuse-C Role")]}
+        self.assertEqual(self.d.titular(ripe), "Operador Ejemplo S.A.")
+        apnic = {"name": "RED-EJEMPLO-2", "entities": [
+            ent(["abuse"], "group", "IRT-EJEMPLO"),
+            ent(["technical"], "individual", "Persona Tecnica")]}
+        self.assertEqual(self.d.titular(apnic), "RED-EJEMPLO-2")
+        anidado = {"name": "X", "entities": [ent(["abuse"], "group", "Abuse",
+                                                 [ent(["registrant"], "org", "Empresa Anidada")])]}
+        self.assertEqual(self.d.titular(anidado), "Empresa Anidada")
+        self.assertEqual(self.d.titular({"name": "192.0.2.0 - 192.0.2.255", "entities": [
+            ent(["abuse"], "individual", "Persona Abuso")]}), "")
+        self.assertEqual(self.d.titular({}), "")
+
+    def test_cache_con_la_regla_vieja_se_vuelve_a_preguntar(self):
+        """Lo guardado por RDAP antes de VERSION 2 (con el contacto en vez del titular) no vale;
+        PTR y errores no cambian."""
+        ahora = time.time()
+        self.assertFalse(self.d.vigente({"via": "rdap", "org": "Abuse-C Role", "ts": ahora}))
+        self.assertTrue(self.d.vigente({"via": "rdap", "org": "X", "ts": ahora, "v": self.d.VERSION}))
+        self.assertTrue(self.d.vigente({"via": "ptr", "org": "Google", "ts": ahora}))
+
     def test_cada_ip_va_a_su_registro_regional(self):
         """Correccion de defecto: rdap.org (solo redirige) corta con 429 a las ~10 consultas; se
         pregunta directo al registro de la tabla de IANA (el prefijo mas largo, por https) y a
@@ -194,8 +268,9 @@ class RutaDuenos(unittest.TestCase):
                     "<td class='org'><span class='obadge pend' data-dueno='192.88.99.7'>&hellip;</span></td>"
                     "</section><!--TOP_FIN--></main></body></html>")
         self.pedidas = []
+        self.esperas = []
         self.p.d.duenos.resolver = lambda ips, espera=8: (
-            self.pedidas.append(list(ips)) or
+            self.pedidas.append(list(ips)) or self.esperas.append(espera) or
             {ip: {"org": "Google", "legit": True, "via": "ptr", "ts": time.time()} for ip in ips})
         self.ana = self.p.entrar("ana")
 
@@ -206,6 +281,8 @@ class RutaDuenos(unittest.TestCase):
         self.assertEqual(r.status, 200)
         self.assertEqual(json.loads(r.texto), {"192.88.99.7": {"org": "Google", "legit": True, "via": "ptr"}})
         self.assertEqual(self.pedidas, [["192.88.99.7"]])
+        # contesta pronto con lo que haya (la pagina pide el resto): antes 8 s y todo o nada
+        self.assertLessEqual(self.esperas[0], 3)
 
     def test_la_pestana_top_pide_los_que_faltan(self):
         """La pestana lleva el codigo que rellena los huecos pidiendolos a /duenos."""

@@ -758,10 +758,13 @@ _JS_VENTANA_PEND = (
     "setTimeout(mira,2000);});}"
     "setTimeout(mira,1500);})();</script>")
 
-DUENOS_ESPERA = 8.0   # s que /duenos espera a la red; lo que no llega lo vuelve a pedir la pagina
+# s que /duenos espera a la red antes de contestar con lo que ya tenga. Con 8 s la pagina no pintaba
+# nada hasta que llegaba la ULTIMA IP; ahora pinta por tandas y lo que falta lo vuelve a pedir.
+DUENOS_ESPERA = 2.0
 
 # Top origenes: rellena los «…» del dueño pidiendolos a /duenos (solo los que faltan, hasta 40 por
-# vez); lo que aun no llego se vuelve a pedir, como mucho 4 veces. Mismas insignias que el reporte.
+# vez); lo que aun no llego se vuelve a pedir enseguida (las consultas siguen en curso en el panel
+# y quedan en su cache), hasta 20 vueltas. Mismas insignias que el reporte.
 _JS_DUENOS = (
     "<script>(function(){"
     "function esc(s){return String(s).replace(/[&<>\"']/g,function(c){return{'&':'&amp;','<':'&lt;',"
@@ -784,8 +787,8 @@ _JS_DUENOS = (
     ".then(function(r){if(!r.ok)throw r.status;return r.json();})"
     ".then(function(d){clearTimeout(k);els.forEach(function(x){var e=d[x.getAttribute('data-dueno')];"
     "if(e)x.outerHTML=insignia(e);});"
-    "if(document.querySelector('[data-dueno]')&&++intentos<4)setTimeout(pide,3000);})"
-    ".catch(function(){clearTimeout(k);if(++intentos<4)setTimeout(pide,5000);});}"
+    "if(document.querySelector('[data-dueno]')&&++intentos<20)setTimeout(pide,200);})"
+    ".catch(function(){clearTimeout(k);intentos+=5;if(intentos<20)setTimeout(pide,3000);});}"
     "pide();})();</script>")
 
 def pedir_regen():
