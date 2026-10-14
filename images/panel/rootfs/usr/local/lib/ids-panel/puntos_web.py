@@ -485,6 +485,9 @@ _CSS = (
     ".btn.sec:hover{background:#f4f4f2;color:#33322f}.btn.peligro{background:#c0392b}"
     ".btn.peligro:hover{color:#fff}"
     ".btn[disabled]{opacity:.5;cursor:default}"
+    ".migas{display:flex;align-items:center;gap:8px;margin:0 0 12px;font-size:13px;color:#8a93a0}"
+    ".migas a{color:#1c5cab;font-weight:600;text-decoration:none}.migas a:hover{text-decoration:underline}"
+    ".migas b{color:#33322f;font-weight:600}"
     ".acciones{display:flex;gap:8px;flex-wrap:wrap;margin:10px 0}.acciones form{margin:0}"
     ".datos{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px}"
     ".dato .et{color:#6b6a66;font-size:12px}"
@@ -529,13 +532,17 @@ def aviso(texto, tipo="err"):
     return "<div class='aviso %s'>%s</div>" % (tipo, esc(texto))
 
 
-def pagina(d, titulo, cuerpo, refresco=0):
+def pagina(d, titulo, cuerpo, refresco=0, en_lista=False):
     meta = "<meta http-equiv=refresh content=%d>" % refresco if refresco else ""
+    # Puntos solo se abre desde Ajustes (no esta en la barra): sin esta ruta no habia como volver
+    # (el user, 2026-10-14). En la lista «Puntos» es donde estas; en lo demas, enlace a la lista.
+    migas = ("<nav class=migas aria-label='Ruta'><a href='/ajustes'>&larr; Ajustes</a><span>/</span>"
+             + ("<b>Puntos</b>" if en_lista else "<a href='/puntos'>Puntos</a>") + "</nav>")
     return ("<!doctype html><html lang=es><head><meta charset=utf-8>"
             "<link rel=icon type=image/png href=/favicon.ico>"
             "<meta name=viewport content='width=device-width,initial-scale=1'>" + meta +
             "<title>%s</title><style>%s%s</style></head><body>" % (esc(titulo), d.BASE_CSS, _CSS)
-            + d.nav("/ajustes") + "<main>" + cuerpo + "</main>" + _JS + "</body></html>")
+            + d.nav("/ajustes") + "<main>" + migas + cuerpo + "</main>" + _JS + "</body></html>")
 
 
 def _prohibido(h):
@@ -684,7 +691,7 @@ def lista(h, consulta):
            filas, RETENCION_OBJETIVO_DIAS))
     # sin <meta refresh>: recargaria la pagina con el modal de Eliminar a medio escribir. Se recarga
     # cada 30 s solo si no hay ningun modal abierto.
-    return h._html(pagina(d, "Puntos", cuerpo + _MODAL_BAJA + _RECARGA_LISTA))
+    return h._html(pagina(d, "Puntos", cuerpo + _MODAL_BAJA + _RECARGA_LISTA, en_lista=True))
 
 
 def _acciones_fila(p):

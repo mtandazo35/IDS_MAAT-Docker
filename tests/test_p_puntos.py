@@ -112,6 +112,20 @@ class BotonEnlace(unittest.TestCase):
                            (r"\.btn\.peligro:hover", "#fff")):
             self.assertRegex(h, sel + r"\{[^}]*(?<![-\w])color:" + color)
 
+    def test_desde_puntos_se_vuelve_a_ajustes(self):
+        """Correccion de defecto (2026-10-14, «puntos cuando ingreso no tiene para regresar a
+        ajustes»): Puntos solo se abre desde Ajustes y no tenia enlace de vuelta. Ahora cada pagina
+        lleva «← Ajustes / Puntos»; en la lista, Puntos es donde estas (sin enlace)."""
+        p = PanelP()
+        self.addCleanup(p.cerrar)
+        ana = p.entrar("ana")
+        lista = p.pedir("GET", "/puntos", cookie=ana).texto
+        self.assertIn("<nav class=migas aria-label='Ruta'><a href='/ajustes'>&larr; Ajustes</a>"
+                      "<span>/</span><b>Puntos</b></nav>", lista)
+        for ruta in ("/puntos/p001", "/puntos/nuevo"):
+            h = p.pedir("GET", ruta, cookie=ana).texto
+            self.assertIn("<a href='/ajustes'>&larr; Ajustes</a><span>/</span><a href='/puntos'>Puntos</a>", h, ruta)
+
     def test_los_botones_no_palpitan_al_pasar_el_raton(self):
         """Correccion de defecto (2026-10-14, «estos botones como que palpitan»): el :hover de .btn y
         .btn.peligro cambiaba el degradado por un color plano oscuro de golpe (un degradado no se
