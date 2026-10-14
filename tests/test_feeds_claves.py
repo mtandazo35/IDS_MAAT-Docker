@@ -134,6 +134,51 @@ class Telegram(unittest.TestCase):
         self.assertEqual(self.p.pedir("POST", "/telegram/detectar", {"tgtoken": TOK}, "olga")[0], 403)
 
 
+class TelegramFacil(Telegram):
+    """Telegram en 4 pasos con botones (el user, 2026-10-14: «eso para telegram debe ser algo
+    facil»; sus notas: token de BotFather, getUpdates para el Chat ID y un sendMessage de prueba
+    con curl). Ahora: Detectar da el enlace del bot y rellena el chat si solo hay uno, y «Enviar
+    mensaje de prueba» hace el sendMessage sin curl."""
+
+    def pedir_json(self, ruta, **campos):
+        st, _c, txt = self.p.pedir("POST", ruta, campos)
+        return st, json.loads(txt) if st == 200 else txt
+
+    def test_mensaje_de_prueba(self):
+        self.resp["sendMessage"] = (True, {"message_id": 7}, 200)
+        st, j = self.pedir_json("/telegram/prueba", tgtoken=TOK, tgchat=CHAT)
+        self.assertTrue(j["ok"])
+        self.assertIn("mensaje enviado", j["msg"])
+        self.assertIn("sendMessage", self.llamadas)
+        self.assertFalse(self.d.telegram_configurado())             # probar no guarda nada
+        self.resp["sendMessage"] = (False, "Bad Request: chat not found", 400)
+        j = self.pedir_json("/telegram/prueba", tgtoken=TOK, tgchat=CHAT)[1]
+        self.assertFalse(j["ok"])
+        self.assertIn("no dejó escribir", j["msg"])
+        self.assertIn("faltan", self.pedir_json("/telegram/prueba", tgtoken=TOK)[1]["msg"])
+        self.assertEqual(self.p.pedir("POST", "/telegram/prueba", {"tgtoken": TOK, "tgchat": CHAT}, "olga")[0], 403)
+
+    def test_detectar_da_el_bot_y_para_si_el_token_no_vale(self):
+        self.resp["getMe"] = (True, {"username": "avisos_bot"}, 200)
+        self.resp["getUpdates"] = (True, [{"message": {"chat": {"id": 5551234, "first_name": "Ana",
+                                                                "type": "private"}}}], 200)
+        j = self.pedir_json("/telegram/detectar", tgtoken=TOK)[1]
+        self.assertEqual((j["ok"], j["bot"], len(j["chats"])), (True, "avisos_bot", 1))
+        self.resp["getMe"] = (False, "Unauthorized", 401)
+        self.llamadas.clear()
+        j = self.pedir_json("/telegram/detectar", tgtoken=TOK)[1]
+        self.assertFalse(j["ok"])
+        self.assertIn("rechazó el token", j["msg"])
+        self.assertNotIn("getUpdates", self.llamadas)
+
+    def test_los_botones_y_la_ayuda_del_chat_id(self):
+        _s, _c, h = self.p.pedir("GET", "/ajustes")
+        tg = h[h.index("id=feed-telegram"):]
+        for txt in ("tgDetectar(this)'>Detectar Chat ID</button>", "tgPrueba(this)'>Enviar mensaje de prueba</button>",
+                    "<b>Personal:</b> un número", "<b>Grupo:</b> empieza por"):
+            self.assertIn(txt, tg)
+
+
 class CampoEquivocado(unittest.TestCase):
     def setUp(self):
         self.p = Panel(http=True)

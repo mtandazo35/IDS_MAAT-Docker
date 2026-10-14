@@ -5904,6 +5904,22 @@ def telegram_chat_probar(tok, chat):
         return False, "Telegram rechazó el token (%s)" % res
     return None, "no se pudo comprobar el chat ahora (%s)" % res
 
+def telegram_enviar_prueba(tok, chat):
+    """Manda un mensaje de prueba (sendMessage) para ver con los propios ojos que llega: es el
+    ultimo paso que el user hacia a mano con curl. (True|False|None, mensaje)."""
+    if not RE_TG_CHAT.match(chat or ""):
+        return False, "el Chat ID no es válido (personal: un número; grupo: empieza por -)"
+    ok, res, cod = _tg_api(tok, "sendMessage", {
+        "chat_id": chat, "text": "Prueba del panel IDS: si ves este mensaje, los avisos llegarán a este chat."})
+    if ok:
+        return True, "mensaje enviado: míralo en Telegram"
+    if cod in (400, 403):
+        return False, ("Telegram no dejó escribir en ese chat (%s): escríbele al bot o añádelo al grupo, "
+                       "y vuelve a detectar el Chat ID" % res)
+    if cod in (401, 404):
+        return False, "Telegram rechazó el token (%s)" % res
+    return None, "no se pudo enviar ahora (%s)" % res
+
 def telegram_detectar_chats(tok):
     """Los chats que escribieron hace poco al bot (getUpdates), para no tener que leer JSON:
     (lista de {id, nombre, tipo}, mensaje). Solo lee: no confirma los mensajes (sin offset)."""
@@ -10710,20 +10726,25 @@ def perfil_page(msg="", ok=False, edit_user=None):
         b_tg = _bloque(
             "feed-telegram", "Telegram", "avisos e informe diario", telegram_configurado() and bool(telegram_chat()),
             "Te manda los avisos de cuarentena y el informe diario a un chat o grupo de Telegram.",
-            ["Abre " + _ir("botfather", "@BotFather") + " en Telegram, mándale <code>/newbot</code> y elige un "
-             "nombre y un usuario que termine en <code>bot</code>.",
-             "Copia el <b>token</b> que te da (número:clave) y pégalo abajo.",
-             "Abre tu bot y mándale cualquier mensaje (o añádelo al grupo y escribe ahí). Después pulsa "
-             "<b>Detectar Chat ID</b> y elige el chat. " + _ir("telegram_guia", "Guía oficial de bots")],
+            ["Abre " + _ir("botfather", "@BotFather") + " en Telegram, mándale <code>/newbot</code>, elige un "
+             "nombre y un usuario que termine en <code>bot</code>, y pega abajo el <b>token</b> que te da.",
+             "Escríbele cualquier cosa a tu bot (al pulsar <b>Detectar Chat ID</b> sale el enlace para "
+             "abrirlo). Para un grupo: añade el bot al grupo y escribe ahí.",
+             "Pulsa <b>Detectar Chat ID</b>: si solo hay un chat se rellena solo; si hay varios, elige uno.",
+             "Pulsa <b>Enviar mensaje de prueba</b>. Si te llega a Telegram, pulsa <b>Guardar Telegram</b>. "
+             + _ir("telegram_guia", "Guía oficial de bots")],
             "<form method=post action='/telegram'><div class=field><label>Token del bot</label>"
             "<input type=password name=tgtoken id=tgtoken autocomplete=new-password placeholder='"
             + ("dejar vacío para conservar" if telegram_configurado() else "pega el token de @BotFather") + "'>"
-            "</div><div class=field><label>Chat ID</label>"
+            "<div id=tgbot class=hint></div></div><div class=field><label>Chat ID</label>"
             "<div style='display:flex;gap:8px;flex-wrap:wrap;align-items:center'>"
             f"<input type=text name=tgchat id=tgchat value=\"{esc(telegram_chat())}\" autocomplete=off "
-            "placeholder='-1001234567890' style='flex:1;min-width:200px'>"
+            "placeholder='1234567890 o -1234567890' style='flex:1;min-width:200px'>"
             "<button type=button class=cancelbtn onclick='window.tgDetectar&&tgDetectar(this)'>Detectar Chat ID</button>"
+            "<button type=button class=cancelbtn onclick='window.tgPrueba&&tgPrueba(this)'>Enviar mensaje de prueba</button>"
             "</div><div id=tgchats class=hint></div>"
+            "<div class=hint><b>Personal:</b> un número (ej. <code>1234567890</code>). <b>Grupo:</b> empieza por "
+            "<code>-</code> (ej. <code>-1234567890</code>, o <code>-100…</code> si es un supergrupo).</div>"
             "<div class=hint>Al guardar se <b>pregunta a Telegram</b> si el token vale y si el bot puede escribir "
             "en ese chat; si no, no se guarda. El token se guarda <b>cifrado</b> y <b>no se vuelve a mostrar</b>. "
             "Para <b>quitarlo</b>, escribe <code>BORRAR</code>.</div></div>"
@@ -10744,19 +10765,36 @@ def perfil_page(msg="", ok=False, edit_user=None):
             "o.textContent=t+(j.guardada?' (la guardada)':' (la pegada, aún sin guardar)')+': '+(j.msg||'');})"
             ".catch(function(){b.disabled=false;o.textContent='No se pudo preguntar al panel.';});}</script>")
         js_tg = (
-            "<script>function tgDetectar(b){var o=document.getElementById('tgchats'),"
-            "t=(document.getElementById('tgtoken')||{}).value||'';o.textContent='Preguntando a Telegram...';"
-            "b.disabled=true;var d=new URLSearchParams();d.set('tgtoken',t);"
-            "fetch('/telegram/detectar',{method:'POST',credentials:'same-origin',"
-            "headers:{'Content-Type':'application/x-www-form-urlencoded'},body:d.toString()})"
-            ".then(function(r){return r.json();}).then(function(j){b.disabled=false;o.textContent='';"
+            "<script>function _tgPost(u,b,cb){var d=new URLSearchParams();"
+            "d.set('tgtoken',(document.getElementById('tgtoken')||{}).value||'');"
+            "d.set('tgchat',(document.getElementById('tgchat')||{}).value||'');b.disabled=true;"
+            "fetch(u,{method:'POST',credentials:'same-origin',headers:{'Content-Type':"
+            "'application/x-www-form-urlencoded'},body:d.toString()}).then(function(r){return r.json();})"
+            ".then(function(j){b.disabled=false;cb(j);}).catch(function(){b.disabled=false;"
+            "cb({ok:false,msg:'No se pudo preguntar al panel.'});});}"
+            # Detectar: el enlace del bot (para escribirle) y los chats; con uno solo se rellena solo
+            "function tgDetectar(b){var o=document.getElementById('tgchats'),bt=document.getElementById('tgbot');"
+            "o.className='hint';o.textContent='Preguntando a Telegram...';"
+            "_tgPost('/telegram/detectar',b,function(j){o.textContent='';"
+            "if(j.bot&&bt){bt.textContent='Tu bot: ';var a=document.createElement('a');a.className='fbtn';"
+            "a.href='https://t.me/'+encodeURIComponent(j.bot);a.target='_blank';a.rel='noopener noreferrer';"
+            "a.textContent='@'+j.bot+' \u2197';bt.appendChild(a);"
+            "bt.appendChild(document.createTextNode(' ábrelo y escríbele algo.'));}"
             "if(!j.ok){o.textContent=j.msg||'No se encontró ningún chat';return;}"
+            "var ch=document.getElementById('tgchat');"
+            "if(j.chats.length===1){var c=j.chats[0];ch.value=c.id;"
+            "o.textContent='Chat '+c.nombre+' ('+c.id+') puesto. Ahora pulsa Enviar mensaje de prueba.';return;}"
             "o.appendChild(document.createTextNode('Elige el chat: '));"
             "j.chats.forEach(function(c){var x=document.createElement('button');x.type='button';"
             "x.className='fbtn';x.style.margin='2px 4px';x.textContent=c.nombre+' ('+c.tipo+') '+c.id;"
-            "x.onclick=function(){document.getElementById('tgchat').value=c.id;"
-            "o.textContent='Chat '+c.nombre+' elegido: pulsa Guardar Telegram.';};o.appendChild(x);});})"
-            ".catch(function(){b.disabled=false;o.textContent='No se pudo preguntar al panel.';});}</script>")
+            "x.onclick=function(){ch.value=c.id;"
+            "o.textContent='Chat '+c.nombre+' elegido. Ahora pulsa Enviar mensaje de prueba.';};o.appendChild(x);});});}"
+            # Prueba: el sendMessage que el user hacia con curl
+            "function tgPrueba(b){var o=document.getElementById('tgchats');o.className='hint';"
+            "o.textContent='Enviando...';_tgPost('/telegram/prueba',b,function(j){"
+            "o.className='fres '+(j.ok?'fresok':'fresmal');"
+            "o.textContent=(j.ok?'\u2705 ':'\u26D4 ')+(j.msg||'')+(j.ok?'. Si te llegó, pulsa Guardar Telegram.':'');});}"
+            "</script>")
         card_feeds = (
             "<style>.feedt{width:100%;border-collapse:collapse;font-size:13px;margin:10px 0 2px}"
             ".feedt th,.feedt td{padding:7px 10px;border-top:1px solid #f0efec;text-align:left}"
@@ -18421,8 +18459,28 @@ class H(BaseHTTPRequestHandler):
             _tk = _tk if _tk and _tk != "BORRAR" else telegram_token()
             if not _tk:
                 return self._json({"ok": False, "msg": "pega primero el token del bot (o guárdalo)"})
+            # el bot primero: si el token no vale, no tiene sentido buscar chats; si vale, se da su
+            # enlace (t.me/<bot>) para abrirlo y escribirle
+            _e, _det, _bot = telegram_probar(_tk)
+            if _e is False:
+                return self._json({"ok": False, "msg": _det})
             _chats, _msg = telegram_detectar_chats(_tk)
-            return self._json({"ok": bool(_chats), "chats": _chats, "msg": _msg})
+            return self._json({"ok": bool(_chats), "chats": _chats, "msg": _msg, "bot": _bot.lstrip("@")})
+        if ruta == "/telegram/prueba":
+            # «Enviar mensaje de prueba»: el sendMessage que el user hacia con curl. Con lo del
+            # formulario (aun sin guardar) o con lo guardado. No guarda nada.
+            if not self._admin():
+                return self._prohibido()
+            _tk = (q.get("tgtoken", [""])[0] or "").strip()
+            _ch = (q.get("tgchat", [""])[0] or "").strip()[:40] or telegram_chat()
+            if _tk and _tk != "BORRAR" and not RE_TG_TOKEN.match(_tk):
+                return self._json({"ok": False, "msg": "eso no parece un token de bot (número:clave)"})
+            _tk = _tk if _tk and _tk != "BORRAR" else telegram_token()
+            if not _tk or not _ch:
+                return self._json({"ok": False, "msg": "faltan el token o el Chat ID"})
+            _e, _msg = telegram_enviar_prueba(_tk, _ch)
+            bitacora("TELEGRAM-PRUEBA", "chat=%s: %s" % (_ch, "ok" if _e else "fallo"))
+            return self._json({"ok": _e is True, "msg": _msg})
         if ruta == "/feeds/actualizar":
             if not self._admin():
                 return self._prohibido()
