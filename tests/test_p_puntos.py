@@ -112,6 +112,17 @@ class BotonEnlace(unittest.TestCase):
                            (r"\.btn\.peligro:hover", "#fff")):
             self.assertRegex(h, sel + r"\{[^}]*(?<![-\w])color:" + color)
 
+    def test_los_botones_no_palpitan_al_pasar_el_raton(self):
+        """Correccion de defecto (2026-10-14, «estos botones como que palpitan»): el :hover de .btn y
+        .btn.peligro cambiaba el degradado por un color plano oscuro de golpe (un degradado no se
+        anima) y al recorrer la lista de Puntos cada boton parpadeaba. El :hover ya no toca el fondo."""
+        p = PanelP()
+        self.addCleanup(p.cerrar)
+        h = p.pedir("GET", "/puntos", cookie=p.entrar("ana")).texto
+        for sel in (r"\.btn:hover", r"\.btn\.peligro:hover"):
+            for regla in re.findall(sel + r"\{([^}]*)\}", h):
+                self.assertNotRegex(regla, r"(?<![-\w])background", sel)
+
 
 class Espejo(unittest.TestCase):
     def setUp(self):
