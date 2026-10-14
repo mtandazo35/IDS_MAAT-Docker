@@ -26,7 +26,10 @@ RAIZ = extraer.RAIZ
 DASH = extraer.fuente("DASH")
 ARBOL = ast.parse(DASH)
 
+# (adaptada, 2026-10-14) Accesos y Bitacora son ahora un solo Registro: log_page y bitacora_page
+# lo abren con su filtro, asi que entran sus piezas
 PIEZAS = ("LOG_RETENCION_DIAS", "_cola_lineas", "_ev_ts", "accesos_recientes",
+          "_registro_tipo", "_ACCESO_TXT", "registro_eventos", "REGISTRO_TIPOS", "registro_page",
           "log_page", "bitacora_page", "BITACORA_LOG", "LOGIN_LOG", "MK_LOG")
 
 fallos = 0
@@ -40,7 +43,7 @@ def check(d, c, e=""):
 
 
 def entorno(tmp):
-    ns = {"os": os, "time": time, "io": io, "html": __import__("html"),
+    ns = {"os": os, "time": time, "io": io, "html": __import__("html"), "json": __import__("json"),
           "BASE_CSS": "/*base*/", "nav": lambda r: "<div class=nav></div>"}
     # panel portado: LOGIN_LOG/MK_LOG/BITACORA_LOG se definen con nodos.ruta(); se carga el
     # nodos REAL sobre el arbol temporal y luego se apuntan al tmp como antes
@@ -82,24 +85,23 @@ def main():
     check("la cuarentena ya NO entra por aqui",
           not any("192.168.1.50" in " ".join(r) for r in rec), rec)
 
-    # --- la pagina de Accesos --------------------------------------------------------------
+    # (adaptada, 2026-10-14: «vamos hacer un solo LOG») Accesos y Bitacora son UN registro.
+    # Lo que se sigue protegiendo: los fallidos se ven, nada sale dos veces y nada se pierde.
     acc = ns["log_page"]()
-    check("se llama Accesos al panel", "<h1>Accesos al panel</h1>" in acc, acc[:400])
+    check("/log abre el Registro con el filtro Accesos puesto",
+          "<h1>Registro</h1>" in acc and "class='rtipo on' data-tipo='accesos'" in acc, acc[:400])
     check("los intentos fallidos se ven: son el unico sitio donde estan",
-          "FAIL" in acc and "BLOQUEADO" in acc, "")
-    check("y el que entro tambien", "OK" in acc, "")
-    check("no se listan cuarentenas", "192.168.1.50" not in acc, "")
-    check("ni queda la columna Tipo, que solo servia para separarlas",
-          "<th>Tipo</th>" not in acc, "")
-    check("y manda a la Bitacora para saber que se hizo dentro",
-          "Bitacora" in acc, "")
-
-    # --- lo que NO se perdio ----------------------------------------------------------------
+          "CLAVE INCORRECTA" in acc and "BLOQUEADO" in acc, "")
     bit = ns["bitacora_page"]()
-    check("la cuarentena sigue estando en la bitacora, con su IP",
-          "192.168.1.50" in bit, "")
+    check("/bitacora abre el Registro completo", "class='rtipo on' data-tipo=''" in bit, "")
+    check("el que entro sale UNA vez (login.log y el LOGIN de la bitacora eran el mismo)",
+          bit.count("ENTRÓ") == 1 and ">LOGIN<" not in bit, bit.count("ENTRÓ"))
+    check("la cuarentena sale UNA vez, con su IP (no se relee el log de MikroTik)",
+          bit.count("192.168.1.50") == 2, bit.count("192.168.1.50"))       # celda + texto de busqueda
     check("junto a los cambios de configuracion", "CONFIG-MIKROTIK" in bit, "")
-    check("y al login que si entro", "LOGIN" in bit, "")
+    check("cada fila lleva su tipo para filtrar",
+          'data-t="accesos"' in bit and 'data-t="cuarentena"' in bit and 'data-t="configuracion"' in bit, "")
+    check("y los fallos se marcan para el filtro Fallos", bit.count('data-e="1"') == 2, bit.count('data-e="1"'))
 
     # --- la separacion, dicha de una vez ------------------------------------------------------
     # Si algun dia vuelve a leerse MK_LOG desde Accesos, esto lo caza.
@@ -107,6 +109,9 @@ def main():
         n for n in ARBOL.body
         if getattr(n, "name", "") == "accesos_recientes")) or ""
     check("Accesos no vuelve a leer el log de cuarentena", "MK_LOG" not in fuente, fuente)
+    fuente_r = ast.get_source_segment(DASH, next(
+        n for n in ARBOL.body if getattr(n, "name", "") == "registro_eventos")) or ""
+    check("ni el Registro: la cuarentena ya esta en la bitacora", "MK_LOG" not in fuente_r.split('"""')[-1], "")
 
     print("\n" + ("TODO OK" if not fallos else "%d fallo(s)" % fallos))
     return 1 if fallos else 0
@@ -115,7 +120,7 @@ def main():
 
 class Legado(unittest.TestCase):
     def test_legado(self):
-        """Tipo: conservacion (prueba heredada de suricata-ids-lab). Accesos y Bitacora: cada pestana responde una sola pregunta."""
+        """Tipo: conservacion, adaptada (2026-10-14): Accesos y Bitacora son un solo Registro; los intentos fallidos se siguen viendo y nada sale dos veces."""
         _comun.correr_main(self, main)
 
 

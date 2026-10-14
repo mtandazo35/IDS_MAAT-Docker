@@ -9071,7 +9071,7 @@ _NAV_LINKS = [("/", "En vivo"), ("/top", "Top origenes"), ("/detalle", "Detalle"
 # Ajustes y el menu del usuario): se abre desde Ajustes -> Puntos
 _NAV_SOLO_ADMIN = ("/exclusiones", "/puntos")
 # paginas que no dependen del nodo: no llevan selector (CONTRATO-F2 §10, inv_B §2)
-_NAV_SIN_NODO = ("/ajustes", "/puntos", "/log", "/bitacora", "/documentacion")
+_NAV_SIN_NODO = ("/ajustes", "/puntos", "/registro", "/log", "/bitacora", "/documentacion")
 
 def qs_nodo(prefijo="&"):
     """"&nodo=pNNN" del nodo que se mira, para los enlaces que se comparten o se abren en otra
@@ -11181,7 +11181,7 @@ def perfil_page(msg="", ok=False, edit_user=None):
         card_acceso = (
             "<section class='card conf'><h2>IPs de confianza</h2>"
             "<p class=sub2>Desde donde se puede abrir el panel. Quien entro y cuando esta en el apartado "
-            "<b>Accesos</b>.</p>" + estado + ctab + addc +
+            "<b>Registro</b>.</p>" + estado + ctab + addc +
             "<h3 class=ch>IPs bloqueadas por fallos</h3>" + blq + rescate +
             "</section>")
     css = (
@@ -11418,8 +11418,8 @@ def perfil_page(msg="", ok=False, edit_user=None):
                   "usuarios": "Altas, roles y accesos", "acceso": "Desde donde se puede entrar",
                   "mikrotik": "Router, API y address-lists", "puntos": "Cada MikroTik con su VPN y Suricata",
                   "dns": "Resolucion de nombres", "feeds": "Listas de reputacion y claves",
-                  "update": "Version y actualizaciones", "log": "Quien entro y cuando",
-                  "bitacora": "Auditoria de cambios", "doc": "Guia de uso del panel"}
+                  "update": "Version y actualizaciones",
+                  "registro": "Accesos y cambios: quién, qué y cuándo", "doc": "Guia de uso del panel"}
     _TILE_CLS = ("tw-group tw-flex tw-items-start tw-gap-3.5 tw-rounded-md tw-border tw-border-line "
                  "tw-bg-surface tw-p-4 tw-no-underline tw-shadow-1 tw-transition "
                  "hover:tw--translate-y-0.5 hover:tw-border-brand hover:tw-shadow-2 tw-cursor-pointer")
@@ -11444,8 +11444,7 @@ def perfil_page(msg="", ok=False, edit_user=None):
              + _tile("dns", "DNS", _IC_DNS, bool(card_dns))
              + _tile("feeds", "Reputación", _IC_FEED, bool(card_feeds))
              + _tile("update", "Version", _IC_DL, bool(card_update))
-             + _tile("log", "Accesos", _IC_LOG, es_admin)
-             + _tile("bitacora", "Bitacora", _IC_AUDIT, es_admin)
+             + _tile("registro", "Registro", _IC_AUDIT, es_admin)
              + _tile("doc", "Documentacion", _IC_BOOK, True))
     hub = f"<div class='tw-my-5 tw-grid tw-gap-3.5 tw-grid-cols-[repeat(auto-fill,minmax(250px,1fr))]'>{tiles}</div>"
     def _modal(sid, contenido, clase=""):
@@ -11459,8 +11458,7 @@ def perfil_page(msg="", ok=False, edit_user=None):
               + _mcard("dns", card_dns) + _mcard("feeds", card_feeds)
               + _mcard("update", card_update))
     if es_admin:
-        modals += _modal("log", "<iframe class=aptframe data-src='/log?embed=1'></iframe>")
-        modals += _modal("bitacora", "<iframe class=aptframe data-src='/bitacora?embed=1'></iframe>")
+        modals += _modal("registro", "<iframe class=aptframe data-src='/registro?embed=1'></iframe>")
     modals += _modal("doc", "<iframe class=aptframe data-src='/documentacion?embed=1'></iframe>")
     hubcss = ("<style>"
               ".aptmodal{display:none;position:fixed;inset:0;background:rgba(11,11,11,.5);z-index:90;align-items:center;justify-content:center;padding:24px;overflow:auto}"
@@ -11890,7 +11888,7 @@ Suricata".</td></tr>
 <tr><td><b>Ajustes</b></td><td>Tu cuenta (clave y foto). Si eres <b>administrador</b>, ademas: <b>usuarios</b>
 (crear/editar/borrar/rol), <b>datos de la empresa</b> (nombre y logo de la barra), <b>MikroTik</b>
 (conexion por nodo y politicas de cuarentena), <b>Puntos</b>, <b>Reputacion/feeds</b> (Auth-Key de
-abuse.ch), <b>Bitacora</b>, <b>Documentacion</b> y la <b>Version</b> instalada (solo lectura).</td></tr>
+abuse.ch), <b>Registro</b> (accesos y cambios), <b>Documentacion</b> y la <b>Version</b> instalada (solo lectura).</td></tr>
 <tr><td><b>Documentacion</b></td><td>Esta pagina.</td></tr>
 <tr><td><b>Selector de nodo</b> (en la barra)</td><td>Elige que se mira: <b>Todos los nodos
 (acumulado)</b> o un punto concreto, con el color de su salud. Con un nodo elegido cada pantalla
@@ -12459,7 +12457,7 @@ que ademas resume la conexion de cada nodo.</li>
 se fija la huella de su certificado; si un dia cambia, la conexion se rechaza hasta que lo revises.</li>
 <li>En <b>Cuarentena</b>, cada CPE infectado confirmado muestra <b>Enviar a cuarentena</b>
 (lo agrega a la lista de <b>su</b> nodo) y luego <b>Quitar</b> (lo saca). Todo queda en el registro de
-cuarentena del panel y en la <b>Bitacora</b>.</li>
+cuarentena del panel y en el <b>Registro</b>.</li>
 </ol>
 <p>En la tabla <b>Enviados manualmente</b> puedes <b>ordenar por cualquier columna</b>: haz
 clic en la cabecera (CPE, Lista, Por, Enviado, Ultima revision&hellip;) para ordenar de forma
@@ -12978,18 +12976,20 @@ como <i>SSH</i> y <i>Escaneo de puertos</i>, no como fuerza bruta.</li>
 categorias.</li>
 </ul>
 
-<h2>Accesos y Bitacora: que mira cada una</h2>
-<p>Son dos preguntas distintas y cada pestana responde una sola:</p>
+<h2>Registro: accesos y cambios en un solo sitio</h2>
+<p><b>Ajustes &rarr; Registro</b> junta en una tabla, mas nuevo primero:</p>
 <ul>
-<li><b>Ajustes &rarr; Accesos</b>: <b>quien intento entrar</b> al panel. Los que entraron, los que
-fallaron la clave y las IPs bloqueadas por insistir. Es el unico sitio donde se ven los intentos
-<b>fallidos</b>, asi que es la pestana que hay que mirar ante una sospecha de fuerza bruta.</li>
-<li><b>Ajustes &rarr; Bitacora</b>: <b>que se hizo</b> una vez dentro. Envios y quitados de
-cuarentena, cambios de configuracion, altas y bajas de usuarios, actualizaciones y denuncias, con
-<b>quien, que, cuando y desde que IP</b>. Incluye las acciones automaticas (<code>por=auto</code>).</li>
+<li><b>Accesos</b>: <b>quien intento entrar</b> al panel. Los que entraron, los que fallaron la clave
+y las IPs bloqueadas por insistir. Es el unico sitio donde se ven los intentos <b>fallidos</b>: es lo
+que hay que mirar ante una sospecha de fuerza bruta (filtro <b>Fallos</b>).</li>
+<li><b>Cuarentena</b>, <b>Configuracion</b> y <b>Usuarios</b>: <b>que se hizo</b> una vez dentro; <b>Sistema</b>, lo que hace el panel solo (errores internos, informe diario).
+Envios y quitados de cuarentena, cambios de configuracion, altas y bajas de usuarios, actualizaciones
+y denuncias, con <b>quien, que, cuando y desde que IP</b>. Incluye las acciones automaticas
+(<code>por=auto</code>).</li>
 </ul>
-<p>Las dos tienen buscador y paginacion, y las dos se podan a los
-<b>15 dias</b> (<code>LOG_RETENCION_DIAS</code>).</p>
+<p>Los botones de arriba filtran por tipo; <b>Fallos</b> junta los intentos fallidos y todo lo que
+salio con error. Tiene buscador y paginacion, y se poda a los <b>15 dias</b>
+(<code>LOG_RETENCION_DIAS</code>).</p>
 
 <h2>IPs de confianza: desde donde se entra</h2>
 <p>En <b>Ajustes &rarr; IPs de confianza</b> se decide desde donde se puede abrir el panel. Arriba se
@@ -13249,77 +13249,146 @@ que vuelve a levantar los contenedores de cada punto.</p>"""
             "})();</script></body></html>")
     return body
 
-def log_page(embed=False):
-    """Pestana Accesos: quien intento entrar al panel. Solo admin."""
+def _registro_tipo(accion):
+    """(tipo, fallo) de una accion de la bitacora. Tipos: accesos, cuarentena, usuarios, sistema
+    (lo que hace el panel solo: errores internos, hilos, informe) y configuracion (todo lo demas).
+    «fallo» se cruza con todos: lo que salio mal."""
+    a = (accion or "").upper()
+    fallo = "ERROR" in a or "FALLO" in a or a == "SIN-PERMISO"
+    if a.startswith(("LOGIN", "LOGOUT", "SESION", "SIN-PERMISO", "CONFIANZA", "DESBLOQ")):
+        return "accesos", fallo
+    if a.startswith(("USUARIO", "CLAVE", "PERFIL", "RESTABLECER")):
+        return "usuarios", fallo
+    if a.startswith(("ENVIADO", "QUITADO", "AUTO-", "POLITICA", "CUARENTENA", "LIBERADO", "OMITIDO",
+                     "GRADUADA", "DESTINO-", "EXCLUIR-DESTINO", "QUITAR-DESTINO", "LISTAS-RECARGADAS",
+                     "MK-PAUSA", "ERROR-ENVIO", "ERROR-DESTINO", "ERROR-GRADUADA", "DENUNCIA",
+                     "PUBLICA-", "CONSULTA-ABUSEIPDB")):
+        return "cuarentena", fallo
+    if a.startswith(("ERROR-PANEL", "FONDO-", "HILO-", "INFORME-DIARIO", "MIGRA")):
+        return "sistema", fallo
+    return "configuracion", fallo
+
+# lo que dice cada resultado de login.log, en castellano
+_ACCESO_TXT = {"OK": "ENTRÓ", "FAIL": "CLAVE INCORRECTA", "BLOQUEADO": "BLOQUEADO"}
+
+def registro_eventos(n=2500):
+    """Un solo registro (el user, 2026-10-14: «vamos hacer un solo LOG»): los intentos de entrar
+    (login.log) y lo que se hizo dentro (bitacora.log), mezclados por fecha, mas nuevo primero.
+    [{ts, tipo, fallo, usuario, ip, que, detalle}].
+
+    No se lee el log de cuarentena de MikroTik (MK_LOG): mk_log() ya escribe cada cuarentena en
+    la bitacora y saldria dos veces. Por lo mismo el LOGIN de la bitacora no se usa: el que entro
+    ya esta en login.log, que ademas tiene los intentos FALLIDOS (el unico sitio donde estan)."""
+    evs = []
+    for ts, ip, us, est in accesos_recientes(n):
+        e = (est or "").upper()
+        evs.append({"ts": ts, "tipo": "accesos", "usuario": us, "ip": ip,
+                    "que": _ACCESO_TXT.get(e, est), "detalle": "",
+                    "fallo": e in ("FAIL", "BLOQUEADO") or e.startswith("ERROR")})
+    for ln in _cola_lineas(BITACORA_LOG, 600000)[-n:]:
+        p = ln.rstrip("\n").split("\t")
+        if len(p) < 4 or p[3].upper() == "LOGIN":
+            continue
+        tipo, fallo = _registro_tipo(p[3])
+        evs.append({"ts": p[0], "tipo": tipo, "usuario": p[1], "ip": p[2], "que": p[3],
+                    "detalle": p[4] if len(p) > 4 else "", "fallo": fallo})
+    evs.sort(key=lambda e: e["ts"], reverse=True)
+    return evs[:n]
+
+REGISTRO_TIPOS = (("", "Todo"), ("accesos", "Accesos"), ("cuarentena", "Cuarentena"),
+                  ("configuracion", "Configuración"), ("usuarios", "Usuarios"), ("sistema", "Sistema"),
+                  ("fallos", "Fallos"))
+
+def registro_page(embed=False, tipo=""):
+    """El registro unico: accesos y cambios en una tabla, con filtro por tipo, buscador y paginas.
+    Sustituye a las pestanas Accesos y Bitacora (/log y /bitacora la abren con su filtro)."""
     esc = html.escape
-    _col = {"OK": "#12b886", "FAIL": "#e34948", "BLOQUEADO": "#eb6834"}
-    def estb(e):
-        if e in _col:
-            c = _col[e]
-        elif e.startswith("DESBLOQUEO"):
-            c = "#2a78d6"
-        elif e.startswith("ERROR"):
-            c = "#e58a00"
-        else:
-            c = "#8a8a86"
-        return (f'<span style="background:{c};color:#fff;font-size:10px;font-weight:700;'
-                f'padding:2px 8px;border-radius:20px">{esc(e)}</span>')
-    rec = accesos_recientes(800)
-    if rec:
-        rows = "".join(
-            f"<tr data-f=\"{esc((ts + ' ' + ip + ' ' + us + ' ' + est).lower())}\">"
-            f"<td class=mono>{esc(ts)}</td><td class=mono>{esc(ip)}</td>"
-            f"<td>{esc(us) or '<span style=color:#c3c2be>&mdash;</span>'}</td>"
-            f"<td>{estb(est)}</td></tr>"
-            for ts, ip, us, est in rec)
-        cuerpo = ("<div class=twrap><table class=ut><thead><tr><th>Fecha (Ecuador)</th><th>IP</th>"
-                  f"<th>Usuario</th><th>Resultado</th></tr></thead><tbody id=logbody>{rows}</tbody></table></div>"
+    tipo = tipo if tipo in dict(REGISTRO_TIPOS) else ""
+    _col_tipo = {"accesos": "#12b886", "cuarentena": "#b52a2a", "usuarios": "#7048e8",
+                 "configuracion": "#2a78d6", "sistema": "#6b6a66"}
+    _nom_tipo = {"accesos": "Acceso", "cuarentena": "Cuarentena", "usuarios": "Usuarios",
+                 "configuracion": "Configuración", "sistema": "Sistema"}
+
+    def chip(txt, color):
+        return (f'<span style="background:{color};color:#fff;font-size:10px;font-weight:700;'
+                f'padding:2px 8px;border-radius:20px">{esc(txt)}</span>')
+    rows = ""
+    for e in registro_eventos():
+        que = chip(e["que"], "#e34948" if e["fallo"] else "#6b6a66")
+        rows += (f"<tr data-t=\"{e['tipo']}\" data-e=\"{'1' if e['fallo'] else ''}\" data-f=\""
+                 f"{esc((e['ts'] + ' ' + e['usuario'] + ' ' + e['ip'] + ' ' + e['que'] + ' ' + e['detalle']).lower())}\">"
+                 f"<td class=mono>{esc(e['ts'])}</td>"
+                 f"<td>{chip(_nom_tipo[e['tipo']], _col_tipo[e['tipo']])}</td>"
+                 f"<td>{esc(e['usuario']) or '<span style=color:#c3c2be>&mdash;</span>'}</td>"
+                 f"<td class=mono>{esc(e['ip'])}</td><td>{que}</td><td class=det>{esc(e['detalle'])}</td></tr>")
+    if rows:
+        cuerpo = ("<div class=twrap><table class=ut><thead><tr><th>Fecha (Ecuador)</th><th>Tipo</th>"
+                  "<th>Usuario</th><th>IP</th><th>Qué pasó</th><th>Detalle</th></tr></thead>"
+                  f"<tbody id=logbody>{rows}</tbody></table></div>"
                   "<div class=pager><button id=lprev type=button onclick=lprev()>&larr; Anterior</button>"
                   "<span id=lpi></span>"
                   "<button id=lnext type=button onclick=lnext()>Siguiente &rarr;</button></div>")
     else:
-        cuerpo = "<p class=sub2>Todavia no hay ningun intento de acceso registrado.</p>"
+        cuerpo = "<p class=sub2>Todavía no hay nada registrado.</p>"
+    chips = "".join("<button type=button class='rtipo%s' data-tipo='%s' onclick='rtipo(this)'>%s</button>"
+                    % (" on" if k == tipo else "", k, v) for k, v in REGISTRO_TIPOS)
     css = (
         BASE_CSS +
         "main{max-width:1360px;padding:22px 28px 40px}"
         "h1{margin:0 0 2px}.sub2{color:#6b6a66;margin:0 0 14px}"
         ".card{border:1px solid #e7e6e2;border-radius:14px;padding:20px;background:#fff;box-shadow:0 1px 3px rgba(0,0,0,.03)}"
         ".uhead{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:10px}"
+        ".rtipos{display:flex;gap:6px;flex-wrap:wrap}"
+        ".rtipo{font:600 12.5px system-ui;padding:6px 12px;border:1px solid #d7d6d2;background:#fff;border-radius:999px;"
+        "cursor:pointer;color:#33322f}.rtipo:hover{background:#eef4fd;border-color:#a7c0ea}"
+        ".rtipo.on{background:#1c5cab;border-color:#1c5cab;color:#fff}"
         ".search{width:240px;padding:8px 12px;border:1px solid #d7d6d2;border-radius:8px;font:14px system-ui}"
         ".twrap{overflow-x:auto;border:1px solid #eee;border-radius:10px}"
         ".ut{width:100%;border-collapse:collapse;font-size:13px;white-space:nowrap}"
         ".ut th{text-align:left;color:#8a8a86;font-weight:600;padding:10px 12px;background:#fafafa;border-bottom:1px solid #eee}"
         ".ut td{padding:8px 12px;border-bottom:1px solid #f2f1ee}"
         ".ut tbody tr:last-child td{border-bottom:0}.ut tbody tr:hover{background:#fafbfd}"
-        ".det{white-space:normal;color:#6b6a66;font-size:12px;max-width:320px}"
+        ".det{white-space:normal;color:#6b6a66;font-size:12px;max-width:360px}"
         ".pager{display:flex;align-items:center;gap:12px;margin-top:12px;flex-wrap:wrap}"
         ".pager button{font:13px system-ui;padding:6px 12px;border:1px solid #d7d6d2;background:#fff;border-radius:8px;cursor:pointer;color:#0b0b0b}"
         ".pager button:hover:not(:disabled){background:#eef4fd;border-color:#2a78d6}"
         ".pager button:disabled{opacity:.4;cursor:default}.pager #lpi{font-weight:600;font-size:13px;color:#52514e}")
     script = ("<script>(function(){var SIZE=50,page=0,"
-              "rows=[].slice.call(document.querySelectorAll('#logbody tr')),q='';"
-              "function filtered(){return rows.filter(function(r){return (r.getAttribute('data-f')||'').indexOf(q)>=0;});}"
-              "function render(){var f=filtered(),pages=Math.max(1,Math.ceil(f.length/SIZE));"
+              "rows=[].slice.call(document.querySelectorAll('#logbody tr')),q='',t=" + json.dumps(tipo) + ";"
+              "function vale(r){if(t==='fallos'){if(!r.getAttribute('data-e'))return false;}"
+              "else if(t&&r.getAttribute('data-t')!==t)return false;"
+              "return (r.getAttribute('data-f')||'').indexOf(q)>=0;}"
+              "function render(){var f=rows.filter(vale),pages=Math.max(1,Math.ceil(f.length/SIZE));"
               "if(page>=pages)page=pages-1;if(page<0)page=0;"
               "rows.forEach(function(r){r.style.display='none';});"
               "f.slice(page*SIZE,page*SIZE+SIZE).forEach(function(r){r.style.display='';});"
-              "var pi=document.getElementById('lpi');if(pi)pi.textContent='Pagina '+(page+1)+' de '+pages+' ('+f.length+' registros)';"
+              "var pi=document.getElementById('lpi');if(pi)pi.textContent='Página '+(page+1)+' de '+pages+' ('+f.length+' registros)';"
               "var pv=document.getElementById('lprev'),nx=document.getElementById('lnext');"
               "if(pv)pv.disabled=page<=0;if(nx)nx.disabled=page>=pages-1;}"
+              "window.rtipo=function(b){t=b.getAttribute('data-tipo')||'';page=0;"
+              "[].forEach.call(document.querySelectorAll('.rtipo'),function(x){x.classList.toggle('on',x===b);});render();};"
               "window.lfiltrar=function(){q=(document.getElementById('lsearch').value||'').toLowerCase();page=0;render();};"
               "window.lprev=function(){page--;render();};window.lnext=function(){page++;render();};"
               "if(rows.length)render();})();</script>")
     return ("<!doctype html><html lang=es><head><meta charset=utf-8><link rel=icon type=image/png href=/favicon.ico>"
             "<meta name=viewport content='width=device-width,initial-scale=1'><title>Suricata</title>"
-            f"<style>{css}</style></head><body>" + ("" if embed else nav("/log")) +
-            "<main><h1>Accesos al panel</h1>"
-            "<p class=sub2>Cada intento de entrar: los que entraron, los que fallaron la clave y "
-            "las IPs bloqueadas por insistir. Lo que se <b>hace</b> dentro del panel (cuarentenas, "
-            "configuracion, usuarios) esta en <b>Bitacora</b>. "
-            f"Los registros de mas de {LOG_RETENCION_DIAS} dias se borran solos.</p>"
-            "<section class=card><div class=uhead><h2 style='font-size:15px;margin:0'>Ultimos intentos</h2>"
-            "<input class=search id=lsearch placeholder='Buscar IP o usuario...' oninput='lfiltrar()'></div>"
+            f"<style>{css}</style></head><body>" + ("" if embed else nav("/ajustes")) +
+            "<main><h1>Registro</h1>"
+            "<p class=sub2>Todo en un sitio: <b>quién intentó entrar</b> al panel (también los intentos "
+            "fallidos y las IPs bloqueadas) y <b>qué se hizo dentro</b> (cuarentenas, configuración, "
+            "usuarios), con quién, cuándo y desde qué IP. Incluye las acciones automáticas. "
+            f"Lo de más de {LOG_RETENCION_DIAS} días se borra solo.</p>"
+            "<section class=card><div class=uhead><div class=rtipos>" + chips + "</div>"
+            "<input class=search id=lsearch placeholder='Buscar usuario, IP, acción...' oninput='lfiltrar()'></div>"
             + cuerpo + "</section></main>" + script + "</body></html>")
+
+def log_page(embed=False):
+    """/log: el registro con el filtro Accesos (antes era su propia pestana)."""
+    return registro_page(embed, "accesos")
+
+def bitacora_page(embed=False):
+    """/bitacora: el registro completo (antes era su propia pestana)."""
+    return registro_page(embed, "")
 
 def rid_de_publica(ip):
     """De que nodo es esa publica, segun lo declarado. "" si no cae en ninguno.
@@ -13879,81 +13948,6 @@ def reputacion_page(res=None, texto="", msg="", ok=False, es_admin=False, volver
             + ("".join(tarjetas) if tarjetas else "")
             + ("" if res else pub_html)
             + "</main>" + aviso_js + "</body></html>")
-
-def bitacora_page(embed=False):
-    """Bitacora auditable: quien hizo que y cuando (logins, cuarentenas, config, usuarios, updates)."""
-    esc = html.escape
-    # la cola, no el archivo entero: readlines() cargaba en memoria toda la bitacora
-    # para quedarse con las ultimas 1500 lineas. Una linea cortada por el corte de bytes
-    # se cae sola mas abajo, donde se exigen 4 campos.
-    lineas = _cola_lineas(BITACORA_LOG, 400000)[-1500:]
-    lineas.reverse()
-    def accb(a):
-        au = a.upper(); c = "#8a8a86"
-        if au.startswith("LOGIN"): c = "#12b886"
-        elif "ELIMINA" in au or au.startswith("ERROR"): c = "#e34948"
-        elif au.startswith("USUARIO"): c = "#7048e8"
-        elif au.startswith("CONFIG") or au.startswith("ACTUALIZAR"): c = "#2a78d6"
-        elif au.startswith("ENVIADO") or "CUARENTENA" in au or au.startswith("QUITADO") or au.startswith("AUTO"): c = "#b52a2a"
-        return (f'<span style="background:{c};color:#fff;font-size:10px;font-weight:700;'
-                f'padding:2px 8px;border-radius:20px">{esc(a)}</span>')
-    rows = ""
-    for ln in lineas:
-        p = ln.rstrip("\n").split("\t")
-        if len(p) < 4:
-            continue
-        ts, us, ip, acc = p[0], p[1], p[2], p[3]
-        det = p[4] if len(p) > 4 else ""
-        rows += (f"<tr data-f=\"{esc((ts + ' ' + us + ' ' + ip + ' ' + acc + ' ' + det).lower())}\">"
-                 f"<td class=mono>{esc(ts)}</td><td>{esc(us) or '&mdash;'}</td><td class=mono>{esc(ip)}</td>"
-                 f"<td>{accb(acc)}</td><td class=det>{esc(det)}</td></tr>")
-    if rows:
-        cuerpo = ("<div class=twrap><table class=ut><thead><tr><th>Fecha (Ecuador)</th><th>Usuario</th><th>IP</th>"
-                  f"<th>Accion</th><th>Detalle</th></tr></thead><tbody id=logbody>{rows}</tbody></table></div>"
-                  "<div class=pager><button id=lprev type=button onclick=lprev()>&larr; Anterior</button>"
-                  "<span id=lpi></span>"
-                  "<button id=lnext type=button onclick=lnext()>Siguiente &rarr;</button></div>")
-    else:
-        cuerpo = "<p class=sub2>Sin acciones registradas todavia.</p>"
-    css = (
-        BASE_CSS +
-        "main{max-width:1360px;padding:22px 28px 40px}"
-        "h1{margin:0 0 2px}.sub2{color:#6b6a66;margin:0 0 14px}"
-        ".card{border:1px solid #e7e6e2;border-radius:14px;padding:20px;background:#fff;box-shadow:0 1px 3px rgba(0,0,0,.03)}"
-        ".uhead{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:10px}"
-        ".search{width:240px;padding:8px 12px;border:1px solid #d7d6d2;border-radius:8px;font:14px system-ui}"
-        ".twrap{overflow-x:auto;border:1px solid #eee;border-radius:10px}"
-        ".ut{width:100%;border-collapse:collapse;font-size:13px;white-space:nowrap}"
-        ".ut th{text-align:left;color:#8a8a86;font-weight:600;padding:10px 12px;background:#fafafa;border-bottom:1px solid #eee}"
-        ".ut td{padding:8px 12px;border-bottom:1px solid #f2f1ee}"
-        ".ut tbody tr:last-child td{border-bottom:0}.ut tbody tr:hover{background:#fafbfd}"
-        ".det{white-space:normal;color:#6b6a66;font-size:12px;max-width:360px}"
-        ".pager{display:flex;align-items:center;gap:12px;margin-top:12px;flex-wrap:wrap}"
-        ".pager button{font:13px system-ui;padding:6px 12px;border:1px solid #d7d6d2;background:#fff;border-radius:8px;cursor:pointer;color:#0b0b0b}"
-        ".pager button:hover:not(:disabled){background:#eef4fd;border-color:#2a78d6}"
-        ".pager button:disabled{opacity:.4;cursor:default}.pager #lpi{font-weight:600;font-size:13px;color:#52514e}")
-    script = ("<script>(function(){var SIZE=50,page=0,"
-              "rows=[].slice.call(document.querySelectorAll('#logbody tr')),q='';"
-              "function filtered(){return rows.filter(function(r){return (r.getAttribute('data-f')||'').indexOf(q)>=0;});}"
-              "function render(){var f=filtered(),pages=Math.max(1,Math.ceil(f.length/SIZE));"
-              "if(page>=pages)page=pages-1;if(page<0)page=0;"
-              "rows.forEach(function(r){r.style.display='none';});"
-              "f.slice(page*SIZE,page*SIZE+SIZE).forEach(function(r){r.style.display='';});"
-              "var pi=document.getElementById('lpi');if(pi)pi.textContent='Pagina '+(page+1)+' de '+pages+' ('+f.length+' registros)';"
-              "var pv=document.getElementById('lprev'),nx=document.getElementById('lnext');"
-              "if(pv)pv.disabled=page<=0;if(nx)nx.disabled=page>=pages-1;}"
-              "window.lfiltrar=function(){q=(document.getElementById('lsearch').value||'').toLowerCase();page=0;render();};"
-              "window.lprev=function(){page--;render();};window.lnext=function(){page++;render();};"
-              "if(rows.length)render();})();</script>")
-    return ("<!doctype html><html lang=es><head><meta charset=utf-8><link rel=icon type=image/png href=/favicon.ico>"
-            "<meta name=viewport content='width=device-width,initial-scale=1'><title>Suricata</title>"
-            f"<style>{css}</style></head><body>" + ("" if embed else nav("/ajustes")) +
-            "<main><h1>Bitacora de acciones</h1>"
-            "<p class=sub2>Auditoria: quien hizo que y cuando (accesos, cuarentenas, cambios de "
-            "configuracion, usuarios y actualizaciones).</p>"
-            "<section class=card><div class=uhead><h2 style='font-size:15px;margin:0'>Ultimas acciones</h2>"
-            "<input class=search id=lsearch placeholder='Buscar usuario, IP, accion...' oninput='lfiltrar()'></div>"
-            + cuerpo + "</section></main>" + script + "</body></html>")
 
 METRICAS_FILE = "metricas.json"   # por nodo: nodos/<pid>/metricas.json (cargar_metricas usa nodos.salida)
 
@@ -17121,7 +17115,7 @@ _RE_URL_ATTR = re.compile(r"(?<![\w-])((?:href|action|formaction)\s*=\s*)([\"']?
 # lo que no depende del nodo (estaticos y las paginas sin selector: Puntos, operaciones,
 # Ajustes, logs, Documentacion) se deja como esta
 _SIN_NODO = ("/login", "/logout", "/logo.png", "/favicon.ico", "/mi-foto", "/mapa/", "/vendor/",
-             "/puntos", "/operaciones", "/ajustes", "/log", "/bitacora", "/documentacion", "/perfil")
+             "/puntos", "/operaciones", "/ajustes", "/registro", "/log", "/bitacora", "/documentacion", "/perfil")
 
 def url_con_nodo(url, nodo=None, amp="&"):
     """`url` (ruta interna) con `nodo=` del nodo que se mira, si no lo lleva ya."""
@@ -17739,6 +17733,12 @@ class H(BaseHTTPRequestHandler):
             _qs = _up.parse_qs(self.path.split("?", 1)[1]) if "?" in self.path else {}
             return self._html(ficha_page(_qs.get("ip", [""])[0],
                                          embed=("embed=1" in (self.path.split("?", 1)[1] if "?" in self.path else ""))))
+        if path == "/registro":
+            if not self._admin():
+                return self._prohibido()   # el registro (accesos y auditoria) es solo de admin
+            _qr = urllib.parse.parse_qs(self.path.split("?", 1)[1]) if "?" in self.path else {}
+            return self._html(registro_page(embed=_qr.get("embed", [""])[0] == "1",
+                                            tipo=(_qr.get("tipo", [""])[0] or "")))
         if path == "/log":
             if not self._admin():
                 return self._prohibido()   # lectura no ve el log de accesos
