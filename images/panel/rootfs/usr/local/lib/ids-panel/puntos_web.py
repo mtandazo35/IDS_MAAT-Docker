@@ -475,8 +475,11 @@ _CSS = (
     ".edot{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:6px;vertical-align:middle}"
     ".btn{display:inline-block;padding:9px 16px;background:#2a78d6;color:#fff;border:0;border-radius:9px;"
     "font:600 13px system-ui;cursor:pointer;text-decoration:none}"
-    ".btn:hover{background:#1c5cab}.btn.sec{background:#fff;color:#33322f;border:1px solid #d7d6d2}"
-    ".btn.sec:hover{background:#f4f4f2}.btn.peligro{background:#c0392b}.btn.peligro:hover{background:#9c2f22}"
+    # el color va tambien en :hover: el `a:hover{color:var(--brand-ink)}` del CSS comun pesa mas que
+    # `.btn` en un <a class=btn> y dejaba el texto azul sobre el fondo azul («desaparecen las letras»)
+    ".btn:hover{background:#1c5cab;color:#fff}.btn.sec{background:#fff;color:#33322f;border:1px solid #d7d6d2}"
+    ".btn.sec:hover{background:#f4f4f2;color:#33322f}.btn.peligro{background:#c0392b}"
+    ".btn.peligro:hover{background:#9c2f22;color:#fff}"
     ".btn[disabled]{opacity:.5;cursor:default}"
     ".acciones{display:flex;gap:8px;flex-wrap:wrap;margin:10px 0}.acciones form{margin:0}"
     ".datos{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px}"

@@ -405,10 +405,10 @@ def main():
     ultimo_stats = {}
     for pid, p in PUNTOS.items():
         ruta = os.path.join(datos, pid, "eve.json")
-        if os.path.exists(ruta):
-            os.remove(ruta)
+        # vaciar, no borrar: en Windows os.remove falla (WinError 32) si el panel lo tiene abierto
+        os.makedirs(os.path.dirname(ruta), exist_ok=True)
+        open(ruta, "w").close()
         if p.get("sin_eventos"):
-            os.makedirs(os.path.dirname(ruta), exist_ok=True)
             continue
         fin = ahora - p.get("sin_espejo_h", 0) * 3600
         evs = eventos_ventana(pid, inicio, fin, ab)

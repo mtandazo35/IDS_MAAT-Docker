@@ -98,6 +98,21 @@ class Puntos(unittest.TestCase):
         self.assertEqual(self.p.pedir("GET", "/puntos/p009", cookie=self.ana).status, 404)
 
 
+class BotonEnlace(unittest.TestCase):
+    def test_el_texto_del_boton_no_desaparece_al_pasar_el_raton(self):
+        """Correccion de defecto (2026-10-14): «Agregar punto» es un <a class=btn> y el
+        `a:hover{color:var(--brand-ink)}` comun pesa mas que `.btn{color:#fff}`: al pasar el raton el
+        texto quedaba azul sobre el fondo azul. Cada :hover de .btn fija su color."""
+        p = PanelP()
+        self.addCleanup(p.cerrar)
+        h = p.pedir("GET", "/puntos", cookie=p.entrar("ana")).texto
+        self.assertIn("<a class=btn href='/puntos/nuevo'>Agregar punto</a>", h)
+        self.assertRegex(h, r"a:hover\{color:var\(--brand-ink\)\}")       # la regla que lo provocaba
+        for sel, color in ((r"\.btn:hover", "#fff"), (r"\.btn\.sec:hover", "#33322f"),
+                           (r"\.btn\.peligro:hover", "#fff")):
+            self.assertRegex(h, sel + r"\{[^}]*(?<![-\w])color:" + color)
+
+
 class Espejo(unittest.TestCase):
     def setUp(self):
         self.p = PanelP()
