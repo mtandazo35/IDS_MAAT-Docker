@@ -1952,16 +1952,61 @@ def rsc_de(tabla, props, comment=""):
     return "%s add %s" % (_TABLA_RSC[tabla], " ".join(partes))
 
 
-def _reglas_nuestras(s_, cat, deseadas=()):
+class ErrorLecturaMK(Exception):
+    """No se pudo LEER el router (transporte caido, timeout o !trap). No es «no hay nada»:
+    quien planifica tiene que parar, no proponer altas."""
+
+
+def _mk_print_estricto(s_, cmd, props):
+    """Como _mk_print (lista de diccionarios) pero sin tragarse los fallos: si el transporte
+    falla o el router contesta !trap/!fatal, lanza ErrorLecturaMK. _mk_print devuelve [] en
+    esos casos, y el plan de reglas leia eso como «el router no tiene nuestras reglas»:
+    proponia add y aplicar las DUPLICABA. `props` vacio = print sin proplist (todas las
+    propiedades)."""
+    palabras = [cmd] + (["=.proplist=" + ",".join(props)] if props else [])
+    try:
+        _mk_send(s_, palabras)
+        ok, frases, err = _mk_reply(s_)
+    except Exception as ex:
+        raise ErrorLecturaMK("no se pudo leer el router (%s): %s" % (cmd, ex)) from ex
+    # un !trap sin =message= deja err vacio y _mk_reply lo daria por bueno: se mira la frase
+    if not ok or any(f and f[0] in ("!trap", "!fatal") for f in frases):
+        raise ErrorLecturaMK("no se pudo leer el router: rechazo %s (%s)" % (cmd, err or "sin motivo"))
+    filas = []
+    for f in frases:
+        if not (f and f[0] == "!re"):
+            continue
+        d = {}
+        for a in f:
+            if a.startswith("=") and "=" in a[1:]:
+                k, v = a[1:].split("=", 1)
+                d[k] = v
+        filas.append(d)
+    return filas
+
+
+def _reglas_nuestras(s_, cat, deseadas=(), leidas=None):
     """{tabla: [fila]} de lo que ya hay en el router con nuestro comentario de esa clase.
     Se leen las propiedades de la tabla MAS las que usen las reglas deseadas (las propias
     pueden traer cualquier campo): si no se leyeran, compararian contra vacio y se
-    reescribirian en cada corrida."""
+    reescribirian en cada corrida.
+
+    La lectura es ESTRICTA: si el router no contesta o rechaza el print, ErrorLecturaMK (una
+    tabla que no se pudo leer no es una tabla vacia: el plan propondria add y duplicaria).
+
+    `leidas` (dict {tabla: filas}) reparte UNA lectura por tabla entre varias clases (el
+    estado de Ajustes, ocho clases). Ahi se lee sin proplist: cada clase pide propiedades
+    distintas (las propias, cualquier campo) y con todas no le falta ninguna."""
     out = {}
     pref = _prefijo_regla(cat)
     for tabla, props in _PROPS_TABLA.items():
-        extra = sorted({k for t, p in deseadas if t == tabla for k in p if not k.startswith("_")} - set(props))
-        filas = _mk_print(s_, tabla + "/print", [".id", "comment"] + props + extra)
+        if leidas is not None:
+            if tabla not in leidas:
+                leidas[tabla] = _mk_print_estricto(s_, tabla + "/print", [])
+            filas = leidas[tabla]
+        else:
+            extra = sorted({k for t, p in deseadas if t == tabla for k in p if not k.startswith("_")} - set(props))
+            filas = _mk_print_estricto(s_, tabla + "/print", [".id", "comment"] + props + extra)
         out[tabla] = [f for f in filas if (f.get("comment") or "").startswith(pref)]
     return out
 
@@ -1998,9 +2043,13 @@ def _plan(cat, deseadas, existentes):
     return acciones
 
 
-def _plan_en(s_, cat, accion=None, m=None, verificar=True):
+def _plan_en(s_, cat, accion=None, m=None, verificar=True, leidas=None):
     """El plan de una clase sobre una conexion YA abierta (el diagnostico lo llama ocho
-    veces con el mismo socket: un login por router, no por clase)."""
+    veces con el mismo socket: un login por router, no por clase).
+
+    Si no se puede leer el router lanza ErrorLecturaMK: sin saber que hay, no se propone
+    nada (un plan sobre una lectura fallida proponia add de reglas que ya estaban).
+    `leidas`: ver _reglas_nuestras (una lectura por tabla compartida entre clases)."""
     m = m if m is not None else _mk_globales()
     accion = accion or accion_de_clase(cat, m)
     lista = lista_de_categoria(cat)
@@ -2016,7 +2065,7 @@ def _plan_en(s_, cat, accion=None, m=None, verificar=True):
         deseadas = reglas_de_accion(cat, accion, lista, _params_accion(cat, m))
     if accion == "limitar" and not deseadas:
         aviso = "Falta el limite (ACCION_LIMITE_%s, p.ej. 2M): sin el no se aplica nada." % cat.upper()
-    existentes = _reglas_nuestras(s_, cat, deseadas)
+    existentes = _reglas_nuestras(s_, cat, deseadas, leidas)
     acciones = _plan(cat, deseadas, existentes)
     ver = []
     if verificar and deseadas:
@@ -2038,8 +2087,13 @@ def _plan_en(s_, cat, accion=None, m=None, verificar=True):
     _refs = {(t, p["_antes_de"], p.get("_antes_cadena", "")) for op, t, p, _c, _i in acciones
              if op == "add" and p.get("_antes_de")}
     for t, com_ref, cad in sorted(_refs):
+        # estricta: con la lectura fallida diria «no hay ninguna regla X» sin saberlo
+        if leidas is not None and t in leidas:
+            filas_t = leidas[t]
+        else:
+            filas_t = _mk_print_estricto(s_, t + "/print", [".id", "chain", "comment"])
         hay = any(f.get("comment") == com_ref and (not cad or f.get("chain") == cad)
-                  for f in _mk_print(s_, t + "/print", [".id", "chain", "comment"]))
+                  for f in filas_t)
         if not hay:
             aviso = ((aviso + " ") if aviso else "") + (
                 "En este router no hay ninguna regla '%s': las que iban delante de ella iran "
@@ -2068,14 +2122,25 @@ def estado_reglas(router, m=None):
 
     - aplicadas: el router ya tiene exactamente lo que toca (la vista previa daria 0 cambios);
     - pendientes: falta aplicar algo (o quedan reglas de una accion que ya no esta);
-    - ninguna: la clase no tiene accion y en el router no queda nada nuestro."""
+    - ninguna: la clase no tiene accion y en el router no queda nada nuestro;
+    - error: no se pudo calcular (p. ej. no se pudo leer el router: entonces TODAS las
+      clases salen en error, nunca «pendientes» por una tabla que no se leyo)."""
     m = m if m is not None else _mk_globales()
     s_ = mk_conectar(cargar_mk_de(router))
     out = {}
+    # cada tabla se lee UNA vez y se reparte entre las ocho clases: antes cada clase releia
+    # las cinco tablas (unas 40 lecturas por la VPN cada vez que se abria Ajustes)
+    leidas = {}
     try:
         for cat in ACCIONES_POR_CAT:
             try:
-                p = _plan_en(s_, cat, None, m, verificar=False)
+                p = _plan_en(s_, cat, None, m, verificar=False, leidas=leidas)
+            except ErrorLecturaMK as ex:
+                # sin lectura no se sabe nada de ninguna clase; y tras un fallo de transporte la
+                # conexion puede traer respuestas atrasadas: no se le pregunta nada mas
+                for c in ACCIONES_POR_CAT:
+                    out.setdefault(c, {"estado": "error", "cambios": 0, "msg": str(ex)[:160]})
+                break
             except Exception as ex:
                 out[cat] = {"estado": "error", "cambios": 0, "msg": str(ex)[:160]}
                 continue
