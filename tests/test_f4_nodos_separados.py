@@ -574,6 +574,42 @@ class UsuarioConMayusculas(unittest.TestCase):
         self.assertTrue(p.entrar("vicente"))
 
 
+class AuthKeyAbuseCh(Base):
+    def test_no_acepta_cualquier_clave(self):
+        """Correccion de defecto (el user: «por que acepta cualquier clave api»): la Auth-Key de abuse.ch
+        se validaba descargando el hostfile de URLhaus, que se sirve SIN clave. Ahora se pregunta a la API
+        de ThreatFox (servidor local que la imita): clave mala -> False; buena -> True; un 200 que no es
+        de la API (el hostfile) -> None, nunca True."""
+        import http.server
+        import threading
+
+        class AbuseCh(http.server.BaseHTTPRequestHandler):
+            def log_message(self, *a):
+                pass
+
+            def do_POST(self):
+                k = self.headers.get("Auth-Key", "")
+                self.rfile.read(int(self.headers.get("Content-Length") or 0))
+                if k == "hostfile":
+                    cod, cuerpo = 200, b"# abuse.ch URLhaus Host file" + bytes([10])
+                elif k == "buena":
+                    cod, cuerpo = 200, b'{"query_status": "no_result"}'
+                else:
+                    cod, cuerpo = 403, b'{"query_status": "unknown_auth_key"}'
+                self.send_response(cod)
+                self.send_header("Content-Length", str(len(cuerpo)))
+                self.end_headers()
+                self.wfile.write(cuerpo)
+        srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), AbuseCh)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        self.addCleanup(srv.server_close)
+        self.addCleanup(srv.shutdown)
+        self.d.ABUSECH_PRUEBA_URL = "http://127.0.0.1:%d/api/v1/" % srv.server_address[1]
+        self.assertIs(self.d.feeds_auth_probar("clave-de-abuseipdb-0123")[0], False)
+        self.assertEqual(self.d.feeds_auth_probar("buena"), (True, "valida"))
+        self.assertIsNone(self.d.feeds_auth_probar("hostfile")[0])
+
+
 class SoloElUltimoReporte(Entorno):
     def test_borra_las_instantaneas_viejas(self):
         """Capacidad nueva (el user quito «Reportes guardados», 2026-10-12): el generador deja solo el
