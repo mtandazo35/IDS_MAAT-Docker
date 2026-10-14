@@ -180,7 +180,10 @@ def main():
     # --- lo que no se puede probar aqui, pero se puede exigir --------------------------
     # El valor de la clave nunca se pinta: las paginas preguntan si ESTA configurada, no
     # cual es. Un `value=` con la clave la dejaria en el HTML de cualquiera que entre.
-    _pag = DASH[DASH.index("card_feeds = ("):DASH.index("card_feeds = (") + 6000]
+    # (adaptada, 2026-10-14) la ventana se arma por bloques (b_abusech, b_aidb, b_groq...) antes de
+    # card_feeds: se mira desde el primer bloque hasta el final de la tarjeta
+    _ini = DASH.index("b_abusech = _bloque(")
+    _pag = DASH[_ini:DASH.index("card_feeds = (", _ini) + 6000]
     check("la pagina pregunta si hay clave, no cual es",
           "groq_configurada()" in _pag and "groq_key()" not in _pag, "")
     check("el campo es de tipo password y no lleva valor precargado",

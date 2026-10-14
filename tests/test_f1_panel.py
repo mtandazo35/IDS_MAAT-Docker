@@ -213,6 +213,11 @@ class Web(Base):
         """Correccion de defecto (B-20): el token de Telegram no tenia interfaz y quedaba en claro
         hasta el siguiente arranque. Ahora se guarda cifrado en el momento."""
         tok = "123456789:" + "A" * 35
+        # (adaptada, 2026-10-14) ahora se pregunta a Telegram antes de guardar (getMe y getChat):
+        # respuestas simuladas, sin red
+        self.d._tg_api = lambda t, metodo, params=None, timeout=12: (
+            True, {"username": "prueba_bot"} if metodo == "getMe" else
+            {"id": -1001234567890, "title": "Grupo", "type": "supergroup"}, 200)
         st, _c, txt = self.p.pedir("POST", "/telegram", {"tgtoken": tok, "tgchat": "-1001234567890"})
         self.assertIn("Telegram guardado", txt)
         conf = open(self.d.REPORT_CONF, encoding="utf-8").read()

@@ -5852,6 +5852,83 @@ def telegram_chat():
         pass
     return ""
 
+RE_TG_TOKEN = re.compile(r"^[0-9]{3,15}:[A-Za-z0-9_-]{20,80}$")
+RE_TG_CHAT = re.compile(r"^-?[0-9]{1,20}$|^@[A-Za-z0-9_]{5,32}$")
+TG_API = "https://api.telegram.org/bot"
+
+def _tg_api(tok, metodo, params=None, timeout=12):
+    """Llama a la Bot API. (ok, datos | descripcion, codigo HTTP o 0 si no hubo red).
+    Telegram contesta {"ok": false, "description": ...} tambien en los 4xx: se devuelve eso."""
+    url = TG_API + tok + "/" + metodo
+    data = urllib.parse.urlencode(params).encode() if params else None
+    try:
+        with urllib.request.urlopen(urllib.request.Request(url, data=data, headers={
+                "User-Agent": "suricata-panel/1.0"}), timeout=timeout) as r:
+            d = json.loads(r.read(262144).decode("utf-8", "replace"))
+            return bool(d.get("ok")), d.get("result"), 200
+    except urllib.error.HTTPError as e:
+        try:
+            desc = str((json.loads(e.read(4096).decode("utf-8", "replace")) or {}).get("description", ""))
+        except Exception:
+            desc = ""
+        return False, desc or ("HTTP %d" % e.code), e.code
+    except (urllib.error.URLError, TimeoutError, OSError, ValueError):
+        return False, "sin respuesta de Telegram", 0
+
+def telegram_probar(tok):
+    """Valida un token de bot ANTES de guardarlo con getMe. (True|False|None, mensaje, @bot).
+    Antes solo se miraba la forma (numero:clave) y un token revocado se guardaba igual."""
+    tok = (tok or "").strip()
+    if not RE_TG_TOKEN.match(tok):
+        return False, "no tiene la forma de un token de bot (numero:clave, el que da @BotFather)", ""
+    ok, res, cod = _tg_api(tok, "getMe")
+    if ok and isinstance(res, dict):
+        return True, "valido", "@" + str(res.get("username") or "")
+    if cod in (401, 404):        # Telegram da 401 o 404 a un token inexistente o revocado
+        return False, "Telegram rechazo el token (%s)" % res, ""
+    return None, "no se pudo comprobar ahora (%s)" % res, ""
+
+def telegram_chat_probar(tok, chat):
+    """El bot puede escribir en ese chat? getChat (no manda nada). (True|False|None, mensaje)."""
+    if not RE_TG_CHAT.match(chat or ""):
+        return False, "el Chat ID no es valido (un numero, o @canal)"
+    ok, res, cod = _tg_api(tok, "getChat", {"chat_id": chat})
+    if ok and isinstance(res, dict):
+        nom = res.get("title") or " ".join(x for x in (res.get("first_name"), res.get("last_name")) if x) \
+            or res.get("username") or str(res.get("id", ""))
+        return True, "chat «%s» (%s)" % (nom, res.get("type", "?"))
+    if cod in (400, 403):
+        return False, ("el bot no tiene acceso a ese chat (%s): escribele al bot o anadelo al grupo, "
+                       "y usa «Detectar Chat ID»" % res)
+    if cod in (401, 404):
+        return False, "Telegram rechazo el token (%s)" % res
+    return None, "no se pudo comprobar el chat ahora (%s)" % res
+
+def telegram_detectar_chats(tok):
+    """Los chats que escribieron hace poco al bot (getUpdates), para no tener que leer JSON:
+    (lista de {id, nombre, tipo}, mensaje). Solo lee: no confirma los mensajes (sin offset)."""
+    ok, res, cod = _tg_api(tok, "getUpdates", {"limit": 100, "timeout": 0})
+    if not ok:
+        if cod == 409:
+            return [], "el bot tiene un webhook puesto y Telegram no deja leer los mensajes asi"
+        if cod in (401, 404):
+            return [], "Telegram rechazo el token (%s)" % res
+        return [], "no se pudo preguntar a Telegram (%s)" % res
+    vistos = {}
+    for u in res or []:
+        m = (u.get("message") or u.get("channel_post") or u.get("my_chat_member")
+             or u.get("edited_message") or {}) if isinstance(u, dict) else {}
+        c = m.get("chat") or {}
+        if "id" not in c:
+            continue
+        nom = c.get("title") or " ".join(x for x in (c.get("first_name"), c.get("last_name")) if x) \
+            or c.get("username") or str(c["id"])
+        vistos[str(c["id"])] = {"id": str(c["id"]), "nombre": str(nom)[:60], "tipo": str(c.get("type", ""))}
+    if not vistos:
+        return [], ("todavia nadie le ha escrito al bot: abre el bot en Telegram y mandale un mensaje "
+                    "(o escribe en el grupo donde lo anadiste) y vuelve a pulsar")
+    return list(vistos.values()), "ok"
+
 def migrar_secretos():
     """Al arrancar: cifra los secretos que sigan en claro (configuracion vieja o
     importada). Sin clave maestra no toca nada y lo deja avisado (no se borra ningun
@@ -5892,6 +5969,19 @@ def feeds_auth_set(val):
 
 ABUSECH_PRUEBA_URL = "https://threatfox-api.abuse.ch/api/v1/"
 _ABUSECH_MALA = ("unknown_auth_key", "illegal_auth_key")
+
+# Donde se crea cada cuenta y cada clave. Comprobadas a mano el 2026-10-14 (todas 200; la que
+# habia de AbuseIPDB, /account/api, daba 404: la oficial es /account, pestana «API Settings»).
+# La prueba test_feeds_enlaces fija que el panel solo enlaza estas.
+FEEDS_ENLACES = {
+    "abusech": "https://auth.abuse.ch/",
+    "aidb_registro": "https://www.abuseipdb.com/register",
+    "aidb_cuenta": "https://www.abuseipdb.com/account",
+    "groq": "https://console.groq.com/",
+    "groq_claves": "https://console.groq.com/keys",
+    "botfather": "https://t.me/BotFather",
+    "telegram_guia": "https://core.telegram.org/bots/tutorial",
+}
 
 def feeds_auth_probar(key):
     """Valida una Auth-Key contra la API de ThreatFox (abuse.ch). Devuelve (estado, msg):
@@ -7925,6 +8015,18 @@ def groq_modelos(key=""):
         if mid:
             out.append(mid)
     return sorted(out)
+
+def clave_de_otro(k, aqui):
+    """Si `k` tiene la forma inconfundible de la clave de OTRO servicio, su nombre; si no, "".
+    Pasa al pegar en el campo equivocado, y la validacion contra la API solo diria «rechazada»
+    sin explicar por que. Solo formas seguras: Groq empieza por gsk_ y un token de bot de
+    Telegram es numero:clave."""
+    k = (k or "").strip()
+    if aqui != "groq" and k.startswith("gsk_"):
+        return "Groq"
+    if aqui != "telegram" and RE_TG_TOKEN.match(k):
+        return "un bot de Telegram"
+    return ""
 
 def groq_probar(key):
     """Valida una clave ANTES de guardarla. (True|False|None, mensaje, modelos).
@@ -10427,7 +10529,13 @@ def perfil_page(msg="", ok=False, edit_user=None):
             ult = time.strftime("%d/%m %H:%M", time.localtime(fv)) if fv else "&mdash;"
             exp = time.strftime("%d/%m %H:%M", time.localtime(s.get("expira", 0))) if s.get("expira") else "&mdash;"
             vig = "si" if s.get("vigente") else "no"
-            filas += (f"<tr><td class=mono>{esc(name)}</td><td>{_estb(s.get('estado', '?'))}</td>"
+            # tambien las variantes (threatfox-c2...): todas usan la Auth-Key de abuse.ch
+            _ir = ("feed-abusech" if name.startswith(("urlhaus", "threatfox")) else
+                   "feed-aidb" if name.startswith("abuseipdb") else None)
+            _cfg = (f" <a href='#' class=fcfg onclick=\"var e=document.getElementById('{_ir}');"
+                    f"if(e)e.scrollIntoView({{behavior:'smooth',block:'center'}});return false\">Configurar</a>"
+                    if _ir and s.get("estado") in ("sin-clave", "error", "caducado") else "")
+            filas += (f"<tr><td class=mono>{esc(name)}</td><td>{_estb(s.get('estado', '?'))}{_cfg}</td>"
                       f"<td>{vig}</td><td class=num>{s.get('count', 0):,}</td>"
                       f"<td class=mono>{ult}</td><td class=mono>{exp}</td></tr>")
         if not filas:
@@ -10435,74 +10543,55 @@ def perfil_page(msg="", ok=False, edit_user=None):
                      "Pulsa 'Actualizar feeds ahora'.</td></tr>")
         gen = meta.get("generated", 0)
         genT = time.strftime("%d/%m %H:%M", time.localtime(gen)) if gen else "nunca"
-        card_feeds = (
-            "<style>.feedt{width:100%;border-collapse:collapse;font-size:13px;margin:10px 0 2px}"
-            ".feedt th,.feedt td{padding:7px 10px;border-top:1px solid #f0efec;text-align:left}"
-            ".feedt th{color:#8a8a86;font-size:12px;border-top:0}.feedt .num{text-align:right}</style>"
-            "<section class=card><h2>Reputacion / feeds</h2>"
-            "<p class=sub2>Fuentes de reputacion (IPs y dominios de C2/malware) que respaldan el riesgo. "
-            "URLhaus y ThreatFox de abuse.ch exigen una <b>Auth-Key</b> gratis "
-            "(<a href='https://auth.abuse.ch/' target=_blank>auth.abuse.ch</a>). La clave se guarda solo "
-            "en este servidor (permisos 600) y <b>no se vuelve a mostrar</b>.</p>"
-            "<form method=post action='/feeds'>"
-            "<div class=field><label>Auth-Key de abuse.ch "
-            + ("<span style='color:#3a9d5d'>(configurada)</span>" if auth_ok else "<span style='color:#b06a00'>(sin configurar)</span>")
-            + "</label>"
+        # Un bloque por servicio: para que sirve, COMO sacar la clave (pasos con boton a la pagina
+        # exacta, comprobada el 2026-10-14) y el campo. Antes los enlaces iban sueltos dentro de
+        # textos largos, el de AbuseIPDB daba 404 (/account/api) y Telegram no tenia ninguno
+        # (el user: «no manda los link donde se deben crear las api»). Las URL estan en
+        # FEEDS_ENLACES para que una prueba fije que son exactamente las comprobadas.
+        def _ir(clave, txt):
+            return ("<a class=fbtn href='%s' target=_blank rel='noopener noreferrer'>%s &#8599;</a>"
+                    % (esc(FEEDS_ENLACES[clave]), txt))
+
+        def _chip(ok, si="configurada", no="sin configurar"):
+            return "<span class='fchip %s'>%s</span>" % ("fok" if ok else "fno", si if ok else no)
+
+        def _bloque(ident, titulo, sub, ok, para, pasos, form, si="configurada", no="sin configurar"):
+            return ("<div class=fsrv id=%s><div class=fsrv-h><b>%s</b><span class=fsub>%s</span>%s</div>"
+                    "<p class=fdesc>%s</p><div class=fcomo>Como sacar la clave</div><ol class=fpasos>%s</ol>%s</div>"
+                    % (ident, titulo, sub, _chip(ok, si, no), para, "".join("<li>%s</li>" % p for p in pasos), form))
+
+        _quitar = " Para <b>quitarla</b>, escribe <code>BORRAR</code>."
+        b_abusech = _bloque(
+            "feed-abusech", "abuse.ch", "URLhaus y ThreatFox", auth_ok,
+            "IPs y dominios de servidores de control (C2) y de malware: respaldan el riesgo de cada abonado.",
+            ["Entra en " + _ir("abusech", "auth.abuse.ch") + " con tu cuenta de X, LinkedIn, Google o GitHub "
+             "(no hace falta crear otra).",
+             "Pulsa <b>Save profile</b>. Conviene vincular un segundo metodo de entrada, por si uno deja de "
+             "funcionar.",
+             "En el apartado <b>Optional</b> crea la <b>Auth-Key</b>, copiala y pegala aqui. La misma clave "
+             "sirve para todos los servicios de abuse.ch."],
+            "<form method=post action='/feeds'><div class=field><label>Auth-Key de abuse.ch</label>"
             "<input type=password name=authkey autocomplete=new-password placeholder='"
             + ("dejar vacio para conservar" if auth_ok else "pega tu Auth-Key") + "'>"
-            "<div class=hint>Al guardar se <b>valida contra abuse.ch</b> (una clave invalida se rechaza). "
-            "Solo escritura. Para <b>quitarla</b>, escribe <code>BORRAR</code>.</div></div>"
-            "<div class=actions><button class=primary type=submit>Guardar clave</button></div></form>"
-            "<form method=post action='/feeds/aidb'>"
-            "<div class=field><label>Clave de AbuseIPDB "
-            + ("<span style='color:#3a9d5d'>(configurada)</span>" if aidb_configurada() else "<span style='color:#b06a00'>(sin configurar)</span>")
-            + "</label>"
+            "<div class=hint>Al guardar se <b>valida contra abuse.ch</b>: una clave invalida se rechaza. "
+            "Se guarda solo en este servidor y <b>no se vuelve a mostrar</b>." + _quitar + "</div></div>"
+            "<div class=actions><button class=primary type=submit>Guardar Auth-Key</button></div></form>")
+        b_aidb = _bloque(
+            "feed-aidb", "AbuseIPDB", "lista de atacantes y Consultar IP", aidb_configurada(),
+            "La lista masiva de atacantes (fuente <code>abuseipdb</code> de la tabla) y la pestana "
+            "<b>Consultar IP</b>, que dice que ataques se le denuncian a una IP. Gratis: <b>%s</b> consultas "
+            "al dia (3.000 si verificas tu dominio como webmaster)." % format(AIDB_CUOTA, ","),
+            [_ir("aidb_registro", "Crea la cuenta") + " (gratis) y confirma el correo.",
+             "Entra en " + _ir("aidb_cuenta", "tu cuenta") + " y abre la pestana <b>API Settings</b>.",
+             "Pulsa <b>Create Key</b>, copiala y pegala aqui. Ojo: generar una clave nueva anula la anterior."],
+            "<form method=post action='/feeds/aidb'><div class=field><label>Clave de AbuseIPDB</label>"
             "<input type=password name=aidbkey autocomplete=new-password placeholder='"
             + ("dejar vacio para conservar" if aidb_configurada() else "pega tu clave de AbuseIPDB") + "'>"
-            "<div class=hint>Gratis en <a href='https://www.abuseipdb.com/account/api' target=_blank "
-            "rel=noopener>abuseipdb.com</a>. Sirve para <b>dos</b> cosas: la lista masiva de atacantes "
-            "(fuente <code>abuseipdb</code> de la tabla) y la pestana <b>Consultar IP</b>, que dice que "
-            f"ataques se le denuncian a una IP. El plan gratuito da <b>{AIDB_CUOTA:,}</b> consultas al dia. "
-            "Se valida al guardar. Para <b>quitarla</b>, escribe <code>BORRAR</code>.</div></div>"
+            "<div class=hint>Al guardar se <b>valida contra AbuseIPDB</b>: una clave invalida se rechaza."
+            + _quitar + "</div></div>"
             "<div class=actions><button class=primary type=submit>Guardar clave de AbuseIPDB</button></div></form>"
-            # --- Groq -------------------------------------------------------------------
-            "<hr style='border:0;border-top:1px solid #f0efec;margin:16px 0'>"
-            "<form method=post action='/feeds/groq'>"
-            "<div class=field><label>Clave de Groq (analisis con IA) "
-            + ("<span style='color:#3a9d5d'>(configurada)</span>" if groq_configurada()
-               else "<span style='color:#b06a00'>(sin configurar)</span>")
-            + "</label>"
-            "<input type=password name=groqkey autocomplete=new-password placeholder='"
-            + ("dejar vacio para conservar" if groq_configurada()
-               else "pega tu clave de Groq") + "'>"
-            "<div class=hint>Se saca en <a href='https://console.groq.com/keys' target=_blank "
-            "rel=noopener>console.groq.com</a>. Sirve para que el panel <b>explique la "
-            "evidencia en lenguaje llano</b> y senale falsos positivos conocidos. "
-            "<b>La IA no corta a nadie</b>: lee y recomienda, el corte lo sigue decidiendo "
-            "una persona o la politica que ya tienes. Se valida al guardar y se guarda solo "
-            "en este servidor (permisos 600); <b>no se vuelve a mostrar</b>. Para "
-            "<b>quitarla</b>, escribe <code>BORRAR</code>.</div></div>"
-            + _groq_estado_linea()
-            + _groq_modelo_campo()
-            + "<div class=actions><button class=primary type=submit>Guardar clave de Groq"
-            "</button></div></form>"
-            # --- Telegram: el token se cifra al guardarlo (auditoria B-20) ----------------
-            "<hr style='border:0;border-top:1px solid #f0efec;margin:16px 0'>"
-            "<form method=post action='/telegram'>"
-            "<div class=field><label>Token del bot de Telegram (avisos e informe diario) "
-            + ("<span style='color:#3a9d5d'>(configurado)</span>" if telegram_configurado()
-               else "<span style='color:#b06a00'>(sin configurar)</span>")
-            + "</label>"
-            "<input type=password name=tgtoken autocomplete=new-password placeholder='"
-            + ("dejar vacio para conservar" if telegram_configurado() else "pega el token de @BotFather") + "'>"
-            "</div><div class=field><label>Chat ID</label>"
-            f"<input type=text name=tgchat value=\"{esc(telegram_chat())}\" autocomplete=off "
-            "placeholder='-1001234567890'>"
-            "<div class=hint>El token se guarda <b>cifrado</b> con la clave maestra del servidor en el "
-            "momento de guardarlo y <b>no se vuelve a mostrar</b>. Para <b>quitarlo</b>, escribe "
-            "<code>BORRAR</code>.</div></div>"
-            "<div class=actions><button class=primary type=submit>Guardar Telegram</button></div></form>"
-            "<form method=post action='/feeds/reportar'>"
+            # la denuncia es de AbuseIPDB: antes estaba debajo de Telegram y no se entendia de que era
+            "<form method=post action='/feeds/reportar' style='margin-top:10px'>"
             "<label class=chk><input type=checkbox name=reportar"
             + (" checked" if aidb_reportar_activo() else "")
             + "> Permitir <b>denunciar</b> atacantes entrantes a AbuseIPDB</label>"
@@ -10511,8 +10600,80 @@ def perfil_page(msg="", ok=False, edit_user=None):
             "siempre lo pulsa una persona. Es una accion <b>publica y a tu nombre</b>. Nunca se denuncian "
             "IPs de tus redes ni de la lista 'Nunca bloquear', el comentario va <b>sin ninguna IP</b> "
             "(ni la tuya) y la misma IP no se repite antes de 24 h.</div>"
-            "<div class=actions><button class=primary type=submit>Guardar</button></div></form>"
-            "<div style='display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-top:6px'>"
+            "<div class=actions><button class=primary type=submit>Guardar</button></div></form>")
+        b_groq = _bloque(
+            "feed-groq", "Groq", "analisis con IA (opcional)", groq_configurada(),
+            "Explica la evidencia en lenguaje llano y senala falsos positivos conocidos. <b>La IA no corta "
+            "a nadie</b>: lee y recomienda; el corte lo sigue decidiendo una persona o tu politica.",
+            ["Entra en " + _ir("groq", "console.groq.com") + " (cuenta gratis).",
+             "Abre " + _ir("groq_claves", "API Keys") + " y pulsa <b>Create API Key</b>.",
+             "Copiala en ese momento (Groq <b>no la vuelve a mostrar</b>) y pegala aqui. Empieza por "
+             "<code>gsk_</code>."],
+            "<form method=post action='/feeds/groq'><div class=field><label>Clave de Groq</label>"
+            "<input type=password name=groqkey autocomplete=new-password placeholder='"
+            + ("dejar vacio para conservar" if groq_configurada() else "pega tu clave de Groq (gsk_...)") + "'>"
+            "<div class=hint>Al guardar se <b>valida contra Groq</b> y se cargan los modelos de tu cuenta."
+            + _quitar + "</div></div>"
+            + _groq_estado_linea()
+            + _groq_modelo_campo()
+            + "<div class=actions><button class=primary type=submit>Guardar clave de Groq</button></div></form>")
+        b_tg = _bloque(
+            "feed-telegram", "Telegram", "avisos e informe diario", telegram_configurado() and bool(telegram_chat()),
+            "Te manda los avisos de cuarentena y el informe diario a un chat o grupo de Telegram.",
+            ["Abre " + _ir("botfather", "@BotFather") + " en Telegram, mandale <code>/newbot</code> y elige un "
+             "nombre y un usuario que termine en <code>bot</code>.",
+             "Copia el <b>token</b> que te da (numero:clave) y pegalo abajo.",
+             "Abre tu bot y mandale cualquier mensaje (o anadelo al grupo y escribe ahi). Despues pulsa "
+             "<b>Detectar Chat ID</b> y elige el chat. " + _ir("telegram_guia", "Guia oficial de bots")],
+            "<form method=post action='/telegram'><div class=field><label>Token del bot</label>"
+            "<input type=password name=tgtoken id=tgtoken autocomplete=new-password placeholder='"
+            + ("dejar vacio para conservar" if telegram_configurado() else "pega el token de @BotFather") + "'>"
+            "</div><div class=field><label>Chat ID</label>"
+            "<div style='display:flex;gap:8px;flex-wrap:wrap;align-items:center'>"
+            f"<input type=text name=tgchat id=tgchat value=\"{esc(telegram_chat())}\" autocomplete=off "
+            "placeholder='-1001234567890' style='flex:1;min-width:200px'>"
+            "<button type=button class=cancelbtn onclick='window.tgDetectar&&tgDetectar(this)'>Detectar Chat ID</button>"
+            "</div><div id=tgchats class=hint></div>"
+            "<div class=hint>Al guardar se <b>pregunta a Telegram</b> si el token vale y si el bot puede escribir "
+            "en ese chat; si no, no se guarda. El token se guarda <b>cifrado</b> y <b>no se vuelve a mostrar</b>. "
+            "Para <b>quitarlo</b>, escribe <code>BORRAR</code>.</div></div>"
+            "<div class=actions><button class=primary type=submit>Guardar Telegram</button></div></form>",
+            si="configurado", no="sin configurar")
+        js_tg = (
+            "<script>function tgDetectar(b){var o=document.getElementById('tgchats'),"
+            "t=(document.getElementById('tgtoken')||{}).value||'';o.textContent='Preguntando a Telegram...';"
+            "b.disabled=true;var d=new URLSearchParams();d.set('tgtoken',t);"
+            "fetch('/telegram/detectar',{method:'POST',credentials:'same-origin',"
+            "headers:{'Content-Type':'application/x-www-form-urlencoded'},body:d.toString()})"
+            ".then(function(r){return r.json();}).then(function(j){b.disabled=false;o.textContent='';"
+            "if(!j.ok){o.textContent=j.msg||'No se encontro ningun chat';return;}"
+            "o.appendChild(document.createTextNode('Elige el chat: '));"
+            "j.chats.forEach(function(c){var x=document.createElement('button');x.type='button';"
+            "x.className='fbtn';x.style.margin='2px 4px';x.textContent=c.nombre+' ('+c.tipo+') '+c.id;"
+            "x.onclick=function(){document.getElementById('tgchat').value=c.id;"
+            "o.textContent='Chat '+c.nombre+' elegido: pulsa Guardar Telegram.';};o.appendChild(x);});})"
+            ".catch(function(){b.disabled=false;o.textContent='No se pudo preguntar al panel.';});}</script>")
+        card_feeds = (
+            "<style>.feedt{width:100%;border-collapse:collapse;font-size:13px;margin:10px 0 2px}"
+            ".feedt th,.feedt td{padding:7px 10px;border-top:1px solid #f0efec;text-align:left}"
+            ".feedt th{color:#8a8a86;font-size:12px;border-top:0}.feedt .num{text-align:right}"
+            ".fsrv{border:1px solid #ecebe7;border-radius:12px;padding:14px 16px;margin:12px 0;background:#fff}"
+            ".fsrv-h{display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:15px}"
+            ".fsub{color:#6b6a66;font-size:13px}.fchip{margin-left:auto;font-size:11.5px;font-weight:700;"
+            "padding:2px 10px;border-radius:999px}.fok{background:#e6f4ea;color:#1a7f37}"
+            ".fno{background:#fff4e5;color:#a15c12}.fdesc{margin:6px 0 8px;color:#52514e;font-size:13px}"
+            ".fcomo{font-size:11px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:#8a93a0}"
+            ".fpasos{margin:6px 0 12px 20px;padding:0;font-size:13px;color:#33322f}.fpasos li{margin:5px 0}"
+            ".fbtn{display:inline-flex;align-items:center;gap:3px;padding:2px 10px;border-radius:999px;"
+            "background:#eef4fd;color:#1c5cab;border:1px solid #d6e2f2;font-weight:600;font-size:12.5px;"
+            "text-decoration:none;cursor:pointer}.fbtn:hover{background:#dceafb;color:#1c5cab}"
+            ".fcfg{margin-left:6px;font-size:12px}</style>"
+            "<section class=card><h2>Reputacion / feeds</h2>"
+            "<p class=sub2>Las claves de cada servicio. Cada una se <b>comprueba con su servicio al guardarla</b> "
+            "y se guarda solo en este servidor (permisos 600); <b>no se vuelve a mostrar</b>. Los botones "
+            "&#8599; abren la pagina del servicio en otra pestana.</p>"
+            + b_abusech + b_aidb + b_groq + b_tg + js_tg +
+            "<div style='display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-top:14px'>"
             "<form method=post action='/feeds/actualizar' style='margin:0'>"
             "<button class=cancelbtn type=submit>Actualizar feeds ahora</button></form>"
             f"<span class=hint>Ultima corrida del actualizador: {genT}</span></div>"
@@ -17810,6 +17971,10 @@ class H(BaseHTTPRequestHandler):
                 return self._html(perfil_page("Auth-Key borrada. URLhaus/ThreatFox quedaran 'sin-clave'.", ok=True))
             if not ak.strip():
                 return self._html(perfil_page("Sin cambios en la Auth-Key.", ok=True))
+            _otro = clave_de_otro(ak, "abusech")
+            if _otro:
+                return self._html(perfil_page("No se guardo: eso parece la clave de %s, no la Auth-Key de "
+                                              "abuse.ch (se crea en auth.abuse.ch)." % _otro, ok=False))
             estado, det = feeds_auth_probar(ak)      # validar ANTES de guardar (rechaza basura)
             if estado is False:
                 bitacora("CONFIG-FEEDS-AUTHKEY", f"rechazada ({det})")
@@ -17986,6 +18151,11 @@ class H(BaseHTTPRequestHandler):
                 return self._html(perfil_page("Clave de AbuseIPDB borrada.", ok=True))
             if not k.strip():
                 return self._html(perfil_page("Sin cambios en la clave de AbuseIPDB.", ok=True))
+            _otro = clave_de_otro(k, "aidb")
+            if _otro:
+                return self._html(perfil_page("No se guardo: eso parece la clave de %s, no la de AbuseIPDB "
+                                              "(se crea en abuseipdb.com/account, pestana API Settings)." % _otro,
+                                              ok=False))
             estado, det = aidb_probar(k)          # validar ANTES de guardar (rechaza basura)
             if estado is False:
                 bitacora("CONFIG-ABUSEIPDB", f"rechazada ({det})")
@@ -18024,6 +18194,11 @@ class H(BaseHTTPRequestHandler):
                     bitacora("CONFIG-GROQ", "modelo " + mod)
                     return self._html(perfil_page("Modelo de Groq guardado: " + mod, ok=True))
                 return self._html(perfil_page("Sin cambios en la clave de Groq.", ok=True))
+            if not k.strip().startswith("gsk_"):
+                _otro = clave_de_otro(k, "groq")
+                return self._html(perfil_page(
+                    "No se guardo: " + ("eso parece la clave de %s; " % _otro if _otro else "")
+                    + "las claves de Groq empiezan por gsk_ (se crean en console.groq.com/keys).", ok=False))
             estado, det, modelos = groq_probar(k)     # validar ANTES de guardar
             if estado is False:
                 bitacora("CONFIG-GROQ", "rechazada (%s)" % det)
@@ -18053,15 +18228,33 @@ class H(BaseHTTPRequestHandler):
                 return self._prohibido()
             tok = (q.get("tgtoken", [""])[0] or "").strip()
             chat = (q.get("tgchat", [""])[0] or "").strip()[:40]
-            if chat and not re.match(r"^-?[0-9]{1,20}$|^@[A-Za-z0-9_]{5,32}$", chat):
+            if chat and not RE_TG_CHAT.match(chat):
                 return self._html(perfil_page("El chat ID no es valido (un numero, o @canal).", ok=False))
             if tok == "BORRAR":
                 telegram_set(token="", chat=chat)
                 bitacora("CONFIG-TELEGRAM", "token borrado")
                 return self._html(perfil_page("Token de Telegram borrado.", ok=True))
-            if tok and not re.match(r"^[0-9]{3,15}:[A-Za-z0-9_-]{20,80}$", tok):
+            if tok and not RE_TG_TOKEN.match(tok):
                 return self._html(perfil_page("No se guardo: eso no parece un token de bot de Telegram "
-                                              "(numero:clave).", ok=False))
+                                              "(numero:clave, el que da @BotFather).", ok=False))
+            # Se pregunta a Telegram ANTES de guardar (antes solo se miraba la forma: un token
+            # revocado o un chat donde el bot no esta se guardaban y los avisos no llegaban nunca)
+            _avisos_tg = []
+            _bot = ""
+            if tok:
+                _e, _det, _bot = telegram_probar(tok)
+                if _e is False:
+                    bitacora("CONFIG-TELEGRAM", "token rechazado (%s)" % _det)
+                    return self._html(perfil_page("No se guardo: %s." % _det, ok=False))
+                if _e is None:
+                    _avisos_tg.append("el token no se pudo comprobar (%s)" % _det)
+            _tok_chat = tok or telegram_token()
+            if chat and _tok_chat:
+                _e, _det = telegram_chat_probar(_tok_chat, chat)
+                if _e is False:
+                    bitacora("CONFIG-TELEGRAM", "chat rechazado (%s)" % _det)
+                    return self._html(perfil_page("No se guardo: %s." % _det, ok=False))
+                _avisos_tg.append(_det if _e else "el chat no se pudo comprobar (%s)" % _det)
             try:
                 telegram_set(token=tok or None, chat=chat)
             except secretos.SecretoNoDisponible:
@@ -18072,7 +18265,22 @@ class H(BaseHTTPRequestHandler):
             except OSError as ex:
                 return self._html(perfil_page(f"No se pudo guardar: {ex}", ok=False))
             bitacora("CONFIG-TELEGRAM", ("token cifrado y guardado; " if tok else "") + "chat=%s" % (chat or "-"))
-            return self._html(perfil_page("Telegram guardado" + (" (token cifrado)." if tok else "."), ok=True))
+            return self._html(perfil_page(
+                "Telegram guardado" + (" (token cifrado" + (", bot %s" % _bot if _bot else "") + ")" if tok else "")
+                + (": " + "; ".join(_avisos_tg) if _avisos_tg else "") + ".", ok=True))
+        if ruta == "/telegram/detectar":
+            # «Detectar Chat ID»: los chats que escribieron al bot, sin abrir la URL con el token ni
+            # leer JSON. Con el token del formulario (aun sin guardar) o con el guardado. JSON.
+            if not self._admin():
+                return self._prohibido()
+            _tk = (q.get("tgtoken", [""])[0] or "").strip()
+            if _tk and _tk != "BORRAR" and not RE_TG_TOKEN.match(_tk):
+                return self._json({"ok": False, "msg": "eso no parece un token de bot (numero:clave)"})
+            _tk = _tk if _tk and _tk != "BORRAR" else telegram_token()
+            if not _tk:
+                return self._json({"ok": False, "msg": "pega primero el token del bot (o guardalo)"})
+            _chats, _msg = telegram_detectar_chats(_tk)
+            return self._json({"ok": bool(_chats), "chats": _chats, "msg": _msg})
         if ruta == "/feeds/actualizar":
             if not self._admin():
                 return self._prohibido()
