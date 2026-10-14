@@ -60,7 +60,10 @@ class PorPunto(Base):
         self.registro.clear()
         self.d.reconciliar_cuarentena("p002")          # en p002 sigue atacando: se queda
         self.assertEqual(sorted(self.d.cargar_enviados()), [K2])
-        self.assertEqual(self.routers_tocados(), set())
+        # (adaptada, 2026-10-14) la primera vuelta de cada punto LEE su address-list una vez para
+        # pasar a permanente lo que tuviera TTL (la cuarentena ya no caduca); escribir, nada
+        self.assertFalse([w for rid, w in self.registro
+                          if w and w[0].endswith(("/add", "/remove", "/set", "/unset"))])
 
     def test_sin_reporte_del_punto_no_se_libera_nada(self):
         """Tipo: corrección de defecto. Si el punto aun no tiene cuarentena.json no se

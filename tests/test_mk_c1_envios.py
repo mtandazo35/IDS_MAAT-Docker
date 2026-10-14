@@ -224,13 +224,14 @@ class EnvioMasivo(_Base):
 
     def test_reenvio_masivo_tras_liberar_del_panel_renueva_la_caducidad(self):
         """La IP sigue en el router (con su timeout viejo) pero no en el registro: el masivo la
-        manda otra vez y ahora la entrada coge el TTL nuevo."""
+        manda otra vez y la entrada coge la caducidad nueva. (adaptada, 2026-10-14) la cuarentena
+        de abonados ya no caduca: la nueva es «sin caducidad», asi que el timeout viejo se quita."""
         lst = self.lista_de("p001", IPS1[0])
         self.p.routers["p001"].cargar(AL, [{"list": lst, "address": IPS1[0], "timeout": "5m"}])
         n, msg = self.d._enviar_confirmados("p001", "cuar")
         self.assertEqual(n, 3, msg)
-        self.assertTrue(self.ttl("p001"))     # con auto-mantener seria permanente: otra prueba
-        self.assertEqual([f.get("timeout") for f in self.entradas("p001", lst, IPS1[0])], [self.ttl("p001")])
+        self.assertEqual(self.ttl("p001"), "")
+        self.assertEqual([f.get("timeout", "") for f in self.entradas("p001", lst, IPS1[0])], [""])
 
 
 if __name__ == "__main__":

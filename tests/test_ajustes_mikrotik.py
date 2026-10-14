@@ -3,8 +3,8 @@
 Tipo: correccion de defecto (el user, 2026-10-14: «aqui por que esta si ya tenemos en puntos»).
 Ajustes tenia un formulario de conexion (nodo, usuario y clave de la API, permitir enviar) con los
 mismos campos que Puntos > ficha > API, y al guardar copiaba al router elegido la lista y el TTL
-globales: la lista LIST del router volvia al defecto aunque el formulario no la enseñara, el TTL
-que se veia era siempre 1h/1d (no el del router) y «vacio = permanente» no se cumplia.
+globales: la lista LIST del router volvia al defecto aunque el formulario no la enseñara.
+Desde la tarde del mismo dia ya no hay TTL de cuarentena (test_cuarentena_sin_caducidad.py).
 """
 import os
 import sys
@@ -58,37 +58,24 @@ class AjustesMikrotik(unittest.TestCase):
                 self.assertEqual(despues[pid].get(k), antes[pid].get(k), (pid, k))
         self.assertEqual(despues["p001"]["ENABLED"], "1")   # sin «enabled» en el form: sigue activo
 
-    def test_el_ttl_va_a_todos_los_nodos_y_vacio_es_permanente(self):
-        st, _txt = self._guardar(ttl="2h", ttl_dns="")
-        self.assertEqual(st, 200)
-        rs = self._routers()
-        self.assertEqual({rs[p]["TTL"] for p in rs}, {"2h"})
-        self.assertEqual({rs[p]["TTL_DNS"] for p in rs}, {""})
-        self.assertEqual(self.d.cargar_mk_de(rs["p002"])["TTL_DNS"], "")    # sin timeout
-        # y se enseña el que tienen, no el defecto 1h
+    def test_sin_ttl_ni_casilla_de_mantener(self):
+        """(adaptada, 2026-10-14) la cuarentena ya no caduca por tiempo: fuera los campos TTL
+        (cuarentena y DNS) y la casilla «Mantener automaticamente»; la tarjeta lo explica."""
         _s, _c, h = self.p.pedir("GET", "/ajustes")
-        self.assertRegex(h, r"name=ttl value=\"2h\"")
-        self.assertRegex(h, r"name=ttl_dns value=\"\"")
+        ini = h.index("MikroTik &mdash; cuarentena")
+        card = h[ini:h.index("</section>", ini)]
+        for fuera in ("name=ttl ", "name=ttl_dns", "name=auto ", "Mantener la cuarentena"):
+            self.assertNotIn(fuera, card)
+        self.assertIn("no caduca por tiempo", card)
+        self.assertIn("deja de enviar virus", card)
 
-    def test_ttl_invalido_no_guarda_nada(self):
-        mk_antes = os.path.exists(self.d.MK_CONF) and open(self.d.MK_CONF, encoding="utf-8").read()
+    def test_un_formulario_viejo_no_cambia_ttl_ni_apaga_el_mantener(self):
         antes = self._routers()
-        st, txt = self._guardar(ttl="2 horas", ttl_dns="1d", auto="1")
-        self.assertEqual(st, 400)
-        self.assertIn("no es un tiempo de RouterOS", txt)
+        st, txt = self._guardar(ttl="2h", ttl_dns="1d")        # sin «auto»: antes lo apagaba
+        self.assertEqual(st, 200)
+        self.assertIn("Ajustes de MikroTik guardados", txt)
         self.assertEqual(self._routers(), antes)
-        self.assertEqual(os.path.exists(self.d.MK_CONF) and open(self.d.MK_CONF, encoding="utf-8").read(), mk_antes)
-        for bueno in ("30m", "1h", "1d12h", "1w", "00:30:00", "1d00:30:00"):
-            self.assertTrue(self.d.RE_TTL_ROS.match(bueno), bueno)
-        for malo in ("2 horas", "1x", "h", "-1h", "1h;", "99:9"):
-            self.assertFalse(self.d.RE_TTL_ROS.match(malo), malo)
-
-    def test_avisa_si_el_ttl_es_distinto_entre_nodos(self):
-        rs = self.d.cargar_routers()
-        rs[0]["TTL"], rs[1]["TTL"] = "1h", "3h"
-        self.d.guardar_routers(rs)
-        _s, _c, h = self.p.pedir("GET", "/ajustes")
-        self.assertIn("Ahora no es igual en todos los nodos (p001: 1h · p002: 3h)", h)
+        self.assertEqual(self.d.cargar_mk()["AUTO_MANTENER"], "1")
 
     def test_probar_conexion_de_ajustes_ya_no_existe(self):
         """La prueba de conexion es la de la ficha del punto, que no guarda a escondidas."""

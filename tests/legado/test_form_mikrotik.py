@@ -94,9 +94,12 @@ def main():
     check("ni la de DNS heredada", "name=list_dns" not in h3, "")
     check("y ya no se habla de 'heredadas'", "heredada" not in h3, "")
     # el TTL es vivo: cuanto dura cada entrada en el router, en todas las listas
-    check("los TTL siguen, que son vivos",
-          'name=ttl value="2h"' in h3 and 'name=ttl_dns value="12h"' in h3, "")
-    check("bajo un apartado de caducidad a secas", "Caducidad</h3>" in h3, "")
+    # (adaptada, 2026-10-14) la cuarentena de abonados ya no caduca por tiempo: sale cuando el CPE
+    # deja de enviar virus. Fuera los campos TTL; el apartado lo explica
+    check("los TTL ya no estan: la cuarentena no caduca por tiempo",
+          "name=ttl" not in h3 and "name=ttl_dns" not in h3, "")
+    check("y el apartado dice cuando sale un abonado",
+          "Cuando sale un abonado de la cuarentena</h3>" in h3 and "deja de enviar virus" in h3, "")
 
     # La clave NO puede borrarse al guardar: el formulario ya no la manda, asi que la ruta
     # tiene que conservar el valor existente (es lo que libera entradas antiguas).

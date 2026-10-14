@@ -132,13 +132,16 @@ def main():
           env.get("10.0.0.4") == {"lista": "clientes-botnet", "router": "r1", "categoria": "botnet"},
           env.get("10.0.0.4"))
 
-    # con TTL (sin auto-mantener): la manual que falta CADUCO -> se suelta, como siempre
+    # (adaptada, 2026-10-14) la cuarentena de abonados ya no caduca: aunque el .conf traiga un TTL
+    # y AUTO_MANTENER=0 de antes, la que falta en el router NO se da por caducada (alguien la quito
+    # a mano): se queda marcada como que falta, para recargarla
     ns2, rt2, _c2, _b2 = entorno({"TTL": "1d", "AUTO_MANTENER": "0"})
     escribir(ns2["MK_SENT"], {"p001|10.0.0.9": {"lista": "clientes-escaneo", "router": "p001"},
                               "p001|10.0.0.6": {"lista": "clientes-botnet", "router": "p001", "pol": True}})
     ns2["mk_sync_enviados"]()
     env2 = leer(ns2["MK_SENT"])
-    check("sync: con TTL, la que falta se da por caducada y se suelta", "p001|10.0.0.9" not in env2, env2)
+    check("sync: la que falta ya no se da por caducada: se queda marcada como que falta",
+          env2.get("p001|10.0.0.9", {}).get("en_router") is False, env2)
     check("  pero la de politica (va sin TTL) se queda aunque haya TTL",
           env2.get("p001|10.0.0.6", {}).get("en_router") is False, env2)
 
@@ -169,8 +172,9 @@ def main():
     check("  la que ya estaba se omite (no se duplica)",
           sum(1 for f in rt.t["/ip/firewall/address-list"] if f["address"] == "10.0.0.5") == 1, "")
     check("  la que ahora esta en 'nunca bloquear' no se carga", ("clientes-spam", "10.0.0.8") not in ips, "")
-    check("  la de politica va permanente; la manual, con el TTL configurado",
-          "timeout" not in ips[("clientes-botnet", "10.0.0.6")] and ips[("clientes-spam", "10.0.0.7")].get("timeout") == "1d",
+    # (adaptada, 2026-10-14) antes la manual iba con el TTL configurado; ya no hay caducidad
+    check("  la de politica y la manual van permanentes (la cuarentena no caduca)",
+          "timeout" not in ips[("clientes-botnet", "10.0.0.6")] and not ips[("clientes-spam", "10.0.0.7")].get("timeout"),
           (ips[("clientes-botnet", "10.0.0.6")], ips[("clientes-spam", "10.0.0.7")]))
     check("  con UNA conexion", len(conex) == 1, len(conex))
     env = leer(ns["MK_SENT"])

@@ -1015,7 +1015,7 @@ def cargar_mk_de(r):
          "LIST_DNS": "suricata-dns-sospechoso", "TTL_DNS": "1d",
          "LIST_GRAD": "suricata-graduada", "TTL_GRAD": "1d",
          "LIST_DST": "suricata-destinos-malos", "TTL_DST": "7d",
-         "AUTO_MANTENER": "0", "ENABLED": "0", "CERT_FP": "",
+         "AUTO_MANTENER": "1", "ENABLED": "0", "CERT_FP": "",
          "POL_AUTO": "0", "POL_BAJO": "nada", "POL_MEDIO": "nada", "POL_ALTO": "nada"}
     d.update(_mk_globales())          # AUTO_MANTENER y POL_* son de toda la instalacion
     for k in ("HOST", "PORT", "TLS", "USER", "PASS", "LIST", "TTL",
@@ -1076,6 +1076,11 @@ def _mk_globales():
                     d[k] = v.strip()
     except OSError:
         pass
+    # La cuarentena se mantiene sola SIEMPRE: la IP de un abonado entra sin caducidad y sale
+    # cuando deja de enviar virus (el user, 2026-10-14: «necesito que se saque de manera automatica
+    # cuando ya no envie virus», y no antes por un TTL). Un AUTO_MANTENER=0 viejo del .conf no
+    # vale: con el apagado la IP caducaba a la hora aunque el abonado siguiera infectado.
+    d["AUTO_MANTENER"] = "1"
     return d
 
 def _routers_guardados():
@@ -1210,8 +1215,6 @@ def router_por_id(rid):
 
 _MK_CONEXION = ("HOST", "PORT", "TLS", "USER", "PASS", "CERT_FP", "ENABLED",
                 "LIST", "TTL", "LIST_DNS", "TTL_DNS", "LIST_GRAD", "TTL_GRAD", "LIST_DST", "TTL_DST")
-# un timeout de address-list como lo escribe RouterOS: 30m, 1h, 1d12h, 1w, 00:30:00, 1d00:30:00
-RE_TTL_ROS = re.compile(r"^(?:(?:\d{1,5}[wdhms])+|(?:\d{1,5}d)?\d{1,2}:\d{2}:\d{2})\Z")
 
 def guardar_mk(d):
     """Guarda los ajustes GLOBALES en MK_CONF. Lo de la conexion (host, usuario, clave,
@@ -2630,16 +2633,56 @@ def mk_log(accion, ip, quien, detalle="", pid=None):
     bitacora(accion, f"{ip} {detalle}".strip(), quien=quien)   # tambien a la bitacora general
 
 def _ttl_efectivo(m, ttl_key):
-    """Con auto-mantener, las entradas van SIN TTL (permanentes) y las libera el
-    reconciliador cuando el CPE deja de atacar. Sin auto, se usa el TTL configurado."""
-    return "" if m.get("AUTO_MANTENER") == "1" else m.get(ttl_key, "")
+    """El timeout con el que entra una IP en el router. Las listas de abonados van SIN TTL
+    (permanentes hasta que el CPE deja de atacar); las de terceros (destinos malos, graduada)
+    conservan su TTL, porque ningun reconciliador las suelta y sin TTL quedarian para siempre."""
+    # TTL y TTL_DNS son los de abonados (cuarentena por categoria y DNS sospechoso): nunca caducan;
+    # los libera reconciliar_cuarentena o una persona con «Quitar». La tupla va aqui dentro: las
+    # pruebas heredadas extraen esta funcion sola por ast.
+    return "" if ttl_key in ("TTL", "TTL_DNS") else m.get(ttl_key, "")
+
+_SIN_CADUCIDAD_HECHO = set()     # puntos ya revisados en este arranque (paso a permanente)
+
+def _registradas_en_router(pid, m):
+    """{lista: {ip}} de lo que el PANEL puso en cuarentena en ese punto (registro de abonados y
+    DNS). No entran las que el panel encontro en el router sin haberlas puesto («por» mikrotik):
+    esas son de quien las escribio a mano."""
+    out = {}
+    for sent_path, list_key in ((MK_SENT, "LIST"), (MK_SENT_DNS, "LIST_DNS")):
+        for k, v in (cargar_enviados(sent_path) or {}).items():
+            v = v or {}
+            if rid_de(k) != pid or v.get("por") == "mikrotik":
+                continue
+            lst = v.get("lista") or m.get(list_key, "")
+            if lst:
+                out.setdefault(lst, set()).add(ip_de(k))
+    return out
+
+def _pasar_a_permanentes(s, por_lista):
+    """Quita la caducidad (timeout) a esas IPs en sus listas, sobre una conexion abierta. Lee cada
+    lista una vez (lectura estricta: si no se puede leer, se lanza y se reintenta en otra vuelta)
+    y solo reescribe las que tienen timeout; _mk_add_en sin TTL las deja permanentes conservando
+    su comentario. Devuelve cuantas pasaron a permanentes."""
+    n = 0
+    if not any(por_lista.values()):
+        return 0
+    filas = _mk_print_estricto(s, "/ip/firewall/address-list/print", [".id", "address", "list", "timeout"])
+    for lst, ips in por_lista.items():
+        con_ttl = {f.get("address") for f in filas
+                   if f.get("list") == lst and f.get("timeout") and f.get("address") in ips}
+        for ip in sorted(con_ttl):
+            ok, _msg = _mk_add_en(s, ip, lst, "")
+            if ok:
+                n += 1
+    return n
 
 def reconciliar_cuarentena(pid=None):
     """Mantiene la cuarentena: un CPE sigue en la lista mientras siga siendo candidato
     (sigue atacando); cuando deja de aparecer, se libera solo. Corre en segundo plano,
     POR PUNTO: solo mira el cuarentena.json de ese punto y solo toca claves `pid|...`
     suyas (con el de un solo nodo leido, los CPEs de los demas parecerian "ya no ataca"
-    y se liberarian). Solo actua con el router del punto habilitado y AUTO_MANTENER."""
+    y se liberarian). Solo actua con el router del punto habilitado. AUTO_MANTENER ya es fijo
+    (2026-10-14): la cuarentena no caduca por tiempo, sale cuando el CPE deja de atacar."""
     pid = nodos.exigir_pid(pid if pid is not None else nodos.nodo_actual())
     r = router_por_id(pid)
     m = cargar_mk_de(r)
@@ -2668,8 +2711,17 @@ def reconciliar_cuarentena(pid=None):
             lst = (env[k] or {}).get("lista") or m.get(list_key, "")
             if lst:
                 pendientes.append((sent_path, k, lst))
-    if not pendientes:
-        return                                 # nada que liberar: ni se abre conexion
+    # Lo que ya estaba en el router CON caducidad (de cuando la cuarentena caducaba por TTL) se
+    # pasa a permanente una vez por punto: si no, el router lo soltaria a su hora aunque el
+    # abonado siga infectado. Las que se van a liberar ahora no se tocan.
+    salen = {(lst, ip_de(k)) for _sp, k, lst in pendientes}
+    migrar = {} if pid in _SIN_CADUCIDAD_HECHO else {
+        lst: ips for lst, ips in _registradas_en_router(pid, m).items()
+        if ips - {ip for (l2, ip) in salen if l2 == lst}}
+    if not migrar:
+        _SIN_CADUCIDAD_HECHO.add(pid)          # nada registrado (o ya revisado): nada que migrar
+    if not pendientes and not migrar:
+        return                                 # nada que hacer: ni se abre conexion
     liberadas = []
 
     def _quitar(s, _d):
@@ -2678,6 +2730,13 @@ def reconciliar_cuarentena(pid=None):
             ok_r, _err = _mk_quitar_en(s, ip_de(k), lst)
             if ok_r:                           # sin confirmacion del router se queda (A-05)
                 liberadas.append((sent_path, k, lst))
+        if migrar:
+            n = _pasar_a_permanentes(s, {lst: ips - {ip for (l2, ip) in salen if l2 == lst}
+                                         for lst, ips in migrar.items()})
+            _SIN_CADUCIDAD_HECHO.add(pid)
+            if n:
+                bitacora("CUARENTENA-SIN-CADUCIDAD", "%d IP(s) de %s pasan a permanentes: saldran cuando "
+                                                     "dejen de atacar" % (n, pid))
     _mk_tanda(r, _quitar)                      # si el router no responde, reintenta el proximo ciclo
     for sent_path in (MK_SENT, MK_SENT_DNS):
         suyas = []
@@ -9917,17 +9976,6 @@ def _card_listas(m):
     filas = ""
     routers = cargar_routers()
 
-    # El TTL vive en cada router (routers.json) y Ajustes lo pone igual en todos. Se enseña el
-    # que tienen: antes salia siempre el defecto (1h / 1d) aunque el router tuviera otro.
-    def _ttl_de_todos(clave, defecto):
-        vals = [(r.get("id", ""), r.get(clave, defecto)) for r in routers]
-        if len({v for _p, v in vals}) <= 1:
-            return (vals[0][1] if vals else defecto), ""
-        return vals[0][1], ("<div class=hint>Ahora no es igual en todos los nodos (%s); al guardar "
-                            "quedara el de este campo en todos.</div>"
-                            % esc(" · ".join("%s: %s" % (p, v or "permanente") for p, v in vals)))
-    ttl, ttl_aviso = _ttl_de_todos("TTL", "1h")
-    ttl_dns, dns_aviso = _ttl_de_todos("TTL_DNS", "1d")
     for cat, nom, _cats, por_defecto in CAT_CPE + [CAT_OTROS]:
         # el nombre por defecto va CARGADO en el campo (editable), no solo como pista: el
         # usuario queria ver y poder cambiar el nombre real, no un gris que no se guarda
@@ -10083,19 +10131,14 @@ def _card_listas(m):
         "&#8635; Recargar las listas en el router</button>"
         "<div class=hint>Si alguien vacio una lista en el router (o se restauro un respaldo viejo), "
         "esto vuelve a cargar las IPs que el panel tiene en cuarentena. Las que ya estan se omiten.</div></div>"
-        "<h3 style='margin:18px 0 2px;font-size:15px'>Caducidad</h3>"
-        "<p class=sub2 style='margin:0 0 10px'>Cuanto dura cada entrada en el router si no "
-        "se mantiene sola. Vale para todas las listas de arriba y para <b>todos los nodos</b>.</p>"
-        "<div class=grid2>"
-        "<div class=field><label>TTL cuarentena (timeout)</label>"
-        "<input type=text name=ttl value=\"%s\" placeholder='1h, 30m, 1d (vacio = permanente)'>%s</div>"
-        "<div class=field><label>TTL DNS sospechoso (timeout)</label>"
-        "<input type=text name=ttl_dns value=\"%s\" placeholder='1d, 12h (vacio = permanente)'>%s</div>"
-        "</div>"
-        # LIST y LIST_DNS ya no se enseñan: ningun envio nuevo va ahi. La clave se conserva
-        # en el .conf porque sigue sirviendo para liberar entradas anteriores al enrutado
-        # por categoria, para el diagnostico y como guardia; se edita a mano si hace falta.
-        % (esc(ttl), ttl_aviso, esc(ttl_dns), dns_aviso))
+        # Sin campos de TTL (2026-10-14): la cuarentena de un abonado no caduca por tiempo, sale
+        # cuando deja de atacar. LIST y LIST_DNS tampoco se enseñan: ningun envio nuevo va ahi.
+        "<h3 style='margin:18px 0 2px;font-size:15px'>Cuando sale un abonado de la cuarentena</h3>"
+        "<p class=sub2 style='margin:0 0 10px'>La cuarentena <b>no caduca por tiempo</b>: la IP sale "
+        "sola del router cuando el abonado <b>deja de enviar virus</b> (ya no aparece como infectado), "
+        "o antes si alguien pulsa <b>Quitar</b> en Cuarentena. Lo mismo para la lista de DNS sospechoso. "
+        "Una IP enviada a mano sin que el panel la detectara se queda hasta que se quite, porque no hay "
+        "con que medir cuando deja de atacar.</p>")
 
 def _card_politicas(m):
     """Sub-bloque de la tarjeta MikroTik: politica por CLASE de abuso."""
@@ -10479,11 +10522,6 @@ def perfil_page(msg="", ok=False, edit_user=None):
             + conexion_mk +
             "<form method=post action='/mikrotik'>"
             + _card_listas(m) +
-            "<div class=field><label class=chk>"
-            f"<input type=checkbox name=auto value=1 {'checked' if m.get('AUTO_MANTENER') == '1' else ''}> "
-            "Mantener la cuarentena automaticamente</label>"
-            "<div class=hint>Activado: la IP entra SIN caducidad y se <b>libera sola</b> cuando el CPE deja de atacar "
-            "(mientras siga enviando virus, sigue en cuarentena). Apagado: la IP caduca sola con el TTL de arriba.</div></div>"
             "<div class=field style='margin-top:6px'><label class=chk>"
             f"<input type=checkbox name=doble value=1 {'checked' if conf_dash_get('DOBLE_SENAL','1') == '1' else ''}> "
             "Doble senal para confirmar infeccion</label>"
@@ -11746,8 +11784,8 @@ internet</td><td><code>src-address-list</code> + <code>connection-state=new</cod
 </table>
 <p>Las tres primeras contienen <b>IPs de tus abonados</b>; las dos ultimas, <b>IPs publicas de
 terceros</b> &mdash; y ninguna de esas dos acepta una IP tuya, ni privada ni publica. Cada lista
-tiene su nombre configurable en <b>Ajustes &rarr; MikroTik</b> (la caducidad tambien esta ahi y vale
-para <b>todos los nodos</b>), y cada una
+tiene su nombre configurable en <b>Ajustes &rarr; MikroTik</b> (las tres de abonados no caducan: un
+abonado sale cuando deja de enviar virus; las de terceros conservan su TTL), y cada una
 lleva su propio registro en el panel, asi que quitar algo de una no toca las demas.</p>
 <p>El TTL de los destinos es mas largo (7 d) a proposito: un servidor de control no deja de serlo en
 una hora, y ahi no hay ningun abonado esperando a que se le devuelva el servicio.</p>
@@ -11919,9 +11957,9 @@ maestra del servidor y no se vuelve a mostrar.</p>
 <pre><code>/ip firewall filter add chain=forward src-address-list=suricata-cuarentena action=drop comment="Suricata: CPE en cuarentena"</code></pre>
 <p>Alternativas segun tu politica: en vez de <code>action=drop</code> puedes redirigir a un portal,
 marcar en <code>mangle</code> para limitar velocidad, o registrar. La <b>address-list</b> por defecto
-es <code>suricata-cuarentena</code> (cambiala en Ajustes si usas otro nombre). Las entradas entran con
-un <b>TTL</b> (timeout, ej. <code>1h</code>) y se <b>auto-liberan</b>; tambien puedes quitarlas a mano
-con el boton <b>Quitar</b> de la pestana.</p>
+es <code>suricata-cuarentena</code> (cambiala en Ajustes si usas otro nombre). Las entradas entran
+<b>sin caducidad</b> y el panel las <b>saca solo cuando el abonado deja de enviar virus</b>; tambien
+puedes quitarlas a mano con el boton <b>Quitar</b> de la pestana.</p>
 
 <h3>4) Configurar y probar en el panel</h3>
 <ol>
@@ -11971,8 +12009,8 @@ el panel no toca el router.</li>
 <p><b>Enviar todos:</b> con el estado en verde, el boton <b>Enviar todos (N)</b> manda de una a la
 address-list todos los CPE de la lista que aun no esten en cuarentena (tope de 50 por accion; si el
 router deja de responder, se detiene y avisa). En «Todos» se reparte <b>por nodo</b> y el resultado
-se da por nodo: un router caido no frena a los demas. Cada IP queda con su <b>TTL</b> y se puede sacar
-con <b>Quitar</b>. Toda accion queda en la Bitacora.</p>
+se da por nodo: un router caido no frena a los demas. Cada IP queda <b>sin caducidad</b> hasta que el
+abonado deja de enviar virus, y se puede sacar antes con <b>Quitar</b>. Toda accion queda en la Bitacora.</p>
 
 <h2>Salud de cada punto (por etapas)</h2>
 <p>La salud se mide <b>por punto y por etapas</b>, porque cada una falla por su lado. La ven todos los
@@ -12120,8 +12158,9 @@ banda y los conteos. La columna <b>Motivo</b> lo muestra tal cual, y la columna 
 ligero cada minuto envia <b>ya</b> a los CPEs con <b>infeccion confirmada</b> (firmas CnC repetidas o
 contacto con un C2 fichado), sin esperar los 5&nbsp;min. Es conservador (solo infeccion confirmada), respeta allowlist, destinos de confianza y
 exclusiones, con <b>anti-rebote de 60&nbsp;s</b> por CPE. MEDIO/BAJO siguen en el ciclo de 5&nbsp;min.</li>
-<li><b>Auto-mantener:</b> las IPs entran sin caducidad y se liberan cuando el CPE deja de atacar (en
-vez de caducar por TTL).</li>
+<li><b>Sin caducidad:</b> las IPs de abonados entran sin TTL y el panel las libera cuando el CPE deja de
+atacar (ya no sale como infectado). No es una opcion: con un TTL la IP salia a la hora aunque el abonado
+siguiera infectado. Las que estaban con TTL de antes pasan a permanentes en la siguiente vuelta.</li>
 </ul>
 
 <h2>Acciones por categoria: lo que el router hace con cada lista</h2>
@@ -16101,9 +16140,9 @@ def cuarentena_page(msg="", es_admin=False):
     else:
         sec_fp = ""
     if activo:
-        auto = m.get("AUTO_MANTENER") == "1"
-        auto_txt = (" <b>Auto-mantener ON</b>: las IPs entran sin caducidad y se liberan solas cuando el CPE deja de atacar."
-                    if auto else " Las IPs caducan solas con su TTL.")
+        # la cuarentena no caduca por tiempo (2026-10-14): sale cuando el CPE deja de atacar
+        auto_txt = (" Las IPs entran <b>sin caducidad</b> y salen solas cuando el CPE <b>deja de enviar "
+                    "virus</b>.")
         estado = (f"<div class='banner ok'><b>MikroTik habilitado.</b> Puedes enviar cada CPE a su address-list "
                   f"(infectados &rarr; <code>{esc(m.get('LIST',''))}</code>, DNS &rarr; <code>{esc(m.get('LIST_DNS',''))}</code>) "
                   f"en el MikroTik de cada nodo; el MikroTik decide con tus reglas. Reversible con <b>Quitar</b>.{auto_txt}</div>")
@@ -17419,20 +17458,6 @@ class H(BaseHTTPRequestHandler):
             # defecto (2026-10-14).
             for _k in _MK_CONEXION:
                 m.pop(_k, None)        # la conexion no va en la configuracion global
-            # TTL: el mismo en TODOS los routers (vive en cada uno). Vacio = permanente. El cuerpo
-            # se relee con keep_blank_values: `q` descarta los campos vacios, y por eso un TTL
-            # vacio nunca llegaba y «vacio = permanente» no se cumplia.
-            _qv = urllib.parse.parse_qs(body, keep_blank_values=True)
-            _ttls = {}
-            for _campo, _clave, _nom_t in (("ttl", "TTL", "TTL cuarentena"), ("ttl_dns", "TTL_DNS", "TTL DNS sospechoso")):
-                if _campo not in _qv:  # sin el campo (otro formulario) no se cambia
-                    continue
-                _v = (_qv[_campo][0] or "").strip()
-                if _v and not RE_TTL_ROS.match(_v):
-                    return self._html(perfil_page(
-                        "%s: «%s» no es un tiempo de RouterOS (ej. 30m, 1h, 1d, 1d12h; vacio = "
-                        "permanente). No se guardo nada." % (_nom_t, _v[:20]), ok=False), 400)
-                _ttls[_clave] = _v
             # Las listas por categoria. Vacio = se borra la clave y vuelve el nombre por
             # defecto; asi se puede deshacer un cambio sin tener que recordar cual era.
             _err_reglas = []; _av_reglas = []
@@ -17472,7 +17497,7 @@ class H(BaseHTTPRequestHandler):
                 m["ACCION_DNS_IP"] = str(ipaddress.ip_address(_dip)) if _dip else ""
             except ValueError:
                 m.pop("ACCION_DNS_IP", None)
-            m["AUTO_MANTENER"] = "1" if q.get("auto") else "0"
+            m["AUTO_MANTENER"] = "1"   # fijo: la cuarentena sale cuando el CPE deja de atacar (2026-10-14)
             # politica por clase; un valor que no es de la lista se ignora (queda la anterior)
             for _cat, _nom, _cs, _def in CAT_CPE + [CAT_OTROS]:
                 _v = (q.get("pol_" + _cat, [""])[0] or "").strip()
@@ -17481,21 +17506,11 @@ class H(BaseHTTPRequestHandler):
             m["POL_AUTO"] = "1" if q.get("pol_auto") else "0"
             try:
                 guardar_mk(m)
-                if _ttls:
-                    _rs = cargar_routers()
-                    for _r in _rs:
-                        _r.update(_ttls)
-                    if _rs:
-                        guardar_routers(_rs)     # la clave de cada router se conserva tal cual
-            except secretos.SecretoNoDisponible:
-                bitacora("CONFIG-MIKROTIK", "ttl no guardado (sin clave maestra)")
-                return self._html(perfil_page("No se guardo el TTL: falta la clave maestra del panel (/run/secrets/master_key) para reescribir los routers, y una clave nunca se guarda en claro. Revisa el montaje de la clave maestra y vuelve a intentarlo.", ok=False))
             except OSError as ex:
                 return self._html(perfil_page(f"No se pudo guardar: {ex}", ok=False))
             conf_dash_set("DOBLE_SENAL", "1" if q.get("doble") else "0")   # doble senal (lo lee el generador)
             guardar_nunca(q.get("nunca", [""])[0])                         # allowlist 'nunca bloquear'
-            bitacora("CONFIG-MIKROTIK", " ".join(["%s=%s" % (k.lower(), v or "permanente") for k, v in _ttls.items()]
-                                                 + ["doble_senal=%s" % ("si" if q.get("doble") else "no")]))
+            bitacora("CONFIG-MIKROTIK", "doble_senal=%s" % ("si" if q.get("doble") else "no"))
             if _err_reglas:
                 return self._html(perfil_page(
                     "Ajustes guardados, pero estas reglas propias NO se guardaron (el "
@@ -17982,7 +17997,7 @@ class H(BaseHTTPRequestHandler):
                     "cuando": int(time.time()), "score": score, "por": getattr(CTX, "user", "?"),
                     "router": r.get("id", ""), "categoria": _cat, "lista": _lst,
                     "manual": clave not in cand_ips, "motivo": _motivo_bloqueo(clave)}}, [], pisar=True)
-                mk_log("ENVIADO", ip, getattr(CTX, "user", "?"), f"lista={_lst} ttl={m.get('TTL')}"
+                mk_log("ENVIADO", ip, getattr(CTX, "user", "?"), f"lista={_lst} sin caducidad"
                        + (" (manual)" if clave not in cand_ips else "") + _suf_nodo(clave))
                 # la lista a la que FUE de verdad (la de su categoria), no la heredada
                 notificar_cuarentena(clave, "Infeccion CnC", _lst, quien=getattr(CTX, "user", "?"))
