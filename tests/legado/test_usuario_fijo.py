@@ -67,7 +67,7 @@ def main():
     # el hash real del panel (PBKDF2 con sal) y la verificacion real del login.
     # Panel portado: las iteraciones de PBKDF2 son la constante de modulo PBKDF2_ITER
     # (pieza nueva; antes iban escritas dentro de _hash_pw): se carga la real.
-    _comun.piezas(ns, ("PBKDF2_ITER",))
+    _comun.piezas(ns, ("PBKDF2_ITER", "CLAVE_MIN"))   # CLAVE_MIN: minimo de clave (10), pieza nueva
     for f in ("_hash_pw", "buscar_usuario", "verificar_login"):
         exec(fuente(f), ns)
     ns["secrets"] = __import__("secrets")
@@ -147,7 +147,9 @@ def main():
           usr and "readonly" in usr.group(1) and "name=" not in usr.group(1), usr and usr.group(0))
     check("  y no hay ningun campo para escribir otro usuario",
           not re.search(r"name=(nuser|usuario|new_user)\b", ed), "")
-    check("  el campo Nombre se llama 'Nombre a mostrar'", "<label>Nombre a mostrar</label><input type=text name=nombre id=en>" in ed, "")
+    # (adaptada, 2026-10-13) el campo lleva for=, maxlength y el oninput de las iniciales de la foto
+    check("  el campo Nombre se llama 'Nombre a mostrar'",
+          "<label for=en>Nombre a mostrar</label>" in ed and "<input type=text name=nombre id=en " in ed, "")
     check("  al abrir, se rellena con el usuario de la fila",
           "document.getElementById('eusr').value=_u;" in fuente("perfil_page") or "document.getElementById('eusr').value=_u;" in DASH, "")
     check("ventana Nuevo: avisa que el usuario no se puede cambiar despues",

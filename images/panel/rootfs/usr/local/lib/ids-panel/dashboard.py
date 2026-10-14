@@ -5178,6 +5178,15 @@ def podar_reportes():
 USERS_FILE = nodos.ruta("conf", "usuarios.json")   # el mismo que escribe `ids-panel crear-admin`
 CTX = threading.local()   # contexto por peticion: user/role del que la hace
 ROLES = ("admin", "operador", "lectura")   # operador: gestiona incidentes y cuarentenas; no toca usuarios/conexiones/updates
+# Lo que puede cada rol, en palabras del operador: sale en la leyenda de Usuarios y debajo del
+# selector de rol al crear o editar (el user, 2026-10-13: «no se sabe que hace cada uno»).
+ROL_DESC = {
+    "admin": "Todo: usuarios, MikroTik, puntos, exclusiones, listas y actualizaciones.",
+    "operador": "La cuarentena: envia y quita CPEs de las listas del MikroTik, excluye destinos y "
+                "denuncia IPs. No toca usuarios ni ajustes.",
+    "lectura": "Ve paneles, eventos y reportes. No cambia nada.",
+}
+CLAVE_MIN = 10   # claves nuevas o cambiadas (antes 6); las que ya existen siguen valiendo
 PBKDF2_ITER = 200_000
 
 def _hash_pw(pw, salt=None):
@@ -9771,8 +9780,8 @@ def perfil_page(msg="", ok=False, edit_user=None):
             "<input type=password name=actual autocomplete=current-password required></div>"
             "<div class=grid2>"
             "<div class=field><label>Clave nueva</label>"
-            "<input type=password name=nueva autocomplete=new-password required>"
-            "<div class=hint>Minimo 6 caracteres.</div></div>"
+            f"<input type=password name=nueva autocomplete=new-password required minlength={CLAVE_MIN}>"
+            f"<div class=hint>Minimo {CLAVE_MIN} caracteres.</div></div>"
             "<div class=field><label>Repetir clave nueva</label>"
             "<input type=password name=nueva2 autocomplete=new-password required></div></div>"
             "<div class=actions><button class=primary type=submit>Actualizar mi clave</button></div>"
@@ -10103,57 +10112,103 @@ def perfil_page(msg="", ok=False, edit_user=None):
             "\"<br><button type=button class=cancelbtn style='margin-top:10px' onclick='mkclose()'>Cerrar</button></div>\";});}</script>"
             "</section>")
     # --- tarjeta: gestion de usuarios estilo tabla (solo admin) ---
+    # Rehecha (el user, 2026-10-13): sin columna ID, nombre y usuario en una celda, correo solo si
+    # alguien lo tiene, leyenda de lo que hace cada rol, estado en suave y tu propia fila sin
+    # papelera ni interruptor (te sacaba del panel). Altas: foto con boton propio, clave con
+    # Ver/Generar y minimo CLAVE_MIN.
     card_users = ""
     if es_admin and yo:
         rows = []
-        for i, r in enumerate(usuarios, 1):
+        hay_correo = any((r.get("correo") or "").strip() for r in usuarios)
+        for r in usuarios:
             uraw = r.get("user", ""); un = esc(uraw); rl = r.get("role", "admin")
             nombre = r.get("nombre", ""); correo = r.get("correo", "")
-            disp = esc(nombre) if nombre else un
             activo = r.get("activo", True)
-            est_cls = "on" if activo else "off"; est_txt = "ACTIVADO" if activo else "DESACTIVADO"
-            tu = ' <span class=me>tu</span>' if uraw == yo else ''
+            soy = uraw == yo
+            tu = " <span class=me>tu</span>" if soy else ""
             filtro = esc(((nombre + " " + uraw + " " + correo).lower()))
-            correo_c = esc(correo) if correo else "<span class=dash>&mdash;</span>"
+            # nombre arriba y el usuario de entrar debajo; sin nombre guardado, solo el usuario
+            quien = (f"<div class=quien><div class=l1><span class=nm>{esc(nombre)}</span>{tu}</div>"
+                     f"<span class=ulog>{un}</span></div>" if nombre else
+                     f"<div class=quien><div class=l1><span class='nm mono'>{un}</span>{tu}</div></div>")
+            est_cls = "on" if activo else "off"; est_txt = "Activo" if activo else "Desactivado"
+            if soy:
+                estado = (f"<span class='estado {est_cls} fijo' title='Tu propia cuenta no se desactiva "
+                          f"desde aqui'>{est_txt}</span>")
+            else:
+                confirma = (f" onsubmit=\"return ask(this,'Desactivar usuario',"
+                            f"{js_attr(uraw + ' no podra entrar hasta que lo vuelvas a activar. Sus sesiones abiertas se cierran.')},"
+                            f"'Desactivar','danger')\"" if activo else "")
+                estado = ("<form method=post action='/perfil' class=inl" + confirma + ">"
+                          f"<input type=hidden name=accion value=toggle_user><input type=hidden name=user value='{un}'>"
+                          f"<button class='estado {est_cls}' type=submit "
+                          f"title='Clic para {'desactivar' if activo else 'activar'}'>{est_txt}</button></form>")
+            borrar = ("<span class=icph></span>" if soy else
+                      "<form method=post action='/perfil' class=inl "
+                      f"onsubmit=\"return ask(this,'Eliminar usuario',"
+                      f"{js_attr(uraw + ' dejara de poder entrar al panel. No se borra nada de lo que haya hecho.')},"
+                      f"'Eliminar','danger')\">"
+                      f"<input type=hidden name=accion value=del_user><input type=hidden name=user value='{un}'>"
+                      f"<button class='ic danger' title=Eliminar type=submit>{_IC_DEL}</button></form>")
+            correo_c = (f"<td class=cmail>{esc(correo) if correo else '<span class=dash>&mdash;</span>'}</td>"
+                        if hay_correo else "")
             rows.append(
-                f"<tr data-f=\"{filtro}\"><td class=idc>{i}</td>"
-                f"<td><div class=nmcell>{_avatar(nombre, uraw, r.get('avatar'))}<span class=nm>{disp}</span>{tu}</div></td>"
-                f"<td class=mono>{un}</td><td class=mono cmail>{correo_c}</td>"
-                f"<td>{_rol_badge(rl)}</td>"
-                "<td><form method=post action='/perfil' class=inl>"
-                f"<input type=hidden name=accion value=toggle_user><input type=hidden name=user value='{un}'>"
-                f"<button class='estado {est_cls}' type=submit title='clic para activar/desactivar'>{est_txt}</button></form></td>"
+                f"<tr data-f=\"{filtro}\">"
+                f"<td><div class=nmcell>{_avatar(nombre, uraw, r.get('avatar'))}{quien}</div></td>"
+                f"{correo_c}<td>{_rol_badge(rl)}</td><td>{estado}</td>"
                 "<td class=acts>"
                 f"<button class=ic title=Editar type=button onclick=\"abrirEdit(this)\" "
                 f"data-user='{un}' data-nombre=\"{esc(nombre)}\" data-correo=\"{esc(correo)}\" "
-                f"data-role='{rl}'>{_IC_EDIT}</button>"
-                "<form method=post action='/perfil' class=inl "
-                f"onsubmit=\"return ask(this,'Eliminar usuario',"
-                f"{js_attr(uraw + ' dejara de poder entrar al panel. No se borra nada de lo que haya hecho.')},"
-                f"'Eliminar','danger')\">"
-                f"<input type=hidden name=accion value=del_user><input type=hidden name=user value='{un}'>"
-                f"<button class='ic danger' title=Eliminar type=submit>{_IC_DEL}</button></form>"
+                f"data-role='{rl}'>{_IC_EDIT}</button>{borrar}"
                 "</td></tr>")
+
+        def _rol_select(nombre_campo, sid, hid, defecto):
+            ops = "".join(f"<option value={k}{' selected' if k == defecto else ''}>{_ROL_TXT[k]}</option>"
+                          for k in ("lectura", "operador", "admin"))
+            return (f"<select name={nombre_campo} id={sid} onchange=\"rolHint(this,'{hid}')\">{ops}</select>"
+                    f"<div class=hint id={hid}>{esc(ROL_DESC[defecto])}</div>")
+
+        def _clave(pid, hid, requerida, ayuda):
+            extra = " required" if requerida else " placeholder='Vacia = no se cambia'"
+            return (f"<div class=pwrow><input id={pid} type=password name=npass autocomplete=new-password "
+                    f"minlength={CLAVE_MIN}{extra}>"
+                    f"<button type=button class=pwb onclick=\"verClave('{pid}',this)\">Ver</button>"
+                    f"<button type=button class=pwb onclick=\"generarClave('{pid}','{hid}')\">Generar</button></div>"
+                    f"<div class=hint id={hid}>{ayuda}</div>")
+
+        def _foto(pfx, ayuda):
+            return ("<div class=field><label>Foto (opcional)</label><div class=ufoto>"
+                    f"<div class=ufprev><img id={pfx}preview alt='' style=display:none "
+                    f"onload=\"window.ufSync&&ufSync('{pfx}')\"><span id={pfx}ini class=ufini>?</span></div>"
+                    "<div class=ufacc><div class=ufbtns>"
+                    f"<label class=filepick><input id={pfx}file type=file accept=image/* "
+                    f"onchange=\"foto(this,'{pfx}');ufArchivo('{pfx}',this)\"><span class=fbtn>Elegir imagen</span></label>"
+                    f"<button class=cancelbtn type=button id={pfx}quitar onclick=\"ufQuitar('{pfx}')\" hidden>Quitar foto</button></div>"
+                    f"<span class=fname id={pfx}fname>{ayuda}</span></div></div>"
+                    f"<input type=hidden name=avatar id={pfx}avatar></div>")
+
+        _usr_ayuda = ("Con el que se entra; no se puede cambiar despues. Letras sin tildes, numeros, punto, "
+                      "guion y guion bajo, sin espacios.")
         modal_new = (
             "<div id=ovlNew class=ovl hidden onmousedown=\"this._dn=event.target\" onclick=\"if(event.target===this&&this._dn===this){cerrar('ovlNew')}\">"
             "<div class=modal><div class=mhead><h3>Nuevo usuario</h3>"
             "<button class=mx type=button onclick=\"cerrar('ovlNew')\" aria-label=Cerrar>&times;</button></div>"
             "<form method=post action='/perfil'><input type=hidden name=accion value=add_user>"
             "<div class=mbody>"
-            "<div class=grid2><div class=field><label>Nombre a mostrar</label><input type=text name=nnombre autocomplete=off></div>"
-            "<div class=field><label>Usuario para entrar</label><input type=text name=nuser autocomplete=off required></div></div>"
-            "<div class=grid2><div class=field><label>Correo</label><input type=email name=ncorreo autocomplete=off></div>"
-            "<div class=field><label>Rol</label><select name=nrole>"
-            "<option value=lectura>Solo lectura</option><option value=operador>Operador (cuarentenas/incidentes)</option>"
-            "<option value=admin>Administrador</option></select></div></div>"
-            "<div class=field><label>Clave</label><input type=password name=npass autocomplete=new-password required>"
-            "<div class=hint>Minimo 6 caracteres. El <b>usuario</b> es con el que se entra y no se "
-            "puede cambiar despues; nombre y correo son opcionales y se cambian cuando quieras.</div></div>"
-            "<div class=field><label>Foto (opcional)</label><div class=avup>"
-            "<img id=npreview class=avprev alt='' style=display:none>"
-            "<input id=nfile type=file accept=image/* onchange=\"foto(this,'n')\">"
-            "<button class=cancelbtn type=button onclick=\"quitarimg('n')\">Quitar</button></div>"
-            "<input type=hidden name=avatar id=navatar></div>"
+            "<div class=grid2><div class=field><label for=nnom>Nombre a mostrar</label>"
+            "<input id=nnom type=text name=nnombre maxlength=60 autocomplete=off placeholder='Opcional' oninput=\"ufIni('n')\"></div>"
+            "<div class=field><label for=nusr>Usuario para entrar</label>"
+            "<input id=nusr type=text name=nuser autocomplete=off required maxlength=32 "
+            "pattern='[A-Za-z0-9][A-Za-z0-9._\\-]{0,31}' title='Letras sin tildes, numeros, punto, guion y guion bajo, sin espacios' "
+            "oninput=\"usrCheck(this);ufIni('n')\"></div></div>"
+            f"<div class=hint id=nusrh>{_usr_ayuda}</div>"
+            "<div class=grid2><div class=field><label for=ncor>Correo</label>"
+            "<input id=ncor type=email name=ncorreo maxlength=80 autocomplete=off placeholder='Opcional'></div>"
+            "<div class=field><label for=nrol>Rol</label>" + _rol_select("nrole", "nrol", "nrolh", "lectura") + "</div></div>"
+            "<div class=field><label for=npw>Clave</label>"
+            + _clave("npw", "npwh", True, f"Minimo {CLAVE_MIN} caracteres. Con «Generar» se crea una segura y se copia.")
+            + "</div>"
+            + _foto("n", "Ninguna: se ven sus iniciales.") +
             "</div>"
             "<div class=mfoot><button class=cancelbtn type=button onclick=\"cerrar('ovlNew')\">Cancelar</button>"
             "<button class=primary type=submit>Crear usuario</button></div></form></div></div>")
@@ -10169,33 +10224,28 @@ def perfil_page(msg="", ok=False, edit_user=None):
             "<div class=field><label>Usuario para entrar</label><input type=text id=eusr readonly disabled>"
             "<div class=hint>El usuario no se cambia nunca. Si hace falta otro, crea uno nuevo y "
             "elimina este.</div></div>"
-            "<div class=grid2><div class=field><label>Nombre a mostrar</label><input type=text name=nombre id=en></div>"
-            "<div class=field><label>Correo</label><input type=email name=correo id=ec></div></div>"
-            "<div class=field><label>Rol</label><select name=role id=er>"
-            "<option value=admin>Administrador</option><option value=operador>Operador (cuarentenas/incidentes)</option>"
-            "<option value=lectura>Solo lectura</option></select></div>"
-            "<div class=field><label>Clave nueva (opcional)</label>"
-            "<input type=password name=npass autocomplete=new-password placeholder='dejar vacio para no cambiar'>"
-            "<div class=hint>Si la escribes, minimo 6 caracteres.</div></div>"
-            "<div class=field><label>Foto (opcional)</label><div class=avup>"
-            "<img id=epreview class=avprev alt='' style=display:none>"
-            "<input id=efile type=file accept=image/* onchange=\"foto(this,'e')\">"
-            "<button class=cancelbtn type=button onclick=\"quitarimg('e')\">Quitar</button></div>"
-            "<div class=hint>Sube una imagen para cambiarla, o Quitar para borrarla.</div>"
-            "<input type=hidden name=avatar id=eavatar></div>"
+            "<div class=grid2><div class=field><label for=en>Nombre a mostrar</label>"
+            "<input type=text name=nombre id=en maxlength=60 oninput=\"ufIni('e')\"></div>"
+            "<div class=field><label for=ec>Correo</label><input type=email name=correo id=ec maxlength=80></div></div>"
+            "<div class=field><label for=er>Rol</label>" + _rol_select("role", "er", "erolh", "lectura") + "</div>"
+            "<div class=field><label for=epw>Clave nueva (opcional)</label>"
+            + _clave("epw", "epwh", False, f"Si la escribes, minimo {CLAVE_MIN} caracteres.")
+            + "</div>"
+            + _foto("e", "Elige una imagen para cambiarla.") +
             "</div>"
             "<div class=mfoot><button class=cancelbtn type=button onclick=\"cerrar('ovlEdit')\">Cancelar</button>"
             "<button class=primary type=submit>Guardar cambios</button></div></form></div></div>")
+        leyenda = "".join(f"<div class=rolc>{_rol_badge(k)}<p>{esc(ROL_DESC[k])}</p></div>"
+                          for k in ("admin", "operador", "lectura"))
         card_users = (
-            "<section class=card>"
-            "<div class=uhead><h2>Usuarios</h2>"
+            "<section class='card usrs'>"
+            "<div class=uhead><h2>Usuarios <span class=cnt>" + str(len(usuarios)) + "</span></h2>"
             "<div class=tools>"
-            "<button class='primary sm' type=button onclick=\"abrir('ovlNew')\">+ Nuevo</button>"
-            "<input class=search id=usearch placeholder='Buscar...' oninput='ufiltrar()'></div></div>"
-            "<p class=sub2>Los de <b>solo lectura</b> ven paneles y reportes pero no editan exclusiones, "
-            "ni actualizan reglas, ni gestionan usuarios.</p>"
+            "<input class=search id=usearch placeholder='Buscar...' oninput='ufiltrar()'>"
+            "<button class='primary sm' type=button onclick=\"abrir('ovlNew')\">+ Nuevo usuario</button></div></div>"
+            "<div class=roles>" + leyenda + "</div>"
             "<div class=twrap><table class=ut><thead><tr>"
-            "<th>ID</th><th>Nombre</th><th>Usuario</th><th>Correo</th><th>Rol</th><th>Estado</th><th></th>"
+            "<th>Usuario</th>" + ("<th>Correo</th>" if hay_correo else "") + "<th>Rol</th><th>Estado</th><th></th>"
             f"</tr></thead><tbody id=ubody>{''.join(rows)}</tbody></table></div>"
             "</section>" + modal_new + modal_edit)
     # --- tarjeta: accesos y seguridad (log de login + desbloqueo; solo admin) ---
@@ -10283,8 +10333,9 @@ def perfil_page(msg="", ok=False, edit_user=None):
         ".av{width:30px;height:30px;border-radius:50%;color:#fff;font:700 11px system-ui;display:inline-flex;align-items:center;justify-content:center;flex:none}"
         ".mono{font-family:ui-monospace,Consolas,monospace}.cmail{color:#52514e}.dash{color:#c3c2be}"
         ".me{background:#e7f0fb;color:#1c5cab;font-size:10px;font-weight:700;padding:1px 6px;border-radius:10px;margin-left:2px}"
-        ".estado{font-size:10px;font-weight:800;letter-spacing:.3px;padding:4px 9px;border-radius:6px;border:0;cursor:pointer}"
-        ".estado.on{background:#12b886;color:#fff}.estado.off{background:#eceae6;color:#8a8a86}"
+        ".estado{display:inline-flex;align-items:center;gap:6px;font:600 12px system-ui;padding:3px 10px;border-radius:20px;border:0;cursor:pointer}"
+        ".estado::before{content:'';width:7px;height:7px;border-radius:50%;background:currentColor}"
+        ".estado.on{background:#e6f4ea;color:#1a7f37}.estado.off{background:#f0efec;color:#8a8a86}.estado.fijo{cursor:default}"
         ".estado:hover{filter:brightness(1.06)}"
         ".acts{display:flex;gap:8px;justify-content:flex-end}.inl{display:inline-flex;margin:0}"
         ".ic{display:inline-flex;align-items:center;justify-content:center;width:30px;height:30px;border-radius:8px;"
@@ -10325,11 +10376,11 @@ def perfil_page(msg="", ok=False, edit_user=None):
         ".emp .vacio{color:#9a9a95;font-size:12px}"
         ".emp .logoacc{display:flex;flex-direction:column;gap:6px;min-width:0;flex:1}"
         ".emp .logobtns{display:flex;gap:8px;flex-wrap:wrap;align-items:center}"
-        ".emp .filepick{position:relative;display:inline-flex;cursor:pointer;margin:0}"
-        ".emp .filepick input{position:absolute;inset:0;width:100%;opacity:0;cursor:pointer}"
-        ".emp .filepick .fbtn{padding:8px 14px;border:1px solid #cfe0f6;background:#eef4fd;color:#1f65bd;border-radius:9px;"
-        "font:600 13px system-ui}.emp .filepick:hover .fbtn{background:#e2edfb}"
-        ".emp .fname{font-size:12px;color:#8a8a86;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}"
+        ".filepick{position:relative;display:inline-flex;cursor:pointer;margin:0}"
+        ".filepick input{position:absolute;inset:0;width:100%;opacity:0;cursor:pointer}"
+        ".filepick .fbtn{padding:8px 14px;border:1px solid #cfe0f6;background:#eef4fd;color:#1f65bd;border-radius:9px;"
+        "font:600 13px system-ui}.filepick:hover .fbtn{background:#e2edfb}"
+        ".fname{font-size:12px;color:#8a8a86;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}"
         ".emp .hint{margin-top:2px}"
         ".emp .vistabar{margin-top:16px;border:1px solid #ececec;border-radius:10px;overflow:hidden}"
         ".emp .vistabar .vt{font:700 11px system-ui;color:#8a8a86;padding:6px 12px;background:#fafafa;"
@@ -10339,7 +10390,38 @@ def perfil_page(msg="", ok=False, edit_user=None):
         ".emp .vistabar .vn{color:#33322f;font-size:14px;font-weight:700;white-space:nowrap;max-width:280px;overflow:hidden;text-overflow:ellipsis}"
         ".emp .vistabar .vacio{margin-right:auto}"
         ".emp .mfoot{margin:20px -24px 0}"
-        "@media(max-width:520px){.emp .logobox{flex-direction:column;align-items:flex-start}}")
+        "@media(max-width:520px){.emp .logobox{flex-direction:column;align-items:flex-start}}"
+        # Usuarios: un solo marco (el del modal), leyenda de roles y altas mas claras
+        ".aptmodal .aptbox.plano{max-width:880px}.aptbox.plano .aptscroll{padding:0}"
+        ".aptbox.plano section.card{border:0;box-shadow:none;margin:0;padding:22px 24px 24px;background:transparent;border-radius:0}"
+        ".usrs .uhead{padding-right:34px}.usrs h2{font-size:17px}"
+        ".usrs h2 .cnt{display:inline-block;min-width:20px;padding:1px 7px;margin-left:4px;border-radius:20px;background:#eceae6;"
+        "color:#6b6a66;font-size:12px;text-align:center;vertical-align:2px}"
+        ".roles{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin:14px 0}"
+        ".rolc{border:1px solid #eeede9;border-radius:10px;padding:10px 12px;background:#fafaf8}"
+        ".rolc p{margin:6px 0 0;font-size:12px;line-height:1.45;color:#5f5e5a}"
+        "@media(max-width:720px){.roles{grid-template-columns:1fr}}"
+        ".usrs .ut td{padding:10px 12px}"
+        ".quien{display:flex;flex-direction:column;line-height:1.3;min-width:0}.quien .l1{display:flex;align-items:center;gap:6px}"
+        ".ulog{font:12px ui-monospace,Consolas,monospace;color:#8a8a86}"
+        ".usrs .av{width:34px;height:34px;font-size:12px}"
+        ".icph{display:inline-block;width:30px}"
+        # la celda de acciones con display:flex deja de ser celda: la linea y el hover de la fila
+        # se cortaban antes de los botones
+        ".ut td.acts{display:table-cell;text-align:right;white-space:nowrap}.ut td.acts>*+*{margin-left:8px}"
+        ".usrs .tools .primary{white-space:nowrap}"
+        "@media(max-width:640px){.usrs .tools{width:100%}.usrs .search{flex:1;width:auto;min-width:0}}"
+        "#ovlNew .modal,#ovlEdit .modal{max-width:560px}"
+        ".pwrow{display:flex;gap:8px}.pwrow input{flex:1;min-width:0}"
+        ".pwb{padding:0 12px;border:1px solid #d7d6d2;border-radius:8px;background:#fff;color:#52514e;"
+        "font:600 12.5px system-ui;cursor:pointer;white-space:nowrap}.pwb:hover{background:#f4f4f2}"
+        ".hint.mal{color:#c0392b}"
+        ".ufoto{display:flex;gap:14px;align-items:center}"
+        ".ufprev{width:56px;height:56px;border-radius:50%;flex:none;overflow:hidden;display:flex;align-items:center;"
+        "justify-content:center;background:linear-gradient(135deg,#2a78d6,#1c5cab)}"
+        ".ufprev img{width:100%;height:100%;object-fit:cover}.ufini{color:#fff;font:700 19px system-ui}"
+        ".ufacc{display:flex;flex-direction:column;gap:6px;min-width:0;flex:1}"
+        ".ufbtns{display:flex;gap:8px;flex-wrap:wrap;align-items:center}")
     script = ("<script>"
               "function foto(inp,p){var f=inp.files&&inp.files[0];if(!f)return;var r=new FileReader();"
               "r.onload=function(){var im=new Image();im.onload=function(){var mx=160,w=im.width,h=im.height;"
@@ -10362,6 +10444,32 @@ def perfil_page(msg="", ok=False, edit_user=None):
               "function quitarimg(p){var h=document.getElementById(p+'avatar');if(h)h.value='__BORRAR__';"
               "var pv=document.getElementById(p+'preview');if(pv){pv.removeAttribute('src');pv.style.display='none';}"
               "var fi=document.getElementById(p+'file');if(fi)fi.value='';}"
+              "var ROLD=" + json.dumps(ROL_DESC) + ";"
+              "function rolHint(sel,h){var e=document.getElementById(h);if(e&&sel)e.textContent=ROLD[sel.value]||'';}"
+              "function verClave(id,b){var i=document.getElementById(id);if(!i)return;"
+              "var ver=i.type==='password';i.type=ver?'text':'password';b.textContent=ver?'Ocultar':'Ver';}"
+              # 14 de un alfabeto sin 0/O/1/l/I; getRandomValues vale tambien por http
+              "function generarClave(id,h){var a='ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789',"
+              "r=new Uint32Array(14),t='';crypto.getRandomValues(r);for(var k=0;k<14;k++)t+=a.charAt(r[k]%a.length);"
+              "var i=document.getElementById(id);if(!i)return;i.value=t;i.type='text';"
+              "var vb=i.parentNode.querySelector('.pwb');if(vb)vb.textContent='Ocultar';"
+              "i.focus();i.select();var ok=false;try{ok=document.execCommand('copy');}catch(e){}"
+              "var e2=document.getElementById(h);if(e2){e2.classList.remove('mal');e2.textContent=(ok?'Generada y copiada':'Generada')+"
+              "': pasala al usuario por un canal seguro; al guardar ya no se vuelve a ver.';}}"
+              "function usrCheck(i){var h=document.getElementById('nusrh');if(!h)return;"
+              "h.classList.toggle('mal',!!i.value&&!i.checkValidity());}"
+              "function ufIni(p){var n=document.getElementById(p==='n'?'nnom':'en'),u=document.getElementById(p==='n'?'nusr':'eusr');"
+              "var t=((n&&n.value.trim())||(u&&u.value.trim())||'').split(/[\\s._-]+/).filter(Boolean);"
+              "var s=t.length>1?t[0].charAt(0)+t[1].charAt(0):(t[0]||'?').slice(0,2);"
+              "var e=document.getElementById(p+'ini');if(e)e.textContent=s.toUpperCase();}"
+              "function ufSync(p){var im=document.getElementById(p+'preview');if(!im)return;"
+              "var hay=!!im.getAttribute('src')&&im.style.display!=='none';"
+              "var e=document.getElementById(p+'ini');if(e)e.hidden=hay;"
+              "var q=document.getElementById(p+'quitar');if(q)q.hidden=!hay;}"
+              "function ufArchivo(p,i){var s=document.getElementById(p+'fname');"
+              "if(s&&i.files&&i.files[0])s.textContent=i.files[0].name;}"
+              "function ufQuitar(p){quitarimg(p);var s=document.getElementById(p+'fname');"
+              "if(s)s.textContent=p==='e'?'Se quitara al guardar.':'Ninguna: se ven sus iniciales.';ufSync(p);}"
               "function abrir(id){document.getElementById(id).hidden=false;}"
               "function cerrar(id){document.getElementById(id).hidden=true;}"
               "function abrirEdit(b){document.getElementById('eu').value=b.getAttribute('data-user');"
@@ -10374,11 +10482,21 @@ def perfil_page(msg="", ok=False, edit_user=None):
               "document.getElementById('en').placeholder='Sin nombre guardado';"
               "document.getElementById('ec').placeholder='Sin correo guardado';"
               "document.getElementById('er').value=b.getAttribute('data-role')||'lectura';"
-              "var p=document.querySelector('#ovlEdit input[name=npass]');if(p)p.value='';abrir('ovlEdit');}"
+              "rolHint(document.getElementById('er'),'erolh');"
+              "var p=document.querySelector('#ovlEdit input[name=npass]');if(p){p.value='';p.type='password';"
+              "var vb=p.parentNode.querySelector('.pwb');if(vb)vb.textContent='Ver';}"
+              "var ph=document.getElementById('epwh');if(ph){ph.classList.remove('mal');ph.textContent='Si la escribes, minimo " + str(CLAVE_MIN) + " caracteres.';}"
+              # la foto actual sale de la fila (no se repite en un data-: pesan hasta 300 KB)
+              "var tr=b.closest('tr'),fim=tr&&tr.querySelector('.nmcell img.av'),pv=document.getElementById('epreview');"
+              "document.getElementById('eavatar').value='';document.getElementById('efile').value='';"
+              "if(fim){pv.src=fim.src;pv.style.display='';}else{pv.removeAttribute('src');pv.style.display='none';}"
+              "document.getElementById('efname').textContent=fim?'Elige una imagen para cambiarla.':'Sin foto: se ven sus iniciales.';"
+              "ufIni('e');ufSync('e');abrir('ovlEdit');}"
               "function ufiltrar(){var q=(document.getElementById('usearch').value||'').toLowerCase();"
               "var rs=document.querySelectorAll('#ubody tr');for(var i=0;i<rs.length;i++){"
               "var f=rs[i].getAttribute('data-f')||'';rs[i].style.display=f.indexOf(q)>=0?'':'none';}}"
               "document.addEventListener('keydown',function(e){if(e.key==='Escape'){cerrar('ovlNew');cerrar('ovlEdit');}});"
+              "if(document.getElementById('nini'))ufIni('n');"
               "</script>")
     # --- hub de accesos: cada apartado abre en su MODAL (Log y Documentacion incluidos) ---
     # tarjetas de acceso (Tailwind compilado, prefijo tw-): icono + nombre + para que sirve
@@ -10422,7 +10540,7 @@ def perfil_page(msg="", ok=False, edit_user=None):
                 f"<div class=aptscroll>{contenido}</div></div></div>")
     def _mcard(sid, card, clase=""):
         return _modal(sid, card, clase) if card else ""
-    modals = (_mcard("perfil", card_pw) + _mcard("empresa", card_empresa, "chico") + _mcard("usuarios", card_users)
+    modals = (_mcard("perfil", card_pw) + _mcard("empresa", card_empresa, "chico") + _mcard("usuarios", card_users, "plano")
               + _mcard("acceso", card_acceso) + _mcard("mikrotik", card_mk)
               + _mcard("dns", card_dns) + _mcard("feeds", card_feeds)
               + _mcard("update", card_update))
@@ -17862,8 +17980,8 @@ class H(BaseHTTPRequestHandler):
             nueva2 = q.get("nueva2", [""])[0]
             if not yo or not verificar_login(yo, actual):
                 return self._html(perfil_page("La clave actual no es correcta.", ok=False))
-            if len(nueva) < 6:
-                return self._html(perfil_page("La clave nueva debe tener al menos 6 caracteres.", ok=False))
+            if len(nueva) < CLAVE_MIN:
+                return self._html(perfil_page(f"La clave nueva debe tener al menos {CLAVE_MIN} caracteres.", ok=False))
             if nueva != nueva2:
                 return self._html(perfil_page("Las dos claves nuevas no coinciden.", ok=False))
             us = cargar_usuarios()
@@ -17949,8 +18067,8 @@ class H(BaseHTTPRequestHandler):
                 return self._html(perfil_page("Usuario invalido: letras sin tildes ni enie, numeros, punto, guion "
                                               "y guion bajo, sin espacios (max 32, empieza por letra o numero).",
                                               ok=False))
-            if len(npw) < 6:
-                return self._html(perfil_page("La clave del usuario debe tener al menos 6 caracteres.", ok=False))
+            if len(npw) < CLAVE_MIN:
+                return self._html(perfil_page(f"La clave del usuario debe tener al menos {CLAVE_MIN} caracteres.", ok=False))
             if foto and (not foto.startswith("data:image/") or len(foto) > 300_000):
                 return self._html(perfil_page("La foto no es una imagen valida o pesa demasiado.", ok=False))
             us = cargar_usuarios()
@@ -17974,6 +18092,9 @@ class H(BaseHTTPRequestHandler):
                 return self._html(perfil_page("Ese usuario no existe.", ok=False))
             if obj.get("role") == "admin" and len(admins) <= 1:
                 return self._html(perfil_page("No puedes borrar el unico administrador.", ok=False))
+            if objetivo == yo:
+                return self._html(perfil_page("No puedes eliminar tu propia cuenta: pide a otro administrador "
+                                              "que lo haga.", ok=False))
             us = [r for r in us if r.get("user") != objetivo]
             try:
                 guardar_usuarios(us)
@@ -18030,8 +18151,8 @@ class H(BaseHTTPRequestHandler):
                 return self._html(perfil_page("No puedes quitar el rol al unico administrador.", ok=False))
             foto = q.get("avatar", [""])[0]
             if npw:
-                if len(npw) < 6:
-                    return self._html(perfil_page("La clave nueva debe tener al menos 6 caracteres.", ok=False))
+                if len(npw) < CLAVE_MIN:
+                    return self._html(perfil_page(f"La clave nueva debe tener al menos {CLAVE_MIN} caracteres.", ok=False))
                 obj["salt"], obj["hash"] = _hash_pw(npw)
             if foto == "__BORRAR__":
                 obj["avatar"] = ""
@@ -18058,6 +18179,9 @@ class H(BaseHTTPRequestHandler):
             obj = next((r for r in us if r.get("user") == objetivo), None)
             if not obj:
                 return self._html(perfil_page("Ese usuario no existe.", ok=False))
+            if objetivo == yo:
+                return self._html(perfil_page("No puedes desactivar tu propia cuenta: pide a otro administrador "
+                                              "que lo haga.", ok=False))
             act_admins = [r for r in us if r.get("role") == "admin" and r.get("activo", True)]
             va_desactivar = obj.get("activo", True)
             if va_desactivar and obj.get("role") == "admin" and len(act_admins) <= 1:
