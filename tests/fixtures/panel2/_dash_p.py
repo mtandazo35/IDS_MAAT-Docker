@@ -11,6 +11,7 @@ Si el nucleo (N) aun no esta integrado, se ponen sustitutos con el contrato de N
 nodo y 400/404, `cargar_routers` = un router por punto, `salud_punto`, `espejo_*`). Con N
 integrado se usan los suyos (salvo los que hablarian con un router de verdad).
 """
+import contextlib
 import http.client
 import importlib
 import inspect
@@ -228,6 +229,15 @@ class PanelP:
             prueba.mk.append(("add", ip, (router or {}).get("id"))) or (True, ""))
         d.mk_remove = lambda ip, lista=None, router=None: (
             prueba.mk.append(("remove", ip, (router or {}).get("id"))) or (True, "1 quitada"))
+        # (adaptada, 2026-10-14) el envio masivo ya no llama a mk_add por IP: abre UNA sesion por
+        # nodo (mk_sesion) y manda con _mk_add_en. El falso de la sesion da como «socket» el id
+        # del punto, para que el add siga apuntando a que router fue.
+        @contextlib.contextmanager
+        def mk_sesion(router):
+            yield (router or {}).get("id"), dict(router or {})
+        d.mk_sesion = mk_sesion
+        d._mk_add_en = lambda s, ip, lst, tt="", comment="": (
+            prueba.mk.append(("add", ip, s)) or (True, ""))
         d.notificar_cuarentena = lambda *a, **k: None
         d.enviar_telegram = lambda *a, **k: None
         d.espejo_plan = lambda pid: (prueba.espejo.append(("plan", pid))

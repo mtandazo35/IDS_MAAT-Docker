@@ -1469,17 +1469,81 @@ def mk_add(ip, comment="", lista=None, ttl=None, router=None):
 def _mk_add_en(s, ip, lst, tt="", comment=""):
     """mk_add sobre una conexion ya abierta: las tandas (politicas, barrido, envio masivo) no
     abren una conexion TLS + login por cada IP. Mismas reglas que mk_add: «already have such
-    entry» es exito (add idempotente). (ok, mensaje)."""
+    entry» es exito (add idempotente). (ok, mensaje).
+
+    Si ya estaba, se le pone la caducidad NUEVA: el add rechazado dejaba la entrada con su
+    timeout viejo, y reenviar un CPE que sigue atacando no alargaba su corte (caducaba a la
+    hora de la primera vez). Con TTL se hace `set` del timeout (6.49 y 7); con TTL vacio
+    (permanente, auto-mantener) y una entrada que caducaba, se quita y se vuelve a anadir sin
+    timeout conservando su comentario: `set` con timeout vacio no vale igual en las dos
+    versiones y `unset timeout` no esta garantizado en la 6.
+
+    Un rechazo del router (!trap) es (False, motivo) y la conexion sigue sirviendo. Un !fatal
+    (el router cierra la API) se LANZA como IOError, igual que un fallo de socket: la sesion
+    ya no sirve y la tanda tiene que cortar ese nodo, no seguir IP por IP."""
+    def _orden(palabras):
+        _mk_send(s, palabras)
+        ok_o, frases_o, err_o = _mk_reply(s)
+        if any(f and f[0] == "!fatal" for f in frases_o):
+            raise IOError("el router cerro la API: %s" % (err_o or "!fatal"))
+        return ok_o, frases_o, err_o or ""
+
     words = ["/ip/firewall/address-list/add", f"=list={lst}", f"=address={ip}"]
     if tt:
         words.append(f"=timeout={tt}")
     if comment:
         words.append(f"=comment={comment[:120]}")
-    _mk_send(s, words)
-    ok, frases, err = _mk_reply(s)
-    if not ok and "already have such entry" in (err or "").lower():
-        return (True, "ya estaba en la lista")   # add idempotente: ya estaba -> ok
-    return (ok, err)
+    ok, _frases, err = _orden(words)
+    if ok or "already have such entry" not in err.lower():
+        return (ok, err)
+    # ya estaba (add idempotente: es exito). Se busca la entrada para renovar su caducidad.
+    ok_p, frases, err_p = _orden(["/ip/firewall/address-list/print", "=.proplist=.id,timeout,comment",
+                                  f"?list={lst}", f"?address={ip}"])
+    if not ok_p:
+        # sigue en la lista (bloqueada), solo no se pudo mirar su caducidad
+        return (True, "ya estaba en la lista; no se pudo renovar su caducidad: %s" % err_p)
+    entradas = []
+    for f in frases:
+        if f and f[0] == "!re":
+            e = {}
+            for a in f[1:]:
+                k, _sep, v = a[1:].partition("=") if a.startswith("=") else ("", "", "")
+                if k:
+                    e[k] = v
+            if e.get(".id"):
+                entradas.append(e)
+    if not entradas:
+        # caduco entre el add y la consulta: se vuelve a anadir con el TTL nuevo
+        ok2, _fr2, err2 = _orden(words)
+        if ok2 or "already have such entry" in err2.lower():
+            return (True, "ya estaba en la lista")
+        return (False, err2)
+    for e in entradas:
+        viejo = (e.get("timeout") or "").strip()
+        tenia_timeout = viejo not in ("", "0s", "00:00:00", "none")
+        if tt:
+            ok_s, _fs, err_s = _orden(["/ip/firewall/address-list/set", "=.id=" + e[".id"], f"=timeout={tt}"])
+            if ok_s:
+                continue
+            # set rechazado (version o entrada que no lo admite): quitar y anadir con el TTL nuevo
+        elif not tenia_timeout:
+            continue                     # ya era permanente y se pide permanente: nada que hacer
+        com = (e.get("comment") or comment or "")[:120]
+        ok_r, _fr, err_r = _orden(["/ip/firewall/address-list/remove", "=.id=" + e[".id"]])
+        if not ok_r:
+            # no se quito: sigue bloqueada con su caducidad vieja
+            return (True, "ya estaba en la lista; no se pudo renovar su caducidad: %s" % err_r)
+        nuevas = ["/ip/firewall/address-list/add", f"=list={lst}", f"=address={ip}"]
+        if tt:
+            nuevas.append(f"=timeout={tt}")
+        if com:
+            nuevas.append(f"=comment={com}")
+        ok_a, _fa, err_a = _orden(nuevas)
+        if not ok_a and "already have such entry" not in err_a.lower():
+            # se quito para renovarla y el router no la acepto de vuelta: ya NO esta cortada
+            return (False, "se quito %s de %s para renovar su caducidad y el router rechazo "
+                           "volver a anadirla: %s" % (ip, lst, err_a))
+    return (True, "ya estaba en la lista")
 
 class PuntoEnBaja(Exception):
     """El punto se esta dando de baja: no se le manda nada (auditoria ap2 H4)."""
@@ -16033,10 +16097,16 @@ def _enviar_confirmados(nodo_form, tipo):
         cq_pid = [_cargar_cuarentena(pid), _cargar_cuarentena(nodos.TODOS)]
         ok_n = err_n = 0; ult_err = ""
         nuevas = {}
+        corte = ""
         try:
-            with cerrojo_operacion(pid, "envio-" + tipo):
+            # UNA conexion por nodo (mk_sesion), abierta al llegar a la primera IP que de
+            # verdad se manda: antes cada IP abria su TLS + login (50 por nodo). La pila la
+            # cierra al salir pase lo que pase, antes de soltar el cerrojo.
+            with cerrojo_operacion(pid, "envio-" + tipo), contextlib.ExitStack() as pila:
                 ya = cargar_enviados(reg)            # releido: otro envio pudo terminar mientras
-                for clave, c in por_nodo[pid][:50]:
+                lote = por_nodo[pid][:50]
+                s = None
+                for i, (clave, c) in enumerate(lote):
                     if clave in ya:
                         continue
                     ip = ip_de(clave)
@@ -16057,10 +16127,24 @@ def _enviar_confirmados(nodo_form, tipo):
                         _lst = lista_de_categoria(_cat); _ttl = _ttl_efectivo(dr, "TTL")
                         _com = "suricata " + _cat + " riesgo %s %s"
                     try:
-                        ok, err = mk_add(ip, comment=_com % (c.get("riesgo", 0), time.strftime("%Y-%m-%d %H:%M")),
-                                         lista=_lst, ttl=_ttl, router=r)
+                        if s is None:
+                            s, _ds = pila.enter_context(mk_sesion(r))
+                        # la lista vacia cae en la del router, como hacia mk_add
+                        ok, err = _mk_add_en(s, ip, _lst or dr.get("LIST", "suricata-cuarentena"), _ttl,
+                                             _com % (c.get("riesgo", 0), time.strftime("%Y-%m-%d %H:%M")))
                     except Exception as ex:
-                        ok, err = False, str(ex)
+                        # Fallo de TRANSPORTE (no conecta, tiempo agotado, TLS, socket, !fatal,
+                        # punto en baja): con una excepcion a medias la conversacion con la API
+                        # queda desincronizada y seguir seria esperar el timeout por cada IP.
+                        # Se corta SOLO este nodo y se dice cuantas quedaron sin enviar. Antes
+                        # solo cortaban "conexion" y "login": un "timed out" o un error TLS
+                        # seguian IP por IP.
+                        err = str(ex) or ex.__class__.__name__
+                        mk_log("ERROR-ENVIO", ip, quien, f"lista={_lst} {err}" + _suf_nodo(clave)); err_n += 1; ult_err = err
+                        quedan = 1 + sum(1 for k, _c in lote[i + 1:] if k not in ya)
+                        corte = ("; se corto el envio a este nodo por un fallo de comunicacion con el "
+                                 "MikroTik: %d sin enviar" % quedan)
+                        break
                     if ok:
                         rec = {"cuando": int(time.time()), "score": c.get("riesgo", 0), "por": quien,
                                "router": r.get("id", ""), "motivo": _motivo_bloqueo(clave)}
@@ -16070,16 +16154,16 @@ def _enviar_confirmados(nodo_form, tipo):
                         mk_log("ENVIADO", ip, quien, f"lista={_lst} ({'dns ' if dns else ''}masivo)" + _suf_nodo(clave))
                         ok_n += 1
                     else:
+                        # el router rechazo ESTA IP (!trap) y la conexion sigue sirviendo: las
+                        # demas se siguen mandando
                         mk_log("ERROR-ENVIO", ip, quien, f"lista={_lst} {err}" + _suf_nodo(clave)); err_n += 1; ult_err = err
-                        if "conexion" in (err or "").lower() or "login" in (err or "").lower():
-                            break   # ese router no responde: no seguir con el, si con los demas nodos
                 _registrar_enviados(reg, nuevas, [])
         except OperacionEnCurso as ex:
             partes.append("%s: nada (%s)" % (nom, ex))
             continue
         total += ok_n
-        partes.append("%s: %d enviado(s)%s" % (nom, ok_n, (", %d con error (%s)" % (err_n, ult_err))
-                                               if err_n else ""))
+        partes.append("%s: %d enviado(s)%s%s" % (nom, ok_n, (", %d con error (%s)" % (err_n, ult_err))
+                                                 if err_n else "", corte))
     if viejas:
         partes.append("%d omitido(s) por evidencia vieja, la IP puede ser hoy de otro abonado: %s%s" % (
             len(viejas), ", ".join(viejas[:5]), " y %d mas" % (len(viejas) - 5) if len(viejas) > 5 else ""))
