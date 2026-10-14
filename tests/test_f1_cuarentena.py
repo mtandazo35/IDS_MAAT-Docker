@@ -119,11 +119,13 @@ class RegistrosSinFotoVieja(Base):
             {"ip": IP, "router": "p001", "confianza": "alta", "riesgo": 90, "ultima": int(time.time())}]})
         dentro, seguir = threading.Event(), threading.Event()
 
-        def mk_add_lento(ip, **k):
+        # (adaptada, 2026-10-14) el masivo ya no llama a mk_add por IP: manda con _mk_add_en
+        # sobre una sesion por nodo (el router simulado de p001 pone la conexion)
+        def mk_add_lento(s, ip, lst, tt="", comment=""):
             dentro.set()
             seguir.wait(10)
             return True, ""
-        d.mk_add = mk_add_lento
+        d._mk_add_en = mk_add_lento
         res = {}
 
         def masivo():
