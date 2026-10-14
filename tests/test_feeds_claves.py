@@ -3,7 +3,8 @@
 Tipo: correccion de defecto + capacidad nueva (el user, 2026-10-14: «no manda los link donde se
 deben crear las api», «que valide bien los link para crear cuentas y api y que valide los token»).
   - Cada servicio tiene su bloque con pasos y botones a la pagina exacta; el panel solo enlaza las
-    direcciones de FEEDS_ENLACES (la de AbuseIPDB que habia, /account/api, daba 404).
+    direcciones de FEEDS_ENLACES (la de AbuseIPDB que habia, /account/api, daba 404; ahora
+    /account/api/keys, la que paso el user).
   - Telegram: antes solo se miraba la FORMA del token; ahora getMe (token) y getChat (chat) antes
     de guardar, y «Detectar Chat ID» (getUpdates) para no leer JSON a mano.
   - Una clave pegada en el campo de otro servicio se rechaza con un mensaje que lo dice.
@@ -15,6 +16,7 @@ import os
 import re
 import sys
 import unittest
+import urllib.error
 import urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -36,7 +38,8 @@ class Bloques(unittest.TestCase):
     def test_solo_enlaces_comprobados_y_todos_presentes(self):
         enlaces = set(re.findall(r"href='(https?://[^']+)' target=_blank", self.card))
         self.assertEqual(enlaces, set(self.d.FEEDS_ENLACES.values()))
-        self.assertNotIn("abuseipdb.com/account/api", self.card)       # la que daba 404
+        self.assertNotIn("abuseipdb.com/account/api'", self.card)      # la que daba 404 (sin /keys)
+        self.assertIn("https://www.abuseipdb.com/account/api/keys", enlaces)   # la que paso el user
         for url in enlaces:
             self.assertIn("href='%s' target=_blank rel='noopener noreferrer'" % url, self.card)
 
@@ -150,16 +153,84 @@ class CampoEquivocado(unittest.TestCase):
         self.assertIn("las claves de Groq empiezan por gsk_", txt)
 
 
+class Comprobar(unittest.TestCase):
+    """«Comprobar» prueba la clave sin guardarla (la pegada, o la guardada con el campo vacio) y la
+    etiqueta del bloque dice como salio la ultima comprobacion de la guardada, con fecha (el user,
+    2026-10-14: «mejorar interfaz para verificar que si sean apis»)."""
+
+    def setUp(self):
+        self.p = Panel(http=True)
+        self.addCleanup(self.p.cerrar)
+        self.d = self.p.d
+        self.resp = {"aidb": (True, "valida")}
+        self.d.aidb_probar = lambda k: self.resp["aidb"]
+        self.d.feeds_auth_probar = lambda k: (False, "abuse.ch rechazo la clave (unknown_auth_key)")
+
+    def probar(self, servicio, clave="", quien="ana"):
+        st, _c, txt = self.p.pedir("POST", "/feeds/probar", {"servicio": servicio, "clave": clave}, quien)
+        return st, (json.loads(txt) if st == 200 else txt)
+
+    def chip(self, ident):
+        _s, _c, h = self.p.pedir("GET", "/ajustes")
+        i = h.index("<div class=fsrv id=%s>" % ident)
+        return h[i:h.index("</div>", i)]
+
+    def test_la_pegada_se_comprueba_y_no_se_guarda(self):
+        st, j = self.probar("aidb", "a" * 80)
+        self.assertEqual((j["estado"], j["guardada"]), ("valida", False))
+        self.assertFalse(self.d.aidb_configurada())
+        self.assertNotIn("aidb", self.d.claves_estado())
+        st, j = self.probar("abusech", "b" * 48)
+        self.assertEqual(j["estado"], "invalida")
+        self.assertIn("unknown_auth_key", j["msg"])
+
+    def test_sin_clave_guardada_lo_dice(self):
+        self.assertEqual(self.probar("aidb")[1]["estado"], "sin_clave")
+
+    def test_la_etiqueta_dice_como_salio_la_ultima_comprobacion(self):
+        self.assertIn("sin configurar", self.chip("feed-aidb"))
+        self.p.pedir("POST", "/feeds/aidb", {"aidbkey": "c" * 80})        # se valida y se guarda
+        self.assertIn("valida &middot; comprobada", self.chip("feed-aidb"))
+        self.resp["aidb"] = (False, "AbuseIPDB rechazo la clave (HTTP 401)")  # la revocaron
+        st, j = self.probar("aidb")                                          # comprobar la guardada
+        self.assertEqual((j["estado"], j["guardada"]), ("invalida", True))
+        self.assertIn("rechazada &middot;", self.chip("feed-aidb"))
+        self.resp["aidb"] = (None, "no se pudo comprobar ahora (sin red?)")
+        self.probar("aidb")
+        self.assertIn("configurada &middot; sin comprobar", self.chip("feed-aidb"))
+        self.p.pedir("POST", "/feeds/aidb", {"aidbkey": "BORRAR"})
+        self.assertNotIn("aidb", self.d.claves_estado())
+
+    def test_groq_sin_gsk_y_clave_de_otro_servicio(self):
+        self.assertIn("gsk_", self.probar("groq", "x" * 50)[1]["msg"])
+        j = self.probar("aidb", TOK)[1]
+        self.assertEqual(j["estado"], "invalida")
+        self.assertIn("Telegram", j["msg"])
+
+    def test_boton_en_cada_bloque_y_solo_admin(self):
+        _s, _c, h = self.p.pedir("GET", "/ajustes")
+        for serv in ("abusech", "aidb", "groq", "telegram"):
+            self.assertIn("fProbar(this,'%s')\">Comprobar</button>" % serv, h)
+        self.assertEqual(self.probar("aidb", "a" * 80, "olga")[0], 403)
+        self.assertEqual(self.probar("nada", "x")[1]["estado"], "invalida")
+
+
 @unittest.skipUnless(os.environ.get("IDS_PRUEBAS_RED") == "1", "sin red: IDS_PRUEBAS_RED=1 para comprobar los enlaces")
 class EnlacesVivos(unittest.TestCase):
     def test_cada_enlace_responde(self):
         sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures", "panel2"))
         p = Panel()
         self.addCleanup(p.cerrar)
+        # las que piden sesion: sin ella, abuse.ch da 401 y AbuseIPDB manda al login (200 tras seguirlo)
+        con_sesion = {"abusech_perfil"}
         for nombre, url in p.d.FEEDS_ENLACES.items():
             req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-            with urllib.request.urlopen(req, timeout=20) as r:
-                self.assertEqual(r.status, 200, "%s %s" % (nombre, url))
+            try:
+                with urllib.request.urlopen(req, timeout=20) as r:
+                    st = r.status
+            except urllib.error.HTTPError as e:
+                st = e.code
+            self.assertIn(st, (200, 401) if nombre in con_sesion else (200,), "%s %s" % (nombre, url))
 
 
 if __name__ == "__main__":

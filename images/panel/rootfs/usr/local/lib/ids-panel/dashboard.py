@@ -5970,18 +5970,86 @@ def feeds_auth_set(val):
 ABUSECH_PRUEBA_URL = "https://threatfox-api.abuse.ch/api/v1/"
 _ABUSECH_MALA = ("unknown_auth_key", "illegal_auth_key")
 
-# Donde se crea cada cuenta y cada clave. Comprobadas a mano el 2026-10-14 (todas 200; la que
-# habia de AbuseIPDB, /account/api, daba 404: la oficial es /account, pestana «API Settings»).
+# Donde se crea cada cuenta y cada clave. Comprobadas a mano el 2026-10-14 (200, o 302 al login
+# si la pagina pide sesion). La de AbuseIPDB que habia, /account/api, daba 404; /account/api/keys
+# (la que paso el user) abre directamente las claves de la cuenta, o el login si no hay sesion.
 # La prueba test_feeds_enlaces fija que el panel solo enlaza estas.
 FEEDS_ENLACES = {
     "abusech": "https://auth.abuse.ch/",
+    "abusech_perfil": "https://auth.abuse.ch/user/me",      # la que paso el user: tu perfil y la Auth-Key
     "aidb_registro": "https://www.abuseipdb.com/register",
-    "aidb_cuenta": "https://www.abuseipdb.com/account",
+    "aidb_cuenta": "https://www.abuseipdb.com/account/api/keys",
     "groq": "https://console.groq.com/",
     "groq_claves": "https://console.groq.com/keys",
     "botfather": "https://t.me/BotFather",
     "telegram_guia": "https://core.telegram.org/bots/tutorial",
 }
+
+# --- comprobar una clave sin guardarla, y recordar como salio la ultima comprobacion -----------
+# El user (2026-10-14): «mejorar la interfaz para verificar que si sean APIs». Cada bloque tiene un
+# boton «Comprobar» (POST /feeds/probar) y su etiqueta dice «valida · comprobada <fecha>», no solo
+# «configurada»: una clave guardada hace meses puede estar revocada.
+CLAVES_ESTADO = nodos.ruta("estado", "claves-estado.json")
+SERVICIOS_CLAVE = {"abusech": "abuse.ch", "aidb": "AbuseIPDB", "groq": "Groq", "telegram": "Telegram"}
+
+def claves_estado():
+    try:
+        d = json.load(open(CLAVES_ESTADO, encoding="utf-8"))
+        return d if isinstance(d, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+def claves_estado_set(serv, estado, msg=""):
+    """estado: valida | invalida | sin_comprobar; None borra la entrada (clave quitada)."""
+    d = claves_estado()
+    if estado is None:
+        d.pop(serv, None)
+    else:
+        d[serv] = {"estado": estado, "msg": str(msg)[:200], "ts": int(time.time())}
+    try:
+        os.makedirs(os.path.dirname(CLAVES_ESTADO), mode=0o700, exist_ok=True)
+        tmp = "%s.%d.%d.tmp" % (CLAVES_ESTADO, os.getpid(), threading.get_ident())
+        with open(tmp, "w", encoding="utf-8", newline="\n") as f:
+            json.dump(d, f)
+        os.replace(tmp, CLAVES_ESTADO)
+    except OSError:
+        pass
+
+def _estado_de(e):
+    return "valida" if e is True else ("invalida" if e is False else "sin_comprobar")
+
+def probar_clave(serv, clave="", chat=""):
+    """Comprueba la clave pegada (o, si viene vacia, la GUARDADA) contra su servicio, sin guardar
+    nada. (valida|invalida|sin_comprobar|sin_clave, mensaje, de_la_guardada)."""
+    clave = (clave or "").strip()
+    guardada = not clave
+    if guardada:
+        clave = {"abusech": lambda: _feeds_conf_get("ABUSE_CH_AUTH_KEY"), "aidb": aidb_key,
+                 "groq": groq_key, "telegram": telegram_token}[serv]() or ""
+        if not clave:
+            return "sin_clave", "no hay ninguna guardada: pega una para comprobarla", True
+    otro = clave_de_otro(clave, serv)
+    if otro:
+        return "invalida", "eso parece la clave de %s, no la de %s" % (otro, SERVICIOS_CLAVE[serv]), guardada
+    if serv == "abusech":
+        e, msg = feeds_auth_probar(clave)
+    elif serv == "aidb":
+        e, msg = aidb_probar(clave)
+    elif serv == "groq":
+        if not clave.startswith("gsk_"):
+            return "invalida", "las claves de Groq empiezan por gsk_", guardada
+        e, msg, _ms = groq_probar(clave)
+    else:
+        e, msg, bot = telegram_probar(clave)
+        if e is True:
+            msg = "token valido: bot %s" % bot
+            chat = (chat or "").strip() or telegram_chat()
+            if chat:
+                ec, mc = telegram_chat_probar(clave, chat)
+                if ec is False:
+                    return "invalida", "el token vale (bot %s), pero %s" % (bot, mc), guardada
+                msg += "; " + (mc if ec else "el chat no se pudo comprobar (%s)" % mc)
+    return _estado_de(e), msg, guardada
 
 def feeds_auth_probar(key):
     """Valida una Auth-Key contra la API de ThreatFox (abuse.ch). Devuelve (estado, msg):
@@ -10552,13 +10620,34 @@ def perfil_page(msg="", ok=False, edit_user=None):
             return ("<a class=fbtn href='%s' target=_blank rel='noopener noreferrer'>%s &#8599;</a>"
                     % (esc(FEEDS_ENLACES[clave]), txt))
 
-        def _chip(ok, si="configurada", no="sin configurar"):
-            return "<span class='fchip %s'>%s</span>" % ("fok" if ok else "fno", si if ok else no)
+        _cest = claves_estado()
+
+        def _chip(serv, ok, si="configurada", no="sin configurar"):
+            """La etiqueta del bloque: sin configurar, o como salio la ULTIMA comprobacion de la
+            clave guardada (al guardarla o con «Comprobar»), con su fecha."""
+            if not ok:
+                return "<span class='fchip fno'>%s</span>" % no
+            e = _cest.get(serv) or {}
+            cuando = time.strftime("%d/%m %H:%M", time.localtime(e["ts"])) if e.get("ts") else ""
+            if e.get("estado") == "valida":
+                return ("<span class='fchip fok' title='%s'>valida &middot; comprobada %s</span>"
+                        % (esc(e.get("msg", "")), cuando))
+            if e.get("estado") == "invalida":
+                return ("<span class='fchip fmal' title='%s'>rechazada &middot; %s</span>"
+                        % (esc(e.get("msg", "")), cuando))
+            return "<span class='fchip fno'>%s &middot; sin comprobar</span>" % si
 
         def _bloque(ident, titulo, sub, ok, para, pasos, form, si="configurada", no="sin configurar"):
+            serv = ident.split("-", 1)[1]
+            # «Comprobar» junto a «Guardar»: prueba lo pegado (o lo guardado) sin guardar nada
+            form = form.replace("</button></div></form>",
+                                "</button><button type=button class=cancelbtn "
+                                "onclick=\"window.fProbar&&fProbar(this,'%s')\">Comprobar</button></div>"
+                                "<div class=fres></div></form>" % serv, 1)
             return ("<div class=fsrv id=%s><div class=fsrv-h><b>%s</b><span class=fsub>%s</span>%s</div>"
                     "<p class=fdesc>%s</p><div class=fcomo>Como sacar la clave</div><ol class=fpasos>%s</ol>%s</div>"
-                    % (ident, titulo, sub, _chip(ok, si, no), para, "".join("<li>%s</li>" % p for p in pasos), form))
+                    % (ident, titulo, sub, _chip(serv, ok, si, no), para,
+                       "".join("<li>%s</li>" % p for p in pasos), form))
 
         _quitar = " Para <b>quitarla</b>, escribe <code>BORRAR</code>."
         b_abusech = _bloque(
@@ -10566,10 +10655,10 @@ def perfil_page(msg="", ok=False, edit_user=None):
             "IPs y dominios de servidores de control (C2) y de malware: respaldan el riesgo de cada abonado.",
             ["Entra en " + _ir("abusech", "auth.abuse.ch") + " con tu cuenta de X, LinkedIn, Google o GitHub "
              "(no hace falta crear otra).",
-             "Pulsa <b>Save profile</b>. Conviene vincular un segundo metodo de entrada, por si uno deja de "
-             "funcionar.",
-             "En el apartado <b>Optional</b> crea la <b>Auth-Key</b>, copiala y pegala aqui. La misma clave "
-             "sirve para todos los servicios de abuse.ch."],
+             "Abre " + _ir("abusech_perfil", "tu perfil") + " (solo funciona despues de entrar) y pulsa "
+             "<b>Save profile</b>. Conviene vincular un segundo metodo de entrada, por si uno deja de funcionar.",
+             "En el apartado <b>Optional</b> de tu perfil crea la <b>Auth-Key</b>, copiala y pegala aqui. La misma "
+             "clave sirve para todos los servicios de abuse.ch."],
             "<form method=post action='/feeds'><div class=field><label>Auth-Key de abuse.ch</label>"
             "<input type=password name=authkey autocomplete=new-password placeholder='"
             + ("dejar vacio para conservar" if auth_ok else "pega tu Auth-Key") + "'>"
@@ -10582,7 +10671,8 @@ def perfil_page(msg="", ok=False, edit_user=None):
             "<b>Consultar IP</b>, que dice que ataques se le denuncian a una IP. Gratis: <b>%s</b> consultas "
             "al dia (3.000 si verificas tu dominio como webmaster)." % format(AIDB_CUOTA, ","),
             [_ir("aidb_registro", "Crea la cuenta") + " (gratis) y confirma el correo.",
-             "Entra en " + _ir("aidb_cuenta", "tu cuenta") + " y abre la pestana <b>API Settings</b>.",
+             "Abre " + _ir("aidb_cuenta", "tus claves de API") + " (si no has entrado, te pide iniciar "
+             "sesion y despues te lleva).",
              "Pulsa <b>Create Key</b>, copiala y pegala aqui. Ojo: generar una clave nueva anula la anterior."],
             "<form method=post action='/feeds/aidb'><div class=field><label>Clave de AbuseIPDB</label>"
             "<input type=password name=aidbkey autocomplete=new-password placeholder='"
@@ -10639,6 +10729,20 @@ def perfil_page(msg="", ok=False, edit_user=None):
             "Para <b>quitarlo</b>, escribe <code>BORRAR</code>.</div></div>"
             "<div class=actions><button class=primary type=submit>Guardar Telegram</button></div></form>",
             si="configurado", no="sin configurar")
+        js_probar = (
+            "<script>function fProbar(b,s){var f=b.form,o=f.querySelector('.fres'),"
+            "i=f.querySelector('input[type=password]'),c=f.querySelector('input[name=tgchat]'),"
+            "d=new URLSearchParams();d.set('servicio',s);d.set('clave',i?i.value:'');"
+            "if(c)d.set('chat',c.value);o.className='fres';"
+            "o.textContent=(i&&i.value?'Comprobando la clave pegada...':'Comprobando la clave guardada...');"
+            "b.disabled=true;fetch('/feeds/probar',{method:'POST',credentials:'same-origin',"
+            "headers:{'Content-Type':'application/x-www-form-urlencoded'},body:d.toString()})"
+            ".then(function(r){return r.json();}).then(function(j){b.disabled=false;"
+            "var t={valida:'\u2705 Valida',invalida:'\u26D4 No es valida',sin_comprobar:'\u26A0 No se pudo comprobar',"
+            "sin_clave:'\u2139 Sin clave'}[j.estado]||j.estado;"
+            "o.className='fres '+(j.estado==='valida'?'fresok':j.estado==='invalida'?'fresmal':'fresno');"
+            "o.textContent=t+(j.guardada?' (la guardada)':' (la pegada, aun sin guardar)')+': '+(j.msg||'');})"
+            ".catch(function(){b.disabled=false;o.textContent='No se pudo preguntar al panel.';});}</script>")
         js_tg = (
             "<script>function tgDetectar(b){var o=document.getElementById('tgchats'),"
             "t=(document.getElementById('tgtoken')||{}).value||'';o.textContent='Preguntando a Telegram...';"
@@ -10661,7 +10765,11 @@ def perfil_page(msg="", ok=False, edit_user=None):
             ".fsrv-h{display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:15px}"
             ".fsub{color:#6b6a66;font-size:13px}.fchip{margin-left:auto;font-size:11.5px;font-weight:700;"
             "padding:2px 10px;border-radius:999px}.fok{background:#e6f4ea;color:#1a7f37}"
-            ".fno{background:#fff4e5;color:#a15c12}.fdesc{margin:6px 0 8px;color:#52514e;font-size:13px}"
+            ".fno{background:#fff4e5;color:#a15c12}.fmal{background:#fdecea;color:#b52a2a}"
+            ".fdesc{margin:6px 0 8px;color:#52514e;font-size:13px}"
+            ".fres{margin-top:8px;font-size:13px;border-radius:8px}.fres:empty{display:none}"
+            ".fresok,.fresmal,.fresno{padding:8px 12px}.fresok{background:#e6f4ea;color:#1a7f37}"
+            ".fresmal{background:#fdecea;color:#b52a2a}.fresno{background:#fff4e5;color:#7a4a12}"
             ".fcomo{font-size:11px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:#8a93a0}"
             ".fpasos{margin:6px 0 12px 20px;padding:0;font-size:13px;color:#33322f}.fpasos li{margin:5px 0}"
             ".fbtn{display:inline-flex;align-items:center;gap:3px;padding:2px 10px;border-radius:999px;"
@@ -10670,9 +10778,10 @@ def perfil_page(msg="", ok=False, edit_user=None):
             ".fcfg{margin-left:6px;font-size:12px}</style>"
             "<section class=card><h2>Reputacion / feeds</h2>"
             "<p class=sub2>Las claves de cada servicio. Cada una se <b>comprueba con su servicio al guardarla</b> "
-            "y se guarda solo en este servidor (permisos 600); <b>no se vuelve a mostrar</b>. Los botones "
-            "&#8599; abren la pagina del servicio en otra pestana.</p>"
-            + b_abusech + b_aidb + b_groq + b_tg + js_tg +
+            "y se guarda solo en este servidor (permisos 600); <b>no se vuelve a mostrar</b>. "
+            "<b>Comprobar</b> prueba la clave que pegaste sin guardarla (con el campo vacio, la guardada). "
+            "Los botones &#8599; abren la pagina del servicio en otra pestana.</p>"
+            + b_abusech + b_aidb + b_groq + b_tg + js_probar + js_tg +
             "<div style='display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-top:14px'>"
             "<form method=post action='/feeds/actualizar' style='margin:0'>"
             "<button class=cancelbtn type=submit>Actualizar feeds ahora</button></form>"
@@ -11313,9 +11422,18 @@ def perfil_page(msg="", ok=False, edit_user=None):
              "try{history.replaceState(null,'',location.pathname+location.search);}catch(e){}}"
              "_cuenta(location.hash.slice(1));"
              "window.addEventListener('hashchange',function(){_cuenta(location.hash.slice(1));});"
-             # tras guardar se vuelve a abrir el apartado que estaba abierto; el aviso va encima
-             "(function(){if(!document.getElementById('notif'))return;"
-             "var la=null;try{la=sessionStorage.getItem('apt');}catch(e){}if(la)openm(la);})();</script>")
+             # tras guardar se vuelve a abrir el apartado que estaba abierto; el aviso va encima.
+             # Y en el MISMO punto: al enviar un formulario de una ventana se guarda su scroll
+             # (.aptscroll) y se repone al reabrirla; antes volvia arriba y habia que bajar otra vez
+             # hasta lo que se acababa de guardar (el user, 2026-10-14: «se lanza al inicio»)
+             "document.addEventListener('submit',function(e){var f=e.target,mo=f&&f.closest&&f.closest('.aptmodal');"
+             "if(!mo)return;var sc=mo.querySelector('.aptscroll');"
+             "try{sessionStorage.setItem('aptsc',String(sc?sc.scrollTop:0));}catch(x){}},true);"
+             "(function(){var sv=null;try{sv=sessionStorage.getItem('aptsc');sessionStorage.removeItem('aptsc');}catch(e){}"
+             "if(!document.getElementById('notif'))return;"
+             "var la=null;try{la=sessionStorage.getItem('apt');}catch(e){}if(!la)return;openm(la);"
+             "var mo=document.getElementById('m-'+la),sc=mo&&mo.querySelector('.aptscroll');"
+             "if(sc&&sv)sc.scrollTop=parseInt(sv,10)||0;})();</script>")
     return ("<!doctype html><html lang=es><head><meta charset=utf-8><link rel=icon type=image/png href=/favicon.ico>"
             "<meta name=viewport content='width=device-width,initial-scale=1'><title>Suricata</title>"
             f"<style>{css}</style>" + hubcss + "</head><body>"
@@ -17967,7 +18085,7 @@ class H(BaseHTTPRequestHandler):
                 return self._prohibido()
             ak = q.get("authkey", [""])[0]
             if ak.strip() == "BORRAR":
-                feeds_auth_set(""); bitacora("CONFIG-FEEDS-AUTHKEY", "borrada")
+                feeds_auth_set(""); claves_estado_set("abusech", None); bitacora("CONFIG-FEEDS-AUTHKEY", "borrada")
                 return self._html(perfil_page("Auth-Key borrada. URLhaus/ThreatFox quedaran 'sin-clave'.", ok=True))
             if not ak.strip():
                 return self._html(perfil_page("Sin cambios en la Auth-Key.", ok=True))
@@ -17982,6 +18100,7 @@ class H(BaseHTTPRequestHandler):
             if feeds_auth_set(ak) is False:      # sin clave maestra no se guarda (B-04)
                 bitacora("CONFIG-FEEDS-AUTHKEY", "no guardada (sin clave maestra)")
                 return self._html(perfil_page("No se guardo: falta la clave maestra del panel (/run/secrets/master_key), y una clave nunca se guarda en claro. Revisa el montaje de la clave maestra y vuelve a intentarlo.", ok=False))
+            claves_estado_set("abusech", _estado_de(estado), det)
             actualizar_feeds_async()
             if estado is True:
                 bitacora("CONFIG-FEEDS-AUTHKEY", "validada y guardada")
@@ -18147,7 +18266,7 @@ class H(BaseHTTPRequestHandler):
                 return self._prohibido()
             k = q.get("aidbkey", [""])[0]
             if k.strip() == "BORRAR":
-                aidb_set(""); bitacora("CONFIG-ABUSEIPDB", "borrada")
+                aidb_set(""); claves_estado_set("aidb", None); bitacora("CONFIG-ABUSEIPDB", "borrada")
                 return self._html(perfil_page("Clave de AbuseIPDB borrada.", ok=True))
             if not k.strip():
                 return self._html(perfil_page("Sin cambios en la clave de AbuseIPDB.", ok=True))
@@ -18163,6 +18282,7 @@ class H(BaseHTTPRequestHandler):
             if aidb_set(k) is False:             # sin clave maestra no se guarda (B-04)
                 bitacora("CONFIG-ABUSEIPDB", "no guardada (sin clave maestra)")
                 return self._html(perfil_page("No se guardo: falta la clave maestra del panel (/run/secrets/master_key), y una clave nunca se guarda en claro. Revisa el montaje de la clave maestra y vuelve a intentarlo.", ok=False))
+            claves_estado_set("aidb", _estado_de(estado), det)
             actualizar_feeds_async()
             if estado is True:
                 bitacora("CONFIG-ABUSEIPDB", "validada y guardada")
@@ -18185,6 +18305,7 @@ class H(BaseHTTPRequestHandler):
             mod = (q.get("groqmodel", [""])[0] or "").strip()
             if k.strip() == "BORRAR":
                 groq_set(""); groq_set_modelo("")
+                claves_estado_set("groq", None)
                 bitacora("CONFIG-GROQ", "borrada")
                 return self._html(perfil_page("Clave de Groq borrada.", ok=True))
             if not k.strip():
@@ -18213,6 +18334,7 @@ class H(BaseHTTPRequestHandler):
                 groq_set_modelo(mod)
             elif groq_modelo() and modelos and groq_modelo() not in modelos:
                 groq_set_modelo("")
+            claves_estado_set("groq", _estado_de(estado), det)
             if estado is True:
                 bitacora("CONFIG-GROQ", "validada y guardada")
                 return self._html(perfil_page(
@@ -18232,6 +18354,7 @@ class H(BaseHTTPRequestHandler):
                 return self._html(perfil_page("El chat ID no es valido (un numero, o @canal).", ok=False))
             if tok == "BORRAR":
                 telegram_set(token="", chat=chat)
+                claves_estado_set("telegram", None)
                 bitacora("CONFIG-TELEGRAM", "token borrado")
                 return self._html(perfil_page("Token de Telegram borrado.", ok=True))
             if tok and not RE_TG_TOKEN.match(tok):
@@ -18264,10 +18387,29 @@ class H(BaseHTTPRequestHandler):
                                               ok=False))
             except OSError as ex:
                 return self._html(perfil_page(f"No se pudo guardar: {ex}", ok=False))
+            if tok or chat:
+                claves_estado_set("telegram", "sin_comprobar" if any("no se pudo" in a for a in _avisos_tg)
+                                  else "valida", "; ".join(_avisos_tg) or "token valido")
             bitacora("CONFIG-TELEGRAM", ("token cifrado y guardado; " if tok else "") + "chat=%s" % (chat or "-"))
             return self._html(perfil_page(
                 "Telegram guardado" + (" (token cifrado" + (", bot %s" % _bot if _bot else "") + ")" if tok else "")
                 + (": " + "; ".join(_avisos_tg) if _avisos_tg else "") + ".", ok=True))
+        if ruta == "/feeds/probar":
+            # «Comprobar»: la clave pegada (o la guardada si el campo va vacio) contra su servicio,
+            # SIN guardarla. Si era la guardada, el resultado queda en la etiqueta del bloque.
+            if not self._admin():
+                return self._prohibido()
+            _sv = (q.get("servicio", [""])[0] or "").strip()
+            if _sv not in SERVICIOS_CLAVE:
+                return self._json({"estado": "invalida", "msg": "servicio desconocido"})
+            _cl = (q.get("clave", [""])[0] or "").strip()
+            if _cl == "BORRAR":
+                _cl = ""
+            _est, _msg, _guardada = probar_clave(_sv, _cl, (q.get("chat", [""])[0] or "").strip()[:40])
+            if _guardada and _est != "sin_clave":
+                claves_estado_set(_sv, _est, _msg)
+            bitacora("PROBAR-CLAVE", "%s %s: %s" % (_sv, "guardada" if _guardada else "pegada", _est))
+            return self._json({"estado": _est, "msg": _msg, "guardada": _guardada})
         if ruta == "/telegram/detectar":
             # «Detectar Chat ID»: los chats que escribieron al bot, sin abrir la URL con el token ni
             # leer JSON. Con el token del formulario (aun sin guardar) o con el guardado. JSON.
