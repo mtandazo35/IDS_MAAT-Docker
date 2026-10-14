@@ -11870,10 +11870,11 @@ Se explica mas abajo.</td></tr>
 <tr><td><b>Historico</b></td><td>El <b>abuso saliente dia a dia</b>: ataques, tendencia, CPEs, por que
 atacan y por que puerto, y cuantos se pusieron en cuarentena y se liberaron. Del nodo que se mira (o de
 todos). Se guarda solo el reporte mas reciente: no hay instantaneas viejas que abrir.</td></tr>
-<tr><td><b>Reporte 3 dias</b></td><td><b>Todo lo que hizo cada CPE</b> en los ultimos
-3 dias: alertas, firmas, destinos, puertos, dominios consultados, dias en los que estuvo
-activo y cuando se le vio por ultima vez. Se descarga en <b>CSV</b> para mandarselo al
-cliente. Se explica mas abajo.</td></tr>
+<tr><td><b>Reporte</b></td><td>El <b>informe de 3 días: conducta por abonado</b>. Agrupa a los CPEs
+por categoría de abuso (primero lo que hay que cortar: botnet, escaneo, fuerza bruta) y de cada uno da
+alertas, firmas, destinos, puertos, dominios consultados y cuándo se le vio. Arriba, el filtro por IP o
+firma y <b>Generar informe PDF</b> (de 1, 3, 7 o 30 días) para mandárselo al cliente. Se explica más
+abajo.</td></tr>
 <tr><td><b>Eventos</b></td><td>Buscador de los <b>eventos de Suricata</b> del nodo elegido (o de
 todos): por fecha y hora, firma (texto o SID), severidad, IP origen o destino, puerto, protocolo y tipo de
 evento. Salen los mas recientes primero, paginados, y cada fila abre el <b>JSON completo</b> del evento.
@@ -11882,21 +11883,34 @@ hasta donde llego); nunca lo da por «sin coincidencias».</td></tr>
 <tr><td><b>Exclusiones</b></td><td>Gestiona las IPs/firmas que NO quieres que cuenten (tus DNS,
 tu monitoreo SNMP, un falso positivo puntual). Permite exclusiones <b>temporales</b> y por
 <b>firma (SID)</b> y por <b>nodo</b>. Se explica mas abajo. Solo <b>administrador</b>.</td></tr>
-<tr><td><b>Puntos</b></td><td>Solo <b>administrador</b>. Alta, ficha y baja de cada MikroTik: un punto es
-un MikroTik con su propia VPN y su propio Suricata. Se explica en "Puntos: un MikroTik, su VPN y su
-Suricata".</td></tr>
-<tr><td><b>Ajustes</b></td><td>Tu cuenta (clave y foto). Si eres <b>administrador</b>, ademas: <b>usuarios</b>
-(crear/editar/borrar/rol), <b>datos de la empresa</b> (nombre y logo de la barra), <b>MikroTik</b>
-(conexion por nodo y politicas de cuarentena), <b>Puntos</b>, <b>Reputacion/feeds</b> (Auth-Key de
-abuse.ch), <b>Registro</b> (accesos y cambios), <b>Documentacion</b> y la <b>Version</b> instalada (solo lectura).</td></tr>
-<tr><td><b>Documentacion</b></td><td>Esta pagina.</td></tr>
+<tr><td><b>Ajustes</b></td><td>Un panel de tarjetas; cada una abre su ventana. Todos ven
+<b>Documentación</b> y, si no son administradores, su <b>Perfil</b> (clave y foto). El
+<b>administrador</b> ve además:
+<ul>
+<li><b>Empresa</b>: nombre y logo que salen en la barra.</li>
+<li><b>Usuarios y roles</b>: crear, editar, borrar y cambiar el rol (su propia clave la cambia con el
+lápiz de su fila).</li>
+<li><b>IPs de confianza</b>: desde dónde se puede entrar al panel y las IPs bloqueadas por fallar la clave.</li>
+<li><b>MikroTik</b>: lo común a todos los routers (listas, acciones, caducidad y políticas de cuarentena).</li>
+<li><b>Puntos</b>: alta, ficha y baja de cada MikroTik. No es pestaña: se abre desde aquí.</li>
+<li><b>DNS</b>: los resolutores conocidos (ver "Resolutores DNS").</li>
+<li><b>Reputación</b>: las claves de abuse.ch, AbuseIPDB, Groq y Telegram, el estado de los feeds y
+<b>Actualizar feeds ahora</b>.</li>
+<li><b>Versión</b>: la versión instalada (solo lectura).</li>
+<li><b>Registro</b>: accesos y cambios en una sola tabla.</li>
+</ul></td></tr>
+<tr><td><b>Puntos</b> (en Ajustes)</td><td>Solo <b>administrador</b>. Alta, ficha y baja de cada MikroTik: un
+punto es un MikroTik con su propia VPN y su propio Suricata. Se explica en "Puntos: un MikroTik, su VPN
+y su Suricata".</td></tr>
+<tr><td><b>Documentación</b> (en Ajustes)</td><td>Esta guía. Se abre desde <b>Ajustes &rarr;
+Documentación</b>.</td></tr>
 <tr><td><b>Selector de nodo</b> (en la barra)</td><td>Elige que se mira: <b>Todos los nodos
 (acumulado)</b> o un punto concreto, con el color de su salud. Con un nodo elegido cada pantalla
 muestra solo sus datos. En «Todos» se ve todo junto y una IP repetida en dos nodos sale en <b>dos
 filas</b>, cada una con la etiqueta de su nodo: son dos abonados distintos y nunca se suman. El nodo
 va en la direccion (<code>?nodo=</code>), asi que un enlace copiado abre lo mismo en otra pestana; sin
 elegir, vale el ultimo de tu sesion y, si no hay, «Todos». Un nodo mal escrito da error (no se cambia
-por «Todos»). No sale en Ajustes, Puntos, Accesos, Bitacora ni Documentacion.</td></tr>
+por «Todos»). No sale en Ajustes, Puntos, Registro ni Documentación, que no dependen del nodo.</td></tr>
 <tr><td><b>Tu usuario</b> (arriba a la derecha)</td><td>Tu foto (o tus iniciales) y tu nombre; al tocarlo se
 abre un menu con tu rol y: <b>Mi cuenta</b> (nombre, correo, foto), <b>Cambiar contrase&ntilde;a</b>,
 <b>Cerrar sesi&oacute;n</b> y <b>Desconectar en</b>, el tiempo que le queda a tu sesion (dura 12 horas desde
@@ -11950,7 +11964,7 @@ publica como una version nueva. Despues reinicia el Suricata de cada punto <b>de
 <p><b>Como se actualiza (automatico):</b></p>
 <ul>
 <li>El orquestador lo hace <b>una vez al dia</b> para todos los puntos.</li>
-<li>Si la validacion falla, <b>se quedan las reglas anteriores</b> y el aviso queda en la Bitacora:
+<li>Si la validacion falla, <b>se quedan las reglas anteriores</b> y el aviso queda en el <b>Registro</b>:
 ningun punto se queda sin reglas por una descarga mala.</li>
 </ul>
 {ubox}
@@ -12034,16 +12048,17 @@ origen y tipo de evento, si quieres cazar clientes infectados por sus consultas.
 <p>El panel soporta <b>varios usuarios</b> con tres roles:</p>
 <ul>
 <li><b>Administrador</b>: acceso total (Puntos, exclusiones, MikroTik y politicas, feeds, actualizar
-reglas, gestionar usuarios, accesos y bitacora).</li>
+reglas, gestionar usuarios y ver el Registro).</li>
 <li><b>Operador</b>: opera el dia a dia &mdash; ve todo y <b>gestiona la cuarentena</b> (enviar/quitar
 CPEs, excluir un destino de falso positivo, consultar o denunciar reputacion). <b>No</b> toca
-Puntos, usuarios, conexion MikroTik, exclusiones de deteccion ni reglas. Cada accion suya queda en la
-<b>bitacora</b>.</li>
+Puntos, usuarios, conexion MikroTik, exclusiones de deteccion ni reglas. Cada acción suya queda en el
+<b>Registro</b>.</li>
 <li><b>Solo lectura</b>: ve los paneles y reportes y cambia su propia clave; no opera cuarentena
 ni edita nada.</li>
 </ul>
-<p>Todo se maneja en <b>Ajustes</b>: cualquiera cambia su clave; un administrador
-ademas crea/borra usuarios y cambia roles. Todos los usuarios ven todos los nodos de la empresa, pero
+<p>Cada uno cambia su clave desde su usuario (arriba a la derecha &rarr; <b>Cambiar
+contraseña</b>); un administrador además crea/borra usuarios y cambia roles en <b>Ajustes &rarr;
+Usuarios y roles</b>. Todos los usuarios ven todos los nodos de la empresa, pero
 <b>cada accion exige su rol y se comprueba en el servidor</b>: no basta con ocultar un boton, y cambiar
 el nodo en la direccion no da mas permisos.</p>
 <p><b>El usuario no se cambia nunca</b>, tampoco el <code>admin</code> que deja el instalador:
@@ -12354,9 +12369,9 @@ atacando.</p>
 <ul>
 <li>El reporte grafico de cada nodo (y el de «Todos») lo genera el panel cada 5 minutos, de un
 nodo en uno; los guardados estan en <b>Historico</b>.</li>
-<li>Informe de texto por Telegram: <code>TELEGRAM_TOKEN</code> y <code>TELEGRAM_CHAT_ID</code> en la
-configuracion del panel (el token se guarda cifrado). Se envia cada dia a las 07:30 (hora local), con
-una seccion por nodo.</li>
+<li>Informe de texto por Telegram: se envía cada día a las 07:30 (hora local), con una sección por
+nodo, al chat configurado en <b>Ajustes &rarr; Reputación &rarr; Telegram</b> (ver "Avisos por
+Telegram").</li>
 <li>Las reglas ET las actualiza el orquestador cada dia.</li>
 </ul>
 
@@ -12469,8 +12484,8 @@ arriba del todo (tambien en el refresco automatico de cada 5 min).</p>
 <b>seleccionar todas</b>). Al marcar alguna se activa <b>Quitar seleccionados (N)</b>, que abre
 una <b>ventana de confirmacion</b> con la lista de IPs antes de tocar nada; las de la lista de
 DNS salen marcadas como tal. Puedes mezclar IPs de <b>ambas listas</b>: cada una se saca de la
-suya, en el MikroTik de su nodo. Es reversible (puedes volver a enviarlas) y queda todo en la
-Bitacora. Si el router falla con alguna, se te dice
+suya, en el MikroTik de su nodo. Es reversible (puedes volver a enviarlas) y queda todo en el
+Registro. Si el router falla con alguna, se te dice
 <b>cual y por que</b>, y esa IP <b>se queda</b> en el registro para reintentarla.</p>
 <p>Las IPs se sacan <b>una por una y se ve el avance</b> (barra + cada IP marcada &#10003; o
 &#10007; segun sale), porque cada una es una llamada al MikroTik y en bloque la pantalla se
@@ -12497,7 +12512,7 @@ el panel no toca el router.</li>
 address-list todos los CPE de la lista que aun no esten en cuarentena (tope de 50 por accion; si el
 router deja de responder, se detiene y avisa). En «Todos» se reparte <b>por nodo</b> y el resultado
 se da por nodo: un router caido no frena a los demas. Cada IP queda <b>sin caducidad</b> hasta que el
-abonado deja de enviar virus, y se puede sacar antes con <b>Quitar</b>. Toda accion queda en la Bitacora.</p>
+abonado deja de enviar virus, y se puede sacar antes con <b>Quitar</b>. Toda acción queda en el Registro.</p>
 
 <h2>Salud de cada punto (por etapas)</h2>
 <p>La salud se mide <b>por punto y por etapas</b>, porque cada una falla por su lado. La ven todos los
@@ -12549,7 +12564,7 @@ el par <b>(punto, IP)</b>: el <code>10.0.0.5</code> de un nodo y el del otro son
 alertas, su riesgo y su ficha.</li>
 <li><b>A que router bloquear.</b> Cada accion va al MikroTik <b>del nodo de esa IP</b> (lo dice la propia
 fila), nunca al que tengas elegido en el selector. En «Todos» las acciones masivas se reparten por nodo.</li>
-<li>Cada linea de la bitacora dice en que nodo se actuo.</li>
+<li>Cada línea del Registro dice en qué nodo se actuó.</li>
 </ul>
 <h3>Alta</h3>
 <ol>
@@ -12572,7 +12587,7 @@ queda registrado: por eso Puntos y Eventos dicen la <b>retencion efectiva</b> (d
 eventos de verdad) y nunca prometen 30 dias si hubo borrado anticipado.</p>
 <h3>Baja</h3>
 <p>En la ficha, escribiendo el nombre del punto. Se borra todo el punto en el servidor (VPN, Suricata y
-eventos) y en el panel (sus reportes, su conexion y sus registros); queda una linea en la bitacora. Los
+eventos) y en el panel (sus reportes, su conexion y sus registros); queda una línea en el Registro. Los
 identificadores no se reutilizan. En el MikroTik quedan lo que lleva el comentario
 <code>IDS ids-maat:&lt;punto&gt;</code> (el alta) o <code>IDS ids-maat:&lt;punto&gt;:espejo</code> (el espejo), la
 interfaz <code>ids-vpn</code> y el usuario <code>ids-api</code> (el <code>comment~</code> de abajo encuentra los dos):</p>
@@ -12625,7 +12640,7 @@ sale de lo que el CPE hace de verdad (la mas grave que casa), y el destino es si
 address-list de <b>esa</b> clase.</p>
 <table><tr><th>Politica de la clase</th><th>Que pasa</th></tr>
 <tr><td><b>Nada</b></td><td>solo se muestra.</td></tr>
-<tr><td><b>Solo notificar</b></td><td>bitacora, con dedupe de 6&nbsp;h por CPE.</td></tr>
+<tr><td><b>Solo notificar</b></td><td>una línea en el Registro, con dedupe de 6&nbsp;h por CPE.</td></tr>
 <tr><td><b>Cuarentena si ALTO</b> / <b>si MEDIO o ALTO</b> / <b>siempre</b></td>
 <td>a la lista de la clase en cuanto el riesgo alcanza ese nivel (o en cuanto aparece en el Top).</td></tr></table>
 <p>Por que por clase y no por banda: el riesgo mide <i>cuanto</i>, no <i>que</i>. Un torrent da
@@ -12695,7 +12710,7 @@ trafico) o que mira otra lista, <code>port=</code> en vez de <code>dst-port=</co
 que no existe ni en el bloque ni en el router, address-list vacia en el router, cola con una marca que
 nadie pone.</li>
 <li><b>Tras aplicar</b> se relee el router: si no guarda exactamente lo que se mando (valores que RouterOS
-normaliza), se dice que campo y como, y queda en la bitacora; si coincide, "Verificado".</li>
+normaliza), se dice que campo y como, y queda en el Registro; si coincide, "Verificado".</li>
 </ul>
 <p>Las plantillas de DNS y escaneo llevan <code>in-interface-list=!WAN</code>: el nombre de esa
 interface-list se pone en Ajustes (vacio = sin esa condicion) y tiene que existir en el router.</p>
@@ -12743,19 +12758,45 @@ contar la alerta para todos; esto solo quita la victima falsa. Si a ese mismo DN
 puerto, eso <b>si</b> es un ataque y sigue saliendo como tal.</p>
 
 <h2>Allowlist "nunca bloquear"</h2>
-<p>En <b>Ajustes</b> puedes definir IPs/CIDR que <b>jamas</b> van a cuarentena (tu infraestructura,
-clientes criticos), aunque disparen alertas. Se guardan en
-la configuracion del panel (<code>/srv/ids/panel/conf/</code>) y las respetan tanto las politicas como el
-barrido rapido, en todos los nodos.</p>
+<p>En <b>Ajustes &rarr; MikroTik</b>, campo <b>Nunca bloquear</b> (solo administrador), puedes definir
+IPs/CIDR que <b>jamas</b> van a cuarentena (tu infraestructura, clientes criticos), aunque disparen
+alertas: una IP o CIDR por línea. Valen para <b>todos los nodos</b>; con el punto delante
+(<code>p001|192.0.2.10</code>) valen <b>solo en ese punto</b>, porque la misma IP privada puede ser otro
+abonado en otro nodo. Se guardan en la configuracion del panel (<code>/srv/ids/panel/conf/</code>) y las
+respetan las politicas, el barrido rapido y el envío a mano.</p>
 
 <h2>Reputacion / feeds (abuse.ch y AbuseIPDB)</h2>
 <p>El panel enriquece los destinos con <b>feeds de reputacion</b> (IPs/CIDR y dominios maliciosos)
-con su <b>procedencia</b> y <b>caducidad</b>. En <b>Ajustes &rarr; Reputacion/feeds</b> (admin) se pegan
-las claves: la <b>Auth-Key</b> de abuse.ch (URLhaus/ThreatFox) y la <b>clave de AbuseIPDB</b>. Se
-guardan <b>solo-escritura</b> y <b>cifradas</b> con la clave maestra del servidor (no se vuelven a
-mostrar) y hay un <b>validador</b> que comprueba cada clave antes de guardarla. Feodo, CINS, Spamhaus,
-ET compromised y la lista de salidas Tor no necesitan clave. La tabla muestra el estado por fuente
-(vigente/vacia/caducada) y un boton para actualizar los feeds al momento.</p>
+con su <b>procedencia</b> y <b>caducidad</b>. Feodo, CINS, Spamhaus, ET compromised y la lista de
+salidas Tor no necesitan clave; abuse.ch (URLhaus/ThreatFox) y AbuseIPDB, sí.</p>
+<h3>Las claves: un bloque por servicio</h3>
+<p><b>Ajustes &rarr; Reputación</b> (solo administrador) tiene un bloque para cada servicio:
+<b>abuse.ch</b>, <b>AbuseIPDB</b>, <b>Groq</b> y <b>Telegram</b>. Cada bloque dice:</p>
+<ul>
+<li><b>Para qué sirve</b> ese servicio en el panel.</li>
+<li><b>Cómo sacar la clave</b>, paso a paso, con botones &#8599; que abren la página exacta del servicio
+en otra pestaña (crear la cuenta, la página de claves...).</li>
+<li>Una <b>etiqueta de estado</b> arriba a la derecha: <i>sin configurar</i>, <i>válida &middot; comprobada
+14/10 09:30</i> o <i>rechazada</i>, según la <b>última comprobación</b> de la clave guardada.</li>
+</ul>
+<p>Botones de cada bloque:</p>
+<ul>
+<li><b>Guardar</b>: antes de guardar, <b>pregunta al servicio</b> si la clave vale; una clave inválida
+se rechaza. Se guarda <b>cifrada</b> con la clave maestra del servidor y <b>no se vuelve a mostrar</b>
+(el campo queda vacío: dejarlo vacío conserva la guardada).</li>
+<li><b>Comprobar</b>: prueba la clave <b>sin guardar nada</b>. Con algo pegado prueba esa; con el campo
+vacío, la guardada. Sirve para saber si una clave que ya estaba sigue viva.</li>
+<li>Para <b>quitar</b> una clave, escribe <code>BORRAR</code> en su campo y guarda.</li>
+</ul>
+<h3>El estado de los feeds</h3>
+<p>Debajo de los bloques, la tabla de fuentes: <b>Fuente</b>, <b>Estado</b> (<code>valido</code>,
+<code>vacio</code>, <code>error</code>, <code>sin-clave</code> o <code>caducado</code>), si está
+<b>Vigente</b> (sí/no), cuántos <b>Indicadores</b> trae, la <b>Última válida</b> (última descarga
+buena) y cuándo <b>Caduca</b>. Si a una fuente de abuse.ch o AbuseIPDB le falta la clave o falla, al lado
+del estado sale <b>Configurar</b>, que lleva a su bloque.</p>
+<p>El actualizador corre solo; encima de la tabla dice su <b>última corrida</b>. <b>Actualizar feeds
+ahora</b> lo lanza al momento en segundo plano y la tabla se va refrescando sola, <b>sin recargar la
+página</b>, hasta que termina (si ya había una corrida en marcha, no lanza otra).</p>
 <p><b>Fuentes y que pesa cada una.</b> <code>feodo</code> (C2 activos) y <code>threatfox-c2</code>
 (C2 por IP <b>y puerto</b>, via la API de ThreatFox con la misma Auth-Key) son prueba de infeccion:
 basta un contacto, y si el CPE hablo <b>por el puerto del C2</b> la ficha lo dice.
@@ -12850,7 +12891,7 @@ del router falla (timeout, usuario de la API sin permiso para esa tabla) o no tr
 publica, el resultado es parcial: el aviso dice que lectura fallo y <b>no se marca nada</b>, porque lo
 que falta no quiere decir que haya dejado de ser tuyo.</p>
 <p>Se revisan solas <b>cada 6 horas</b>. Cuando una publica <b>cruza</b> el 25&nbsp;% de abuso llega un
-aviso por Telegram (una vez, no en cada vuelta) y queda en la bitacora. De cada publica se guarda la
+aviso por Telegram (una vez, no en cada vuelta) y queda en el Registro. De cada publica se guarda la
 <b>serie por dia</b> durante 180 dias: es lo que permite enseñar que despues de limpiar, el puntaje
 baja.</p>
 <p>Avisos importantes de honestidad: la traduccion sirve para <b>ordenar sospechosos</b>, no para
@@ -12972,12 +13013,14 @@ maquina atacada. Solo el nombre de la firma, el puerto y cuantas alertas hubo.</
 <li>Las <b>categorias</b> salen de la firma de Suricata y se <b>suman</b>: un "SSH Scan" se denuncia
 como <i>SSH</i> y <i>Escaneo de puertos</i>, no como fuerza bruta.</li>
 <li>La misma IP <b>no se repite antes de 24 h</b>.</li>
-<li>Todo queda en la <b>bitacora</b> (<code>DENUNCIA-ABUSEIPDB</code>): quien, cuando y con que
+<li>Todo queda en el <b>Registro</b> (<code>DENUNCIA-ABUSEIPDB</code>): quien, cuando y con que
 categorias.</li>
 </ul>
 
 <h2>Registro: accesos y cambios en un solo sitio</h2>
-<p><b>Ajustes &rarr; Registro</b> junta en una tabla, mas nuevo primero:</p>
+<p><b>Ajustes &rarr; Registro</b> (solo administrador) junta en una tabla, lo más nuevo primero. Sustituye
+a las antiguas pantallas Accesos y Bitácora; los enlaces viejos (<code>/log</code>, <code>/bitacora</code>)
+abren el Registro con su filtro.</p>
 <ul>
 <li><b>Accesos</b>: <b>quien intento entrar</b> al panel. Los que entraron, los que fallaron la clave
 y las IPs bloqueadas por insistir. Es el unico sitio donde se ven los intentos <b>fallidos</b>: es lo
@@ -13011,9 +13054,26 @@ lista; <code>ids-orq panel confianza ver</code> la muestra. Hace efecto al momen
 <p>Cuando un CPE va a cuarentena (a mano, por politica o por el barrido rapido) se manda un aviso por
 Telegram con el <b>cliente/abonado</b>, la <b>accion</b> (a que lista), el <b>nivel de confianza</b>, la
 <b>evidencia</b> (top 3) y un enlace a la <b>ficha</b>. Hay dedupe por IP (no re-avisa dentro de 6&nbsp;h)
-y los envios masivos mandan un solo resumen. El aviso dice el nodo. Usa el mismo
-<code>TELEGRAM_TOKEN</code>/<code>CHAT_ID</code> del informe diario. Para que el enlace de la ficha sea
-clicable, el servidor tiene que declarar la URL publica del panel (<code>IDS_PANEL_URL</code>).</p>
+y los envios masivos mandan un solo resumen. El aviso dice el nodo. Por el mismo chat llegan el
+<b>informe diario</b> (07:30) y el aviso de una IP pública que cruza el 25&nbsp;% de abuso.</p>
+<h3>Cómo se configura (4 pasos)</h3>
+<p>En <b>Ajustes &rarr; Reputación &rarr; Telegram</b> (solo administrador), sin tocar el servidor:</p>
+<ol class=doc>
+<li><b>Crear el bot</b>: en Telegram abre <b>@BotFather</b> (el bloque trae el botón), mándale
+<code>/newbot</code>, elige un nombre y un usuario que termine en <code>bot</code>, y pega el
+<b>token</b> que te da.</li>
+<li><b>Escribirle al bot</b>: mándale cualquier mensaje. Al pulsar <b>Detectar Chat ID</b> sale el enlace
+a tu bot para abrirlo. Para avisar a un <b>grupo</b>, añade el bot al grupo y escribe ahí.</li>
+<li><b>Detectar Chat ID</b>: el panel le pregunta a Telegram quién le escribió al bot. Si hay un solo
+chat, lo rellena solo; si hay varios, salen como botones para elegir. A mano también vale: un chat
+personal es un número (<code>1234567890</code>); un grupo empieza por <code>-</code>
+(<code>-100…</code> si es un supergrupo).</li>
+<li><b>Enviar mensaje de prueba</b>: si te llega a Telegram, pulsa <b>Guardar Telegram</b>.</li>
+</ol>
+<p>Al guardar se <b>pregunta a Telegram</b> si el token vale y si el bot puede escribir en ese chat; si
+no, no se guarda. El token se guarda <b>cifrado</b> y no se vuelve a mostrar; <b>Comprobar</b> lo prueba
+sin guardar, y para quitarlo se escribe <code>BORRAR</code>. Para que el enlace a la ficha sea
+clicable, el servidor tiene que declarar la URL pública del panel (<code>IDS_PANEL_URL</code>).</p>
 
 <!--CAT:Mantenimiento--><h2>Version, actualizaciones y recuperacion</h2>
 <p>En <b>Ajustes &rarr; Version</b> se ve la version instalada (solo lectura). El panel ya no se
