@@ -11859,22 +11859,22 @@ linea de tiempo por intervalos de 30 minutos. Se actualiza sola cada 20 segundos
 con el desglose de cada uno: puerto origen, IP destino, dueño/organizacion del destino, puerto y
 protocolo. Debajo, el <b>espejo</b>: <b>Top IPs destino mas atacadas</b> (los blancos que reciben mas
 alertas) y que CPEs las atacan &mdash; util para detectar un destino comun (un mismo C2/servidor
-tocado por varios CPEs). Y al final, <b>Ataques entrantes desde internet</b> (ver abajo).</td></tr>
+tocado por varios CPEs). Y al final, <b>Ataques entrantes desde internet</b> (ver "Ataques entrantes desde internet").</td></tr>
 <tr><td><b>Detalle</b></td><td>La tabla completa de ataques: quien ataca, a que IP y puerto,
 protocolo, tipo de ataque, cuantas veces y desde/hasta cuando. Paginada de 20 en 20; al
 imprimir a PDF salen todas las filas.</td></tr>
 <tr><td><b>Cuarentena</b></td><td>Los CPEs con <b>infeccion confirmada</b> y los que consultan
 <b>DNS sospechoso</b>, con su <b>nivel de confianza</b>, la <b>evidencia</b> que lo respalda (boton
 "Ver evidencia") y la <b>salud del sensor</b> arriba. Desde aqui se envian/quitan del MikroTik.
-Se explica mas abajo.</td></tr>
+Se explica en "Cuarentena: enviar CPEs infectados al MikroTik (API v6 y v7)".</td></tr>
 <tr><td><b>Historico</b></td><td>El <b>abuso saliente dia a dia</b>: ataques, tendencia, CPEs, por que
 atacan y por que puerto, y cuantos se pusieron en cuarentena y se liberaron. Del nodo que se mira (o de
 todos). Se guarda solo el reporte mas reciente: no hay instantaneas viejas que abrir.</td></tr>
 <tr><td><b>Reporte</b></td><td>El <b>informe de 3 días: conducta por abonado</b>. Agrupa a los CPEs
 por categoría de abuso (primero lo que hay que cortar: botnet, escaneo, fuerza bruta) y de cada uno da
 alertas, firmas, destinos, puertos, dominios consultados y cuándo se le vio. Arriba, el filtro por IP o
-firma y <b>Generar informe PDF</b> (de 1, 3, 7 o 30 días) para mandárselo al cliente. Se explica más
-abajo.</td></tr>
+firma y <b>Generar informe PDF</b> (de 1, 3, 7 o 30 días) para mandárselo al cliente. Se explica en
+"Abuso saliente: el numero que hay que poder enseñar".</td></tr>
 <tr><td><b>Eventos</b></td><td>Buscador de los <b>eventos de Suricata</b> del nodo elegido (o de
 todos): por fecha y hora, firma (texto o SID), severidad, IP origen o destino, puerto, protocolo y tipo de
 evento. Salen los mas recientes primero, paginados, y cada fila abre el <b>JSON completo</b> del evento.
@@ -11882,7 +11882,7 @@ En «Todos» lleva la columna <b>Nodo</b>. Si una busqueda llega a su limite de 
 hasta donde llego); nunca lo da por «sin coincidencias».</td></tr>
 <tr><td><b>Exclusiones</b></td><td>Gestiona las IPs/firmas que NO quieres que cuenten (tus DNS,
 tu monitoreo SNMP, un falso positivo puntual). Permite exclusiones <b>temporales</b> y por
-<b>firma (SID)</b> y por <b>nodo</b>. Se explica mas abajo. Solo <b>administrador</b>.</td></tr>
+<b>firma (SID)</b> y por <b>nodo</b>. Se explica en "Modulo de Exclusiones". Solo <b>administrador</b>.</td></tr>
 <tr><td><b>Ajustes</b></td><td>Un panel de tarjetas; cada una abre su ventana. Todos ven
 <b>Documentación</b> y, si no son administradores, su <b>Perfil</b> (clave y foto). El
 <b>administrador</b> ve además:
@@ -11930,7 +11930,7 @@ regenera en unos segundos. Asi el Top no marca como en cuarentena a un CPE que a
 quitar, ni deja sin marcar al que acaba de entrar (tambien cuando lo libera el sistema solo).</li>
 <li><b>Cuarentena automatica</b> (si esta activada): las politicas por clase se aplican junto
 con el resumen (cada 5 min), pero hay un <b>barrido rapido cada ~60 s</b> que envia YA a los CPEs
-con <b>infeccion confirmada</b> (no esperan los 5 min). Ver "Cuarentena automatica" mas abajo.</li>
+con <b>infeccion confirmada</b> (no esperan los 5 min). Ver "Cuarentena automatica".</li>
 <li><b>Ventana del resumen</b>: por defecto <b>24 h</b>. Se puede acortar para ver solo la
 <b>actividad reciente</b> (asi una IP ya atendida se cae sola del top al no tener alertas
 nuevas). Se cambia en <b>En vivo</b> con el selector <b>Ventana</b> (solo administrador). Al
@@ -11941,35 +11941,6 @@ cambiarla se regenera cada punto y al final Todos; mientras tanto la pagina dice
 Telegram</b>: 07:30.</li>
 <li>Todas las horas del panel estan en la <b>hora local</b> configurada en el servidor.</li>
 </ul>
-
-<!--CAT:Deteccion--><h2>De donde saca Suricata para confirmar (reglas) y como se actualiza</h2>
-<p>Suricata no "adivina": compara cada paquete/flujo contra un conjunto de <b>reglas</b>
-(firmas). Una alerta existe solo si algo coincide con una regla. Aqui las reglas vienen de
-dos fuentes:</p>
-<table><tr><th>Fuente</th><th>Que trae</th><th>Donde vive</th></tr>
-<tr><td><b>ET Open</b> (Emerging Threats, de Proofpoint)</td>
-<td>El grueso: ~40&nbsp;000 firmas gratuitas de malware, CnC/botnets, troyanos, exploits,
-escaneos, dominios de mala fama, etc. Es el catalogo publico estandar de la industria.</td>
-<td>La version de reglas del servidor (<code>/srv/ids/reglas/current/</code>), compartida por
-todos los puntos</td></tr>
-<tr><td><b>Reglas propias</b> (vienen con la imagen de Suricata)</td>
-<td>Deteccion de <b>escaneo/ataque saliente</b> de tus CPEs (port-scan, fuerza bruta SSH),
-que ET Open no cubre. SIDs en rango local 90000xx.</td>
-<td>La misma version de reglas</td></tr>
-</table>
-<p>Quien las descarga es el <b>orquestador</b> del servidor, en un contenedor de un solo uso: baja ET
-Open por HTTPS, le aplica las reglas desactivadas (el ruido de stream/app-layer que mete el espejo
-TZSP), anade las propias y los dominios de los feeds, <b>valida</b> el resultado con Suricata y lo
-publica como una version nueva. Despues reinicia el Suricata de cada punto <b>de uno en uno</b>.</p>
-<p><b>Como se actualiza (automatico):</b></p>
-<ul>
-<li>El orquestador lo hace <b>una vez al dia</b> para todos los puntos.</li>
-<li>Si la validacion falla, <b>se quedan las reglas anteriores</b> y el aviso queda en el <b>Registro</b>:
-ningun punto se queda sin reglas por una descarga mala.</li>
-</ul>
-{ubox}
-<p><b>Forzar una actualizacion ahora</b>: el boton de arriba (administrador) o, en el servidor,
-<code>ids-orq reglas actualizar</code>.</p>
 
 <h2>Colores de gravedad</h2>
 <p>Cada alerta se clasifica por el texto de su firma. Se evalua de arriba hacia abajo y
@@ -12002,91 +11973,207 @@ No es benigna &mdash; el ruido puramente informativo (ET INFO) ya se descarta an
 <p class="muted" style="color:#52514e;font-size:12px">Nota: las alertas <b>ET INFO</b> (trafico
 informativo, no sospechoso) no se muestran en el panel ni cuentan en los reportes.</p>
 
-<h2>Modulo de Exclusiones</h2>
-<p>El apartado <b>Exclusiones</b> (en el menu de arriba) sirve para que ciertas IPs propias
-no aparezcan en el panel ni en los reportes. Tipico: tu servidor DNS y tu servidor de
-monitoreo, que generan mucho trafico normal (consultas DNS, sondeos SNMP) y ensucian las
-estadisticas sin ser un ataque.</p>
-<p><b>Como funciona:</b> por cada alerta, si coincide con una regla de exclusion, se descarta
-antes de contarla. Se aplica en los tres lados a la vez (resumen de 24h, feed en vivo e
-informe de texto) y surte efecto al instante, sin reiniciar nada.</p>
-<p><b>Campos al agregar una exclusion:</b></p>
-<table><tr><th>Campo</th><th>Que es</th></tr>
-<tr><td>Tipo</td><td><b>Destino</b>: ignora el trafico que va HACIA esa IP (p. ej. tu DNS).
-<b>Origen</b>: ignora el que SALE de esa IP (p. ej. tu monitor).</td></tr>
-<tr><td>IP</td><td>La direccion a excluir. Se valida que sea una IP correcta.</td></tr>
-<tr><td>Puertos</td><td>Los puertos a ignorar, separados por coma (p. ej. <code>53</code> o
-<code>161</code>). <b>Vacio = todos los puertos</b> de esa IP.</td></tr>
-<tr><td>Firma (SID)</td><td>El numero de firma a excluir SOLO para esa IP (p. ej. un falso
-positivo puntual de un CPE). <b>Vacio = cualquier firma</b>. El SID sale en la ficha de evidencia.</td></tr>
-<tr><td>Vigencia</td><td>Exclusion <b>temporal</b>: se ignora hasta que venza (24 h / 7 d / 30 d)
-y luego el trafico vuelve a analizarse solo. <b>Permanente</b> no vence. Queda registrado quien la creo.</td></tr>
-<tr><td>Motivo</td><td>Una nota para acordarte por que (p. ej. "DNS interno").</td></tr>
-<tr><td>Nodo</td><td>A que punto se aplica. <b>Vacio = todos los nodos</b>. Hace falta porque las IPs
-privadas se repiten entre puntos: el <code>10.0.0.5</code> de un nodo no es el del otro.</td></tr>
+<!--CAT:Deteccion--><h2>De donde saca Suricata para confirmar (reglas) y como se actualiza</h2>
+<p>Suricata no "adivina": compara cada paquete/flujo contra un conjunto de <b>reglas</b>
+(firmas). Una alerta existe solo si algo coincide con una regla. Aqui las reglas vienen de
+dos fuentes:</p>
+<table><tr><th>Fuente</th><th>Que trae</th><th>Donde vive</th></tr>
+<tr><td><b>ET Open</b> (Emerging Threats, de Proofpoint)</td>
+<td>El grueso: ~40&nbsp;000 firmas gratuitas de malware, CnC/botnets, troyanos, exploits,
+escaneos, dominios de mala fama, etc. Es el catalogo publico estandar de la industria.</td>
+<td>La version de reglas del servidor (<code>/srv/ids/reglas/current/</code>), compartida por
+todos los puntos</td></tr>
+<tr><td><b>Reglas propias</b> (vienen con la imagen de Suricata)</td>
+<td>Deteccion de <b>escaneo/ataque saliente</b> de tus CPEs (port-scan, fuerza bruta SSH),
+que ET Open no cubre. SIDs en rango local 90000xx.</td>
+<td>La misma version de reglas</td></tr>
 </table>
-<p><b>Ejemplos utiles:</b></p>
+<p>Quien las descarga es el <b>orquestador</b> del servidor, en un contenedor de un solo uso: baja ET
+Open por HTTPS, le aplica las reglas desactivadas (el ruido de stream/app-layer que mete el espejo
+TZSP), anade las propias y los dominios de los feeds, <b>valida</b> el resultado con Suricata y lo
+publica como una version nueva. Despues reinicia el Suricata de cada punto <b>de uno en uno</b>.</p>
+<p><b>Como se actualiza (automatico):</b></p>
 <ul>
-<li><b>Tu DNS</b>: Tipo <b>Destino</b>, puerto <b>53</b>. Asi las consultas de clientes a
-dominios de mala fama (que van a tu DNS) dejan de marcarse.</li>
-<li><b>Tu monitoreo SNMP</b>: Tipo <b>Origen</b>, puerto <b>161</b>. Quita el ruido del
-servidor que sondea tus equipos.</li>
-<li><b>Ignorar una IP entera</b>: deja Puertos vacio.</li>
+<li>El orquestador lo hace <b>una vez al dia</b> para todos los puntos.</li>
+<li>Si la validacion falla, <b>se quedan las reglas anteriores</b> y el aviso queda en el <b>Registro</b>:
+ningun punto se queda sin reglas por una descarga mala.</li>
 </ul>
-<p><b>Por que filtrar por puerto y no la IP entera:</b> si excluyes tu DNS solo en el puerto
-53, sigues viendo si ese mismo equipo hace algo raro en otro puerto (un escaneo, una conexion
-a un CnC). Silenciar la IP completa te dejaria ciego a eso.</p>
-<p><b>Para eliminar</b> una exclusion, usa el boton Eliminar en la lista del apartado.</p>
-<p>Se guardan en la configuracion del panel (<code>/srv/ids/panel/conf/exclusiones.json</code>). Las
-que se pueden expresar exactas pasan ademas al Suricata de cada nodo afectado, que deja de generar esa
-alerta (lo aplica el orquestador sin cortar el espejo).</p>
-<p><b>Ojo con el criterio:</b> al excluir tu DNS dejas de ver en el panel que un cliente
-consulto un dominio malicioso. Esa senal sigue disponible en <b>Eventos</b> filtrando por IP de
-origen y tipo de evento, si quieres cazar clientes infectados por sus consultas.</p>
+{ubox}
+<p><b>Forzar una actualizacion ahora</b>: el boton de arriba (administrador) o, en el servidor,
+<code>ids-orq reglas actualizar</code>.</p>
 
-<!--CAT:Operacion diaria--><h2>Usuarios, roles y clave</h2>
-<p>El panel soporta <b>varios usuarios</b> con tres roles:</p>
+<h2>IDS e IPS: que puede y que no puede hacer este montaje</h2>
+<p>Conviene tenerlo claro desde el principio. Suricata aqui recibe un <b>espejo</b>: una copia del
+trafico. Cuando ve un ataque, el paquete <b>ya paso</b>. Por diseño, <b>nunca</b> va a poder
+bloquearlo. Un IPS de verdad exige que el trafico <b>atraviese</b> el sensor (modo inline), y eso
+significa poner una maquina Linux en el camino de todos tus abonados: pasa a ser punto unico de
+fallo y tiene que aguantar el caudal entero.</p>
+<p>La alternativa practica es que <b>el que corta sea el MikroTik</b>, en dos capas:</p>
 <ul>
-<li><b>Administrador</b>: acceso total (Puntos, exclusiones, MikroTik y politicas, feeds, actualizar
-reglas, gestionar usuarios y ver el Registro).</li>
-<li><b>Operador</b>: opera el dia a dia &mdash; ve todo y <b>gestiona la cuarentena</b> (enviar/quitar
-CPEs, excluir un destino de falso positivo, consultar o denunciar reputacion). <b>No</b> toca
-Puntos, usuarios, conexion MikroTik, exclusiones de deteccion ni reglas. Cada acción suya queda en el
-<b>Registro</b>.</li>
-<li><b>Solo lectura</b>: ve los paneles y reportes y cambia su propia clave; no opera cuarentena
-ni edita nada.</li>
+<li><b>Instantanea, en el router.</b> Reglas nativas de RouterOS que no necesitan al sensor para
+nada: deteccion de escaneo (<code>psd</code>), limite de conexiones nuevas, tope de conexiones por
+abonado, higiene de salida. Cortan a velocidad de linea y funcionan aunque el sensor este apagado.
+Lo que no hacen es distinguir por firma.</li>
+<li><b>Con criterio, desde el panel.</b> Suricata identifica al CPE por firma y el panel lo mete en
+una address-list del router. Entre que el ataque empieza y el CPE queda cortado pasan segundos o
+algunos minutos, no es instantaneo, pero acierta mucho mas.</li>
 </ul>
-<p>Cada uno cambia su clave desde su usuario (arriba a la derecha &rarr; <b>Cambiar
-contraseña</b>); un administrador además crea/borra usuarios y cambia roles en <b>Ajustes &rarr;
-Usuarios y roles</b>. Todos los usuarios ven todos los nodos de la empresa, pero
-<b>cada accion exige su rol y se comprueba en el servidor</b>: no basta con ocultar un boton, y cambiar
-el nodo en la direccion no da mas permisos.</p>
-<p><b>El usuario no se cambia nunca</b>, tampoco el <code>admin</code> que deja el instalador:
-de una cuenta se cambia la clave, el <b>nombre a mostrar</b>, el correo, el rol y la foto, o se
-elimina. El nombre a mostrar es el que sale arriba a la derecha y en la tabla, pero para entrar
-vale el <b>usuario</b> (el menu de arriba lo ensena debajo del nombre). Si hace falta otro
-usuario, crea uno nuevo y elimina el viejo (sin quedarte sin ningun administrador).</p>
-<p>Al crear o editar un usuario, debajo del rol sale lo que puede hacer. La clave tiene que tener al menos
-<b>10 caracteres</b> (las que ya existian siguen valiendo); <b>Generar</b> crea una de 14 y la copia, y
-<b>Ver</b> la muestra. Tu propia cuenta no se borra ni se desactiva desde la tabla: eso lo hace otro
-administrador.</p>
-<p> Las claves se guardan <b>hasheadas</b> (PBKDF2 con sal)
-en <code>/srv/ids/panel/conf/usuarios.json</code>; nunca en texto plano. El primer administrador lo crea
-el instalador del servidor (<code>ids-orq panel crear-admin</code>, que imprime su clave una sola vez).
-Si alguien olvida la suya, <code>ids-orq panel restablecer &lt;usuario&gt;</code> le da una nueva y
-cierra sus sesiones abiertas.</p>
-<p><b>Formularios de otra web.</b> Todo POST que traiga <code>Origin</code> o <code>Referer</code> de otro
-sitio se rechaza (403), haya usuarios o no: una pagina ajena abierta en tu navegador no puede mandar
-acciones al panel. Tambien se rechaza si el navegador dice <code>Sec-Fetch-Site: cross-site</code> o
-<code>same-site</code>; si dice <code>same-origin</code>, pasa siempre (lo certifica el navegador). Las
-peticiones sin esas cabeceras (curl, scripts) siguen entrando. Detras de un proxy, el origen se compara con
-el <code>Host</code>, con <code>X-Forwarded-Host</code>, con el <code>host=</code> de <code>Forwarded</code>
-y con la URL publica del panel (<code>IDS_PANEL_URL</code> del servidor); las cabeceras que pone un
-proxy solo cuentan si llegan de un proxy de confianza. Basta con que el proxy pase el Host (Nginx Proxy
-Manager lo hace) o con declarar la URL publica.
-Si el proxy anade <code>Referrer-Policy: no-referrer</code>, el navegador manda <code>Origin: null</code>:
-se acepta solo con <code>Sec-Fetch-Site: same-origin</code> (o <code>none</code>); un <code>null</code>
-sin esa cabecera se rechaza, porque no se distingue de un iframe con sandbox de otra web.</p>
+<p>Las dos juntas se acercan bastante a un IPS. Y el orden importa: primero las nativas, que son
+gratis y no dependen de nada; despues las del panel.</p>
+
+<h3>Proteccion en el MikroTik: que le falta</h3>
+<p>Al principio de <b>Abuso saliente</b>, el panel <b>le pregunta al router</b> y dice que tiene y
+que le falta para poder cortar, con el comando exacto de cada cosa:</p>
+<ul>
+<li><b>El espejo activo.</b> Si el sniffer se paro, el sensor esta ciego y todo lo demas da igual.</li>
+<li><b>Que las address-lists CORTEN.</b> Es el fallo mas caro: el panel mete CPEs en la lista, dice
+"enviado", y si ninguna regla usa esa lista el abonado sigue atacando igual. Una regla
+<b>desactivada</b> tampoco cuenta.</li>
+<li><b>Origen falsificado</b> (<code>rp-filter</code>). Es la base de los ataques de amplificacion y
+de las quejas que no se pueden rastrear, y <b>ningun IDS lo detecta</b>, porque el trafico parece
+venir de otro sitio. Aviso: con rutas asimetricas o varios proveedores, <code>strict</code> tira
+trafico legitimo; se prueba antes con <code>loose</code>.</li>
+<li><b>Deteccion de escaneo en el propio router</b> y <b>tope de conexiones por abonado</b>.</li>
+<li><b>Cortar en <code>raw</code></b>: con muchas IPs en cuarentena conviene descartar antes de
+crear la conexion, para no llenar la tabla de conntrack.</li>
+</ul>
+
+<h2>El espejo del MikroTik</h2>
+<p>El espejo ya no se pega a mano: lo monta el panel desde la ficha del punto (<b>Puntos &rarr; ficha
+&rarr; Espejo</b>), por la API y el tunel del punto, siempre con <b>vista previa</b> y <b>respaldo</b>
+(export en el router y copia en el panel). Es equivalente a esto (con los prefijos del punto, la IP del
+sensor dentro de su tunel y el comentario del espejo de su punto, <code>IDS ids-maat:&lt;punto&gt;:espejo</code>,
+distinto del de la regla de acceso a la API que se pego en el alta, <code>IDS ids-maat:&lt;punto&gt;</code>: montar,
+pausar o retirar el espejo nunca toca esa regla):</p>
+<pre><code>/ip firewall address-list add list=ids-vigilados address=10.0.0.0/24 comment="IDS ids-maat:p003:espejo"
+/ip firewall mangle add chain=forward src-address-list=ids-vigilados connection-bytes=0-10000 \
+    action=sniff-tzsp sniff-target=&lt;sensor del punto&gt; sniff-target-port=37008 comment="IDS ids-maat:p003:espejo"
+/ip firewall mangle add chain=forward dst-address-list=ids-vigilados connection-bytes=0-10000 \
+    action=sniff-tzsp sniff-target=&lt;sensor del punto&gt; sniff-target-port=37008 comment="IDS ids-maat:p003:espejo"</code></pre>
+<p><b>Nunca se anade una regla <code>accept</code></b>: en RouterOS un accept termina la cadena y los
+paquetes se saltarian los <code>drop</code> de detras (incluida la cuarentena). Montar, pausar o retirar
+el espejo no autoriza nada que tu firewall rechazaba; si el plan trajera un accept, el panel no lo aplica.</p>
+<p><b>FastTrack.</b> Los paquetes acelerados no pasan por mangle: sin tocarlo el espejo solo veria el
+primer paquete y te perderias el handshake TLS con su SNI, que es donde se detecta botnet y C2. Solo se
+cambian <b>condiciones</b> de las reglas <code>fasttrack-connection</code> (que deciden que se acelera,
+nunca que pasa): la existente deja fuera a <code>ids-vigilados</code> y se anaden dos fasttrack con sus
+mismas condiciones para los vigilados a partir de los 10 KB. Si tu regla fasttrack ya usa
+address-lists, el panel no la toca y lo dice en la vista previa.</p>
+<ul>
+<li><b><code>chain=forward</code> en las dos</b>, tambien en la de vuelta: en <code>prerouting</code>
+el des-NAT del retorno todavia no se aplico y <code>dst-address-list</code> no coincidiria.</li>
+<li><b><code>connection-bytes=0-10000</code></b>: captura reducida, el arranque de cada conexion, que es
+donde Suricata detecta casi todo. La salud del punto lo muestra como tal.</li>
+<li><b>Idempotente</b>: aplicar dos veces no duplica nada. <b>Pausar</b> deshabilita los dos mangle;
+<b>Retirar</b> borra lo del comentario del punto y devuelve al fasttrack sus valores del respaldo.</li>
+</ul>
+<p>Comprueba que llega mirando la salud por etapas del punto (<b>TZSP recibido</b> y <b>Trafico
+procesado</b>) o, en el router, <code>/ip firewall mangle print stats where comment~"ids-maat"</code>.</p>
+
+<h3>Prefijos: por que a veces no se ven datos</h3>
+<p>El espejo de cada punto llega a su receptor TZSP (en su contenedor VPN) y su Suricata lo inspecciona.
+Pero el panel muestra <b>alertas</b>, no trafico normal, y las reglas de <b>ataque saliente</b> (escaneo
+de puertos, Telnet/Mirai, fuerza bruta SSH de un CPE) solo disparan si la IP de origen esta dentro de
+los <b>prefijos del punto</b> (su <code>HOME_NET</code>).</p>
+<p><b>Sintoma tipico:</b> la salud del punto dice <b>TZSP recibido</b> pero el panel se ve casi vacio.
+Casi siempre es que los prefijos no incluyen las redes de tus clientes.</p>
+<p>Los prefijos se eligen al dar de alta el punto y se cambian en su ficha (<b>Prefijos</b>): el
+Suricata del punto se recrea con los nuevos y despues hay que <b>volver a aplicar el espejo</b> para
+llevarlos a la address-list <code>ids-vigilados</code> del router (con la misma vista previa).</p>
+
+<h2>Sensor POST-NAT: analizar lo que hacen tus IPs publicas</h2>
+<p>Lo normal es espejar el <b>bridge</b> del MikroTik: ahi se ve quien es cada abonado (<code>10.x</code>)
+pero <b>nunca</b> la IP publica por la que salio. Hay un montaje distinto para lo contrario: espejar
+la <b>WAN</b>. Entonces el sensor ve el trafico <b>ya traducido</b> y el origen es tu IP publica, que
+es exactamente lo que ve -y denuncia- el resto de internet.</p>
+<p>Los dos se complementan: el de la LAN dice <b>quien</b>, el de la WAN dice <b>que sale por cada
+publica</b>. En el de la WAN, <b>HOME_NET son tus rangos PUBLICOS</b>, no los privados.</p>
+<p>Se monta como un <b>punto aparte</b> en <b>Puntos</b>, con tus rangos <b>publicos</b> como prefijos
+del espejo, y en el MikroTik el espejo apunta a la <b>WAN</b>, no al bridge.</p>
+<h3>Tres avisos que hay que leer antes</h3>
+<ul>
+<li><b>Tu propia publica NO puede ir a la cuarentena.</b> Como HOME_NET son las publicas, el panel
+las trata como si fueran CPEs; mandar tu IP de NAT a la address-list dejaria <b>sin internet a todos
+los abonados que salen por ella</b>. El panel lo <b>impide</b> si esas IPs estan declaradas en
+<b>Consultar IP &rarr; Tus IPs publicas</b>. Declararlas ahi no es opcional en este modo.</li>
+<li><b>El espejo tiene que salir por el tunel del punto</b>, desde la IP del MikroTik dentro del
+tunel. El receptor de cada punto descarta lo que llega por otro lado, y eso solo se ve en la salud por
+etapas (<b>TZSP recibido</b>): por eso conviene mirarla tras cualquier cambio.</li>
+<li><b>El espejo duplica el trafico dentro del tunel</b> y va por UDP sin retransmision: con perdida
+el IDS ve trafico incompleto <b>y no avisa</b>. Para un sensor remoto conviene <b>filtrar en el
+propio MikroTik</b> (<code>filter-port</code>, <code>filter-protocol</code>): con 25, 22, 23, 445,
+3389 y 7547 se caza casi todo el abuso que ensucia las publicas, a una fraccion del ancho de
+banda.</li>
+</ul>
+
+<h2>Resolutores DNS: el DNS no es la victima</h2>
+<p>Cuando un CPE pregunta por un dominio de malware, la alerta lleva como <b>destino</b> la IP del
+DNS al que pregunto (1.1.1.2, 8.8.8.8, el de tu ISP...). Sin mas, el panel contaria eso como un
+ataque <i>al DNS</i> y el resolutor subiria a <b>Top destinos mas atacados</b>. No lo es: la prueba
+es el <b>dominio</b>, y la culpa, del CPE. En <b>Ajustes &rarr; DNS</b> esta la lista de resolutores
+conocidos (en la configuracion del panel; de serie los publicos). Para una IP de esa
+lista, lo que va al <b>puerto 53</b> o lleva firma de DNS se cuenta como <b>consulta a traves de el</b>:
+sale aparte en Top destinos ("resolutores usados para consultar dominios maliciosos", con cuantos
+CPEs lo hacen), la ficha del CPE dice <i>consulta DNS maliciosa: tal dominio, via tal resolutor</i>,
+y el CPE <b>conserva todas sus alertas</b>. Es distinto de <i>excluir destino</i>: aquello deja de
+contar la alerta para todos; esto solo quita la victima falsa. Si a ese mismo DNS le pegan por otro
+puerto, eso <b>si</b> es un ataque y sigue saliendo como tal.</p>
+
+<h2>Salud de cada punto (por etapas)</h2>
+<p>La salud se mide <b>por punto y por etapas</b>, porque cada una falla por su lado. La ven todos los
+usuarios en el selector de nodo, y con detalle en <b>Puntos</b>:</p>
+<ul>
+<li><b>VPN conectada</b>: el MikroTik tiene el tunel arriba.</li>
+<li><b>TZSP recibido</b>: llega el espejo al receptor del punto.</li>
+<li><b>Trafico procesado</b>: Suricata cuenta paquetes capturados y sus <b>descartes</b>.</li>
+<li><b>Eventos actualizados</b>: el registro de eventos del punto se esta escribiendo.</li>
+<li><b>Datos consultables</b>: el panel puede leerlos (reporte, eventos, historico).</li>
+</ul>
+<p>Estados: <b>operativa</b>, <b>degradada</b>, <b>sin datos</b>, <b>desconectada</b>,
+<b>deshabilitada</b> y <b>desconocido</b>. Una VPN arriba, un contenedor en marcha o cero alertas
+<b>no</b> son «sano» por si solos. La captura es reducida (los primeros 10 KB de cada conexion de los
+prefijos elegidos) y se muestra como tal. Lo publican el orquestador (cada 15 s) y el receptor TZSP de
+cada punto.</p>
+
+<!--CAT:Pantallas--><h2>Mapa: a donde atacan tus CPEs</h2>
+<p>En la pestana <b>En vivo</b>, <b>debajo de la linea de tiempo</b> ("Ataques por hora y minuto"),
+hay un <b>mapa mundial</b> que pinta los <b>paises destino</b> de las alertas (a donde va el
+trafico sospechoso de tus CPEs). El color sube con el nº de alertas y debajo sale el
+<b>Top paises destino</b>: los 10 paises con mas alertas, por puesto y en dos columnas (1 a 5 y
+6 a 10), cada uno con su barra, el numero de alertas y que parte del total son. Clic en una fila
+acerca ese pais en el mapa.</p>
+<ul>
+<li><b>Geolocalizacion offline:</b> la IP destino se traduce a pais con una base
+<b>IP&rarr;pais DB-IP lite</b> (via ip-location-db, CC-BY-4.0, &copy; db-ip.com) que se guarda en el servidor
+(<code>/srv/ids/panel/geo/</code>). No usa servicios externos en caliente.</li>
+<li><b>Flujo "de donde -> a donde":</b> ademas del color, salen <b>arcos animados</b> desde tu red
+hacia cada pais destino (un punto viaja por el arco = sensacion de trafico en vivo), y <b>cada punta
+late</b> igual que el origen, para ver de un vistazo donde cae cada flujo. El punto de
+origen se puede fijar con <code>MAPA_ORIGEN=lon,lat</code> en la configuracion del panel
+(por defecto Ecuador); es solo el inicio visual del arco, no un dato real.</li>
+<li><b>Detalle por pais:</b> al <b>pasar el mouse</b> por un pais sale un recuadro con <b>a que IPs
+destino</b> va el trafico, <b>por que puertos</b> (p.ej. <code>443/tcp</code>) y <b>desde que CPEs</b> de
+tu red sale, ademas de la <b>direccion</b> (siempre saliente: tus CPEs &rarr; el pais). Se muestran los
+mas repetidos y se indica cuantos mas hay.</li>
+<li><b>Zoom por pais:</b> <b>clic en un pais</b> (o en una fila del Top) lo <b>acerca</b> y abre debajo
+un panel fijo con ese mismo detalle, comodo de leer en el telefono. Puedes <b>arrastrar</b> para
+mover el mapa, usar <b>+</b> / <b>&minus;</b> o <b>Ctrl + rueda</b> para acercar, y <b>Vista completa</b>
+para volver al mundo entero.</li>
+<li><b>No pierde el zoom:</b> la pagina se recarga sola cada 5 min; el mapa <b>repone la vista</b>
+(el zoom, el desplazamiento y el pais que tenias abierto) en vez de volver al mundo entero. Se
+guarda por pestana del navegador, asi que otra pestana o una sesion nueva empiezan limpias.</li>
+<li><b>Cobertura:</b> el mapa reconoce los <b>174 paises</b> del atlas (todos los que trae el
+TopoJSON, mas Kosovo). Si un pais no tiene nombre traducido, se usa el del propio mapa.</li>
+<li><b>Solo destinos publicos:</b> las IPs privadas (tu red) o sin pais no cuentan en el mapa.</li>
+<li><b>El mapa</b> se dibuja en el navegador con un <b>TopoJSON</b> del mundo servido por el
+propio panel (viene en su imagen); no llama a ningun CDN externo.</li>
+<li>Si el mapa sale vacio, casi siempre es que la base GeoIP no se instalo (no habia internet
+en la instalacion). El panel <b>se auto-provisiona</b> al arrancar (baja el mapa y construye la
+base GeoIP en 2do plano si falta); tambien se reconstruye reiniciando el panel. Necesita salida a
+internet la primera vez.</li>
+</ul>
+<p class="muted" style="color:#52514e;font-size:12px">Mapa inspirado en
+<b>MikroDash</b> (MIT). Geometria del mundo: World Atlas / Natural Earth (dominio publico).</p>
 
 <h2>Abuso saliente: el numero que hay que poder enseñar</h2>
 <h3>Reporte de 3 dias: que hizo cada CPE</h3>
@@ -12154,676 +12241,6 @@ de esa corrida.</li>
 guarda 15 dias.</li>
 <li>La tendencia necesita <b>14 dias</b> de datos para poder comparar; antes de eso lo dice.</li>
 </ul>
-
-<h2>IDS e IPS: que puede y que no puede hacer este montaje</h2>
-<p>Conviene tenerlo claro desde el principio. Suricata aqui recibe un <b>espejo</b>: una copia del
-trafico. Cuando ve un ataque, el paquete <b>ya paso</b>. Por diseño, <b>nunca</b> va a poder
-bloquearlo. Un IPS de verdad exige que el trafico <b>atraviese</b> el sensor (modo inline), y eso
-significa poner una maquina Linux en el camino de todos tus abonados: pasa a ser punto unico de
-fallo y tiene que aguantar el caudal entero.</p>
-<p>La alternativa practica es que <b>el que corta sea el MikroTik</b>, en dos capas:</p>
-<ul>
-<li><b>Instantanea, en el router.</b> Reglas nativas de RouterOS que no necesitan al sensor para
-nada: deteccion de escaneo (<code>psd</code>), limite de conexiones nuevas, tope de conexiones por
-abonado, higiene de salida. Cortan a velocidad de linea y funcionan aunque el sensor este apagado.
-Lo que no hacen es distinguir por firma.</li>
-<li><b>Con criterio, desde el panel.</b> Suricata identifica al CPE por firma y el panel lo mete en
-una address-list del router. Entre que el ataque empieza y el CPE queda cortado pasan segundos o
-algunos minutos, no es instantaneo, pero acierta mucho mas.</li>
-</ul>
-<p>Las dos juntas se acercan bastante a un IPS. Y el orden importa: primero las nativas, que son
-gratis y no dependen de nada; despues las del panel.</p>
-
-<h3>Proteccion en el MikroTik: que le falta</h3>
-<p>Al principio de <b>Abuso saliente</b>, el panel <b>le pregunta al router</b> y dice que tiene y
-que le falta para poder cortar, con el comando exacto de cada cosa:</p>
-<ul>
-<li><b>El espejo activo.</b> Si el sniffer se paro, el sensor esta ciego y todo lo demas da igual.</li>
-<li><b>Que las address-lists CORTEN.</b> Es el fallo mas caro: el panel mete CPEs en la lista, dice
-"enviado", y si ninguna regla usa esa lista el abonado sigue atacando igual. Una regla
-<b>desactivada</b> tampoco cuenta.</li>
-<li><b>Origen falsificado</b> (<code>rp-filter</code>). Es la base de los ataques de amplificacion y
-de las quejas que no se pueden rastrear, y <b>ningun IDS lo detecta</b>, porque el trafico parece
-venir de otro sitio. Aviso: con rutas asimetricas o varios proveedores, <code>strict</code> tira
-trafico legitimo; se prueba antes con <code>loose</code>.</li>
-<li><b>Deteccion de escaneo en el propio router</b> y <b>tope de conexiones por abonado</b>.</li>
-<li><b>Cortar en <code>raw</code></b>: con muchas IPs en cuarentena conviene descartar antes de
-crear la conexion, para no llenar la tabla de conntrack.</li>
-</ul>
-
-<h2>Sensor POST-NAT: analizar lo que hacen tus IPs publicas</h2>
-<p>Lo normal es espejar el <b>bridge</b> del MikroTik: ahi se ve quien es cada abonado (<code>10.x</code>)
-pero <b>nunca</b> la IP publica por la que salio. Hay un montaje distinto para lo contrario: espejar
-la <b>WAN</b>. Entonces el sensor ve el trafico <b>ya traducido</b> y el origen es tu IP publica, que
-es exactamente lo que ve -y denuncia- el resto de internet.</p>
-<p>Los dos se complementan: el de la LAN dice <b>quien</b>, el de la WAN dice <b>que sale por cada
-publica</b>. En el de la WAN, <b>HOME_NET son tus rangos PUBLICOS</b>, no los privados.</p>
-<p>Se monta como un <b>punto aparte</b> en <b>Puntos</b>, con tus rangos <b>publicos</b> como prefijos
-del espejo, y en el MikroTik el espejo apunta a la <b>WAN</b>, no al bridge.</p>
-<h3>Tres avisos que hay que leer antes</h3>
-<ul>
-<li><b>Tu propia publica NO puede ir a la cuarentena.</b> Como HOME_NET son las publicas, el panel
-las trata como si fueran CPEs; mandar tu IP de NAT a la address-list dejaria <b>sin internet a todos
-los abonados que salen por ella</b>. El panel lo <b>impide</b> si esas IPs estan declaradas en
-<b>Consultar IP &rarr; Tus IPs publicas</b>. Declararlas ahi no es opcional en este modo.</li>
-<li><b>El espejo tiene que salir por el tunel del punto</b>, desde la IP del MikroTik dentro del
-tunel. El receptor de cada punto descarta lo que llega por otro lado, y eso solo se ve en la salud por
-etapas (<b>TZSP recibido</b>): por eso conviene mirarla tras cualquier cambio.</li>
-<li><b>El espejo duplica el trafico dentro del tunel</b> y va por UDP sin retransmision: con perdida
-el IDS ve trafico incompleto <b>y no avisa</b>. Para un sensor remoto conviene <b>filtrar en el
-propio MikroTik</b> (<code>filter-port</code>, <code>filter-protocol</code>): con 25, 22, 23, 445,
-3389 y 7547 se caza casi todo el abuso que ensucia las publicas, a una fraccion del ancho de
-banda.</li>
-</ul>
-
-<h2>Una lista por categoria de abuso</h2>
-<p>Meter en el mismo cajon al que tiene una <b>botnet</b> y al que usa <b>BitTorrent</b> obliga a
-darles el mismo trato en el firewall, y no es el mismo problema. Por eso cada CPE va a la
-address-list de <b>su categoria</b>, y cada lista se trata como corresponde:</p>
-<table>
-<tr><th>Categoria</th><th>Lista</th><th>Que se hace</th></tr>
-<tr><td>Botnet / CnC</td><td><code>clientes-botnet</code></td><td><b>Cortar.</b> El equipo esta
-comprometido y ataca a terceros.</td></tr>
-<tr><td>Escaneo</td><td><code>clientes-escaneo</code></td><td><b>Cortar.</b></td></tr>
-<tr><td>Fuerza bruta</td><td><code>clientes-fuerza-bruta</code></td><td><b>Cortar.</b></td></tr>
-<tr><td>Spam</td><td><code>clientes-spam</code></td><td>Cerrarle <b>solo el correo saliente</b>. No
-hace falta dejarlo sin internet.</td></tr>
-<tr><td>DNS de malware</td><td><code>clientes-dns-malware</code></td><td><b>Redirigir</b> su DNS a tu
-resolutor, que ya filtra. Ni se entera.</td></tr>
-<tr><td>Criptominado</td><td><code>clientes-minado</code></td><td><b>Encolar</b>, no cortar: es
-consumo. Con <b>su propia marca y su propia cola</b> (<code>minado-con</code> /
-<code>minado</code>), separadas de las del P2P.</td></tr>
-<tr><td>P2P</td><td><code>clientes-p2p</code></td><td><b>Encolar</b>, no cortar: es consumo. Marca
-<code>p2p-con</code> / <code>p2p</code> y su cola.</td></tr>
-<tr><td>Otros</td><td><code>clientes-otros</code></td><td>Lo que no encaja en nada de lo anterior.</td></tr>
-</table>
-<p>La clasificacion va de <b>lo mas grave a lo mas leve</b> y manda la primera que casa: quien tiene
-una botnet <b>y ademas</b> usa BitTorrent es, a efectos de que hacer con el, un CPE con botnet
-&mdash; aunque el P2P tenga diez veces mas alertas.</p>
-<p><b>Encolar no es poner una cola.</b> Lo que de verdad limita son <b>tres</b> piezas
-encadenadas: <code>mark-connection</code> &rarr; <code>mark-packet</code> &rarr; una
-<code>/queue tree</code> que consuma esa marca. Faltando cualquiera de las tres <b>no se limita
-nada y no da error</b>: una <code>/queue simple</code> con <code>target=""</code> no engancha
-trafico, y una marca de paquete que ninguna cola consume no la usa nadie. P2P y criptominado
-llevan <b>marcas y colas distintas</b>, para poder darles limites distintos y saber cual consume.
-Las reglas listas para copiar estan en <b>MikroTik &rarr; Reglas</b>.</p>
-<p>Tres cosas que hacen que las reglas <b>parezcan</b> no funcionar:</p>
-<ul>
-<li><b>El orden frente a <code>fasttrack-connection</code>.</b> Los <code>drop</code> tienen que ir
-<b>antes</b> de la regla de fasttrack y de los <code>accept</code>: con fasttrack activo una
-conexion ya establecida deja de pasar por <code>filter</code> y el bloqueo no se aplica.</li>
-<li><b>Meter el CPE en la lista no corta lo que ya esta abierto.</b> La regla solo mira los paquetes
-que pasan por ella; las conexiones vivas hay que soltarlas a mano con
-<code>/ip firewall connection remove [find src-address~"^192.0.2.25:"]</code>.</li>
-<li><b><code>action=redirect to-ports=53</code> apunta al resolutor del propio router.</b> Si el
-router no resuelve, el cliente se queda <b>sin DNS</b> y parece que le cortaste internet. O
-habilitas <code>/ip dns set allow-remote-requests=yes</code>, o usas
-<code>action=dst-nat to-addresses=&lt;tu resolutor&gt; to-ports=53</code>.</li>
-</ul>
-<p>Los nombres se pueden cambiar en <b>Ajustes &rarr; MikroTik</b> (un campo por lista), por si ya
-tienes tu propia
-nomenclatura. Y al enviar se <b>guarda en que lista quedo</b>: si manana cambia su categoria o
-renombras la lista, el panel lo saca de donde esta de verdad y no de donde tocaria hoy.</p>
-
-<h2>Las address-lists: cual es cual</h2>
-<p>Ya son cinco y conviene tenerlas claras, porque <b>no todas se usan igual</b>: tres miran el
-<b>origen</b> (a quien se corta) y dos el <b>destino</b> o la entrada. Confundir
-<code>src-address-list</code> con <code>dst-address-list</code> en la regla es el error que hace que
-"funcione" sin bloquear nada, o que bloquee lo que no era.</p>
-<table>
-<tr><th>Lista</th><th>Que lleva dentro</th><th>En la regla</th><th>TTL</th></tr>
-<tr><td><code>suricata-cuarentena</code></td><td><b>CPEs infectados</b> (malware/CnC confirmado)</td>
-<td><code>src-address-list</code></td><td>1 h</td></tr>
-<tr><td><code>suricata-dns-sospechoso</code></td><td><b>CPEs</b> que consultan dominios de botnet</td>
-<td><code>src-address-list</code></td><td>1 d</td></tr>
-<tr><td><code>suricata-graduada</code></td><td><b>CPEs</b> con corte <b>parcial</b>: solo los puertos
-de abuso, el resto le sigue funcionando</td><td><code>src-address-list</code></td><td>1 d</td></tr>
-<tr><td><code>suricata-destinos-malos</code></td><td><b>IPs publicas ajenas</b> de mala reputacion a
-las que tus CPEs salen (C2, malware, redes secuestradas)</td><td><b><code>dst-address-list</code></b>
-</td><td>7 d</td></tr>
-<tr><td><code>suricata-atacantes</code></td><td><b>IPs publicas ajenas</b> que atacan tu red desde
-internet</td><td><code>src-address-list</code> + <code>connection-state=new</code></td><td>1 d</td></tr>
-</table>
-<p>Las tres primeras contienen <b>IPs de tus abonados</b>; las dos ultimas, <b>IPs publicas de
-terceros</b> &mdash; y ninguna de esas dos acepta una IP tuya, ni privada ni publica. Cada lista
-tiene su nombre configurable en <b>Ajustes &rarr; MikroTik</b> (las tres de abonados no caducan: un
-abonado sale cuando deja de enviar virus; las de terceros conservan su TTL), y cada una
-lleva su propio registro en el panel, asi que quitar algo de una no toca las demas.</p>
-<p>El TTL de los destinos es mas largo (7 d) a proposito: un servidor de control no deja de serlo en
-una hora, y ahi no hay ningun abonado esperando a que se le devuelva el servicio.</p>
-
-<h2>Destinos de mala reputacion (en Cuarentena)</h2>
-<p>La cuarentena corta al <b>abonado</b>. Esto corta el <b>destino</b>, que es lo que mantiene vivo
-al equipo infectado: sin canal de control, la botnet no manda nada. Y vale para <b>todos</b> los
-abonados a la vez, sin tener que identificar a ninguno.</p>
-<p>Al final de la pestana <b>Cuarentena</b> aparecen los destinos fichados a los que tus CPEs
-<b>estan saliendo de verdad</b> (no el feed entero), con de que lista vienen, cuantos CPEs los
-contactan y un boton para bloquearlos en <b>todos</b> los nodos a la vez. La regla es de
-<code>dst-address-list</code>, no de origen: no se bloquea a nadie, se bloquea <b>a donde va</b>.</p>
-<h3>Preventivo: cortar ANTES de que nadie llegue</h3>
-<p>Lo anterior es <b>reactivo</b>: bloquea destinos que un CPE <b>ya</b> contacto. Mejor es lo
-contrario, y tambien esta: el router se baja cada hora la lista de <b>infraestructura fichada</b> y
-corta la salida hacia ella <b>antes</b> de que ningun abonado llegue. Asi el equipo infectado ni
-siquiera consigue instrucciones, y no hace falta detectarlo primero.</p>
-<p>Al <b>preventivo</b> solo entran los feeds en los que se puede confiar para cortar <b>por
-destino</b>: <b>C2 activo</b> (Feodo) e <b>infraestructura delictiva</b> (Spamhaus DROP), que son
-unos pocos miles de entradas y caben de sobra en cualquier router. <b>No</b> entran las listas de
-"esta IP escaneo a alguien" (CINS, AbuseIPDB): describen a un atacante, pero <b>esa misma IP puede
-alojar una web que un abonado visita</b>, y cortarla por destino lo deja sin servicio.</p>
-<p>La importacion <b>solo borra lo que puso el feed</b> (por el comentario), asi que lo que hayas
-bloqueado a mano desde el panel no se toca. Y nunca entra nada tuyo: ni tus redes privadas ni tus
-publicas declaradas, aunque un feed las fiche.</p>
-
-<h3>Los dos frenos, que son lo importante</h3>
-<ul>
-<li><b>Solo IPs publicas.</b> Una privada aqui seria de tu propia red, y bloquearla como destino
-dejaria a tus abonados sin verse entre si. Tambien se frena una IP <b>publica que sea tuya</b> (tu
-rango de NAT), que pasa el filtro de "es publica" y aun asi no hay que bloquearla.</li>
-<li><b>Solo feeds que se sostienen</b>: C2 activo, IOC de C2, distribucion de malware e infra
-delictiva. <b>No</b> se propone lo que viene de listas de "esta IP escaneo a alguien": esas pueden
-alojar ademas algo legitimo, y bloquearlas deja sin servicio a un abonado que no hizo nada. Si aun
-asi las quieres ver, se pueden pedir.</li>
-</ul>
-<p>Lo que marques como <b>destino confiable</b> (falso positivo) desaparece de la lista y no se
-vuelve a proponer. Y sin una regla en el MikroTik que use esa address-list, el panel diria
-"bloqueado" sin bloquear nada: la regla esta ahi mismo para copiarla.</p>
-
-<h2>Cortar a los que te atacan desde internet</h2>
-<p>Es la otra mitad del problema, y la cadena importa: <b>el atacante de fuera es el que infecta al
-CPE, y el CPE infectado es el que ensucia tus publicas</b>. Cortar la entrada no limpia lo que ya
-esta infectado &mdash;para eso esta la cuarentena&mdash; pero corta las <b>infecciones nuevas</b>,
-que es lo unico que hace que el numero baje y se quede abajo.</p>
-<p>En <b>Abuso saliente</b> el panel arma la lista con los origenes de internet que <b>de verdad</b>
-estan atacando tu red: los que insisten mucho y contra varios equipos, mas los que ademas aparecen
-fichados en los feeds de reputacion (a esos les basta con poco). <b>No</b> se vuelcan los feeds
-enteros: son cientos de miles de IPs, llenan la RAM del router y meten falsos positivos de sitios
-que tus abonados visitan.</p>
-<h3>Dos detalles que deciden si esto sirve o rompe clientes</h3>
-<ul>
-<li><b><code>connection-state=new</code>.</b> Se cortan solo las conexiones que <b>entran</b> desde
-esas IPs. Sin ese matcher &mdash;o cortando en <code>raw</code>&mdash; se tiran tambien las
-<b>respuestas</b> a lo que pidio tu abonado, y el cliente se queda sin poder entrar a un sitio
-legitimo sin que nadie entienda por que.</li>
-<li><b>La lista se descarga del panel</b> (<code>/blocklist.rsc</code>, con sesion de
-administrador; en «Todos» o por nodo) y se importa en el router con <code>/import</code>. El MikroTik
-no llega al panel por el tunel (por el solo pasan el espejo y la API), asi que ya no se la baja solo.
-Meterle miles de entradas una a una por la API tardaria horas.</li>
-</ul>
-<p>Nunca entran en la lista tus propias redes ni las de <b>Nunca bloquear</b>, y cada importacion
-<b>reemplaza</b> la lista entera, asi que lo que deja de atacar desaparece solo.</p>
-
-<h2>Cuarentena graduada: cortar sin dejar sin internet</h2>
-<p>El corte total tiene un problema practico: el abonado llama a soporte, soporte lo desbloquea y el
-ataque vuelve. Ese ciclo es la razon habitual de que estos programas no bajen ningun numero.</p>
-<p>La <b>cuarentena graduada</b> mete al CPE en otra address-list
-(<code>suricata-graduada</code>) cuyas reglas cortan <b>solo los puertos de abuso</b>: correo,
-SSH/Telnet, SMB, RDP/VNC y TR-069. El abonado sigue navegando, viendo streaming y jugando, asi que
-<b>no llama</b>, y el corte aguanta en el tiempo. Aqui si se corta tambien el 587/465: ese equipo ya
-esta comprometido.</p>
-<p>Las reglas se pegan una vez y estan en <b>Ajustes &rarr; MikroTik</b>. Al enviar el primer CPE el
-panel <b>comprueba que exista alguna regla usando esa lista</b> y avisa si no: una address-list sin
-regla que la use no bloquea nada, y sin ese aviso el panel diria "enviado" mientras el CPE sigue
-atacando.</p>
-
-<h2>Reportes e informe diario</h2>
-<ul>
-<li>El reporte grafico de cada nodo (y el de «Todos») lo genera el panel cada 5 minutos, de un
-nodo en uno; los guardados estan en <b>Historico</b>.</li>
-<li>Informe de texto por Telegram: se envía cada día a las 07:30 (hora local), con una sección por
-nodo, al chat configurado en <b>Ajustes &rarr; Reputación &rarr; Telegram</b> (ver "Avisos por
-Telegram").</li>
-<li>Las reglas ET las actualiza el orquestador cada dia.</li>
-</ul>
-
-<h2>Archivos y comandos utiles</h2>
-<p>Todo corre en contenedores: el panel, y por cada punto su VPN y su Suricata. Los comandos van en el
-servidor, como root.</p>
-<table><tr><th>Que</th><th>Donde / como</th></tr>
-<tr><td>Datos del panel</td><td><code>/srv/ids/panel/</code> (<code>conf/</code> configuracion,
-<code>estado/</code> registros, <code>log/</code>, <code>nodos/&lt;punto&gt;/</code> reportes de cada nodo)</td></tr>
-<tr><td>Eventos de cada punto</td><td><code>/srv/ids/datos/&lt;punto&gt;/eve.json</code> y
-<code>dns.json</code> (y sus rotados); el panel solo los lee</td></tr>
-<tr><td>Estado de los puntos</td><td><code>/srv/ids/run/estado.json</code> (lo escribe el orquestador cada 15 s)
-o <code>ids-orq estado</code></td></tr>
-<tr><td>Contenedores</td><td><code>docker ps</code>: <code>ids-core-panel</code>, y por punto
-<code>ids-&lt;punto&gt;-vpn</code> e <code>ids-&lt;punto&gt;-suricata</code></td></tr>
-<tr><td>Logs</td><td><code>docker logs ids-core-panel</code>; los de un punto, en su ficha (Logs) o con
-<code>ids-orq punto logs</code></td></tr>
-<tr><td>Reglas</td><td><code>/srv/ids/reglas/current/</code>; actualizar: <code>ids-orq reglas actualizar</code></td></tr>
-<tr><td>Base GeoIP del mapa</td><td><code>/srv/ids/panel/geo/</code> (IP&rarr;pais, offline)</td></tr>
-</table>
-
-<!--CAT:Cuarentena y MikroTik--><h2>El espejo del MikroTik</h2>
-<p>El espejo ya no se pega a mano: lo monta el panel desde la ficha del punto (<b>Puntos &rarr; ficha
-&rarr; Espejo</b>), por la API y el tunel del punto, siempre con <b>vista previa</b> y <b>respaldo</b>
-(export en el router y copia en el panel). Es equivalente a esto (con los prefijos del punto, la IP del
-sensor dentro de su tunel y el comentario del espejo de su punto, <code>IDS ids-maat:&lt;punto&gt;:espejo</code>,
-distinto del de la regla de acceso a la API que se pego en el alta, <code>IDS ids-maat:&lt;punto&gt;</code>: montar,
-pausar o retirar el espejo nunca toca esa regla):</p>
-<pre><code>/ip firewall address-list add list=ids-vigilados address=10.0.0.0/24 comment="IDS ids-maat:p003:espejo"
-/ip firewall mangle add chain=forward src-address-list=ids-vigilados connection-bytes=0-10000 \
-    action=sniff-tzsp sniff-target=&lt;sensor del punto&gt; sniff-target-port=37008 comment="IDS ids-maat:p003:espejo"
-/ip firewall mangle add chain=forward dst-address-list=ids-vigilados connection-bytes=0-10000 \
-    action=sniff-tzsp sniff-target=&lt;sensor del punto&gt; sniff-target-port=37008 comment="IDS ids-maat:p003:espejo"</code></pre>
-<p><b>Nunca se anade una regla <code>accept</code></b>: en RouterOS un accept termina la cadena y los
-paquetes se saltarian los <code>drop</code> de detras (incluida la cuarentena). Montar, pausar o retirar
-el espejo no autoriza nada que tu firewall rechazaba; si el plan trajera un accept, el panel no lo aplica.</p>
-<p><b>FastTrack.</b> Los paquetes acelerados no pasan por mangle: sin tocarlo el espejo solo veria el
-primer paquete y te perderias el handshake TLS con su SNI, que es donde se detecta botnet y C2. Solo se
-cambian <b>condiciones</b> de las reglas <code>fasttrack-connection</code> (que deciden que se acelera,
-nunca que pasa): la existente deja fuera a <code>ids-vigilados</code> y se anaden dos fasttrack con sus
-mismas condiciones para los vigilados a partir de los 10 KB. Si tu regla fasttrack ya usa
-address-lists, el panel no la toca y lo dice en la vista previa.</p>
-<ul>
-<li><b><code>chain=forward</code> en las dos</b>, tambien en la de vuelta: en <code>prerouting</code>
-el des-NAT del retorno todavia no se aplico y <code>dst-address-list</code> no coincidiria.</li>
-<li><b><code>connection-bytes=0-10000</code></b>: captura reducida, el arranque de cada conexion, que es
-donde Suricata detecta casi todo. La salud del punto lo muestra como tal.</li>
-<li><b>Idempotente</b>: aplicar dos veces no duplica nada. <b>Pausar</b> deshabilita los dos mangle;
-<b>Retirar</b> borra lo del comentario del punto y devuelve al fasttrack sus valores del respaldo.</li>
-</ul>
-<p>Comprueba que llega mirando la salud por etapas del punto (<b>TZSP recibido</b> y <b>Trafico
-procesado</b>) o, en el router, <code>/ip firewall mangle print stats where comment~"ids-maat"</code>.</p>
-
-<h2>Espejo y prefijos (por que a veces no se ven datos)</h2>
-<p>El espejo de cada punto llega a su receptor TZSP (en su contenedor VPN) y su Suricata lo inspecciona.
-Pero el panel muestra <b>alertas</b>, no trafico normal, y las reglas de <b>ataque saliente</b> (escaneo
-de puertos, Telnet/Mirai, fuerza bruta SSH de un CPE) solo disparan si la IP de origen esta dentro de
-los <b>prefijos del punto</b> (su <code>HOME_NET</code>).</p>
-<p><b>Sintoma tipico:</b> la salud del punto dice <b>TZSP recibido</b> pero el panel se ve casi vacio.
-Casi siempre es que los prefijos no incluyen las redes de tus clientes.</p>
-<p>Los prefijos se eligen al dar de alta el punto y se cambian en su ficha (<b>Prefijos</b>): el
-Suricata del punto se recrea con los nuevos y despues hay que <b>volver a aplicar el espejo</b> para
-llevarlos a la address-list <code>ids-vigilados</code> del router (con la misma vista previa).</p>
-
-<h2>Cuarentena: enviar CPEs infectados al MikroTik (API v6 y v7)</h2>
-<p>La pestana <b>Cuarentena</b> lista los CPE con <b>infeccion confirmada</b> (por repeticion y
-contexto, no por una sola firma). Desde ahi, con un boton, el panel empuja la IP a una
-<b>address-list</b> del MikroTik por su <b>API</b>. El panel <b>solo mete y saca IPs de la lista</b>;
-<b>que se hace con esa lista lo decides tu</b> con una regla de firewall. Es compatible con
-<b>RouterOS v6</b> (incluye login antiguo &lt;6.43 por reto MD5) y <b>v7</b>, por <b>API-SSL</b>
-(8729) a traves del tunel de su punto.</p>
-
-<h3>1) La API del router y su usuario</h3>
-<p>Los comandos de la ficha del punto (bloque VPN) ya dejan la <b>API-SSL</b> con el certificado
-<code>ids-promax</code> y el usuario <code>ids-api</code>, que solo puede entrar desde el sensor y por el
-tunel. La API no se abre a internet ni a tu LAN.</p>
-
-<h3>2) La clave del usuario API</h3>
-<p>La eliges tu (<code>&lt;CLAVE-API&gt;</code> en los comandos) y la pones en la ficha del punto
-(apartado <b>API</b>). Se guarda cifrada con la clave
-maestra del servidor y no se vuelve a mostrar.</p>
-
-<h3>3) La regla que DECIDE que hacer con la lista (tu la defines)</h3>
-<p>Ejemplo: cortar el trafico saliente de los CPE en cuarentena (misma sintaxis en v6 y v7):</p>
-<pre><code>/ip firewall filter add chain=forward src-address-list=suricata-cuarentena action=drop comment="Suricata: CPE en cuarentena"</code></pre>
-<p>Alternativas segun tu politica: en vez de <code>action=drop</code> puedes redirigir a un portal,
-marcar en <code>mangle</code> para limitar velocidad, o registrar. La <b>address-list</b> por defecto
-es <code>suricata-cuarentena</code> (cambiala en Ajustes si usas otro nombre). Las entradas entran
-<b>sin caducidad</b> y el panel las <b>saca solo cuando el abonado deja de enviar virus</b>; también
-puedes quitarlas a mano con el botón <b>Quitar</b> de la pestaña.</p>
-
-<h3>4) Configurar y probar en el panel</h3>
-<ol>
-<li><b>Puntos &rarr; ficha del punto &rarr; API</b>: usuario, clave y <b>Permitir enviar</b>. Lo comun a
-todos los nodos (nombres de las address-list, acciones, caducidad y politicas) esta en Ajustes &rarr; MikroTik,
-que ademas resume la conexion de cada nodo.</li>
-<li>Pulsa <b>Probar conexion</b>: si conecta, muestra el nombre (identity) del router. La primera vez
-se fija la huella de su certificado; si un dia cambia, la conexion se rechaza hasta que lo revises.</li>
-<li>En <b>Cuarentena</b>, cada CPE infectado confirmado muestra <b>Enviar a cuarentena</b>
-(lo agrega a la lista de <b>su</b> nodo) y luego <b>Quitar</b> (lo saca). Todo queda en el registro de
-cuarentena del panel y en el <b>Registro</b>.</li>
-</ol>
-<p>En la tabla <b>Enviados manualmente</b> puedes <b>ordenar por cualquier columna</b>: haz
-clic en la cabecera (CPE, Lista, Por, Enviado, Ultima revision&hellip;) para ordenar de forma
-<b>ascendente</b>, y otra vez para <b>descendente</b>. Las columnas de fecha ordenan por
-tiempo real, no por texto. El orden que elijas <b>se conserva</b> al pulsar <b>Quitar</b> o
-al recargarse la pagina, y esta <b>vuelve a la altura donde estabas</b> en vez de saltar
-arriba del todo (tambien en el refresco automatico de cada 5 min).</p>
-<p><b>Quitar varias a la vez:</b> cada fila tiene una <b>casilla</b> (y la cabecera una para
-<b>seleccionar todas</b>). Al marcar alguna se activa <b>Quitar seleccionados (N)</b>, que abre
-una <b>ventana de confirmacion</b> con la lista de IPs antes de tocar nada; las de la lista de
-DNS salen marcadas como tal. Puedes mezclar IPs de <b>ambas listas</b>: cada una se saca de la
-suya, en el MikroTik de su nodo. Es reversible (puedes volver a enviarlas) y queda todo en el
-Registro. Si el router falla con alguna, se te dice
-<b>cual y por que</b>, y esa IP <b>se queda</b> en el registro para reintentarla.</p>
-<p>Las IPs se sacan <b>una por una y se ve el avance</b> (barra + cada IP marcada &#10003; o
-&#10007; segun sale), porque cada una es una llamada al MikroTik y en bloque la pantalla se
-quedaba parada sin decir nada. Si una falla <b>no se detiene el resto</b>. Mientras corre, la
-ventana no se cierra, para no perder de vista el avance.</p>
-<p><b>Seguridad:</b> el usuario <code>ids-api</code> solo entra desde el sensor por el tunel, la
-conexion es <b>API-SSL</b> extremo a extremo con la huella fijada, y el destino de cada accion es siempre
-el nodo de la IP (<code>punto|IP</code>), nunca el que tengas elegido en el selector. Si dejas el envio
-<b>deshabilitado</b>, la pestana Cuarentena solo <b>sugiere</b> (no toca ese router).</p>
-
-<h3>5) Estados de la pestana Cuarentena</h3>
-<p>El aviso de arriba de la pestana cambia de color segun el estado:</p>
-<ul>
-<li><b style="color:#1a7f37">Verde &mdash; MikroTik habilitado</b>: marcaste <b>Permitir enviar</b> y la conexion
-(usuario y clave del nodo) esta completa. Aparecen los botones <b>Enviar a cuarentena</b> por CPE y
-<b>Enviar todos</b>.</li>
-<li><b style="color:#b52a2a">Rojo &mdash; Falta configurar la conexion</b>: marcaste <b>Permitir enviar</b>
-pero todavia falta el usuario o la clave (o no conecta). Completa la API del punto y pulsa
-<b>Probar conexion</b>. Mientras tanto no se envia nada.</li>
-<li><b>Gris &mdash; Modo sugerencia (dry-run)</b>: el permiso esta apagado. Solo se listan candidatos;
-el panel no toca el router.</li>
-</ul>
-<p><b>Enviar todos:</b> con el estado en verde, el boton <b>Enviar todos (N)</b> manda de una a la
-address-list todos los CPE de la lista que aun no esten en cuarentena (tope de 50 por accion; si el
-router deja de responder, se detiene y avisa). En «Todos» se reparte <b>por nodo</b> y el resultado
-se da por nodo: un router caido no frena a los demas. Cada IP queda <b>sin caducidad</b> hasta que el
-abonado deja de enviar virus, y se puede sacar antes con <b>Quitar</b>. Toda acción queda en el Registro.</p>
-
-<h2>Salud de cada punto (por etapas)</h2>
-<p>La salud se mide <b>por punto y por etapas</b>, porque cada una falla por su lado. La ven todos los
-usuarios en el selector de nodo, y con detalle en <b>Puntos</b>:</p>
-<ul>
-<li><b>VPN conectada</b>: el MikroTik tiene el tunel arriba.</li>
-<li><b>TZSP recibido</b>: llega el espejo al receptor del punto.</li>
-<li><b>Trafico procesado</b>: Suricata cuenta paquetes capturados y sus <b>descartes</b>.</li>
-<li><b>Eventos actualizados</b>: el registro de eventos del punto se esta escribiendo.</li>
-<li><b>Datos consultables</b>: el panel puede leerlos (reporte, eventos, historico).</li>
-</ul>
-<p>Estados: <b>operativa</b>, <b>degradada</b>, <b>sin datos</b>, <b>desconectada</b>,
-<b>deshabilitada</b> y <b>desconocido</b>. Una VPN arriba, un contenedor en marcha o cero alertas
-<b>no</b> son «sano» por si solos. La captura es reducida (los primeros 10 KB de cada conexion de los
-prefijos elegidos) y se muestra como tal. Lo publican el orquestador (cada 15 s) y el receptor TZSP de
-cada punto.</p>
-
-<h2>Por que un CPE es candidato: confianza y evidencia</h2>
-<p>Una coincidencia en una lista o varias alertas repetidas <b>no bastan</b> para confirmar una
-infeccion. Cada candidato lleva un <b>nivel de confianza</b>:</p>
-<ul>
-<li><b>Confirmado</b>: hay <b>&ge;2 pruebas independientes</b> (firmas CnC distintas, reputacion
-del destino, persistencia, campana, DNS). La insignia dice <b>cuantas</b>, porque lo que decide
-no es el volumen de alertas sino cuantas cosas DISTINTAS apuntan al mismo abonado: una firma
-ruidosa que dispara mil veces sigue siendo una sola prueba. Es lo que manda el boton
-"Enviar confirmados".</li>
-<li><b>Sin confirmar</b>: una sola pista, o solo repeticion &rarr; vigilar, no aislar todavia.</li>
-</ul>
-<p>El boton <b>Ver evidencia</b> abre la <b>ficha del CPE</b>, que muestra: el <b>cliente/abonado</b>
-(nombre PPPoE/DHCP tomado del MikroTik), la <b>actividad</b> (a que destinos hablo), las <b>alertas</b>
-con su SID/firma/fecha/flow_id, las <b>coincidencias de reputacion</b> con su fuente/CIDR y su
-<b>vigencia</b> (si el feed sigue vigente o caduco), la <b>corroboracion</b> independiente y la
-<b>decision</b>. Si el destino no tiene DNS inverso, se muestra el <b>operador de red</b> del bloque
-(via RDAP) en vez de "sin PTR". El dueño de cada IP se consulta <b>solo cuando hace falta</b>: al
-abrir <b>Top origenes</b>, la pagina pide las que faltan (salen como <b>&hellip;</b> unos segundos) y
-quedan guardadas 7 dias. Generar el resumen no consulta nada, asi que cambiar la ventana no
-espera por esto.</p>
-<p><b>Quien tenia la IP en el momento del evento:</b> el panel guarda un historico de asignaciones
-(PPPoE/DHCP). Si la IP cambio de dueño entre el ataque y ahora, la ficha lo avisa &mdash; asi no se
-culpa al cliente que hoy tiene esa IP por lo que hizo otro antes.</p>
-
-<h2>Puntos: un MikroTik, su VPN y su Suricata</h2>
-<p>Cada MikroTik es un <b>punto</b>, con identidad fija (<code>p001</code>, <code>p002</code>...) y su
-propia VPN y su propio Suricata en contenedores que crea el orquestador. Un punto que falla o se reinicia
-no afecta a los demas, y sus datos van aparte.</p>
-<ul>
-<li><b>Rangos repetidos.</b> Es normal que cada nodo use <code>10.0.0.x</code>. La identidad de un CPE es
-el par <b>(punto, IP)</b>: el <code>10.0.0.5</code> de un nodo y el del otro son dos abonados, con sus
-alertas, su riesgo y su ficha.</li>
-<li><b>A que router bloquear.</b> Cada accion va al MikroTik <b>del nodo de esa IP</b> (lo dice la propia
-fila), nunca al que tengas elegido en el selector. En «Todos» las acciones masivas se reparten por nodo.</li>
-<li>Cada línea del Registro dice en qué nodo se actuó.</li>
-</ul>
-<h3>Alta</h3>
-<ol>
-<li><b>Puntos &rarr; Agregar punto</b>: nombre, <b>prefijos de abonados</b> que se espejan, version de
-RouterOS (6.49+ o 7) y perfil (reducido por defecto). Un doble clic no crea dos puntos.</li>
-<li>El servidor crea la VPN y el Suricata del punto; se ve el avance paso a paso.</li>
-<li>Al terminar se muestran <b>una sola vez</b> el usuario y la clave de la VPN y los comandos para el
-MikroTik (v7 y v6) con la clave puesta. Si la pierdes, en la ficha esta <b>Regenerar la clave VPN</b>.</li>
-<li>En la ficha: la clave de la <b>API</b>, <b>Probar conexion</b> y luego <b>Espejo &rarr; Ver el plan
-&rarr; Aplicar</b>.</li>
-</ol>
-<h3>La ficha del punto</h3>
-<p>Resumen (estado, salud por etapas, espejo, Suricata, alertas de 24 h y <b>retencion efectiva</b>),
-VPN (comandos sin la clave), API (usuario, clave, probar, huella), Espejo (plan, aplicar, pausar,
-retirar), Prefijos, Logs de la VPN y del Suricata, arrancar, parar, reiniciar y la baja.</p>
-<h3>Retencion</h3>
-<p>El objetivo es guardar <b>30 dias</b> de eventos de cada punto. Se poda por fecha (lo que tiene mas
-de 30 dias). Si el disco del servidor baja del 15 % libre, se borran antes los rotados mas viejos y
-queda registrado: por eso Puntos y Eventos dicen la <b>retencion efectiva</b> (desde que fecha hay
-eventos de verdad) y nunca prometen 30 dias si hubo borrado anticipado.</p>
-<h3>Baja</h3>
-<p>En la ficha, escribiendo el nombre del punto. Se borra todo el punto en el servidor (VPN, Suricata y
-eventos) y en el panel (sus reportes, su conexion y sus registros); queda una línea en el Registro. Los
-identificadores no se reutilizan. En el MikroTik quedan lo que lleva el comentario
-<code>IDS ids-maat:&lt;punto&gt;</code> (el alta) o <code>IDS ids-maat:&lt;punto&gt;:espejo</code> (el espejo), la
-interfaz <code>ids-vpn</code> y el usuario <code>ids-api</code> (el <code>comment~</code> de abajo encuentra los dos):</p>
-<pre><code>/ip firewall mangle remove [find comment~"ids-maat:p003"]
-/ip firewall filter remove [find comment~"ids-maat:p003"]
-/ip firewall address-list remove [find comment~"ids-maat:p003"]
-/ip route remove [find comment~"ids-maat:p003"]
-/interface ovpn-client remove [find name=ids-vpn]
-/user remove [find name=ids-api]
-/user group remove [find name=ids-api]</code></pre>
-<p>Y devolver a la regla fasttrack sus valores originales (si se retiro el espejo desde el panel antes de
-la baja, ya esta hecho).</p>
-<h3>Limites que conviene tener claros</h3>
-<ul>
-<li><b>La capacidad es del servidor.</b> Cada punto reserva su memoria; <b>Puntos</b> dice cuantos caben
-todavia.</li>
-<li><b>El espejo va por el tunel</b> y por UDP: con perdida el IDS ve trafico incompleto. La salud por
-etapas lo enseña (descartes, TZSP).</li>
-<li><b>Dar de baja un punto limpia antes su MikroTik</b>: retira el espejo (el fasttrack vuelve a como
-estaba) y saca de sus address-lists los CPEs en cuarentena y los destinos bloqueados. Si el router no
-responde, la baja no sigue; si ese router ya no existe, se desmarca la casilla y lo del router se quita a
-mano. Las reglas de accion por categoria (comentario <code>Suricata:</code>) se quedan: sin nadie en las
-listas no cortan nada.</li>
-</ul>
-
-<h2>Ataques entrantes desde internet (y por que van aparte)</h2>
-<p>Suricata ve las <b>dos direcciones</b>: tus CPEs atacando hacia afuera y hosts de internet
-atacando hacia adentro. Este panel existe para lo primero, asi que <b>solo los origenes de tus
-redes</b> pueden ser candidatos a cuarentena, entrar al ranking de riesgo o ser enviados al
-MikroTik. Lo de fuera aparece en <b>Top &rarr; Ataques entrantes desde internet</b>.</p>
-<p><b>Por que importa:</b> ET Open trae firmas que disparan sobre trafico <b>entrante</b> (por
-ejemplo <code>ET COMPROMISED Known Compromised or Hostile Host Traffic</code>), y la palabra
-"compromised" cuenta aqui como infeccion. Sin este filtro, un escaner de internet insistente
-podia aparecer como "CPE infectado" y, con <b>politicas automaticas</b> activadas, acabar en la
-address-list de cuarentena: no bloquea nada util y ensucia la lista.</p>
-<p><b>Que hacer con un ataque entrante:</b> no va a la cuarentena de CPEs (esa lista es de
-abonados). Se corta en el <b>firewall de borde</b>, o mejor: se <b>cierra la exposicion</b> del
-equipo atacado. Si algo tuyo recibe escaneo constante desde internet, casi siempre es que tiene
-un puerto publicado que no hacia falta.</p>
-<p><b>Si das IP publica a tus clientes</b>, dilo con <code>MIS_REDES=203.0.113.0/24,10.0.0.0/8</code>
-en la configuracion del panel (<code>/srv/ids/panel/conf/panel.conf</code>); por defecto son las privadas
-(<code>10/8</code>, <code>172.16/12</code>, <code>192.168/16</code>) mas CGNAT
-(<code>100.64/10</code>). Ojo: lo que pongas <b>reemplaza</b> el valor por defecto.</p>
-
-<h2>Cuarentena automatica (politicas por clase de abuso)</h2>
-<p>Ademas de enviar a mano, el panel puede actuar solo. En <b>Ajustes &rarr; MikroTik</b>, con
-<b>Aplicar politicas automaticamente</b> activado, defines que hacer con cada <b>clase</b> de CPE
-(Botnet/CnC, DNS de malware, Escaneo, Fuerza bruta, Spam, Criptominado, P2P, Otros). La clase
-sale de lo que el CPE hace de verdad (la mas grave que casa), y el destino es siempre la
-address-list de <b>esa</b> clase.</p>
-<table><tr><th>Politica de la clase</th><th>Que pasa</th></tr>
-<tr><td><b>Nada</b></td><td>solo se muestra.</td></tr>
-<tr><td><b>Solo notificar</b></td><td>una línea en el Registro, con dedupe de 6&nbsp;h por CPE.</td></tr>
-<tr><td><b>Cuarentena si ALTO</b> / <b>si MEDIO o ALTO</b> / <b>siempre</b></td>
-<td>a la lista de la clase en cuanto el riesgo alcanza ese nivel (o en cuanto aparece en el Top).</td></tr></table>
-<p>Por que por clase y no por banda: el riesgo mide <i>cuanto</i>, no <i>que</i>. Un torrent da
-ALTO sin ser una infeccion; una botnet confirmada no necesita esperar a puntuar alto. Las cajas
-que ya tenian politica por banda la heredan tal cual en todas las clases (ALTO&rarr;cuarentena
-pasa a "si ALTO" en todas, P2P incluido) hasta que se toque el formulario: nada cambia solo.</p>
-<p>Las politicas se aplican junto con el resumen (cada 5&nbsp;min) y <b>liberan solas</b> a los CPEs
-que dejan de calificar, de la lista en la que estan (aunque la clase o el nombre hayan cambiado
-despues). Ademas:</p>
-<p><b>Por que se bloqueo cada uno:</b> las politicas eligen por <b>banda de riesgo</b>, no por
-infeccion confirmada, asi que el motivo guardado es el <b>desglose del puntaje</b> (severidad,
-destinos unicos, puertos unicos, persistencia, correlacion de flota y reputacion) junto con la
-banda y los conteos. La columna <b>Motivo</b> lo muestra tal cual, y la columna <b>Por</b> dice
-<code>politica</code> o <code>politica-rapida</code> segun quien lo envio.</p>
-<ul>
-<li><b>Barrido rapido (~60&nbsp;s):</b> si la clase <b>Botnet / CnC</b> corta en algun nivel, un chequeo
-ligero cada minuto envia <b>ya</b> a los CPEs con <b>infeccion confirmada</b> (firmas CnC repetidas o
-contacto con un C2 fichado), sin esperar los 5&nbsp;min. Es conservador (solo infeccion confirmada), respeta allowlist, destinos de confianza y
-exclusiones, con <b>anti-rebote de 60&nbsp;s</b> por CPE. MEDIO/BAJO siguen en el ciclo de 5&nbsp;min.</li>
-<li><b>Sin caducidad:</b> las IPs de abonados entran sin TTL y el panel las libera cuando el CPE deja de
-atacar (ya no sale como infectado). No es una opción: con un TTL la IP salía a la hora aunque el abonado
-siguiera infectado. Las que estaban con TTL de antes pasan a permanentes en la siguiente vuelta. Una IP
-enviada a mano sin detección sale cuando ya no tiene ninguna alerta como origen; en riesgo bajo todavía se
-queda.</li>
-</ul>
-
-<h2>Acciones por categoria: lo que el router hace con cada lista</h2>
-<p>Meter un CPE en una address-list no hace nada si ninguna regla la usa. En <b>Ajustes &rarr;
-MikroTik</b>, bajo cada lista, eliges la <b>accion</b> que el router aplica a esa clase y el panel
-<b>pone las reglas por la API</b>:</p>
-<table><tr><th>Accion</th><th>Que pone</th></tr>
-<tr><td><b>Cortar todo</b></td><td>un <code>drop</code> en <code>raw prerouting</code> por la lista.</td></tr>
-<tr><td><b>Solo navegacion</b></td><td>una cadena propia que deja pasar DNS (53) y 80/443 y corta lo demas,
-con un <code>jump</code> desde <code>prerouting</code>. Util con portal cautivo; ojo: una botnet que hable
-por 443 sigue hablando.</td></tr>
-<tr><td><b>Sin correo saliente</b></td><td>corta 25/465/587/2525 (spam) y nada mas.</td></tr>
-<tr><td><b>DNS protegido</b></td><td>la del ISP: el 53 (udp y tcp) a un resolutor que filtra (Quad9
-9.9.9.9 por defecto, o la IP que pongas), corte de DNS cifrado y puertos alternativos (853, 8853, 9953 y
-784 en udp) y tope de 50 consultas/s por cliente con rafaga de 100.</td></tr>
-<tr><td><b>Frenar escaneo</b></td><td>la del ISP: tope de 30 SYN nuevos por segundo por cliente (rafaga
-60); lo que pase de ahi se descarta. El cliente sigue navegando.</td></tr>
-<tr><td><b>Redirigir DNS</b></td><td>fuerza el 53 a tu resolutor (dst-nat a la IP que pongas; vacio =
-<code>redirect</code> al propio router, que entonces debe resolver).</td></tr>
-<tr><td><b>Limitar</b></td><td>marca de conexion + marca de paquete + cola (<code>queue tree</code>) con el
-limite que pongas (p.ej. <code>2M</code> o <code>2M/2M</code>). Sin limite no se aplica.</td></tr>
-<tr><td><b>Mis reglas</b></td><td>pegas tu bloque de RouterOS tal cual (tablas <code>raw</code>, <code>nat</code>,
-<code>filter</code>, <code>mangle</code>, <code>queue tree</code>). Escribe <code>{{LISTA}}</code> donde vaya la
-address-list de la clase; el <code>comment</code> lo pone el panel y <code>place-before=0</code> significa
-"la primera de su cadena". Tambien vale <code>place-before=[find where comment="X"]</code>: va delante de
-esa regla y, si en ese router no existe, la vista previa lo avisa y va la primera. Varias reglas "arriba"
-conservan su orden; las que no dicen posicion van al final, como en la consola. Un bloque que no parsea
-no se guarda y se dice en que linea.</td></tr></table>
-<h3>Verificador de reglas</h3>
-<p>RouterOS acepta sin quejarse reglas que hacen algo que no querias: una regla en <code>prerouting</code>
-sin la address-list corta a <b>toda</b> la red; <code>port=</code> casa origen o destino y tambien corta las
-respuestas; un jump a una cadena vacia no hace nada. El verificador lo revisa en cuatro momentos: al
-pulsar <i>Verificar mis reglas</i> (sin guardar ni aplicar), al <b>guardar</b>, en la <b>vista previa</b> y
-<b>despues de aplicar</b>.</p>
-<ul>
-<li><b>Errores</b> (no se guarda ni se aplica): accion que no existe en esa tabla, jump sin destino o a una
-cadena del sistema, puerto sin <code>protocol=tcp/udp</code>, NAT en la cadena equivocada, una regla que
-nunca se evalua porque otra corta todo antes, un drop sin ningun criterio en una cadena del sistema, y una
-<code>interface-list</code> que no existe en el router.</li>
-<li><b>Avisos</b> (se guarda, pero se dice): regla que no mira la lista de la categoria (afecta a todo el
-trafico) o que mira otra lista, <code>port=</code> en vez de <code>dst-port=</code>, comentario que dice
-"acepta" en una regla que descarta (o al reves), cadena propia a la que no salta nadie, jump a una cadena
-que no existe ni en el bloque ni en el router, address-list vacia en el router, cola con una marca que
-nadie pone.</li>
-<li><b>Tras aplicar</b> se relee el router: si no guarda exactamente lo que se mando (valores que RouterOS
-normaliza), se dice que campo y como, y queda en el Registro; si coincide, "Verificado".</li>
-</ul>
-<p>Las plantillas de DNS y escaneo llevan <code>in-interface-list=!WAN</code>: el nombre de esa
-interface-list se pone en Ajustes (vacio = sin esa condicion) y tiene que existir en el router.</p>
-<p><b>Como se aplica.</b> Guarda primero. <i>Ver / aplicar en el router</i> ensena las lineas exactas que se
-van a crear, corregir o quitar en ese router; solo si confirmas se toca. Antes del primer cambio se
-<b>respalda</b> el firewall (raw, nat, filter, mangle y queue tree) en <code>/srv/ids/panel/respaldos/</code>; si
-el respaldo falla, no se toca nada. Cada regla del panel lleva <code>comment="Suricata:&lt;clase&gt;:&lt;n&gt;"</code>
-y la reconciliacion es <b>idempotente</b> (aplicar dos veces no cambia nada) y <b>acotada</b>: jamas toca una
-regla que no lleve ese comentario. Junto a los botones, una etiqueta dice como esta cada clase en el router:
-<b style="color:#1a7f37">&#10003; Reglas aplicadas</b> (el router ya tiene exactamente lo que toca),
-<b style="color:#a15c12">N cambio(s) sin aplicar</b>, o <i>Sin guardar</i> si cambiaste la accion y aun no la
-guardaste; se comprueba al abrir el apartado, al cambiar de router y despues de aplicar o quitar.
-Debajo de las listas, <b>Recargar las listas en el router</b> vuelve a cargar las IPs que el panel tiene
-en cuarentena y que faltan en su address-list (alguien la vacio, se restauro un respaldo viejo); las que ya
-estan se omiten y no se quita nada. El panel compara cada IP con <b>su</b> lista cada pocos minutos: si una
-entrada permanente falta en el router, no la olvida, la marca <i>falta en el router</i> para poder recargarla
-(una con TTL que ya no esta se da por caducada).
-<i>Quitar del router</i> elimina solo las del panel para esa clase; la
-lista y sus IPs se quedan.</p>
-<p><b>Por que en raw prerouting.</b> Se evalua antes del fasttrack y de conntrack: corta aunque la conexion
-ya este establecida y sin depender del orden del <code>filter</code>. Las acciones de NAT y de colas van en su
-tabla. Meter un CPE en la lista <b>no</b> cierra lo que ya tiene abierto: para eso
-<code>/ip firewall connection remove [find src-address~"^IP:"]</code>.</p>
-<p>El <b>diagnostico</b> del router (segundo plano) dice por clase si la accion configurada esta aplicada o
-cuantos cambios le faltan, ademas de si alguna lista con CPEs dentro no la usa ninguna regla.</p>
-
-<h2>Falsos positivos: excluir un destino y liberar en cadena</h2>
-<p>Si una IP <b>destino</b> (p.ej. un DNS publico) dispara falsos positivos en muchos CPEs, en la
-pestana Cuarentena esta <b>Excluir destino (falso positivo)</b>: marca esa IP como <b>confiable</b>,
-sus alertas dejan de contar y se <b>liberan automaticamente</b> todos los CPEs que fueron a la lista
-por su culpa. Los destinos confiables se guardan en la configuracion del panel
-(<code>/srv/ids/panel/conf/</code>).</p>
-
-<h2>Resolutores DNS: el DNS no es la victima</h2>
-<p>Cuando un CPE pregunta por un dominio de malware, la alerta lleva como <b>destino</b> la IP del
-DNS al que pregunto (1.1.1.2, 8.8.8.8, el de tu ISP...). Sin mas, el panel contaria eso como un
-ataque <i>al DNS</i> y el resolutor subiria a <b>Top destinos mas atacados</b>. No lo es: la prueba
-es el <b>dominio</b>, y la culpa, del CPE. En <b>Ajustes &rarr; DNS</b> esta la lista de resolutores
-conocidos (en la configuracion del panel; de serie los publicos). Para una IP de esa
-lista, lo que va al <b>puerto 53</b> o lleva firma de DNS se cuenta como <b>consulta a traves de el</b>:
-sale aparte en Top destinos ("resolutores usados para consultar dominios maliciosos", con cuantos
-CPEs lo hacen), la ficha del CPE dice <i>consulta DNS maliciosa: tal dominio, via tal resolutor</i>,
-y el CPE <b>conserva todas sus alertas</b>. Es distinto de <i>excluir destino</i>: aquello deja de
-contar la alerta para todos; esto solo quita la victima falsa. Si a ese mismo DNS le pegan por otro
-puerto, eso <b>si</b> es un ataque y sigue saliendo como tal.</p>
-
-<h2>Allowlist "nunca bloquear"</h2>
-<p>En <b>Ajustes &rarr; MikroTik</b>, campo <b>Nunca bloquear</b> (solo administrador), puedes definir
-IPs/CIDR que <b>jamas</b> van a cuarentena (tu infraestructura, clientes criticos), aunque disparen
-alertas: una IP o CIDR por línea. Valen para <b>todos los nodos</b>; con el punto delante
-(<code>p001|192.0.2.10</code>) valen <b>solo en ese punto</b>, porque la misma IP privada puede ser otro
-abonado en otro nodo. Se guardan en la configuracion del panel (<code>/srv/ids/panel/conf/</code>) y las
-respetan las politicas, el barrido rapido y el envío a mano.</p>
-
-<h2>Reputacion / feeds (abuse.ch y AbuseIPDB)</h2>
-<p>El panel enriquece los destinos con <b>feeds de reputacion</b> (IPs/CIDR y dominios maliciosos)
-con su <b>procedencia</b> y <b>caducidad</b>. Feodo, CINS, Spamhaus, ET compromised y la lista de
-salidas Tor no necesitan clave; abuse.ch (URLhaus/ThreatFox) y AbuseIPDB, sí.</p>
-<h3>Las claves: un bloque por servicio</h3>
-<p><b>Ajustes &rarr; Reputación</b> (solo administrador) tiene un bloque para cada servicio:
-<b>abuse.ch</b>, <b>AbuseIPDB</b>, <b>Groq</b> y <b>Telegram</b>. Cada bloque dice:</p>
-<ul>
-<li><b>Para qué sirve</b> ese servicio en el panel.</li>
-<li><b>Cómo sacar la clave</b>, paso a paso, con botones &#8599; que abren la página exacta del servicio
-en otra pestaña (crear la cuenta, la página de claves...).</li>
-<li>Una <b>etiqueta de estado</b> arriba a la derecha: <i>sin configurar</i>, <i>válida &middot; comprobada
-14/10 09:30</i> o <i>rechazada</i>, según la <b>última comprobación</b> de la clave guardada.</li>
-</ul>
-<p>Botones de cada bloque:</p>
-<ul>
-<li><b>Guardar</b>: antes de guardar, <b>pregunta al servicio</b> si la clave vale; una clave inválida
-se rechaza. Se guarda <b>cifrada</b> con la clave maestra del servidor y <b>no se vuelve a mostrar</b>
-(el campo queda vacío: dejarlo vacío conserva la guardada).</li>
-<li><b>Comprobar</b>: prueba la clave <b>sin guardar nada</b>. Con algo pegado prueba esa; con el campo
-vacío, la guardada. Sirve para saber si una clave que ya estaba sigue viva.</li>
-<li>Para <b>quitar</b> una clave, escribe <code>BORRAR</code> en su campo y guarda.</li>
-</ul>
-<h3>El estado de los feeds</h3>
-<p>Debajo de los bloques, la tabla de fuentes: <b>Fuente</b>, <b>Estado</b> (<code>valido</code>,
-<code>vacio</code>, <code>error</code>, <code>sin-clave</code> o <code>caducado</code>), si está
-<b>Vigente</b> (sí/no), cuántos <b>Indicadores</b> trae, la <b>Última válida</b> (última descarga
-buena) y cuándo <b>Caduca</b>. Si a una fuente de abuse.ch o AbuseIPDB le falta la clave o falla, al lado
-del estado sale <b>Configurar</b>, que lleva a su bloque.</p>
-<p>El actualizador corre solo; encima de la tabla dice su <b>última corrida</b>. <b>Actualizar feeds
-ahora</b> lo lanza al momento en segundo plano y la tabla se va refrescando sola, <b>sin recargar la
-página</b>, hasta que termina (si ya había una corrida en marcha, no lanza otra).</p>
-<p><b>Fuentes y que pesa cada una.</b> <code>feodo</code> (C2 activos) y <code>threatfox-c2</code>
-(C2 por IP <b>y puerto</b>, via la API de ThreatFox con la misma Auth-Key) son prueba de infeccion:
-basta un contacto, y si el CPE hablo <b>por el puerto del C2</b> la ficha lo dice.
-<code>spamhaus-drop</code> es infraestructura delictiva. <code>cins</code>, <code>et-compromised</code>
-y <code>abuseipdb</code> son atacantes observados: una IP que ataca puede alojar ademas algo legitimo,
-asi que se exige insistencia. <code>tor-exit</code> es <b>contexto</b>: un abonado que habla con una
-salida Tor no esta infectado por eso (hay quien lo usa a proposito); se ensena en el destino pero
-<b>no suma al riesgo</b>, no es evidencia y no se propone cortar. La lista de IPs de SSLBL no esta
-porque abuse.ch la dejo vacia en enero de 2025 (y sus JA3 no se actualizan desde 2021).</p>
-<h3>Analisis con IA (Groq)</h3>
-<p>En la misma tarjeta de Ajustes se pega la <b>clave de Groq</b>. Sirve para que el panel
-<b>explique la evidencia en lenguaje llano</b> &mdash; estos informes los lee gente que no es de
-redes &mdash; y para senalar <b>falsos positivos conocidos</b>. <b>La IA no corta a nadie</b>: lee y
-recomienda; el corte lo sigue decidiendo una persona o la politica con sus umbrales medibles.</p>
-<p>La clave se guarda igual que las demas: <b>solo-escritura</b> y cifrada con la clave maestra
-del servidor, y no se vuelve a mostrar. Al guardarla se <b>valida contra Groq</b>, y de paso se trae
-<b>la lista de modelos que tiene tu cuenta</b>: el modelo se elige de ahi en vez de escribirlo a mano.
-Esto no es un capricho &mdash; Groq retira modelos cada cierto tiempo, y un nombre que ya no existe
-no falla al guardarlo sino en la primera consulta, lejos de donde se configuro. Si el modelo elegido
-desaparece de la cuenta, el panel lo deja en blanco y hay que volver a elegir.</p>
-<p><b>Que se le manda y que no.</b> Solo la evidencia tecnica: nombres de firma, dominios consultados,
-puertos, recuentos y categorias. <b>Nunca</b> la IP del abonado, su nombre ni la identidad del router.
-La IA no necesita saber <b>quien</b> es para decir <b>que</b> es, y esos datos saldrian de tu red.</p>
-<p>La fuente <code>abuseipdb</code> es la <b>lista masiva</b> de atacantes denunciados por la comunidad:
-se baja como mucho <b>cada 6 horas</b> (el plan gratuito permite 5 descargas al dia) y trae hasta
-10.000 IPs de <b>confianza 100&nbsp;%</b> &mdash; acotar ese umbral es de pago. Si un dia se agota la
-cuota, se conserva la lista anterior en vez de dar la fuente por rota.</p>
 
 <h2>Consultar IP o red: que ataques se le denuncian</h2>
 <p>La pestana <b>Consultar IP</b> responde algo que los feeds no responden: no solo <i>si</i> una IP
@@ -13017,6 +12434,581 @@ como <i>SSH</i> y <i>Escaneo de puertos</i>, no como fuerza bruta.</li>
 categorias.</li>
 </ul>
 
+<h2>Por que un CPE es candidato: confianza y evidencia</h2>
+<p>Una coincidencia en una lista o varias alertas repetidas <b>no bastan</b> para confirmar una
+infeccion. Cada candidato lleva un <b>nivel de confianza</b>:</p>
+<ul>
+<li><b>Confirmado</b>: hay <b>&ge;2 pruebas independientes</b> (firmas CnC distintas, reputacion
+del destino, persistencia, campana, DNS). La insignia dice <b>cuantas</b>, porque lo que decide
+no es el volumen de alertas sino cuantas cosas DISTINTAS apuntan al mismo abonado: una firma
+ruidosa que dispara mil veces sigue siendo una sola prueba. Es lo que manda el boton
+"Enviar confirmados".</li>
+<li><b>Sin confirmar</b>: una sola pista, o solo repeticion &rarr; vigilar, no aislar todavia.</li>
+</ul>
+<p>El boton <b>Ver evidencia</b> abre la <b>ficha del CPE</b>, que muestra: el <b>cliente/abonado</b>
+(nombre PPPoE/DHCP tomado del MikroTik), la <b>actividad</b> (a que destinos hablo), las <b>alertas</b>
+con su SID/firma/fecha/flow_id, las <b>coincidencias de reputacion</b> con su fuente/CIDR y su
+<b>vigencia</b> (si el feed sigue vigente o caduco), la <b>corroboracion</b> independiente y la
+<b>decision</b>. Si el destino no tiene DNS inverso, se muestra el <b>operador de red</b> del bloque
+(via RDAP) en vez de "sin PTR". El dueño de cada IP se consulta <b>solo cuando hace falta</b>: al
+abrir <b>Top origenes</b>, la pagina pide las que faltan (salen como <b>&hellip;</b> unos segundos) y
+quedan guardadas 7 dias. Generar el resumen no consulta nada, asi que cambiar la ventana no
+espera por esto.</p>
+<p><b>Quien tenia la IP en el momento del evento:</b> el panel guarda un historico de asignaciones
+(PPPoE/DHCP). Si la IP cambio de dueño entre el ataque y ahora, la ficha lo avisa &mdash; asi no se
+culpa al cliente que hoy tiene esa IP por lo que hizo otro antes.</p>
+
+<h2>Ataques entrantes desde internet</h2>
+<h3>Que es</h3>
+<p>Suricata ve las <b>dos direcciones</b>: tus CPEs atacando hacia afuera y hosts de internet
+atacando hacia adentro. Este panel existe para lo primero, asi que <b>solo los origenes de tus
+redes</b> pueden ser candidatos a cuarentena, entrar al ranking de riesgo o ser enviados al
+MikroTik. Lo de fuera aparece en <b>Top &rarr; Ataques entrantes desde internet</b>.</p>
+<p>Es la otra mitad del problema, y la cadena importa: <b>el atacante de fuera es el que infecta al
+CPE, y el CPE infectado es el que ensucia tus publicas</b>. Cortar la entrada no limpia lo que ya
+esta infectado &mdash;para eso esta la cuarentena&mdash; pero corta las <b>infecciones nuevas</b>,
+que es lo unico que hace que el numero baje y se quede abajo.</p>
+<h3>Por que va aparte</h3>
+<p><b>Por que importa:</b> ET Open trae firmas que disparan sobre trafico <b>entrante</b> (por
+ejemplo <code>ET COMPROMISED Known Compromised or Hostile Host Traffic</code>), y la palabra
+"compromised" cuenta aqui como infeccion. Sin este filtro, un escaner de internet insistente
+podia aparecer como "CPE infectado" y, con <b>politicas automaticas</b> activadas, acabar en la
+address-list de cuarentena: no bloquea nada util y ensucia la lista.</p>
+<p><b>Si das IP publica a tus clientes</b>, dilo con <code>MIS_REDES=203.0.113.0/24,10.0.0.0/8</code>
+en la configuracion del panel (<code>/srv/ids/panel/conf/panel.conf</code>); por defecto son las privadas
+(<code>10/8</code>, <code>172.16/12</code>, <code>192.168/16</code>) mas CGNAT
+(<code>100.64/10</code>). Ojo: lo que pongas <b>reemplaza</b> el valor por defecto.</p>
+<h3>Como se corta</h3>
+<p><b>Que hacer con un ataque entrante:</b> no va a la cuarentena de CPEs (esa lista es de
+abonados). Se corta en el <b>firewall de borde</b>, o mejor: se <b>cierra la exposicion</b> del
+equipo atacado. Si algo tuyo recibe escaneo constante desde internet, casi siempre es que tiene
+un puerto publicado que no hacia falta.</p>
+<p>En <b>Abuso saliente</b> el panel arma la lista con los origenes de internet que <b>de verdad</b>
+estan atacando tu red: los que insisten mucho y contra varios equipos, mas los que ademas aparecen
+fichados en los feeds de reputacion (a esos les basta con poco). <b>No</b> se vuelcan los feeds
+enteros: son cientos de miles de IPs, llenan la RAM del router y meten falsos positivos de sitios
+que tus abonados visitan.</p>
+<h3>Dos detalles que deciden si esto sirve o rompe clientes</h3>
+<ul>
+<li><b><code>connection-state=new</code>.</b> Se cortan solo las conexiones que <b>entran</b> desde
+esas IPs. Sin ese matcher &mdash;o cortando en <code>raw</code>&mdash; se tiran tambien las
+<b>respuestas</b> a lo que pidio tu abonado, y el cliente se queda sin poder entrar a un sitio
+legitimo sin que nadie entienda por que.</li>
+<li><b>La lista se descarga del panel</b> (<code>/blocklist.rsc</code>, con sesion de
+administrador; en «Todos» o por nodo) y se importa en el router con <code>/import</code>. El MikroTik
+no llega al panel por el tunel (por el solo pasan el espejo y la API), asi que ya no se la baja solo.
+Meterle miles de entradas una a una por la API tardaria horas.</li>
+</ul>
+<p>Nunca entran en la lista tus propias redes ni las de <b>Nunca bloquear</b>, y cada importacion
+<b>reemplaza</b> la lista entera, asi que lo que deja de atacar desaparece solo.</p>
+
+<h2>Reportes e informe diario</h2>
+<ul>
+<li>El reporte grafico de cada nodo (y el de «Todos») lo genera el panel cada 5 minutos, de un
+nodo en uno; los guardados estan en <b>Historico</b>.</li>
+<li>Informe de texto por Telegram: se envía cada día a las 07:30 (hora local), con una sección por
+nodo, al chat configurado en <b>Ajustes &rarr; Reputación &rarr; Telegram</b> (ver "Avisos por
+Telegram").</li>
+<li>Las reglas ET las actualiza el orquestador cada dia.</li>
+</ul>
+
+<!--CAT:Cuarentena y MikroTik--><h2>Cuarentena: enviar CPEs infectados al MikroTik (API v6 y v7)</h2>
+<p>La pestana <b>Cuarentena</b> lista los CPE con <b>infeccion confirmada</b> (por repeticion y
+contexto, no por una sola firma). Desde ahi, con un boton, el panel empuja la IP a una
+<b>address-list</b> del MikroTik por su <b>API</b>. El panel <b>solo mete y saca IPs de la lista</b>;
+<b>que se hace con esa lista lo decides tu</b> con una regla de firewall. Es compatible con
+<b>RouterOS v6</b> (incluye login antiguo &lt;6.43 por reto MD5) y <b>v7</b>, por <b>API-SSL</b>
+(8729) a traves del tunel de su punto.</p>
+
+<h3>1) La API del router y su usuario</h3>
+<p>Los comandos de la ficha del punto (bloque VPN) ya dejan la <b>API-SSL</b> con el certificado
+<code>ids-promax</code> y el usuario <code>ids-api</code>, que solo puede entrar desde el sensor y por el
+tunel. La API no se abre a internet ni a tu LAN.</p>
+
+<h3>2) La clave del usuario API</h3>
+<p>La eliges tu (<code>&lt;CLAVE-API&gt;</code> en los comandos) y la pones en la ficha del punto
+(apartado <b>API</b>). Se guarda cifrada con la clave
+maestra del servidor y no se vuelve a mostrar.</p>
+
+<h3>3) La regla que DECIDE que hacer con la lista (tu la defines)</h3>
+<p>Ejemplo: cortar el trafico saliente de los CPE en cuarentena (misma sintaxis en v6 y v7):</p>
+<pre><code>/ip firewall filter add chain=forward src-address-list=suricata-cuarentena action=drop comment="Suricata: CPE en cuarentena"</code></pre>
+<p>Alternativas segun tu politica: en vez de <code>action=drop</code> puedes redirigir a un portal,
+marcar en <code>mangle</code> para limitar velocidad, o registrar. La <b>address-list</b> por defecto
+es <code>suricata-cuarentena</code> (cambiala en Ajustes si usas otro nombre). Las entradas entran
+<b>sin caducidad</b> y el panel las <b>saca solo cuando el abonado deja de enviar virus</b>; también
+puedes quitarlas a mano con el botón <b>Quitar</b> de la pestaña.</p>
+
+<h3>4) Configurar y probar en el panel</h3>
+<ol>
+<li><b>Puntos &rarr; ficha del punto &rarr; API</b>: usuario, clave y <b>Permitir enviar</b>. Lo comun a
+todos los nodos (nombres de las address-list, acciones, caducidad y politicas) esta en Ajustes &rarr; MikroTik,
+que ademas resume la conexion de cada nodo.</li>
+<li>Pulsa <b>Probar conexion</b>: si conecta, muestra el nombre (identity) del router. La primera vez
+se fija la huella de su certificado; si un dia cambia, la conexion se rechaza hasta que lo revises.</li>
+<li>En <b>Cuarentena</b>, cada CPE infectado confirmado muestra <b>Enviar a cuarentena</b>
+(lo agrega a la lista de <b>su</b> nodo) y luego <b>Quitar</b> (lo saca). Todo queda en el registro de
+cuarentena del panel y en el <b>Registro</b>.</li>
+</ol>
+<p>En la tabla <b>Enviados manualmente</b> puedes <b>ordenar por cualquier columna</b>: haz
+clic en la cabecera (CPE, Lista, Por, Enviado, Ultima revision&hellip;) para ordenar de forma
+<b>ascendente</b>, y otra vez para <b>descendente</b>. Las columnas de fecha ordenan por
+tiempo real, no por texto. El orden que elijas <b>se conserva</b> al pulsar <b>Quitar</b> o
+al recargarse la pagina, y esta <b>vuelve a la altura donde estabas</b> en vez de saltar
+arriba del todo (tambien en el refresco automatico de cada 5 min).</p>
+<p><b>Quitar varias a la vez:</b> cada fila tiene una <b>casilla</b> (y la cabecera una para
+<b>seleccionar todas</b>). Al marcar alguna se activa <b>Quitar seleccionados (N)</b>, que abre
+una <b>ventana de confirmacion</b> con la lista de IPs antes de tocar nada; las de la lista de
+DNS salen marcadas como tal. Puedes mezclar IPs de <b>ambas listas</b>: cada una se saca de la
+suya, en el MikroTik de su nodo. Es reversible (puedes volver a enviarlas) y queda todo en el
+Registro. Si el router falla con alguna, se te dice
+<b>cual y por que</b>, y esa IP <b>se queda</b> en el registro para reintentarla.</p>
+<p>Las IPs se sacan <b>una por una y se ve el avance</b> (barra + cada IP marcada &#10003; o
+&#10007; segun sale), porque cada una es una llamada al MikroTik y en bloque la pantalla se
+quedaba parada sin decir nada. Si una falla <b>no se detiene el resto</b>. Mientras corre, la
+ventana no se cierra, para no perder de vista el avance.</p>
+<p><b>Seguridad:</b> el usuario <code>ids-api</code> solo entra desde el sensor por el tunel, la
+conexion es <b>API-SSL</b> extremo a extremo con la huella fijada, y el destino de cada accion es siempre
+el nodo de la IP (<code>punto|IP</code>), nunca el que tengas elegido en el selector. Si dejas el envio
+<b>deshabilitado</b>, la pestana Cuarentena solo <b>sugiere</b> (no toca ese router).</p>
+
+<h3>5) Estados de la pestana Cuarentena</h3>
+<p>El aviso de arriba de la pestana cambia de color segun el estado:</p>
+<ul>
+<li><b style="color:#1a7f37">Verde &mdash; MikroTik habilitado</b>: marcaste <b>Permitir enviar</b> y la conexion
+(usuario y clave del nodo) esta completa. Aparecen los botones <b>Enviar a cuarentena</b> por CPE y
+<b>Enviar todos</b>.</li>
+<li><b style="color:#b52a2a">Rojo &mdash; Falta configurar la conexion</b>: marcaste <b>Permitir enviar</b>
+pero todavia falta el usuario o la clave (o no conecta). Completa la API del punto y pulsa
+<b>Probar conexion</b>. Mientras tanto no se envia nada.</li>
+<li><b>Gris &mdash; Modo sugerencia (dry-run)</b>: el permiso esta apagado. Solo se listan candidatos;
+el panel no toca el router.</li>
+</ul>
+<p><b>Enviar todos:</b> con el estado en verde, el boton <b>Enviar todos (N)</b> manda de una a la
+address-list todos los CPE de la lista que aun no esten en cuarentena (tope de 50 por accion; si el
+router deja de responder, se detiene y avisa). En «Todos» se reparte <b>por nodo</b> y el resultado
+se da por nodo: un router caido no frena a los demas. Cada IP queda <b>sin caducidad</b> hasta que el
+abonado deja de enviar virus, y se puede sacar antes con <b>Quitar</b>. Toda acción queda en el Registro.</p>
+
+<h2>Cuarentena graduada: cortar sin dejar sin internet</h2>
+<p>El corte total tiene un problema practico: el abonado llama a soporte, soporte lo desbloquea y el
+ataque vuelve. Ese ciclo es la razon habitual de que estos programas no bajen ningun numero.</p>
+<p>La <b>cuarentena graduada</b> mete al CPE en otra address-list
+(<code>suricata-graduada</code>) cuyas reglas cortan <b>solo los puertos de abuso</b>: correo,
+SSH/Telnet, SMB, RDP/VNC y TR-069. El abonado sigue navegando, viendo streaming y jugando, asi que
+<b>no llama</b>, y el corte aguanta en el tiempo. Aqui si se corta tambien el 587/465: ese equipo ya
+esta comprometido.</p>
+<p>Las reglas se pegan una vez y estan en <b>Ajustes &rarr; MikroTik</b>. Al enviar el primer CPE el
+panel <b>comprueba que exista alguna regla usando esa lista</b> y avisa si no: una address-list sin
+regla que la use no bloquea nada, y sin ese aviso el panel diria "enviado" mientras el CPE sigue
+atacando.</p>
+
+<h2>Cuarentena automatica (politicas por clase de abuso)</h2>
+<p>Ademas de enviar a mano, el panel puede actuar solo. En <b>Ajustes &rarr; MikroTik</b>, con
+<b>Aplicar politicas automaticamente</b> activado, defines que hacer con cada <b>clase</b> de CPE
+(Botnet/CnC, DNS de malware, Escaneo, Fuerza bruta, Spam, Criptominado, P2P, Otros). La clase
+sale de lo que el CPE hace de verdad (la mas grave que casa), y el destino es siempre la
+address-list de <b>esa</b> clase.</p>
+<table><tr><th>Politica de la clase</th><th>Que pasa</th></tr>
+<tr><td><b>Nada</b></td><td>solo se muestra.</td></tr>
+<tr><td><b>Solo notificar</b></td><td>una línea en el Registro, con dedupe de 6&nbsp;h por CPE.</td></tr>
+<tr><td><b>Cuarentena si ALTO</b> / <b>si MEDIO o ALTO</b> / <b>siempre</b></td>
+<td>a la lista de la clase en cuanto el riesgo alcanza ese nivel (o en cuanto aparece en el Top).</td></tr></table>
+<p>Por que por clase y no por banda: el riesgo mide <i>cuanto</i>, no <i>que</i>. Un torrent da
+ALTO sin ser una infeccion; una botnet confirmada no necesita esperar a puntuar alto. Las cajas
+que ya tenian politica por banda la heredan tal cual en todas las clases (ALTO&rarr;cuarentena
+pasa a "si ALTO" en todas, P2P incluido) hasta que se toque el formulario: nada cambia solo.</p>
+<p>Las politicas se aplican junto con el resumen (cada 5&nbsp;min) y <b>liberan solas</b> a los CPEs
+que dejan de calificar, de la lista en la que estan (aunque la clase o el nombre hayan cambiado
+despues). Ademas:</p>
+<p><b>Por que se bloqueo cada uno:</b> las politicas eligen por <b>banda de riesgo</b>, no por
+infeccion confirmada, asi que el motivo guardado es el <b>desglose del puntaje</b> (severidad,
+destinos unicos, puertos unicos, persistencia, correlacion de flota y reputacion) junto con la
+banda y los conteos. La columna <b>Motivo</b> lo muestra tal cual, y la columna <b>Por</b> dice
+<code>politica</code> o <code>politica-rapida</code> segun quien lo envio.</p>
+<ul>
+<li><b>Barrido rapido (~60&nbsp;s):</b> si la clase <b>Botnet / CnC</b> corta en algun nivel, un chequeo
+ligero cada minuto envia <b>ya</b> a los CPEs con <b>infeccion confirmada</b> (firmas CnC repetidas o
+contacto con un C2 fichado), sin esperar los 5&nbsp;min. Es conservador (solo infeccion confirmada), respeta allowlist, destinos de confianza y
+exclusiones, con <b>anti-rebote de 60&nbsp;s</b> por CPE. MEDIO/BAJO siguen en el ciclo de 5&nbsp;min.</li>
+<li><b>Sin caducidad:</b> las IPs de abonados entran sin TTL y el panel las libera cuando el CPE deja de
+atacar (ya no sale como infectado). No es una opción: con un TTL la IP salía a la hora aunque el abonado
+siguiera infectado. Las que estaban con TTL de antes pasan a permanentes en la siguiente vuelta. Una IP
+enviada a mano sin detección sale cuando ya no tiene ninguna alerta como origen; en riesgo bajo todavía se
+queda.</li>
+</ul>
+
+<h2>Una lista por categoria de abuso</h2>
+<p>Meter en el mismo cajon al que tiene una <b>botnet</b> y al que usa <b>BitTorrent</b> obliga a
+darles el mismo trato en el firewall, y no es el mismo problema. Por eso cada CPE va a la
+address-list de <b>su categoria</b>, y cada lista se trata como corresponde:</p>
+<table>
+<tr><th>Categoria</th><th>Lista</th><th>Que se hace</th></tr>
+<tr><td>Botnet / CnC</td><td><code>clientes-botnet</code></td><td><b>Cortar.</b> El equipo esta
+comprometido y ataca a terceros.</td></tr>
+<tr><td>Escaneo</td><td><code>clientes-escaneo</code></td><td><b>Cortar.</b></td></tr>
+<tr><td>Fuerza bruta</td><td><code>clientes-fuerza-bruta</code></td><td><b>Cortar.</b></td></tr>
+<tr><td>Spam</td><td><code>clientes-spam</code></td><td>Cerrarle <b>solo el correo saliente</b>. No
+hace falta dejarlo sin internet.</td></tr>
+<tr><td>DNS de malware</td><td><code>clientes-dns-malware</code></td><td><b>Redirigir</b> su DNS a tu
+resolutor, que ya filtra. Ni se entera.</td></tr>
+<tr><td>Criptominado</td><td><code>clientes-minado</code></td><td><b>Encolar</b>, no cortar: es
+consumo. Con <b>su propia marca y su propia cola</b> (<code>minado-con</code> /
+<code>minado</code>), separadas de las del P2P.</td></tr>
+<tr><td>P2P</td><td><code>clientes-p2p</code></td><td><b>Encolar</b>, no cortar: es consumo. Marca
+<code>p2p-con</code> / <code>p2p</code> y su cola.</td></tr>
+<tr><td>Otros</td><td><code>clientes-otros</code></td><td>Lo que no encaja en nada de lo anterior.</td></tr>
+</table>
+<p>La clasificacion va de <b>lo mas grave a lo mas leve</b> y manda la primera que casa: quien tiene
+una botnet <b>y ademas</b> usa BitTorrent es, a efectos de que hacer con el, un CPE con botnet
+&mdash; aunque el P2P tenga diez veces mas alertas.</p>
+<p><b>Encolar no es poner una cola.</b> Lo que de verdad limita son <b>tres</b> piezas
+encadenadas: <code>mark-connection</code> &rarr; <code>mark-packet</code> &rarr; una
+<code>/queue tree</code> que consuma esa marca. Faltando cualquiera de las tres <b>no se limita
+nada y no da error</b>: una <code>/queue simple</code> con <code>target=""</code> no engancha
+trafico, y una marca de paquete que ninguna cola consume no la usa nadie. P2P y criptominado
+llevan <b>marcas y colas distintas</b>, para poder darles limites distintos y saber cual consume.
+Las reglas listas para copiar estan en <b>MikroTik &rarr; Reglas</b>.</p>
+<p>Tres cosas que hacen que las reglas <b>parezcan</b> no funcionar:</p>
+<ul>
+<li><b>El orden frente a <code>fasttrack-connection</code>.</b> Los <code>drop</code> tienen que ir
+<b>antes</b> de la regla de fasttrack y de los <code>accept</code>: con fasttrack activo una
+conexion ya establecida deja de pasar por <code>filter</code> y el bloqueo no se aplica.</li>
+<li><b>Meter el CPE en la lista no corta lo que ya esta abierto.</b> La regla solo mira los paquetes
+que pasan por ella; las conexiones vivas hay que soltarlas a mano con
+<code>/ip firewall connection remove [find src-address~"^192.0.2.25:"]</code>.</li>
+<li><b><code>action=redirect to-ports=53</code> apunta al resolutor del propio router.</b> Si el
+router no resuelve, el cliente se queda <b>sin DNS</b> y parece que le cortaste internet. O
+habilitas <code>/ip dns set allow-remote-requests=yes</code>, o usas
+<code>action=dst-nat to-addresses=&lt;tu resolutor&gt; to-ports=53</code>.</li>
+</ul>
+<p>Los nombres se pueden cambiar en <b>Ajustes &rarr; MikroTik</b> (un campo por lista), por si ya
+tienes tu propia
+nomenclatura. Y al enviar se <b>guarda en que lista quedo</b>: si manana cambia su categoria o
+renombras la lista, el panel lo saca de donde esta de verdad y no de donde tocaria hoy.</p>
+
+<h2>Acciones por categoria: lo que el router hace con cada lista</h2>
+<p>Meter un CPE en una address-list no hace nada si ninguna regla la usa. En <b>Ajustes &rarr;
+MikroTik</b>, bajo cada lista, eliges la <b>accion</b> que el router aplica a esa clase y el panel
+<b>pone las reglas por la API</b>:</p>
+<table><tr><th>Accion</th><th>Que pone</th></tr>
+<tr><td><b>Cortar todo</b></td><td>un <code>drop</code> en <code>raw prerouting</code> por la lista.</td></tr>
+<tr><td><b>Solo navegacion</b></td><td>una cadena propia que deja pasar DNS (53) y 80/443 y corta lo demas,
+con un <code>jump</code> desde <code>prerouting</code>. Util con portal cautivo; ojo: una botnet que hable
+por 443 sigue hablando.</td></tr>
+<tr><td><b>Sin correo saliente</b></td><td>corta 25/465/587/2525 (spam) y nada mas.</td></tr>
+<tr><td><b>DNS protegido</b></td><td>la del ISP: el 53 (udp y tcp) a un resolutor que filtra (Quad9
+9.9.9.9 por defecto, o la IP que pongas), corte de DNS cifrado y puertos alternativos (853, 8853, 9953 y
+784 en udp) y tope de 50 consultas/s por cliente con rafaga de 100.</td></tr>
+<tr><td><b>Frenar escaneo</b></td><td>la del ISP: tope de 30 SYN nuevos por segundo por cliente (rafaga
+60); lo que pase de ahi se descarta. El cliente sigue navegando.</td></tr>
+<tr><td><b>Redirigir DNS</b></td><td>fuerza el 53 a tu resolutor (dst-nat a la IP que pongas; vacio =
+<code>redirect</code> al propio router, que entonces debe resolver).</td></tr>
+<tr><td><b>Limitar</b></td><td>marca de conexion + marca de paquete + cola (<code>queue tree</code>) con el
+limite que pongas (p.ej. <code>2M</code> o <code>2M/2M</code>). Sin limite no se aplica.</td></tr>
+<tr><td><b>Mis reglas</b></td><td>pegas tu bloque de RouterOS tal cual (tablas <code>raw</code>, <code>nat</code>,
+<code>filter</code>, <code>mangle</code>, <code>queue tree</code>). Escribe <code>{{LISTA}}</code> donde vaya la
+address-list de la clase; el <code>comment</code> lo pone el panel y <code>place-before=0</code> significa
+"la primera de su cadena". Tambien vale <code>place-before=[find where comment="X"]</code>: va delante de
+esa regla y, si en ese router no existe, la vista previa lo avisa y va la primera. Varias reglas "arriba"
+conservan su orden; las que no dicen posicion van al final, como en la consola. Un bloque que no parsea
+no se guarda y se dice en que linea.</td></tr></table>
+<h3>Verificador de reglas</h3>
+<p>RouterOS acepta sin quejarse reglas que hacen algo que no querias: una regla en <code>prerouting</code>
+sin la address-list corta a <b>toda</b> la red; <code>port=</code> casa origen o destino y tambien corta las
+respuestas; un jump a una cadena vacia no hace nada. El verificador lo revisa en cuatro momentos: al
+pulsar <i>Verificar mis reglas</i> (sin guardar ni aplicar), al <b>guardar</b>, en la <b>vista previa</b> y
+<b>despues de aplicar</b>.</p>
+<ul>
+<li><b>Errores</b> (no se guarda ni se aplica): accion que no existe en esa tabla, jump sin destino o a una
+cadena del sistema, puerto sin <code>protocol=tcp/udp</code>, NAT en la cadena equivocada, una regla que
+nunca se evalua porque otra corta todo antes, un drop sin ningun criterio en una cadena del sistema, y una
+<code>interface-list</code> que no existe en el router.</li>
+<li><b>Avisos</b> (se guarda, pero se dice): regla que no mira la lista de la categoria (afecta a todo el
+trafico) o que mira otra lista, <code>port=</code> en vez de <code>dst-port=</code>, comentario que dice
+"acepta" en una regla que descarta (o al reves), cadena propia a la que no salta nadie, jump a una cadena
+que no existe ni en el bloque ni en el router, address-list vacia en el router, cola con una marca que
+nadie pone.</li>
+<li><b>Tras aplicar</b> se relee el router: si no guarda exactamente lo que se mando (valores que RouterOS
+normaliza), se dice que campo y como, y queda en el Registro; si coincide, "Verificado".</li>
+</ul>
+<p>Las plantillas de DNS y escaneo llevan <code>in-interface-list=!WAN</code>: el nombre de esa
+interface-list se pone en Ajustes (vacio = sin esa condicion) y tiene que existir en el router.</p>
+<p><b>Como se aplica.</b> Guarda primero. <i>Ver / aplicar en el router</i> ensena las lineas exactas que se
+van a crear, corregir o quitar en ese router; solo si confirmas se toca. Antes del primer cambio se
+<b>respalda</b> el firewall (raw, nat, filter, mangle y queue tree) en <code>/srv/ids/panel/respaldos/</code>; si
+el respaldo falla, no se toca nada. Cada regla del panel lleva <code>comment="Suricata:&lt;clase&gt;:&lt;n&gt;"</code>
+y la reconciliacion es <b>idempotente</b> (aplicar dos veces no cambia nada) y <b>acotada</b>: jamas toca una
+regla que no lleve ese comentario. Junto a los botones, una etiqueta dice como esta cada clase en el router:
+<b style="color:#1a7f37">&#10003; Reglas aplicadas</b> (el router ya tiene exactamente lo que toca),
+<b style="color:#a15c12">N cambio(s) sin aplicar</b>, o <i>Sin guardar</i> si cambiaste la accion y aun no la
+guardaste; se comprueba al abrir el apartado, al cambiar de router y despues de aplicar o quitar.
+Debajo de las listas, <b>Recargar las listas en el router</b> vuelve a cargar las IPs que el panel tiene
+en cuarentena y que faltan en su address-list (alguien la vacio, se restauro un respaldo viejo); las que ya
+estan se omiten y no se quita nada. El panel compara cada IP con <b>su</b> lista cada pocos minutos: si una
+entrada permanente falta en el router, no la olvida, la marca <i>falta en el router</i> para poder recargarla
+(una con TTL que ya no esta se da por caducada).
+<i>Quitar del router</i> elimina solo las del panel para esa clase; la
+lista y sus IPs se quedan.</p>
+<p><b>Por que en raw prerouting.</b> Se evalua antes del fasttrack y de conntrack: corta aunque la conexion
+ya este establecida y sin depender del orden del <code>filter</code>. Las acciones de NAT y de colas van en su
+tabla. Meter un CPE en la lista <b>no</b> cierra lo que ya tiene abierto: para eso
+<code>/ip firewall connection remove [find src-address~"^IP:"]</code>.</p>
+<p>El <b>diagnostico</b> del router (segundo plano) dice por clase si la accion configurada esta aplicada o
+cuantos cambios le faltan, ademas de si alguna lista con CPEs dentro no la usa ninguna regla.</p>
+
+<h2>Las address-lists: cual es cual</h2>
+<p>Ya son cinco y conviene tenerlas claras, porque <b>no todas se usan igual</b>: tres miran el
+<b>origen</b> (a quien se corta) y dos el <b>destino</b> o la entrada. Confundir
+<code>src-address-list</code> con <code>dst-address-list</code> en la regla es el error que hace que
+"funcione" sin bloquear nada, o que bloquee lo que no era.</p>
+<table>
+<tr><th>Lista</th><th>Que lleva dentro</th><th>En la regla</th><th>TTL</th></tr>
+<tr><td><code>suricata-cuarentena</code></td><td><b>CPEs infectados</b> (malware/CnC confirmado)</td>
+<td><code>src-address-list</code></td><td>1 h</td></tr>
+<tr><td><code>suricata-dns-sospechoso</code></td><td><b>CPEs</b> que consultan dominios de botnet</td>
+<td><code>src-address-list</code></td><td>1 d</td></tr>
+<tr><td><code>suricata-graduada</code></td><td><b>CPEs</b> con corte <b>parcial</b>: solo los puertos
+de abuso, el resto le sigue funcionando</td><td><code>src-address-list</code></td><td>1 d</td></tr>
+<tr><td><code>suricata-destinos-malos</code></td><td><b>IPs publicas ajenas</b> de mala reputacion a
+las que tus CPEs salen (C2, malware, redes secuestradas)</td><td><b><code>dst-address-list</code></b>
+</td><td>7 d</td></tr>
+<tr><td><code>suricata-atacantes</code></td><td><b>IPs publicas ajenas</b> que atacan tu red desde
+internet</td><td><code>src-address-list</code> + <code>connection-state=new</code></td><td>1 d</td></tr>
+</table>
+<p>Las tres primeras contienen <b>IPs de tus abonados</b>; las dos ultimas, <b>IPs publicas de
+terceros</b> &mdash; y ninguna de esas dos acepta una IP tuya, ni privada ni publica. Cada lista
+tiene su nombre configurable en <b>Ajustes &rarr; MikroTik</b> (las tres de abonados no caducan: un
+abonado sale cuando deja de enviar virus; las de terceros conservan su TTL), y cada una
+lleva su propio registro en el panel, asi que quitar algo de una no toca las demas.</p>
+<p>El TTL de los destinos es mas largo (7 d) a proposito: un servidor de control no deja de serlo en
+una hora, y ahi no hay ningun abonado esperando a que se le devuelva el servicio.</p>
+
+<h2>Destinos de mala reputacion (en Cuarentena)</h2>
+<p>La cuarentena corta al <b>abonado</b>. Esto corta el <b>destino</b>, que es lo que mantiene vivo
+al equipo infectado: sin canal de control, la botnet no manda nada. Y vale para <b>todos</b> los
+abonados a la vez, sin tener que identificar a ninguno.</p>
+<p>Al final de la pestana <b>Cuarentena</b> aparecen los destinos fichados a los que tus CPEs
+<b>estan saliendo de verdad</b> (no el feed entero), con de que lista vienen, cuantos CPEs los
+contactan y un boton para bloquearlos en <b>todos</b> los nodos a la vez. La regla es de
+<code>dst-address-list</code>, no de origen: no se bloquea a nadie, se bloquea <b>a donde va</b>.</p>
+<h3>Preventivo: cortar ANTES de que nadie llegue</h3>
+<p>Lo anterior es <b>reactivo</b>: bloquea destinos que un CPE <b>ya</b> contacto. Mejor es lo
+contrario, y tambien esta: el router se baja cada hora la lista de <b>infraestructura fichada</b> y
+corta la salida hacia ella <b>antes</b> de que ningun abonado llegue. Asi el equipo infectado ni
+siquiera consigue instrucciones, y no hace falta detectarlo primero.</p>
+<p>Al <b>preventivo</b> solo entran los feeds en los que se puede confiar para cortar <b>por
+destino</b>: <b>C2 activo</b> (Feodo) e <b>infraestructura delictiva</b> (Spamhaus DROP), que son
+unos pocos miles de entradas y caben de sobra en cualquier router. <b>No</b> entran las listas de
+"esta IP escaneo a alguien" (CINS, AbuseIPDB): describen a un atacante, pero <b>esa misma IP puede
+alojar una web que un abonado visita</b>, y cortarla por destino lo deja sin servicio.</p>
+<p>La importacion <b>solo borra lo que puso el feed</b> (por el comentario), asi que lo que hayas
+bloqueado a mano desde el panel no se toca. Y nunca entra nada tuyo: ni tus redes privadas ni tus
+publicas declaradas, aunque un feed las fiche.</p>
+
+<h3>Los dos frenos, que son lo importante</h3>
+<ul>
+<li><b>Solo IPs publicas.</b> Una privada aqui seria de tu propia red, y bloquearla como destino
+dejaria a tus abonados sin verse entre si. Tambien se frena una IP <b>publica que sea tuya</b> (tu
+rango de NAT), que pasa el filtro de "es publica" y aun asi no hay que bloquearla.</li>
+<li><b>Solo feeds que se sostienen</b>: C2 activo, IOC de C2, distribucion de malware e infra
+delictiva. <b>No</b> se propone lo que viene de listas de "esta IP escaneo a alguien": esas pueden
+alojar ademas algo legitimo, y bloquearlas deja sin servicio a un abonado que no hizo nada. Si aun
+asi las quieres ver, se pueden pedir.</li>
+</ul>
+<p>Lo que marques como <b>destino confiable</b> (falso positivo) desaparece de la lista y no se
+vuelve a proponer. Y sin una regla en el MikroTik que use esa address-list, el panel diria
+"bloqueado" sin bloquear nada: la regla esta ahi mismo para copiarla.</p>
+
+<h2>Falsos positivos: excluir un destino y liberar en cadena</h2>
+<p>Si una IP <b>destino</b> (p.ej. un DNS publico) dispara falsos positivos en muchos CPEs, en la
+pestana Cuarentena esta <b>Excluir destino (falso positivo)</b>: marca esa IP como <b>confiable</b>,
+sus alertas dejan de contar y se <b>liberan automaticamente</b> todos los CPEs que fueron a la lista
+por su culpa. Los destinos confiables se guardan en la configuracion del panel
+(<code>/srv/ids/panel/conf/</code>).</p>
+
+<h2>Allowlist "nunca bloquear"</h2>
+<p>En <b>Ajustes &rarr; MikroTik</b>, campo <b>Nunca bloquear</b> (solo administrador), puedes definir
+IPs/CIDR que <b>jamas</b> van a cuarentena (tu infraestructura, clientes criticos), aunque disparen
+alertas: una IP o CIDR por línea. Valen para <b>todos los nodos</b>; con el punto delante
+(<code>p001|192.0.2.10</code>) valen <b>solo en ese punto</b>, porque la misma IP privada puede ser otro
+abonado en otro nodo. Se guardan en la configuracion del panel (<code>/srv/ids/panel/conf/</code>) y las
+respetan las politicas, el barrido rapido y el envío a mano.</p>
+
+<h2>Modulo de Exclusiones</h2>
+<p>El apartado <b>Exclusiones</b> (en el menu de arriba) sirve para que ciertas IPs propias
+no aparezcan en el panel ni en los reportes. Tipico: tu servidor DNS y tu servidor de
+monitoreo, que generan mucho trafico normal (consultas DNS, sondeos SNMP) y ensucian las
+estadisticas sin ser un ataque.</p>
+<p><b>Como funciona:</b> por cada alerta, si coincide con una regla de exclusion, se descarta
+antes de contarla. Se aplica en los tres lados a la vez (resumen de 24h, feed en vivo e
+informe de texto) y surte efecto al instante, sin reiniciar nada.</p>
+<p><b>Campos al agregar una exclusion:</b></p>
+<table><tr><th>Campo</th><th>Que es</th></tr>
+<tr><td>Tipo</td><td><b>Destino</b>: ignora el trafico que va HACIA esa IP (p. ej. tu DNS).
+<b>Origen</b>: ignora el que SALE de esa IP (p. ej. tu monitor).</td></tr>
+<tr><td>IP</td><td>La direccion a excluir. Se valida que sea una IP correcta.</td></tr>
+<tr><td>Puertos</td><td>Los puertos a ignorar, separados por coma (p. ej. <code>53</code> o
+<code>161</code>). <b>Vacio = todos los puertos</b> de esa IP.</td></tr>
+<tr><td>Firma (SID)</td><td>El numero de firma a excluir SOLO para esa IP (p. ej. un falso
+positivo puntual de un CPE). <b>Vacio = cualquier firma</b>. El SID sale en la ficha de evidencia.</td></tr>
+<tr><td>Vigencia</td><td>Exclusion <b>temporal</b>: se ignora hasta que venza (24 h / 7 d / 30 d)
+y luego el trafico vuelve a analizarse solo. <b>Permanente</b> no vence. Queda registrado quien la creo.</td></tr>
+<tr><td>Motivo</td><td>Una nota para acordarte por que (p. ej. "DNS interno").</td></tr>
+<tr><td>Nodo</td><td>A que punto se aplica. <b>Vacio = todos los nodos</b>. Hace falta porque las IPs
+privadas se repiten entre puntos: el <code>10.0.0.5</code> de un nodo no es el del otro.</td></tr>
+</table>
+<p><b>Ejemplos utiles:</b></p>
+<ul>
+<li><b>Tu DNS</b>: Tipo <b>Destino</b>, puerto <b>53</b>. Asi las consultas de clientes a
+dominios de mala fama (que van a tu DNS) dejan de marcarse.</li>
+<li><b>Tu monitoreo SNMP</b>: Tipo <b>Origen</b>, puerto <b>161</b>. Quita el ruido del
+servidor que sondea tus equipos.</li>
+<li><b>Ignorar una IP entera</b>: deja Puertos vacio.</li>
+</ul>
+<p><b>Por que filtrar por puerto y no la IP entera:</b> si excluyes tu DNS solo en el puerto
+53, sigues viendo si ese mismo equipo hace algo raro en otro puerto (un escaneo, una conexion
+a un CnC). Silenciar la IP completa te dejaria ciego a eso.</p>
+<p><b>Para eliminar</b> una exclusion, usa el boton Eliminar en la lista del apartado.</p>
+<p>Se guardan en la configuracion del panel (<code>/srv/ids/panel/conf/exclusiones.json</code>). Las
+que se pueden expresar exactas pasan ademas al Suricata de cada nodo afectado, que deja de generar esa
+alerta (lo aplica el orquestador sin cortar el espejo).</p>
+<p><b>Ojo con el criterio:</b> al excluir tu DNS dejas de ver en el panel que un cliente
+consulto un dominio malicioso. Esa senal sigue disponible en <b>Eventos</b> filtrando por IP de
+origen y tipo de evento, si quieres cazar clientes infectados por sus consultas.</p>
+
+<!--CAT:Puntos y VPN--><h2>Puntos: un MikroTik, su VPN y su Suricata</h2>
+<p>Cada MikroTik es un <b>punto</b>, con identidad fija (<code>p001</code>, <code>p002</code>...) y su
+propia VPN y su propio Suricata en contenedores que crea el orquestador. Un punto que falla o se reinicia
+no afecta a los demas, y sus datos van aparte.</p>
+<ul>
+<li><b>Rangos repetidos.</b> Es normal que cada nodo use <code>10.0.0.x</code>. La identidad de un CPE es
+el par <b>(punto, IP)</b>: el <code>10.0.0.5</code> de un nodo y el del otro son dos abonados, con sus
+alertas, su riesgo y su ficha.</li>
+<li><b>A que router bloquear.</b> Cada accion va al MikroTik <b>del nodo de esa IP</b> (lo dice la propia
+fila), nunca al que tengas elegido en el selector. En «Todos» las acciones masivas se reparten por nodo.</li>
+<li>Cada línea del Registro dice en qué nodo se actuó.</li>
+</ul>
+<h3>Alta</h3>
+<ol>
+<li><b>Puntos &rarr; Agregar punto</b>: nombre, <b>prefijos de abonados</b> que se espejan, version de
+RouterOS (6.49+ o 7) y perfil (reducido por defecto). Un doble clic no crea dos puntos.</li>
+<li>El servidor crea la VPN y el Suricata del punto; se ve el avance paso a paso.</li>
+<li>Al terminar se muestran <b>una sola vez</b> el usuario y la clave de la VPN y los comandos para el
+MikroTik (v7 y v6) con la clave puesta. Si la pierdes, en la ficha esta <b>Regenerar la clave VPN</b>.</li>
+<li>En la ficha: la clave de la <b>API</b>, <b>Probar conexion</b> y luego <b>Espejo &rarr; Ver el plan
+&rarr; Aplicar</b>.</li>
+</ol>
+<h3>La ficha del punto</h3>
+<p>Resumen (estado, salud por etapas, espejo, Suricata, alertas de 24 h y <b>retencion efectiva</b>),
+VPN (comandos sin la clave), API (usuario, clave, probar, huella), Espejo (plan, aplicar, pausar,
+retirar), Prefijos, Logs de la VPN y del Suricata, arrancar, parar, reiniciar y la baja.</p>
+<h3>Retencion</h3>
+<p>El objetivo es guardar <b>30 dias</b> de eventos de cada punto. Se poda por fecha (lo que tiene mas
+de 30 dias). Si el disco del servidor baja del 15 % libre, se borran antes los rotados mas viejos y
+queda registrado: por eso Puntos y Eventos dicen la <b>retencion efectiva</b> (desde que fecha hay
+eventos de verdad) y nunca prometen 30 dias si hubo borrado anticipado.</p>
+<h3>Baja</h3>
+<p>En la ficha, escribiendo el nombre del punto. Se borra todo el punto en el servidor (VPN, Suricata y
+eventos) y en el panel (sus reportes, su conexion y sus registros); queda una línea en el Registro. Los
+identificadores no se reutilizan. En el MikroTik quedan lo que lleva el comentario
+<code>IDS ids-maat:&lt;punto&gt;</code> (el alta) o <code>IDS ids-maat:&lt;punto&gt;:espejo</code> (el espejo), la
+interfaz <code>ids-vpn</code> y el usuario <code>ids-api</code> (el <code>comment~</code> de abajo encuentra los dos):</p>
+<pre><code>/ip firewall mangle remove [find comment~"ids-maat:p003"]
+/ip firewall filter remove [find comment~"ids-maat:p003"]
+/ip firewall address-list remove [find comment~"ids-maat:p003"]
+/ip route remove [find comment~"ids-maat:p003"]
+/interface ovpn-client remove [find name=ids-vpn]
+/user remove [find name=ids-api]
+/user group remove [find name=ids-api]</code></pre>
+<p>Y devolver a la regla fasttrack sus valores originales (si se retiro el espejo desde el panel antes de
+la baja, ya esta hecho).</p>
+<h3>Limites que conviene tener claros</h3>
+<ul>
+<li><b>La capacidad es del servidor.</b> Cada punto reserva su memoria; <b>Puntos</b> dice cuantos caben
+todavia.</li>
+<li><b>El espejo va por el tunel</b> y por UDP: con perdida el IDS ve trafico incompleto. La salud por
+etapas lo enseña (descartes, TZSP).</li>
+<li><b>Dar de baja un punto limpia antes su MikroTik</b>: retira el espejo (el fasttrack vuelve a como
+estaba) y saca de sus address-lists los CPEs en cuarentena y los destinos bloqueados. Si el router no
+responde, la baja no sigue; si ese router ya no existe, se desmarca la casilla y lo del router se quita a
+mano. Las reglas de accion por categoria (comentario <code>Suricata:</code>) se quedan: sin nadie en las
+listas no cortan nada.</li>
+</ul>
+
+<h2>La VPN de cada punto</h2>
+<p>Cada MikroTik manda el espejo por <b>su propia VPN</b>, un contenedor OpenVPN solo para el, con su
+puerto y su red de tunel (el sensor es la <code>.1</code> y el MikroTik la <code>.2</code>). Es
+compatible con RouterOS 6.49+ y 7.</p>
+<ul>
+<li>La crea el alta del punto; los comandos para el router salen al terminar (con la clave, una sola vez)
+y en la ficha (sin la clave).</li>
+<li><b>La VPN solo trae el espejo y la API del propio router</b>: no enruta trafico de abonados, no lleva
+a otras redes y un punto no ve a otro.</li>
+<li>Cambiar, regenerar o borrar la VPN de un punto <b>no corta a los demas</b>.</li>
+<li><b>Regenerar la clave</b> (ficha del punto) corta la VPN de ese MikroTik hasta que pongas la nueva.</li>
+</ul>
+
+<!--CAT:Ajustes--><h2>Usuarios, roles y clave</h2>
+<p>El panel soporta <b>varios usuarios</b> con tres roles:</p>
+<ul>
+<li><b>Administrador</b>: acceso total (Puntos, exclusiones, MikroTik y politicas, feeds, actualizar
+reglas, gestionar usuarios y ver el Registro).</li>
+<li><b>Operador</b>: opera el dia a dia &mdash; ve todo y <b>gestiona la cuarentena</b> (enviar/quitar
+CPEs, excluir un destino de falso positivo, consultar o denunciar reputacion). <b>No</b> toca
+Puntos, usuarios, conexion MikroTik, exclusiones de deteccion ni reglas. Cada acción suya queda en el
+<b>Registro</b>.</li>
+<li><b>Solo lectura</b>: ve los paneles y reportes y cambia su propia clave; no opera cuarentena
+ni edita nada.</li>
+</ul>
+<p>Cada uno cambia su clave desde su usuario (arriba a la derecha &rarr; <b>Cambiar
+contraseña</b>); un administrador además crea/borra usuarios y cambia roles en <b>Ajustes &rarr;
+Usuarios y roles</b>. Todos los usuarios ven todos los nodos de la empresa, pero
+<b>cada accion exige su rol y se comprueba en el servidor</b>: no basta con ocultar un boton, y cambiar
+el nodo en la direccion no da mas permisos.</p>
+<p><b>El usuario no se cambia nunca</b>, tampoco el <code>admin</code> que deja el instalador:
+de una cuenta se cambia la clave, el <b>nombre a mostrar</b>, el correo, el rol y la foto, o se
+elimina. El nombre a mostrar es el que sale arriba a la derecha y en la tabla, pero para entrar
+vale el <b>usuario</b> (el menu de arriba lo ensena debajo del nombre). Si hace falta otro
+usuario, crea uno nuevo y elimina el viejo (sin quedarte sin ningun administrador).</p>
+<p>Al crear o editar un usuario, debajo del rol sale lo que puede hacer. La clave tiene que tener al menos
+<b>10 caracteres</b> (las que ya existian siguen valiendo); <b>Generar</b> crea una de 14 y la copia, y
+<b>Ver</b> la muestra. Tu propia cuenta no se borra ni se desactiva desde la tabla: eso lo hace otro
+administrador.</p>
+<p> Las claves se guardan <b>hasheadas</b> (PBKDF2 con sal)
+en <code>/srv/ids/panel/conf/usuarios.json</code>; nunca en texto plano. El primer administrador lo crea
+el instalador del servidor (<code>ids-orq panel crear-admin</code>, que imprime su clave una sola vez).
+Si alguien olvida la suya, <code>ids-orq panel restablecer &lt;usuario&gt;</code> le da una nueva y
+cierra sus sesiones abiertas.</p>
+<p><b>Formularios de otra web.</b> Todo POST que traiga <code>Origin</code> o <code>Referer</code> de otro
+sitio se rechaza (403), haya usuarios o no: una pagina ajena abierta en tu navegador no puede mandar
+acciones al panel. Tambien se rechaza si el navegador dice <code>Sec-Fetch-Site: cross-site</code> o
+<code>same-site</code>; si dice <code>same-origin</code>, pasa siempre (lo certifica el navegador). Las
+peticiones sin esas cabeceras (curl, scripts) siguen entrando. Detras de un proxy, el origen se compara con
+el <code>Host</code>, con <code>X-Forwarded-Host</code>, con el <code>host=</code> de <code>Forwarded</code>
+y con la URL publica del panel (<code>IDS_PANEL_URL</code> del servidor); las cabeceras que pone un
+proxy solo cuentan si llegan de un proxy de confianza. Basta con que el proxy pase el Host (Nginx Proxy
+Manager lo hace) o con declarar la URL publica.
+Si el proxy anade <code>Referrer-Policy: no-referrer</code>, el navegador manda <code>Origin: null</code>:
+se acepta solo con <code>Sec-Fetch-Site: same-origin</code> (o <code>none</code>); un <code>null</code>
+sin esa cabecera se rechaza, porque no se distingue de un iframe con sandbox de otra web.</p>
+
+<h2>IPs de confianza: desde donde se entra</h2>
+<p>En <b>Ajustes &rarr; IPs de confianza</b> se decide desde donde se puede abrir el panel. Arriba se
+ve el estado: <b>Abierto</b> (lista vacia: cualquiera puede intentar entrar) o <b>Restringido</b>
+(solo las IPs o rangos de la lista; desde otra IP sale &laquo;Acceso restringido&raquo; con la IP de
+quien intenta, para que se la pase al administrador). En los dos casos una IP queda
+<b>bloqueada 10 min tras 8 claves mal puestas</b>; las bloqueadas se ven y se desbloquean ahi mismo.</p>
+<p>Cada entrada lleva una <b>nota</b> opcional (&laquo;Oficina&raquo;, &laquo;VPN&raquo;) para saber
+de quien es. Se guarda normalizada (<code>192.0.2.5/24</code> queda como <code>192.0.2.0/24</code>) y no
+entra lo que ya cubre otra entrada. <b>Usar mi IP</b> rellena la tuya. La primera IP pide
+confirmacion (restringe el panel) y quitar la ultima tambien (lo deja abierto). El panel no deja
+guardar una lista que no incluya tu IP actual.</p>
+<p><b>Si te quedas fuera</b> (por ejemplo, te cambio la IP), en el servidor por SSH como root:
+<code>ids-orq panel confianza agregar &lt;tu-IP-nueva&gt;</code> deja entrar esa IP sin abrir el panel a
+nadie mas; <code>ids-orq panel confianza vaciar</code> lo deja abierto y guarda una copia de la
+lista; <code>ids-orq panel confianza ver</code> la muestra. Hace efecto al momento.</p>
+
 <h2>Registro: accesos y cambios en un solo sitio</h2>
 <p><b>Ajustes &rarr; Registro</b> (solo administrador) junta en una tabla, lo más nuevo primero. Sustituye
 a las antiguas pantallas Accesos y Bitácora; los enlaces viejos (<code>/log</code>, <code>/bitacora</code>)
@@ -13034,21 +13026,65 @@ y denuncias, con <b>quien, que, cuando y desde que IP</b>. Incluye las acciones 
 salio con error. Tiene buscador y paginacion, y se poda a los <b>15 dias</b>
 (<code>LOG_RETENCION_DIAS</code>).</p>
 
-<h2>IPs de confianza: desde donde se entra</h2>
-<p>En <b>Ajustes &rarr; IPs de confianza</b> se decide desde donde se puede abrir el panel. Arriba se
-ve el estado: <b>Abierto</b> (lista vacia: cualquiera puede intentar entrar) o <b>Restringido</b>
-(solo las IPs o rangos de la lista; desde otra IP sale &laquo;Acceso restringido&raquo; con la IP de
-quien intenta, para que se la pase al administrador). En los dos casos una IP queda
-<b>bloqueada 10 min tras 8 claves mal puestas</b>; las bloqueadas se ven y se desbloquean ahi mismo.</p>
-<p>Cada entrada lleva una <b>nota</b> opcional (&laquo;Oficina&raquo;, &laquo;VPN&raquo;) para saber
-de quien es. Se guarda normalizada (<code>192.0.2.5/24</code> queda como <code>192.0.2.0/24</code>) y no
-entra lo que ya cubre otra entrada. <b>Usar mi IP</b> rellena la tuya. La primera IP pide
-confirmacion (restringe el panel) y quitar la ultima tambien (lo deja abierto). El panel no deja
-guardar una lista que no incluya tu IP actual.</p>
-<p><b>Si te quedas fuera</b> (por ejemplo, te cambio la IP), en el servidor por SSH como root:
-<code>ids-orq panel confianza agregar &lt;tu-IP-nueva&gt;</code> deja entrar esa IP sin abrir el panel a
-nadie mas; <code>ids-orq panel confianza vaciar</code> lo deja abierto y guarda una copia de la
-lista; <code>ids-orq panel confianza ver</code> la muestra. Hace efecto al momento.</p>
+<h2>Reputacion / feeds (abuse.ch y AbuseIPDB)</h2>
+<p>El panel enriquece los destinos con <b>feeds de reputacion</b> (IPs/CIDR y dominios maliciosos)
+con su <b>procedencia</b> y <b>caducidad</b>. Feodo, CINS, Spamhaus, ET compromised y la lista de
+salidas Tor no necesitan clave; abuse.ch (URLhaus/ThreatFox) y AbuseIPDB, sí.</p>
+<h3>Las claves: un bloque por servicio</h3>
+<p><b>Ajustes &rarr; Reputación</b> (solo administrador) tiene un bloque para cada servicio:
+<b>abuse.ch</b>, <b>AbuseIPDB</b>, <b>Groq</b> y <b>Telegram</b>. Cada bloque dice:</p>
+<ul>
+<li><b>Para qué sirve</b> ese servicio en el panel.</li>
+<li><b>Cómo sacar la clave</b>, paso a paso, con botones &#8599; que abren la página exacta del servicio
+en otra pestaña (crear la cuenta, la página de claves...).</li>
+<li>Una <b>etiqueta de estado</b> arriba a la derecha: <i>sin configurar</i>, <i>válida &middot; comprobada
+14/10 09:30</i> o <i>rechazada</i>, según la <b>última comprobación</b> de la clave guardada.</li>
+</ul>
+<p>Botones de cada bloque:</p>
+<ul>
+<li><b>Guardar</b>: antes de guardar, <b>pregunta al servicio</b> si la clave vale; una clave inválida
+se rechaza. Se guarda <b>cifrada</b> con la clave maestra del servidor y <b>no se vuelve a mostrar</b>
+(el campo queda vacío: dejarlo vacío conserva la guardada).</li>
+<li><b>Comprobar</b>: prueba la clave <b>sin guardar nada</b>. Con algo pegado prueba esa; con el campo
+vacío, la guardada. Sirve para saber si una clave que ya estaba sigue viva.</li>
+<li>Para <b>quitar</b> una clave, escribe <code>BORRAR</code> en su campo y guarda.</li>
+</ul>
+<h3>El estado de los feeds</h3>
+<p>Debajo de los bloques, la tabla de fuentes: <b>Fuente</b>, <b>Estado</b> (<code>valido</code>,
+<code>vacio</code>, <code>error</code>, <code>sin-clave</code> o <code>caducado</code>), si está
+<b>Vigente</b> (sí/no), cuántos <b>Indicadores</b> trae, la <b>Última válida</b> (última descarga
+buena) y cuándo <b>Caduca</b>. Si a una fuente de abuse.ch o AbuseIPDB le falta la clave o falla, al lado
+del estado sale <b>Configurar</b>, que lleva a su bloque.</p>
+<p>El actualizador corre solo; encima de la tabla dice su <b>última corrida</b>. <b>Actualizar feeds
+ahora</b> lo lanza al momento en segundo plano y la tabla se va refrescando sola, <b>sin recargar la
+página</b>, hasta que termina (si ya había una corrida en marcha, no lanza otra).</p>
+<p><b>Fuentes y que pesa cada una.</b> <code>feodo</code> (C2 activos) y <code>threatfox-c2</code>
+(C2 por IP <b>y puerto</b>, via la API de ThreatFox con la misma Auth-Key) son prueba de infeccion:
+basta un contacto, y si el CPE hablo <b>por el puerto del C2</b> la ficha lo dice.
+<code>spamhaus-drop</code> es infraestructura delictiva. <code>cins</code>, <code>et-compromised</code>
+y <code>abuseipdb</code> son atacantes observados: una IP que ataca puede alojar ademas algo legitimo,
+asi que se exige insistencia. <code>tor-exit</code> es <b>contexto</b>: un abonado que habla con una
+salida Tor no esta infectado por eso (hay quien lo usa a proposito); se ensena en el destino pero
+<b>no suma al riesgo</b>, no es evidencia y no se propone cortar. La lista de IPs de SSLBL no esta
+porque abuse.ch la dejo vacia en enero de 2025 (y sus JA3 no se actualizan desde 2021).</p>
+<h3>Analisis con IA (Groq)</h3>
+<p>En la misma tarjeta de Ajustes se pega la <b>clave de Groq</b>. Sirve para que el panel
+<b>explique la evidencia en lenguaje llano</b> &mdash; estos informes los lee gente que no es de
+redes &mdash; y para senalar <b>falsos positivos conocidos</b>. <b>La IA no corta a nadie</b>: lee y
+recomienda; el corte lo sigue decidiendo una persona o la politica con sus umbrales medibles.</p>
+<p>La clave se guarda igual que las demas: <b>solo-escritura</b> y cifrada con la clave maestra
+del servidor, y no se vuelve a mostrar. Al guardarla se <b>valida contra Groq</b>, y de paso se trae
+<b>la lista de modelos que tiene tu cuenta</b>: el modelo se elige de ahi en vez de escribirlo a mano.
+Esto no es un capricho &mdash; Groq retira modelos cada cierto tiempo, y un nombre que ya no existe
+no falla al guardarlo sino en la primera consulta, lejos de donde se configuro. Si el modelo elegido
+desaparece de la cuenta, el panel lo deja en blanco y hay que volver a elegir.</p>
+<p><b>Que se le manda y que no.</b> Solo la evidencia tecnica: nombres de firma, dominios consultados,
+puertos, recuentos y categorias. <b>Nunca</b> la IP del abonado, su nombre ni la identidad del router.
+La IA no necesita saber <b>quien</b> es para decir <b>que</b> es, y esos datos saldrian de tu red.</p>
+<p>La fuente <code>abuseipdb</code> es la <b>lista masiva</b> de atacantes denunciados por la comunidad:
+se baja como mucho <b>cada 6 horas</b> (el plan gratuito permite 5 descargas al dia) y trae hasta
+10.000 IPs de <b>confianza 100&nbsp;%</b> &mdash; acotar ese umbral es de pago. Si un dia se agota la
+cuota, se conserva la lista anterior en vez de dar la fuente por rota.</p>
 
 <h2>Avisos por Telegram</h2>
 <p>Cuando un CPE va a cuarentena (a mano, por politica o por el barrido rapido) se manda un aviso por
@@ -13086,65 +13122,30 @@ la version.</p>
 cifradas (API de los routers, AbuseIPDB, abuse.ch, Groq, Telegram). El panel arranca igual y avisa, pero
 no las borra.</p>
 
-<h2>Mapa: a donde atacan tus CPEs</h2>
-<p>En la pestana <b>En vivo</b>, <b>debajo de la linea de tiempo</b> ("Ataques por hora y minuto"),
-hay un <b>mapa mundial</b> que pinta los <b>paises destino</b> de las alertas (a donde va el
-trafico sospechoso de tus CPEs). El color sube con el nº de alertas y debajo sale el
-<b>Top paises destino</b>: los 10 paises con mas alertas, por puesto y en dos columnas (1 a 5 y
-6 a 10), cada uno con su barra, el numero de alertas y que parte del total son. Clic en una fila
-acerca ese pais en el mapa.</p>
-<ul>
-<li><b>Geolocalizacion offline:</b> la IP destino se traduce a pais con una base
-<b>IP&rarr;pais DB-IP lite</b> (via ip-location-db, CC-BY-4.0, &copy; db-ip.com) que se guarda en el servidor
-(<code>/srv/ids/panel/geo/</code>). No usa servicios externos en caliente.</li>
-<li><b>Flujo "de donde -> a donde":</b> ademas del color, salen <b>arcos animados</b> desde tu red
-hacia cada pais destino (un punto viaja por el arco = sensacion de trafico en vivo), y <b>cada punta
-late</b> igual que el origen, para ver de un vistazo donde cae cada flujo. El punto de
-origen se puede fijar con <code>MAPA_ORIGEN=lon,lat</code> en la configuracion del panel
-(por defecto Ecuador); es solo el inicio visual del arco, no un dato real.</li>
-<li><b>Detalle por pais:</b> al <b>pasar el mouse</b> por un pais sale un recuadro con <b>a que IPs
-destino</b> va el trafico, <b>por que puertos</b> (p.ej. <code>443/tcp</code>) y <b>desde que CPEs</b> de
-tu red sale, ademas de la <b>direccion</b> (siempre saliente: tus CPEs &rarr; el pais). Se muestran los
-mas repetidos y se indica cuantos mas hay.</li>
-<li><b>Zoom por pais:</b> <b>clic en un pais</b> (o en una fila del Top) lo <b>acerca</b> y abre debajo
-un panel fijo con ese mismo detalle, comodo de leer en el telefono. Puedes <b>arrastrar</b> para
-mover el mapa, usar <b>+</b> / <b>&minus;</b> o <b>Ctrl + rueda</b> para acercar, y <b>Vista completa</b>
-para volver al mundo entero.</li>
-<li><b>No pierde el zoom:</b> la pagina se recarga sola cada 5 min; el mapa <b>repone la vista</b>
-(el zoom, el desplazamiento y el pais que tenias abierto) en vez de volver al mundo entero. Se
-guarda por pestana del navegador, asi que otra pestana o una sesion nueva empiezan limpias.</li>
-<li><b>Cobertura:</b> el mapa reconoce los <b>174 paises</b> del atlas (todos los que trae el
-TopoJSON, mas Kosovo). Si un pais no tiene nombre traducido, se usa el del propio mapa.</li>
-<li><b>Solo destinos publicos:</b> las IPs privadas (tu red) o sin pais no cuentan en el mapa.</li>
-<li><b>El mapa</b> se dibuja en el navegador con un <b>TopoJSON</b> del mundo servido por el
-propio panel (viene en su imagen); no llama a ningun CDN externo.</li>
-<li>Si el mapa sale vacio, casi siempre es que la base GeoIP no se instalo (no habia internet
-en la instalacion). El panel <b>se auto-provisiona</b> al arrancar (baja el mapa y construye la
-base GeoIP en 2do plano si falta); tambien se reconstruye reiniciando el panel. Necesita salida a
-internet la primera vez.</li>
-</ul>
-<p class="muted" style="color:#52514e;font-size:12px">Mapa inspirado en
-<b>MikroDash</b> (MIT). Geometria del mundo: World Atlas / Natural Earth (dominio publico).</p>
-
-<h2>La VPN de cada punto</h2>
-<p>Cada MikroTik manda el espejo por <b>su propia VPN</b>, un contenedor OpenVPN solo para el, con su
-puerto y su red de tunel (el sensor es la <code>.1</code> y el MikroTik la <code>.2</code>). Es
-compatible con RouterOS 6.49+ y 7.</p>
-<ul>
-<li>La crea el alta del punto; los comandos para el router salen al terminar (con la clave, una sola vez)
-y en la ficha (sin la clave).</li>
-<li><b>La VPN solo trae el espejo y la API del propio router</b>: no enruta trafico de abonados, no lleva
-a otras redes y un punto no ve a otro.</li>
-<li>Cambiar, regenerar o borrar la VPN de un punto <b>no corta a los demas</b>.</li>
-<li><b>Regenerar la clave</b> (ficha del punto) corta la VPN de ese MikroTik hasta que pongas la nueva.</li>
-</ul>
-
 <h2>Instalar o recuperar el servidor</h2>
 <p>El servidor se instala con el instalador de IDS_MAAT (como root), que deja el orquestador
 (<code>ids-orq</code>), el panel y las reglas, y crea el primer administrador. Los MikroTik se agregan
 despues desde <b>Puntos</b>, no desde el instalador. Para recuperar en un servidor nuevo: instalar,
 restaurar <code>/srv/ids</code> y la clave maestra, y reconciliar (<code>ids-orq reconciliar</code>),
-que vuelve a levantar los contenedores de cada punto.</p>"""
+que vuelve a levantar los contenedores de cada punto.</p>
+
+<h2>Archivos y comandos utiles</h2>
+<p>Todo corre en contenedores: el panel, y por cada punto su VPN y su Suricata. Los comandos van en el
+servidor, como root.</p>
+<table><tr><th>Que</th><th>Donde / como</th></tr>
+<tr><td>Datos del panel</td><td><code>/srv/ids/panel/</code> (<code>conf/</code> configuracion,
+<code>estado/</code> registros, <code>log/</code>, <code>nodos/&lt;punto&gt;/</code> reportes de cada nodo)</td></tr>
+<tr><td>Eventos de cada punto</td><td><code>/srv/ids/datos/&lt;punto&gt;/eve.json</code> y
+<code>dns.json</code> (y sus rotados); el panel solo los lee</td></tr>
+<tr><td>Estado de los puntos</td><td><code>/srv/ids/run/estado.json</code> (lo escribe el orquestador cada 15 s)
+o <code>ids-orq estado</code></td></tr>
+<tr><td>Contenedores</td><td><code>docker ps</code>: <code>ids-core-panel</code>, y por punto
+<code>ids-&lt;punto&gt;-vpn</code> e <code>ids-&lt;punto&gt;-suricata</code></td></tr>
+<tr><td>Logs</td><td><code>docker logs ids-core-panel</code>; los de un punto, en su ficha (Logs) o con
+<code>ids-orq punto logs</code></td></tr>
+<tr><td>Reglas</td><td><code>/srv/ids/reglas/current/</code>; actualizar: <code>ids-orq reglas actualizar</code></td></tr>
+<tr><td>Base GeoIP del mapa</td><td><code>/srv/ids/panel/geo/</code> (IP&rarr;pais, offline)</td></tr>
+</table>"""
     # --- La documentacion se parte en PAGINAS (una por tema), agrupadas en categorias.
     # Antes era un unico muro con indice lateral: con 23 temas costaba encontrar nada.
     # Las categorias se marcan en el texto con <!--CAT:Nombre--> delante del <h2> que

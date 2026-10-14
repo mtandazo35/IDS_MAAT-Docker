@@ -65,8 +65,13 @@ def main():
 
     cats = re.findall(r'<div class=navcat>([^<]+)</div>', portada)
     check("los temas estan agrupados en categorias", len(cats) >= 5, cats)
-    for esperada in ("Primeros pasos", "Deteccion", "Cuarentena y MikroTik",
-                     "Operacion diaria", "Mantenimiento"):
+    # (adaptada) la guia se reordeno en 7 categorias y «Operacion diaria» se reparte entre
+    # Pantallas, Cuarentena y MikroTik y Ajustes: se exigen las 7 y en este orden.
+    NUEVAS = ("Primeros pasos", "Deteccion", "Pantallas", "Cuarentena y MikroTik",
+              "Puntos y VPN", "Ajustes", "Mantenimiento")
+    check("las categorias salen en este orden y sin repetirse",
+          [c for c in cats if c != "Todo"] == list(NUEVAS), cats)
+    for esperada in NUEVAS:
         check("categoria '%s' presente" % esperada, esperada in cats, cats)
 
     check("hay buscador", 'id=docq' in portada)
