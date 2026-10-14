@@ -1461,16 +1461,43 @@ def mk_add(ip, comment="", lista=None, ttl=None, router=None):
     tt = ttl if ttl is not None else d.get("TTL")
     s = mk_conectar(d)
     try:
-        words = ["/ip/firewall/address-list/add", f"=list={lst}", f"=address={ip}"]
-        if tt:
-            words.append(f"=timeout={tt}")
-        if comment:
-            words.append(f"=comment={comment[:120]}")
-        _mk_send(s, words)
-        ok, frases, err = _mk_reply(s)
-        if not ok and "already have such entry" in (err or "").lower():
-            return (True, "ya estaba en la lista")   # add idempotente: ya estaba -> ok
-        return (ok, err)
+        return _mk_add_en(s, ip, lst, tt, comment)
+    finally:
+        try: s.close()
+        except Exception: pass
+
+def _mk_add_en(s, ip, lst, tt="", comment=""):
+    """mk_add sobre una conexion ya abierta: las tandas (politicas, barrido, envio masivo) no
+    abren una conexion TLS + login por cada IP. Mismas reglas que mk_add: «already have such
+    entry» es exito (add idempotente). (ok, mensaje)."""
+    words = ["/ip/firewall/address-list/add", f"=list={lst}", f"=address={ip}"]
+    if tt:
+        words.append(f"=timeout={tt}")
+    if comment:
+        words.append(f"=comment={comment[:120]}")
+    _mk_send(s, words)
+    ok, frases, err = _mk_reply(s)
+    if not ok and "already have such entry" in (err or "").lower():
+        return (True, "ya estaba en la lista")   # add idempotente: ya estaba -> ok
+    return (ok, err)
+
+class PuntoEnBaja(Exception):
+    """El punto se esta dando de baja: no se le manda nada (auditoria ap2 H4)."""
+
+@contextlib.contextmanager
+def mk_sesion(router):
+    """Una conexion al router para una TANDA de operaciones: `with mk_sesion(r) as (s, d):`,
+    con d = cargar_mk_de(router) (lista, TTL...). Se usa con _mk_add_en y _mk_quitar_en.
+    Lanza PuntoEnBaja si el punto se esta dando de baja (como mk_add) y lo que lance
+    mk_conectar si no conecta. Cierra la conexion siempre."""
+    _r = _router_destino(router)
+    _p = (_r or {}).get("id", "")
+    if _p and (_p in _BAJAS or _en_prebaja(_p)):
+        raise PuntoEnBaja("el punto %s se esta dando de baja: no se le manda nada" % _p)
+    d = cargar_mk_de(_r)
+    s = mk_conectar(d)
+    try:
+        yield s, d
     finally:
         try: s.close()
         except Exception: pass
