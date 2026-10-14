@@ -9,7 +9,11 @@ hora aunque el abonado siguiera infectado. Ahora:
   - el reconciliador las libera cuando el CPE ya no es candidato (deja de atacar);
   - lo que ya estaba en el router con timeout pasa a permanente (si sigue atacando), una vez;
   - las listas de terceros (destinos malos, graduada) conservan su TTL: nadie las libera.
-Panel real con el MikroTik simulado (Panel de test_f1_cuarentena).
+  - una IP enviada A MANO (sin deteccion) sale cuando ya no tiene ninguna alerta como origen;
+    en banda baja todavia se queda. El reporte publica 'vigiladas' (las en cuarentena con
+    alertas, sin el tope de 80 de top_riesgo) para medirlo.
+Panel real con el MikroTik simulado (Panel de test_f1_cuarentena); el generador, de verdad
+(Entorno de test_hrep_nodos).
 """
 import os
 import sys
@@ -17,6 +21,7 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from test_f1_cuarentena import Panel  # noqa: E402
+from test_hrep_nodos import Entorno, alerta  # noqa: E402
 
 SIGUE, DEJO, OTRA = "10.0.0.41", "10.0.0.42", "10.0.0.43"
 LISTA, LISTA_DNS = "clientes-escaneo", "clientes-dns-malware"
@@ -102,6 +107,60 @@ class SinCaducidad(unittest.TestCase):
         self.r1.fallar_print = None
         self.d.reconciliar_cuarentena("p001")
         self.assertFalse(self.entrada(LISTA, SIGUE).get("timeout"))
+
+
+    # --- IPs enviadas a mano --------------------------------------------------------------
+    def manual(self, ip, **extra):
+        self.r1.cargar("/ip/firewall/address-list", [{"list": LISTA, "address": ip}])
+        self.d._registrar_enviados(self.d.MK_SENT, {"p001|" + ip: dict(
+            {"cuando": 1, "router": "p001", "lista": LISTA, "por": "ana", "manual": True}, **extra)}, [])
+
+    def test_manual_sale_cuando_ya_no_tiene_alertas_y_en_bajo_se_queda(self):
+        self.manual(SIGUE)          # sigue con alertas en banda baja
+        self.manual(DEJO)           # ya no tiene ninguna alerta
+        self.p.a.salida("p001", "cuarentena.json", {"candidatos": [], "dns_candidatos": [], "vigiladas": [
+            {"ip": SIGUE, "router": "p001", "riesgo": 12, "banda": "bajo", "alertas": 1}]})
+        self.d.reconciliar_cuarentena("p001")
+        self.assertIsNotNone(self.entrada(LISTA, SIGUE))
+        self.assertIsNone(self.entrada(LISTA, DEJO))
+        self.assertEqual(sorted(self.d.cargar_enviados(self.d.MK_SENT)), ["p001|" + SIGUE])
+
+    def test_manual_con_un_reporte_viejo_sin_vigiladas_no_se_toca(self):
+        self.manual(DEJO)
+        self.p.a.salida("p001", "cuarentena.json", {"candidatos": [], "dns_candidatos": []})
+        self.d.reconciliar_cuarentena("p001")
+        self.assertIsNotNone(self.entrada(LISTA, DEJO))
+
+    def test_lo_escrito_a_mano_en_el_router_no_se_libera(self):
+        self.manual(DEJO, por="mikrotik")
+        self.p.a.salida("p001", "cuarentena.json", {"candidatos": [], "dns_candidatos": [], "vigiladas": []})
+        self.d.reconciliar_cuarentena("p001")
+        self.assertIsNotNone(self.entrada(LISTA, DEJO))
+
+
+class Vigiladas(Entorno):
+    """El reporte publica las IPs en cuarentena que aun tienen alertas, SIN el tope de 80 de
+    top_riesgo: una enviada a mano con pocas alertas quedaba fuera del top y se habria soltado."""
+
+    def test_en_cuarentena_con_alertas_aunque_no_entre_en_el_top(self):
+        evs = []
+        for i in range(85):                          # 85 CPEs con mas alertas: llenan el top
+            evs += [alerta("10.0.0.%d" % (100 + i), "192.0.2.10", hace_s=60 + j, flow_id=5000 + i * 3 + j)
+                    for j in range(3)]
+        # una sola alerta de las que cuentan (las INFO / «Misc activity» no suman riesgo ni
+        # cuentan como actuar mal: esas no la mantendrian)
+        evs.append(alerta(SIGUE, "192.0.2.20", flow_id=9001))
+        self.eventos("p001", "eve.json", evs)
+        self.global_("estado/cuarentena-enviados.json", {
+            "p001|" + SIGUE: {"router": "p001", "manual": True},        # 1 alerta, fuera del top
+            "p001|" + DEJO: {"router": "p001", "manual": True}})        # sin alertas
+        self.ok("60", "--nodo", "p001")
+        cuar = self.salida("p001", "cuarentena.json")
+        self.assertNotIn(("p001", SIGUE), self.cpes(cuar, "top_riesgo"))
+        self.assertEqual(self.cpes(cuar, "vigiladas"), [("p001", SIGUE)])
+        v = cuar["vigiladas"][0]
+        self.assertEqual(v["alertas"], 1)
+        self.assertIn(v["banda"], ("bajo", "MEDIO", "ALTO"))
 
 
 if __name__ == "__main__":

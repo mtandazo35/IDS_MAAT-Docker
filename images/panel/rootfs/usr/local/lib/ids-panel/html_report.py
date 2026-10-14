@@ -2359,9 +2359,21 @@ try:
                       "cats_top": dict(cat_cnt_by_src.get(_s, Counter()).most_common(6)),
                       "riesgo": _sc, "banda": _bd, "desglose": _d2, "alertas": _t,
                       "destinos": len(dst_by_src.get(_s, ())), "puertos": len(dpt_by_src.get(_s, ()))})
+    # Las que estan EN CUARENTENA y siguen teniendo alertas como origen en la ventana, sin tope
+    # (top_riesgo se corta en los 80 con mas alertas). El panel suelta una IP enviada a mano
+    # solo cuando ya no aparece aqui: mientras siga «actuando mal», aunque sea en banda baja, se
+    # queda (el user, 2026-10-14). Sin esta lista no habia con que medirlo y se quedaban siempre.
+    vigiladas = []
+    for _s in sorted(_MK_ENVIADOS):
+        if by_src.get(_s, 0) <= 0 or not es_mi_cpe(_s):
+            continue
+        _sc, _bd, _c3, _d3 = riesgo(_s)
+        vigiladas.append({"ip": ip_de(_s), "router": rid_de(_s), "ultima": _ultima(_s),
+                          "riesgo": _sc, "banda": _bd, "alertas": by_src[_s]})
     _cq = {"generado": int(time.time()), "ventana_min": VENTANA_MIN,
            "umbral": UMBRAL_INFECTADO, "umbral_dns": UMBRAL_DNS,
-           "candidatos": cand, "dns_candidatos": cand_dns, "top_riesgo": top_r}
+           "candidatos": cand, "dns_candidatos": cand_dns, "top_riesgo": top_r,
+           "vigiladas": vigiladas}
     _tmpq = os.path.join(OUTDIR, "cuarentena.json.tmp")
     with open(_tmpq, "w", encoding="utf-8") as _f:
         json.dump(_cq, _f)

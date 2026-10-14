@@ -2692,6 +2692,7 @@ def reconciliar_cuarentena(pid=None):
     if not data:
         return                                 # sin reporte de este punto no se libera a nadie
     pendientes = []                            # (registro, clave, lista) a quitar del router
+    vigiladas = {clave_cpe(c.get("ip", ""), c.get("router", "") or pid) for c in data.get("vigiladas", [])}
     for cand_key, sent_path, list_key in (("candidatos", MK_SENT, "LIST"),
                                           ("dns_candidatos", MK_SENT_DNS, "LIST_DNS")):
         # El registro va por identidad (router, IP); los candidatos traen la IP y su nodo
@@ -2702,9 +2703,20 @@ def reconciliar_cuarentena(pid=None):
         for k in list(env.keys()):
             if rid_de(k) != pid:
                 continue                       # de otro punto: no es asunto de este ciclo
-            if env[k].get("manual") or env[k].get("pol"):
-                continue                       # manual o por politica -> los gestiona otro, no el auto
-            if k in activas:
+            v = env[k] or {}
+            if v.get("pol"):
+                continue                       # por politica -> la gestiona aplicar_politicas
+            if v.get("manual"):
+                # Enviada a mano sin que el panel la detectara: no es candidato, asi que se mide
+                # con 'vigiladas' (las en cuarentena que aun tienen alertas, en cualquier banda).
+                # Sale cuando ya no actua mal; en banda baja todavia se queda (el user, 2026-10-14).
+                # Lo escrito a mano en el router («por» mikrotik) y un reporte viejo sin
+                # 'vigiladas' no se tocan: no hay con que saber si dejo de atacar.
+                if v.get("por") == "mikrotik" or "vigiladas" not in data:
+                    continue
+                if k in activas or k in vigiladas:
+                    continue
+            elif k in activas:
                 continue                       # sigue atacando -> se queda (entrada permanente)
             # de la lista donde se puso DE VERDAD (la de su categoria, guardada al mandarla), no
             # la vieja unica; y solo se suelta si el router confirma (auditoria A-05)
@@ -10137,8 +10149,8 @@ def _card_listas(m):
         "<p class=sub2 style='margin:0 0 10px'>La cuarentena <b>no caduca por tiempo</b>: la IP sale "
         "sola del router cuando el abonado <b>deja de enviar virus</b> (ya no aparece como infectado), "
         "o antes si alguien pulsa <b>Quitar</b> en Cuarentena. Lo mismo para la lista de DNS sospechoso. "
-        "Una IP enviada a mano sin que el panel la detectara se queda hasta que se quite, porque no hay "
-        "con que medir cuando deja de atacar.</p>")
+        "Una IP enviada a mano (sin que el panel la detectara) sale cuando ya <b>no tiene ninguna "
+        "alerta</b>: mientras siga actuando mal, aunque sea con riesgo bajo, se queda.</p>")
 
 def _card_politicas(m):
     """Sub-bloque de la tarjeta MikroTik: politica por CLASE de abuso."""
@@ -12160,7 +12172,9 @@ contacto con un C2 fichado), sin esperar los 5&nbsp;min. Es conservador (solo in
 exclusiones, con <b>anti-rebote de 60&nbsp;s</b> por CPE. MEDIO/BAJO siguen en el ciclo de 5&nbsp;min.</li>
 <li><b>Sin caducidad:</b> las IPs de abonados entran sin TTL y el panel las libera cuando el CPE deja de
 atacar (ya no sale como infectado). No es una opcion: con un TTL la IP salia a la hora aunque el abonado
-siguiera infectado. Las que estaban con TTL de antes pasan a permanentes en la siguiente vuelta.</li>
+siguiera infectado. Las que estaban con TTL de antes pasan a permanentes en la siguiente vuelta. Una IP
+enviada a mano sin deteccion sale cuando ya no tiene ninguna alerta como origen; en riesgo bajo todavia se
+queda.</li>
 </ul>
 
 <h2>Acciones por categoria: lo que el router hace con cada lista</h2>
