@@ -99,7 +99,7 @@ def main():
     check("los TTL ya no estan: la cuarentena no caduca por tiempo",
           "name=ttl" not in h3 and "name=ttl_dns" not in h3, "")
     check("y el apartado dice cuando sale un abonado",
-          "Cuando sale un abonado de la cuarentena</h3>" in h3 and "deja de enviar virus" in h3, "")
+          "Cuándo sale un abonado de la cuarentena</h3>" in h3 and "deja de enviar virus" in h3, "")
 
     # La clave NO puede borrarse al guardar: el formulario ya no la manda, asi que la ruta
     # tiene que conservar el valor existente (es lo que libera entradas antiguas).
@@ -197,7 +197,7 @@ def main():
     # (adaptada, 2026-10-14) la tarjeta es «MikroTik — cuarentena» y la conexion queda como un
     # resumen por nodo con enlace a su ficha
     check("la tarjeta separa la conexion de lo demas",
-          "Conexion de cada MikroTik" in DASH and "MikroTik &mdash; cuarentena" in DASH, "")
+          "Conexión de cada MikroTik" in DASH and "MikroTik &mdash; cuarentena" in DASH, "")
     check("y las listas tienen su propio apartado",
           "Listas por tipo de abuso" in DASH, "")
     check("que explica por que son distintas",

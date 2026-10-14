@@ -5880,28 +5880,28 @@ def telegram_probar(tok):
     Antes solo se miraba la forma (numero:clave) y un token revocado se guardaba igual."""
     tok = (tok or "").strip()
     if not RE_TG_TOKEN.match(tok):
-        return False, "no tiene la forma de un token de bot (numero:clave, el que da @BotFather)", ""
+        return False, "no tiene la forma de un token de bot (número:clave, el que da @BotFather)", ""
     ok, res, cod = _tg_api(tok, "getMe")
     if ok and isinstance(res, dict):
-        return True, "valido", "@" + str(res.get("username") or "")
+        return True, "válido", "@" + str(res.get("username") or "")
     if cod in (401, 404):        # Telegram da 401 o 404 a un token inexistente o revocado
-        return False, "Telegram rechazo el token (%s)" % res, ""
+        return False, "Telegram rechazó el token (%s)" % res, ""
     return None, "no se pudo comprobar ahora (%s)" % res, ""
 
 def telegram_chat_probar(tok, chat):
     """El bot puede escribir en ese chat? getChat (no manda nada). (True|False|None, mensaje)."""
     if not RE_TG_CHAT.match(chat or ""):
-        return False, "el Chat ID no es valido (un numero, o @canal)"
+        return False, "el Chat ID no es válido (un número, o @canal)"
     ok, res, cod = _tg_api(tok, "getChat", {"chat_id": chat})
     if ok and isinstance(res, dict):
         nom = res.get("title") or " ".join(x for x in (res.get("first_name"), res.get("last_name")) if x) \
             or res.get("username") or str(res.get("id", ""))
         return True, "chat «%s» (%s)" % (nom, res.get("type", "?"))
     if cod in (400, 403):
-        return False, ("el bot no tiene acceso a ese chat (%s): escribele al bot o anadelo al grupo, "
+        return False, ("el bot no tiene acceso a ese chat (%s): escríbele al bot o añádelo al grupo, "
                        "y usa «Detectar Chat ID»" % res)
     if cod in (401, 404):
-        return False, "Telegram rechazo el token (%s)" % res
+        return False, "Telegram rechazó el token (%s)" % res
     return None, "no se pudo comprobar el chat ahora (%s)" % res
 
 def telegram_detectar_chats(tok):
@@ -5910,9 +5910,9 @@ def telegram_detectar_chats(tok):
     ok, res, cod = _tg_api(tok, "getUpdates", {"limit": 100, "timeout": 0})
     if not ok:
         if cod == 409:
-            return [], "el bot tiene un webhook puesto y Telegram no deja leer los mensajes asi"
+            return [], "el bot tiene un webhook puesto y Telegram no deja leer los mensajes así"
         if cod in (401, 404):
-            return [], "Telegram rechazo el token (%s)" % res
+            return [], "Telegram rechazó el token (%s)" % res
         return [], "no se pudo preguntar a Telegram (%s)" % res
     vistos = {}
     for u in res or []:
@@ -5925,8 +5925,8 @@ def telegram_detectar_chats(tok):
             or c.get("username") or str(c["id"])
         vistos[str(c["id"])] = {"id": str(c["id"]), "nombre": str(nom)[:60], "tipo": str(c.get("type", ""))}
     if not vistos:
-        return [], ("todavia nadie le ha escrito al bot: abre el bot en Telegram y mandale un mensaje "
-                    "(o escribe en el grupo donde lo anadiste) y vuelve a pulsar")
+        return [], ("todavía nadie le ha escrito al bot: abre el bot en Telegram y mándale un mensaje "
+                    "(o escribe en el grupo donde lo añadiste) y vuelve a pulsar")
     return list(vistos.values()), "ok"
 
 def migrar_secretos():
@@ -6042,7 +6042,7 @@ def probar_clave(serv, clave="", chat=""):
     else:
         e, msg, bot = telegram_probar(clave)
         if e is True:
-            msg = "token valido: bot %s" % bot
+            msg = "token válido: bot %s" % bot
             chat = (chat or "").strip() or telegram_chat()
             if chat:
                 ec, mc = telegram_chat_probar(clave, chat)
@@ -10370,7 +10370,7 @@ def _card_listas(m):
         "esto vuelve a cargar las IPs que el panel tiene en cuarentena. Las que ya estan se omiten.</div></div>"
         # Sin campos de TTL (2026-10-14): la cuarentena de un abonado no caduca por tiempo, sale
         # cuando deja de atacar. LIST y LIST_DNS tampoco se enseñan: ningun envio nuevo va ahi.
-        "<h3 style='margin:18px 0 2px;font-size:15px'>Cuando sale un abonado de la cuarentena</h3>"
+        "<h3 style='margin:18px 0 2px;font-size:15px'>Cuándo sale un abonado de la cuarentena</h3>"
         "<p class=sub2 style='margin:0 0 10px'>La cuarentena <b>no caduca por tiempo</b>: la IP sale "
         "sola del router cuando el abonado <b>deja de enviar virus</b> (ya no aparece como infectado), "
         "o antes si alguien pulsa <b>Quitar</b> en Cuarentena. Lo mismo para la lista de DNS sospechoso. "
@@ -10630,7 +10630,7 @@ def perfil_page(msg="", ok=False, edit_user=None):
             e = _cest.get(serv) or {}
             cuando = time.strftime("%d/%m %H:%M", time.localtime(e["ts"])) if e.get("ts") else ""
             if e.get("estado") == "valida":
-                return ("<span class='fchip fok' title='%s'>valida &middot; comprobada %s</span>"
+                return ("<span class='fchip fok' title='%s'>válida &middot; comprobada %s</span>"
                         % (esc(e.get("msg", "")), cuando))
             if e.get("estado") == "invalida":
                 return ("<span class='fchip fmal' title='%s'>rechazada &middot; %s</span>"
@@ -10645,7 +10645,7 @@ def perfil_page(msg="", ok=False, edit_user=None):
                                 "onclick=\"window.fProbar&&fProbar(this,'%s')\">Comprobar</button></div>"
                                 "<div class=fres></div></form>" % serv, 1)
             return ("<div class=fsrv id=%s><div class=fsrv-h><b>%s</b><span class=fsub>%s</span>%s</div>"
-                    "<p class=fdesc>%s</p><div class=fcomo>Como sacar la clave</div><ol class=fpasos>%s</ol>%s</div>"
+                    "<p class=fdesc>%s</p><div class=fcomo>Cómo sacar la clave</div><ol class=fpasos>%s</ol>%s</div>"
                     % (ident, titulo, sub, _chip(serv, ok, si, no), para,
                        "".join("<li>%s</li>" % p for p in pasos), form))
 
@@ -10655,29 +10655,29 @@ def perfil_page(msg="", ok=False, edit_user=None):
             "IPs y dominios de servidores de control (C2) y de malware: respaldan el riesgo de cada abonado.",
             ["Entra en " + _ir("abusech", "auth.abuse.ch") + " con tu cuenta de X, LinkedIn, Google o GitHub "
              "(no hace falta crear otra).",
-             "Abre " + _ir("abusech_perfil", "tu perfil") + " (solo funciona despues de entrar) y pulsa "
-             "<b>Save profile</b>. Conviene vincular un segundo metodo de entrada, por si uno deja de funcionar.",
-             "En el apartado <b>Optional</b> de tu perfil crea la <b>Auth-Key</b>, copiala y pegala aqui. La misma "
+             "Abre " + _ir("abusech_perfil", "tu perfil") + " (solo funciona después de entrar) y pulsa "
+             "<b>Save profile</b>. Conviene vincular un segundo método de entrada, por si uno deja de funcionar.",
+             "En el apartado <b>Optional</b> de tu perfil crea la <b>Auth-Key</b>, cópiala y pégala aquí. La misma "
              "clave sirve para todos los servicios de abuse.ch."],
             "<form method=post action='/feeds'><div class=field><label>Auth-Key de abuse.ch</label>"
             "<input type=password name=authkey autocomplete=new-password placeholder='"
-            + ("dejar vacio para conservar" if auth_ok else "pega tu Auth-Key") + "'>"
-            "<div class=hint>Al guardar se <b>valida contra abuse.ch</b>: una clave invalida se rechaza. "
+            + ("dejar vacío para conservar" if auth_ok else "pega tu Auth-Key") + "'>"
+            "<div class=hint>Al guardar se <b>valida contra abuse.ch</b>: una clave inválida se rechaza. "
             "Se guarda solo en este servidor y <b>no se vuelve a mostrar</b>." + _quitar + "</div></div>"
             "<div class=actions><button class=primary type=submit>Guardar Auth-Key</button></div></form>")
         b_aidb = _bloque(
             "feed-aidb", "AbuseIPDB", "lista de atacantes y Consultar IP", aidb_configurada(),
-            "La lista masiva de atacantes (fuente <code>abuseipdb</code> de la tabla) y la pestana "
+            "La lista masiva de atacantes (fuente <code>abuseipdb</code> de la tabla) y la pestaña "
             "<b>Consultar IP</b>, que dice que ataques se le denuncian a una IP. Gratis: <b>%s</b> consultas "
-            "al dia (3.000 si verificas tu dominio como webmaster)." % format(AIDB_CUOTA, ","),
+            "al día (3.000 si verificas tu dominio como webmaster)." % format(AIDB_CUOTA, ","),
             [_ir("aidb_registro", "Crea la cuenta") + " (gratis) y confirma el correo.",
              "Abre " + _ir("aidb_cuenta", "tus claves de API") + " (si no has entrado, te pide iniciar "
-             "sesion y despues te lleva).",
-             "Pulsa <b>Create Key</b>, copiala y pegala aqui. Ojo: generar una clave nueva anula la anterior."],
+             "sesión y después te lleva).",
+             "Pulsa <b>Create Key</b>, cópiala y pégala aquí. Ojo: generar una clave nueva anula la anterior."],
             "<form method=post action='/feeds/aidb'><div class=field><label>Clave de AbuseIPDB</label>"
             "<input type=password name=aidbkey autocomplete=new-password placeholder='"
-            + ("dejar vacio para conservar" if aidb_configurada() else "pega tu clave de AbuseIPDB") + "'>"
-            "<div class=hint>Al guardar se <b>valida contra AbuseIPDB</b>: una clave invalida se rechaza."
+            + ("dejar vacío para conservar" if aidb_configurada() else "pega tu clave de AbuseIPDB") + "'>"
+            "<div class=hint>Al guardar se <b>valida contra AbuseIPDB</b>: una clave inválida se rechaza."
             + _quitar + "</div></div>"
             "<div class=actions><button class=primary type=submit>Guardar clave de AbuseIPDB</button></div></form>"
             # la denuncia es de AbuseIPDB: antes estaba debajo de Telegram y no se entendia de que era
@@ -10685,23 +10685,23 @@ def perfil_page(msg="", ok=False, edit_user=None):
             "<label class=chk><input type=checkbox name=reportar"
             + (" checked" if aidb_reportar_activo() else "")
             + "> Permitir <b>denunciar</b> atacantes entrantes a AbuseIPDB</label>"
-            "<div class=hint>Apagado por defecto. Con esto activado, cada atacante de la seccion "
-            "<b>Ataques entrantes</b> muestra un boton <b>Denunciar</b>; <b>nunca</b> se denuncia solo, "
-            "siempre lo pulsa una persona. Es una accion <b>publica y a tu nombre</b>. Nunca se denuncian "
+            "<div class=hint>Apagado por defecto. Con esto activado, cada atacante de la sección "
+            "<b>Ataques entrantes</b> muestra un botón <b>Denunciar</b>; <b>nunca</b> se denuncia solo, "
+            "siempre lo pulsa una persona. Es una acción <b>pública y a tu nombre</b>. Nunca se denuncian "
             "IPs de tus redes ni de la lista 'Nunca bloquear', el comentario va <b>sin ninguna IP</b> "
             "(ni la tuya) y la misma IP no se repite antes de 24 h.</div>"
             "<div class=actions><button class=primary type=submit>Guardar</button></div></form>")
         b_groq = _bloque(
-            "feed-groq", "Groq", "analisis con IA (opcional)", groq_configurada(),
-            "Explica la evidencia en lenguaje llano y senala falsos positivos conocidos. <b>La IA no corta "
-            "a nadie</b>: lee y recomienda; el corte lo sigue decidiendo una persona o tu politica.",
+            "feed-groq", "Groq", "análisis con IA (opcional)", groq_configurada(),
+            "Explica la evidencia en lenguaje llano y señala falsos positivos conocidos. <b>La IA no corta "
+            "a nadie</b>: lee y recomienda; el corte lo sigue decidiendo una persona o tu política.",
             ["Entra en " + _ir("groq", "console.groq.com") + " (cuenta gratis).",
              "Abre " + _ir("groq_claves", "API Keys") + " y pulsa <b>Create API Key</b>.",
-             "Copiala en ese momento (Groq <b>no la vuelve a mostrar</b>) y pegala aqui. Empieza por "
+             "Cópiala en ese momento (Groq <b>no la vuelve a mostrar</b>) y pégala aquí. Empieza por "
              "<code>gsk_</code>."],
             "<form method=post action='/feeds/groq'><div class=field><label>Clave de Groq</label>"
             "<input type=password name=groqkey autocomplete=new-password placeholder='"
-            + ("dejar vacio para conservar" if groq_configurada() else "pega tu clave de Groq (gsk_...)") + "'>"
+            + ("dejar vacío para conservar" if groq_configurada() else "pega tu clave de Groq (gsk_...)") + "'>"
             "<div class=hint>Al guardar se <b>valida contra Groq</b> y se cargan los modelos de tu cuenta."
             + _quitar + "</div></div>"
             + _groq_estado_linea()
@@ -10710,14 +10710,14 @@ def perfil_page(msg="", ok=False, edit_user=None):
         b_tg = _bloque(
             "feed-telegram", "Telegram", "avisos e informe diario", telegram_configurado() and bool(telegram_chat()),
             "Te manda los avisos de cuarentena y el informe diario a un chat o grupo de Telegram.",
-            ["Abre " + _ir("botfather", "@BotFather") + " en Telegram, mandale <code>/newbot</code> y elige un "
+            ["Abre " + _ir("botfather", "@BotFather") + " en Telegram, mándale <code>/newbot</code> y elige un "
              "nombre y un usuario que termine en <code>bot</code>.",
-             "Copia el <b>token</b> que te da (numero:clave) y pegalo abajo.",
-             "Abre tu bot y mandale cualquier mensaje (o anadelo al grupo y escribe ahi). Despues pulsa "
-             "<b>Detectar Chat ID</b> y elige el chat. " + _ir("telegram_guia", "Guia oficial de bots")],
+             "Copia el <b>token</b> que te da (número:clave) y pégalo abajo.",
+             "Abre tu bot y mándale cualquier mensaje (o añádelo al grupo y escribe ahí). Después pulsa "
+             "<b>Detectar Chat ID</b> y elige el chat. " + _ir("telegram_guia", "Guía oficial de bots")],
             "<form method=post action='/telegram'><div class=field><label>Token del bot</label>"
             "<input type=password name=tgtoken id=tgtoken autocomplete=new-password placeholder='"
-            + ("dejar vacio para conservar" if telegram_configurado() else "pega el token de @BotFather") + "'>"
+            + ("dejar vacío para conservar" if telegram_configurado() else "pega el token de @BotFather") + "'>"
             "</div><div class=field><label>Chat ID</label>"
             "<div style='display:flex;gap:8px;flex-wrap:wrap;align-items:center'>"
             f"<input type=text name=tgchat id=tgchat value=\"{esc(telegram_chat())}\" autocomplete=off "
@@ -10738,10 +10738,10 @@ def perfil_page(msg="", ok=False, edit_user=None):
             "b.disabled=true;fetch('/feeds/probar',{method:'POST',credentials:'same-origin',"
             "headers:{'Content-Type':'application/x-www-form-urlencoded'},body:d.toString()})"
             ".then(function(r){return r.json();}).then(function(j){b.disabled=false;"
-            "var t={valida:'\u2705 Valida',invalida:'\u26D4 No es valida',sin_comprobar:'\u26A0 No se pudo comprobar',"
+            "var t={valida:'\u2705 Válida',invalida:'\u26D4 No es válida',sin_comprobar:'\u26A0 No se pudo comprobar',"
             "sin_clave:'\u2139 Sin clave'}[j.estado]||j.estado;"
             "o.className='fres '+(j.estado==='valida'?'fresok':j.estado==='invalida'?'fresmal':'fresno');"
-            "o.textContent=t+(j.guardada?' (la guardada)':' (la pegada, aun sin guardar)')+': '+(j.msg||'');})"
+            "o.textContent=t+(j.guardada?' (la guardada)':' (la pegada, aún sin guardar)')+': '+(j.msg||'');})"
             ".catch(function(){b.disabled=false;o.textContent='No se pudo preguntar al panel.';});}</script>")
         js_tg = (
             "<script>function tgDetectar(b){var o=document.getElementById('tgchats'),"
@@ -10750,7 +10750,7 @@ def perfil_page(msg="", ok=False, edit_user=None):
             "fetch('/telegram/detectar',{method:'POST',credentials:'same-origin',"
             "headers:{'Content-Type':'application/x-www-form-urlencoded'},body:d.toString()})"
             ".then(function(r){return r.json();}).then(function(j){b.disabled=false;o.textContent='';"
-            "if(!j.ok){o.textContent=j.msg||'No se encontro ningun chat';return;}"
+            "if(!j.ok){o.textContent=j.msg||'No se encontró ningún chat';return;}"
             "o.appendChild(document.createTextNode('Elige el chat: '));"
             "j.chats.forEach(function(c){var x=document.createElement('button');x.type='button';"
             "x.className='fbtn';x.style.margin='2px 4px';x.textContent=c.nombre+' ('+c.tipo+') '+c.id;"
@@ -10776,18 +10776,18 @@ def perfil_page(msg="", ok=False, edit_user=None):
             "background:#eef4fd;color:#1c5cab;border:1px solid #d6e2f2;font-weight:600;font-size:12.5px;"
             "text-decoration:none;cursor:pointer}.fbtn:hover{background:#dceafb;color:#1c5cab}"
             ".fcfg{margin-left:6px;font-size:12px}</style>"
-            "<section class=card><h2>Reputacion / feeds</h2>"
+            "<section class=card><h2>Reputación / feeds</h2>"
             "<p class=sub2>Las claves de cada servicio. Cada una se <b>comprueba con su servicio al guardarla</b> "
             "y se guarda solo en este servidor (permisos 600); <b>no se vuelve a mostrar</b>. "
-            "<b>Comprobar</b> prueba la clave que pegaste sin guardarla (con el campo vacio, la guardada). "
-            "Los botones &#8599; abren la pagina del servicio en otra pestana.</p>"
+            "<b>Comprobar</b> prueba la clave que pegaste sin guardarla (con el campo vacío, la guardada). "
+            "Los botones &#8599; abren la página del servicio en otra pestaña.</p>"
             + b_abusech + b_aidb + b_groq + b_tg + js_probar + js_tg +
             "<div style='display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-top:14px'>"
             "<form method=post action='/feeds/actualizar' style='margin:0'>"
             "<button class=cancelbtn type=submit>Actualizar feeds ahora</button></form>"
-            f"<span class=hint>Ultima corrida del actualizador: {genT}</span></div>"
+            f"<span class=hint>Última corrida del actualizador: {genT}</span></div>"
             "<table class=feedt><thead><tr><th>Fuente</th><th>Estado</th><th>Vigente</th>"
-            "<th class=num>Indicadores</th><th>Ultima valida</th><th>Caduca</th></tr></thead>"
+            "<th class=num>Indicadores</th><th>Última válida</th><th>Caduca</th></tr></thead>"
             f"<tbody>{filas}</tbody></table></section>")
     # --- tarjeta: conexion al MikroTik para la cuarentena (solo admin) ---
     # --- la VPN de cada MikroTik es la de su punto: se gestiona en Puntos (solo admin) ---
@@ -10833,13 +10833,13 @@ def perfil_page(msg="", ok=False, edit_user=None):
                 api = "<span class='mkcx-ok'>configurada</span> <span class=mkcx-u>(%s)</span>" % esc(r["USER"])
             else:
                 api = "<span class='mkcx-no'>falta usuario o clave</span>"
-            env = ("<span class='mkcx-ok'>si</span>" if r.get("ENABLED") == "1"
+            env = ("<span class='mkcx-ok'>sí</span>" if r.get("ENABLED") == "1"
                    else "<span class=mkcx-u>no (solo sugerencias)</span>")
             return ("<tr><td><b>%s</b> <span class=mkcx-u>%s</span></td><td>%s</td><td>%s</td>"
                     "<td style='text-align:right'><a href='/puntos/%s#api'>Configurar en Puntos &rarr;</a></td></tr>"
                     % (esc(r.get("nombre") or pid), esc(pid), api, env, esc(pid)))
         conexion_mk = (
-            "<h3 style='margin:4px 0 6px;font-size:15px'>Conexion de cada MikroTik</h3>"
+            "<h3 style='margin:4px 0 6px;font-size:15px'>Conexión de cada MikroTik</h3>"
             "<style>.mkcx{width:100%;border-collapse:collapse;font-size:13px;margin-bottom:6px}"
             ".mkcx th{text-align:left;font-weight:600;color:#52514e;border-bottom:1px solid #e5e8ec;padding:6px 8px}"
             ".mkcx td{border-bottom:1px solid #eef0f3;padding:7px 8px}.mkcx-ok{color:#1a7f37;font-weight:600}"
@@ -10847,15 +10847,15 @@ def perfil_page(msg="", ok=False, edit_user=None):
             "<table class=mkcx><tr><th>Nodo</th><th>API</th><th>Enviar IPs al router</th><th></th></tr>"
             + "".join(_fila_cx(r) for r in rs_mk) + "</table>"
             "<div class=hint>El usuario y la clave de la API, el permiso para enviar IPs, la prueba de "
-            "conexion y la huella del certificado estan en la ficha de cada punto (apartado <b>API</b>).</div>"
+            "conexión y la huella del certificado están en la ficha de cada punto (apartado <b>API</b>).</div>"
         ) if rs_mk else (
-            "<p class=sub2><b>Todavia no hay puntos.</b> Da de alta el primer MikroTik en "
-            "<a href='/puntos'>Puntos</a>; su conexion (API) se configura en su ficha.</p>")
+            "<p class=sub2><b>Todavía no hay puntos.</b> Da de alta el primer MikroTik en "
+            "<a href='/puntos'>Puntos</a>; su conexión (API) se configura en su ficha.</p>")
         card_mk = (
             "<section class=card><h2>MikroTik &mdash; cuarentena</h2>"
-            "<p class=sub2>Listas, acciones, caducidad y politicas de la cuarentena, <b>comunes a todos "
-            "los nodos</b>. El panel pone cada CPE infectado en la <b>address-list</b> de su categoria y "
-            "la accion que elijas abajo decide que hace el router con esa lista.</p>"
+            "<p class=sub2>Listas, acciones, caducidad y políticas de la cuarentena, <b>comunes a todos "
+            "los nodos</b>. El panel pone cada CPE infectado en la <b>address-list</b> de su categoría y "
+            "la acción que elijas abajo decide qué hace el router con esa lista.</p>"
             + conexion_mk +
             "<form method=post action='/mikrotik'>"
             + _card_listas(m) +
@@ -11369,7 +11369,7 @@ def perfil_page(msg="", ok=False, edit_user=None):
              + _tile("mikrotik", "MikroTik", _IC_RTR, bool(card_mk))
              + (_tile_html("puntos", "Puntos", _IC_VPN, "/puntos") if es_admin else "")
              + _tile("dns", "DNS", _IC_DNS, bool(card_dns))
-             + _tile("feeds", "Reputacion", _IC_FEED, bool(card_feeds))
+             + _tile("feeds", "Reputación", _IC_FEED, bool(card_feeds))
              + _tile("update", "Version", _IC_DL, bool(card_update))
              + _tile("log", "Accesos", _IC_LOG, es_admin)
              + _tile("bitacora", "Bitacora", _IC_AUDIT, es_admin)
@@ -12374,8 +12374,8 @@ maestra del servidor y no se vuelve a mostrar.</p>
 <p>Alternativas segun tu politica: en vez de <code>action=drop</code> puedes redirigir a un portal,
 marcar en <code>mangle</code> para limitar velocidad, o registrar. La <b>address-list</b> por defecto
 es <code>suricata-cuarentena</code> (cambiala en Ajustes si usas otro nombre). Las entradas entran
-<b>sin caducidad</b> y el panel las <b>saca solo cuando el abonado deja de enviar virus</b>; tambien
-puedes quitarlas a mano con el boton <b>Quitar</b> de la pestana.</p>
+<b>sin caducidad</b> y el panel las <b>saca solo cuando el abonado deja de enviar virus</b>; también
+puedes quitarlas a mano con el botón <b>Quitar</b> de la pestaña.</p>
 
 <h3>4) Configurar y probar en el panel</h3>
 <ol>
@@ -12575,9 +12575,9 @@ ligero cada minuto envia <b>ya</b> a los CPEs con <b>infeccion confirmada</b> (f
 contacto con un C2 fichado), sin esperar los 5&nbsp;min. Es conservador (solo infeccion confirmada), respeta allowlist, destinos de confianza y
 exclusiones, con <b>anti-rebote de 60&nbsp;s</b> por CPE. MEDIO/BAJO siguen en el ciclo de 5&nbsp;min.</li>
 <li><b>Sin caducidad:</b> las IPs de abonados entran sin TTL y el panel las libera cuando el CPE deja de
-atacar (ya no sale como infectado). No es una opcion: con un TTL la IP salia a la hora aunque el abonado
+atacar (ya no sale como infectado). No es una opción: con un TTL la IP salía a la hora aunque el abonado
 siguiera infectado. Las que estaban con TTL de antes pasan a permanentes en la siguiente vuelta. Una IP
-enviada a mano sin deteccion sale cuando ya no tiene ninguna alerta como origen; en riesgo bajo todavia se
+enviada a mano sin detección sale cuando ya no tiene ninguna alerta como origen; en riesgo bajo todavía se
 queda.</li>
 </ul>
 
@@ -15983,7 +15983,7 @@ def ficha_page(ip, embed=False):
                        f"<td class=mono>{_fecha(r.get('expira', 0))}</td>"
                        f"<td>{'vigente' if r.get('vigente') else '<b>CADUCADA</b>'}</td></tr>")
             reputacion = ("<table class=fichat><thead><tr><th>IP/CIDR</th><th>Fuente</th><th>Categoria</th>"
-                          f"<th>Ultima valida</th><th>Caduca</th><th>Estado</th></tr></thead><tbody>{co}</tbody></table>")
+                          f"<th>Última válida</th><th>Caduca</th><th>Estado</th></tr></thead><tbody>{co}</tbody></table>")
         else:
             reputacion = "<span class=rowmeta>Ningun destino aparece en las listas de reputacion.</span>"
         # Corroboracion
@@ -18091,7 +18091,7 @@ class H(BaseHTTPRequestHandler):
                 return self._html(perfil_page("Sin cambios en la Auth-Key.", ok=True))
             _otro = clave_de_otro(ak, "abusech")
             if _otro:
-                return self._html(perfil_page("No se guardo: eso parece la clave de %s, no la Auth-Key de "
+                return self._html(perfil_page("No se guardó: eso parece la clave de %s, no la Auth-Key de "
                                               "abuse.ch (se crea en auth.abuse.ch)." % _otro, ok=False))
             estado, det = feeds_auth_probar(ak)      # validar ANTES de guardar (rechaza basura)
             if estado is False:
@@ -18272,8 +18272,8 @@ class H(BaseHTTPRequestHandler):
                 return self._html(perfil_page("Sin cambios en la clave de AbuseIPDB.", ok=True))
             _otro = clave_de_otro(k, "aidb")
             if _otro:
-                return self._html(perfil_page("No se guardo: eso parece la clave de %s, no la de AbuseIPDB "
-                                              "(se crea en abuseipdb.com/account, pestana API Settings)." % _otro,
+                return self._html(perfil_page("No se guardó: eso parece la clave de %s, no la de AbuseIPDB "
+                                              "(se crea en abuseipdb.com/account/api/keys)." % _otro,
                                               ok=False))
             estado, det = aidb_probar(k)          # validar ANTES de guardar (rechaza basura)
             if estado is False:
@@ -18318,7 +18318,7 @@ class H(BaseHTTPRequestHandler):
             if not k.strip().startswith("gsk_"):
                 _otro = clave_de_otro(k, "groq")
                 return self._html(perfil_page(
-                    "No se guardo: " + ("eso parece la clave de %s; " % _otro if _otro else "")
+                    "No se guardó: " + ("eso parece la clave de %s; " % _otro if _otro else "")
                     + "las claves de Groq empiezan por gsk_ (se crean en console.groq.com/keys).", ok=False))
             estado, det, modelos = groq_probar(k)     # validar ANTES de guardar
             if estado is False:
@@ -18351,15 +18351,15 @@ class H(BaseHTTPRequestHandler):
             tok = (q.get("tgtoken", [""])[0] or "").strip()
             chat = (q.get("tgchat", [""])[0] or "").strip()[:40]
             if chat and not RE_TG_CHAT.match(chat):
-                return self._html(perfil_page("El chat ID no es valido (un numero, o @canal).", ok=False))
+                return self._html(perfil_page("El chat ID no es válido (un número, o @canal).", ok=False))
             if tok == "BORRAR":
                 telegram_set(token="", chat=chat)
                 claves_estado_set("telegram", None)
                 bitacora("CONFIG-TELEGRAM", "token borrado")
                 return self._html(perfil_page("Token de Telegram borrado.", ok=True))
             if tok and not RE_TG_TOKEN.match(tok):
-                return self._html(perfil_page("No se guardo: eso no parece un token de bot de Telegram "
-                                              "(numero:clave, el que da @BotFather).", ok=False))
+                return self._html(perfil_page("No se guardó: eso no parece un token de bot de Telegram "
+                                              "(número:clave, el que da @BotFather).", ok=False))
             # Se pregunta a Telegram ANTES de guardar (antes solo se miraba la forma: un token
             # revocado o un chat donde el bot no esta se guardaban y los avisos no llegaban nunca)
             _avisos_tg = []
@@ -18368,7 +18368,7 @@ class H(BaseHTTPRequestHandler):
                 _e, _det, _bot = telegram_probar(tok)
                 if _e is False:
                     bitacora("CONFIG-TELEGRAM", "token rechazado (%s)" % _det)
-                    return self._html(perfil_page("No se guardo: %s." % _det, ok=False))
+                    return self._html(perfil_page("No se guardó: %s." % _det, ok=False))
                 if _e is None:
                     _avisos_tg.append("el token no se pudo comprobar (%s)" % _det)
             _tok_chat = tok or telegram_token()
@@ -18376,7 +18376,7 @@ class H(BaseHTTPRequestHandler):
                 _e, _det = telegram_chat_probar(_tok_chat, chat)
                 if _e is False:
                     bitacora("CONFIG-TELEGRAM", "chat rechazado (%s)" % _det)
-                    return self._html(perfil_page("No se guardo: %s." % _det, ok=False))
+                    return self._html(perfil_page("No se guardó: %s." % _det, ok=False))
                 _avisos_tg.append(_det if _e else "el chat no se pudo comprobar (%s)" % _det)
             try:
                 telegram_set(token=tok or None, chat=chat)
@@ -18417,10 +18417,10 @@ class H(BaseHTTPRequestHandler):
                 return self._prohibido()
             _tk = (q.get("tgtoken", [""])[0] or "").strip()
             if _tk and _tk != "BORRAR" and not RE_TG_TOKEN.match(_tk):
-                return self._json({"ok": False, "msg": "eso no parece un token de bot (numero:clave)"})
+                return self._json({"ok": False, "msg": "eso no parece un token de bot (número:clave)"})
             _tk = _tk if _tk and _tk != "BORRAR" else telegram_token()
             if not _tk:
-                return self._json({"ok": False, "msg": "pega primero el token del bot (o guardalo)"})
+                return self._json({"ok": False, "msg": "pega primero el token del bot (o guárdalo)"})
             _chats, _msg = telegram_detectar_chats(_tk)
             return self._json({"ok": bool(_chats), "chats": _chats, "msg": _msg})
         if ruta == "/feeds/actualizar":

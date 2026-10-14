@@ -242,10 +242,15 @@ class SinClaveMaestra(unittest.TestCase):
         self.d.aidb_probar = lambda k: (True, "")
         self.d.groq_probar = lambda k: (True, "", ["m1"])
         self.d.feeds_auth_probar = lambda k: (True, "")
-        for ruta, campo in (("/feeds/aidb", "aidbkey"), ("/feeds/groq", "groqkey"), ("/feeds", "authkey")):
-            st, _c, txt = self.p.pedir("POST", ruta, {campo: "clave-de-prueba-123"})
+        # (adaptada, 2026-10-14) Groq exige ahora que la clave empiece por gsk_: con otra forma se
+        # rechazaria antes de llegar a la clave maestra, que es lo que esta prueba mira
+        for ruta, campo, clave in (("/feeds/aidb", "aidbkey", "clave-de-prueba-123"),
+                                   ("/feeds/groq", "groqkey", "gsk_clave-de-prueba-123"),
+                                   ("/feeds", "authkey", "clave-de-prueba-123")):
+            st, _c, txt = self.p.pedir("POST", ruta, {campo: clave})
             self.assertEqual(st, 200, ruta)
             self.assertIn("No se guardo", txt, ruta)
+            self.assertIn("clave maestra", txt, ruta)
             self.assertNotIn("guardada (solo", txt, ruta)
         # Ajustes > MikroTik ya no recibe la clave de la API (es de la ficha del punto, 2026-10-14):
         # aunque un formulario viejo la mande, no acaba en ningun fichero, ni en claro ni cifrada

@@ -32,7 +32,7 @@ class Bloques(unittest.TestCase):
         self.addCleanup(self.p.cerrar)
         self.d = self.p.d
         _s, _c, h = self.p.pedir("GET", "/ajustes")
-        i = h.index("<h2>Reputacion / feeds</h2>")
+        i = h.index("<h2>Reputación / feeds</h2>")
         self.card = h[i:h.index("</section>", i)]
 
     def test_solo_enlaces_comprobados_y_todos_presentes(self):
@@ -46,7 +46,7 @@ class Bloques(unittest.TestCase):
     def test_un_bloque_por_servicio_con_sus_pasos(self):
         for ident in ("feed-abusech", "feed-aidb", "feed-groq", "feed-telegram"):
             self.assertIn("<div class=fsrv id=%s>" % ident, self.card)
-        self.assertEqual(self.card.count("<div class=fcomo>Como sacar la clave</div>"), 4)
+        self.assertEqual(self.card.count("<div class=fcomo>Cómo sacar la clave</div>"), 4)
         # la casilla de denunciar va en el bloque de AbuseIPDB, no debajo de Telegram
         aidb = self.card[self.card.index("id=feed-aidb"):self.card.index("id=feed-groq")]
         self.assertIn("name=reportar", aidb)
@@ -83,8 +83,8 @@ class Telegram(unittest.TestCase):
     def test_token_rechazado_no_se_guarda(self):
         self.resp["getMe"] = (False, "Unauthorized", 401)
         txt = self.guardar(tgtoken=TOK, tgchat=CHAT)
-        self.assertIn("No se guardo", txt)
-        self.assertIn("Telegram rechazo el token", txt)
+        self.assertIn("No se guardó", txt)
+        self.assertIn("Telegram rechazó el token", txt)
         self.assertFalse(self.d.telegram_configurado())
 
     def test_chat_donde_el_bot_no_esta_no_se_guarda(self):
@@ -126,7 +126,7 @@ class Telegram(unittest.TestCase):
         self.resp["getUpdates"] = (True, [], 200)
         j = json.loads(self.p.pedir("POST", "/telegram/detectar", {"tgtoken": TOK})[2])
         self.assertFalse(j["ok"])
-        self.assertIn("mandale un mensaje", j["msg"])
+        self.assertIn("mándale un mensaje", j["msg"])
         self.resp["getUpdates"] = (False, "Conflict: webhook is active", 409)
         j = json.loads(self.p.pedir("POST", "/telegram/detectar", {"tgtoken": TOK})[2])
         self.assertIn("webhook", j["msg"])
@@ -190,7 +190,7 @@ class Comprobar(unittest.TestCase):
     def test_la_etiqueta_dice_como_salio_la_ultima_comprobacion(self):
         self.assertIn("sin configurar", self.chip("feed-aidb"))
         self.p.pedir("POST", "/feeds/aidb", {"aidbkey": "c" * 80})        # se valida y se guarda
-        self.assertIn("valida &middot; comprobada", self.chip("feed-aidb"))
+        self.assertIn("válida &middot; comprobada", self.chip("feed-aidb"))
         self.resp["aidb"] = (False, "AbuseIPDB rechazo la clave (HTTP 401)")  # la revocaron
         st, j = self.probar("aidb")                                          # comprobar la guardada
         self.assertEqual((j["estado"], j["guardada"]), ("invalida", True))
