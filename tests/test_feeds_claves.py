@@ -179,6 +179,41 @@ class TelegramFacil(Telegram):
             self.assertIn(txt, tg)
 
 
+class ActualizarSinRecargar(unittest.TestCase):
+    """«Actualizar feeds ahora» ya no recarga Ajustes (el user, 2026-10-14: «como que palpita la web,
+    veo que sube y regresa»): el boton lanza la corrida con ajax=1 y la tabla se refresca con
+    GET /feeds/tabla mientras dura."""
+
+    def setUp(self):
+        self.p = Panel(http=True)
+        self.addCleanup(self.p.cerrar)
+        self.d = self.p.d
+        self.lanzadas = []
+        self.d.actualizar_feeds_async = lambda: self.lanzadas.append(1) or True
+        self.d.cargar_feeds_meta = lambda: {"generated": 1792000000, "sources": {
+            "cins": {"estado": "valido", "vigente": True, "count": 15000}}}
+
+    def test_ajax_contesta_json_y_la_tabla_se_pide_sola(self):
+        st, _c, txt = self.p.pedir("POST", "/feeds/actualizar", {"ajax": "1"})
+        self.assertEqual(st, 200)
+        self.assertTrue(json.loads(txt)["ok"])
+        self.assertEqual(self.lanzadas, [1])
+        st, _c, txt = self.p.pedir("GET", "/feeds/tabla")
+        j = json.loads(txt)
+        self.assertIn("<td class=mono>cins</td>", j["filas"])
+        self.assertIn("15,000", j["filas"])
+        self.assertFalse(j["corriendo"])
+        # sin ajax (navegador sin JavaScript) sigue funcionando como antes
+        txt = self.p.pedir("POST", "/feeds/actualizar", {})[2]
+        self.assertIn("Actualizando feeds en segundo plano", txt)
+
+    def test_el_boton_va_por_javascript_y_solo_admin(self):
+        _s, _c, h = self.p.pedir("GET", "/ajustes")
+        self.assertIn("onsubmit='return window.feedsAct?feedsAct(this):true'", h)
+        self.assertIn("<tbody id=feedtb>", h)
+        self.assertEqual(self.p.pedir("GET", "/feeds/tabla", quien="olga")[0], 403)
+
+
 class CampoEquivocado(unittest.TestCase):
     def setUp(self):
         self.p = Panel(http=True)

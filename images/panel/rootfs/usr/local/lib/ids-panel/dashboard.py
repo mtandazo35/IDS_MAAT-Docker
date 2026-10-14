@@ -6114,6 +6114,45 @@ FEEDS_CADA = 15 * 60
 _FEEDS_PROC = {"p": None}
 _FEEDS_LOCK = threading.Lock()
 
+def feeds_corriendo():
+    """Hay una corrida del actualizador de feeds en marcha?"""
+    with _FEEDS_LOCK:
+        p = _FEEDS_PROC["p"]
+        return p is not None and p.poll() is None
+
+def feeds_tabla():
+    """(filas <tr> de la tabla de fuentes, generado, generado en texto). Fuera de perfil_page para
+    que GET /feeds/tabla la refresque sin recargar Ajustes."""
+    esc = html.escape
+    meta = cargar_feeds_meta()
+    srcs = meta.get("sources", {}) or {}
+    def _estb(e):
+        c = {"valido": "#1a7f37", "vacio": "#e58a00", "error": "#b52a2a",
+             "sin-clave": "#7a4a12", "caducado": "#b52a2a"}.get(e, "#8a8a86")
+        return (f"<span style='background:{c};color:#fff;font-size:10.5px;font-weight:700;"
+                f"padding:2px 8px;border-radius:20px'>{esc(e)}</span>")
+    filas = ""
+    for name, s in srcs.items():
+        fv = s.get("fetched_valid", 0)
+        ult = time.strftime("%d/%m %H:%M", time.localtime(fv)) if fv else "&mdash;"
+        exp = time.strftime("%d/%m %H:%M", time.localtime(s.get("expira", 0))) if s.get("expira") else "&mdash;"
+        vig = "si" if s.get("vigente") else "no"
+        # tambien las variantes (threatfox-c2...): todas usan la Auth-Key de abuse.ch
+        _ir = ("feed-abusech" if name.startswith(("urlhaus", "threatfox")) else
+               "feed-aidb" if name.startswith("abuseipdb") else None)
+        _cfg = (f" <a href='#' class=fcfg onclick=\"var e=document.getElementById('{_ir}');"
+                f"if(e)e.scrollIntoView({{behavior:'smooth',block:'center'}});return false\">Configurar</a>"
+                if _ir and s.get("estado") in ("sin-clave", "error", "caducado") else "")
+        filas += (f"<tr><td class=mono>{esc(name)}</td><td>{_estb(s.get('estado', '?'))}{_cfg}</td>"
+                  f"<td>{vig}</td><td class=num>{s.get('count', 0):,}</td>"
+                  f"<td class=mono>{ult}</td><td class=mono>{exp}</td></tr>")
+    if not filas:
+        filas = ("<tr><td colspan=6 class=hint style='padding:12px'>Sin datos de feeds todavia. "
+                 "Pulsa 'Actualizar feeds ahora'.</td></tr>")
+    gen = meta.get("generated", 0)
+    genT = time.strftime("%d/%m %H:%M", time.localtime(gen)) if gen else "nunca"
+    return filas, gen, genT
+
 def actualizar_feeds_async():
     """Lanza feeds_update.py en segundo plano (con nice). Si ya hay una corrida en marcha
     no se lanza otra: dos procesos escribiendo los mismos ficheros se pisarian."""
@@ -10565,8 +10604,6 @@ def perfil_page(msg="", ok=False, edit_user=None):
     # --- tarjeta: reputacion / feeds (Auth-Key abuse.ch + estado por fuente; solo admin) ---
     card_feeds = ""
     if es_admin and yo:
-        meta = cargar_feeds_meta()
-        srcs = meta.get("sources", {})
         auth_ok = feeds_auth_configurada()
         def _groq_estado_linea():
             """Que esta haciendo la IA ahora mismo, en una linea."""
@@ -10602,31 +10639,7 @@ def perfil_page(msg="", ok=False, edit_user=None):
                     "modelos de vez en cuando: si el elegido desaparece, el analisis se "
                     "apaga solo y aqui se vuelve a elegir.</div></div>")
 
-        def _estb(e):
-            c = {"valido": "#1a7f37", "vacio": "#e58a00", "error": "#b52a2a",
-                 "sin-clave": "#7a4a12", "caducado": "#b52a2a"}.get(e, "#8a8a86")
-            return (f"<span style='background:{c};color:#fff;font-size:10.5px;font-weight:700;"
-                    f"padding:2px 8px;border-radius:20px'>{esc(e)}</span>")
-        filas = ""
-        for name, s in srcs.items():
-            fv = s.get("fetched_valid", 0)
-            ult = time.strftime("%d/%m %H:%M", time.localtime(fv)) if fv else "&mdash;"
-            exp = time.strftime("%d/%m %H:%M", time.localtime(s.get("expira", 0))) if s.get("expira") else "&mdash;"
-            vig = "si" if s.get("vigente") else "no"
-            # tambien las variantes (threatfox-c2...): todas usan la Auth-Key de abuse.ch
-            _ir = ("feed-abusech" if name.startswith(("urlhaus", "threatfox")) else
-                   "feed-aidb" if name.startswith("abuseipdb") else None)
-            _cfg = (f" <a href='#' class=fcfg onclick=\"var e=document.getElementById('{_ir}');"
-                    f"if(e)e.scrollIntoView({{behavior:'smooth',block:'center'}});return false\">Configurar</a>"
-                    if _ir and s.get("estado") in ("sin-clave", "error", "caducado") else "")
-            filas += (f"<tr><td class=mono>{esc(name)}</td><td>{_estb(s.get('estado', '?'))}{_cfg}</td>"
-                      f"<td>{vig}</td><td class=num>{s.get('count', 0):,}</td>"
-                      f"<td class=mono>{ult}</td><td class=mono>{exp}</td></tr>")
-        if not filas:
-            filas = ("<tr><td colspan=6 class=hint style='padding:12px'>Sin datos de feeds todavia. "
-                     "Pulsa 'Actualizar feeds ahora'.</td></tr>")
-        gen = meta.get("generated", 0)
-        genT = time.strftime("%d/%m %H:%M", time.localtime(gen)) if gen else "nunca"
+        filas, gen, genT = feeds_tabla()
         # Un bloque por servicio: para que sirve, COMO sacar la clave (pasos con boton a la pagina
         # exacta, comprobada el 2026-10-14) y el campo. Antes los enlaces iban sueltos dentro de
         # textos largos, el de AbuseIPDB daba 404 (/account/api) y Telegram no tenia ninguno
@@ -10795,6 +10808,26 @@ def perfil_page(msg="", ok=False, edit_user=None):
             "o.className='fres '+(j.ok?'fresok':'fresmal');"
             "o.textContent=(j.ok?'\u2705 ':'\u26D4 ')+(j.msg||'')+(j.ok?'. Si te llegó, pulsa Guardar Telegram.':'');});}"
             "</script>")
+        # «Actualizar feeds ahora» SIN recargar: antes era un formulario normal, la pagina entera se
+        # recargaba, subia arriba y volvia a bajar al reabrir la ventana («palpita», el user
+        # 2026-10-14). Ahora pide la corrida (ajax) y refresca la tabla mientras dura.
+        js_act = (
+            "<script>function feedsAct(f){var b=f.querySelector('button'),e=document.getElementById('feedest'),"
+            "g=document.getElementById('feedgen'),tb=document.getElementById('feedtb');"
+            "try{sessionStorage.removeItem('aptsc');}catch(x){}"
+            "b.disabled=true;e.textContent=' Actualizando en segundo plano...';var n=0;"
+            "function mira(){fetch('/feeds/tabla',{credentials:'same-origin',cache:'no-store'})"
+            ".then(function(r){return r.json();}).then(function(j){tb.innerHTML=j.filas;"
+            "g.textContent='Última corrida del actualizador: '+j.genT;"
+            "if(j.corriendo&&++n<60){setTimeout(mira,2000);return;}"
+            "b.disabled=false;e.textContent=j.corriendo?' Sigue en marcha; mira la tabla en un rato.':' Listo.';})"
+            ".catch(function(){b.disabled=false;e.textContent=' No se pudo leer el estado.';});}"
+            "fetch('/feeds/actualizar',{method:'POST',credentials:'same-origin',"
+            "headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'ajax=1'})"
+            ".then(function(r){if(!r.ok)throw r.status;return r.json();})"
+            ".then(function(){setTimeout(mira,1500);})"
+            ".catch(function(){b.disabled=false;e.textContent=' No se pudo lanzar la actualización.';});"
+            "return false;}</script>")
         card_feeds = (
             "<style>.feedt{width:100%;border-collapse:collapse;font-size:13px;margin:10px 0 2px}"
             ".feedt th,.feedt td{padding:7px 10px;border-top:1px solid #f0efec;text-align:left}"
@@ -10821,12 +10854,14 @@ def perfil_page(msg="", ok=False, edit_user=None):
             "Los botones &#8599; abren la página del servicio en otra pestaña.</p>"
             + b_abusech + b_aidb + b_groq + b_tg + js_probar + js_tg +
             "<div style='display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-top:14px'>"
-            "<form method=post action='/feeds/actualizar' style='margin:0'>"
+            "<form method=post action='/feeds/actualizar' style='margin:0' "
+            "onsubmit='return window.feedsAct?feedsAct(this):true'>"
             "<button class=cancelbtn type=submit>Actualizar feeds ahora</button></form>"
-            f"<span class=hint>Última corrida del actualizador: {genT}</span></div>"
+            f"<span class=hint id=feedgen>Última corrida del actualizador: {genT}</span>"
+            "<span class=hint id=feedest></span></div>"
             "<table class=feedt><thead><tr><th>Fuente</th><th>Estado</th><th>Vigente</th>"
             "<th class=num>Indicadores</th><th>Última válida</th><th>Caduca</th></tr></thead>"
-            f"<tbody>{filas}</tbody></table></section>")
+            f"<tbody id=feedtb>{filas}</tbody></table>" + js_act + "</section>")
     # --- tarjeta: conexion al MikroTik para la cuarentena (solo admin) ---
     # --- la VPN de cada MikroTik es la de su punto: se gestiona en Puntos (solo admin) ---
     # --- DNS: a que resolutores preguntan tus CPEs -------------------------------------
@@ -17595,6 +17630,12 @@ class H(BaseHTTPRequestHandler):
                        "if(s<=0)clearInterval(t);},1000);})();</script>")
                     + "</body></html>")
             return self._html(page)
+        if path == "/feeds/tabla":
+            # la tabla de fuentes para refrescarla en Ajustes sin recargar (solo admin, como la tarjeta)
+            if not self._admin():
+                return self._prohibido()
+            _f, _g, _gt = feeds_tabla()
+            return self._json({"filas": _f, "gen": _g, "genT": _gt, "corriendo": feeds_corriendo()})
         if path == "/ventana-estado":
             return self._json(estado_ventana())
         if path == "/duenos":
@@ -18485,6 +18526,8 @@ class H(BaseHTTPRequestHandler):
             if not self._admin():
                 return self._prohibido()
             actualizar_feeds_async(); bitacora("ACTUALIZAR-FEEDS", "manual")
+            if q.get("ajax"):                  # desde el boton: sin recargar la pagina
+                return self._json({"ok": True, "corriendo": feeds_corriendo()})
             return self._html(perfil_page("Actualizando feeds en segundo plano; recarga en un momento para ver el estado.", ok=True))
         if ruta == "/conducta/refrescar":
             if not self._operador():
