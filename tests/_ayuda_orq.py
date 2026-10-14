@@ -254,6 +254,8 @@ class SistemaFalso:
         if sub == "run":
             if "crear-admin" in a or "restablecer" in a:
                 return self._panel_un_uso(a)
+            if "confianza" in a:
+                return self._panel_confianza(a)
             if "--build-info" in a:
                 return 0, "This is Suricata version 7.0.10 RELEASE\nHyperscan support:       yes\n", ""
             if "-T" in a:
@@ -298,6 +300,25 @@ class SistemaFalso:
         usuarios.write_text(json.dumps(datos), encoding="utf-8")
         self.claves_panel.append(clave)
         return 0, "CLAVE=%s\n" % clave, ""
+
+    def _panel_confianza(self, a):
+        """ids-panel confianza ver|agregar|vaciar sobre conf/confianza.json del /srv/ids/panel
+        montado (el panel real normaliza y valida; aqui solo se guarda lo que llega)."""
+        montaje = a[a.index("-v") + 1]
+        fichero = Path(montaje.rsplit(":", 1)[0]) / "conf" / "confianza.json"
+        fichero.parent.mkdir(parents=True, exist_ok=True)
+        lista = json.loads(fichero.read_text(encoding="utf-8")) if fichero.exists() else []
+        resto = a[a.index("confianza") + 1:]
+        self.confianza_args = resto
+        if resto[0] == "ver":
+            return 0, "".join("%s\n" % e["red"] for e in lista), ""
+        if resto[0] == "vaciar":
+            fichero.write_text("[]", encoding="utf-8")
+            return 0, "OK lista vaciada (%d entradas)\n" % len(lista), ""
+        nota = next((x.split("=", 1)[1] for x in resto if x.startswith("--nota=")), "")
+        lista.append({"red": resto[1], "nota": nota})
+        fichero.write_text(json.dumps(lista), encoding="utf-8")
+        return 0, "OK agregada %s\n" % resto[1], ""
 
     def _nft(self, a):
         fichero = a[-1]

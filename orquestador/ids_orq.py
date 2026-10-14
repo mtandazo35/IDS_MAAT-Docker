@@ -8,7 +8,9 @@ F1a, según docs/CONTRATO-F1a.md (§3, §4, §5.9-§5.12). Un solo módulo:
   reinicios con espera creciente) y escribe /srv/ids/run/estado.json cada 15 s.
 - El resto de subórdenes son la CLI, que habla con el servicio por el socket.
 - F1b: `ids-orq panel aplicar|crear-admin|restablecer` (locales, de root, como `fw-render`)
-  renderizan y levantan el núcleo `ids-core` (el panel) y crean o restablecen sus usuarios
+  renderizan y levantan el núcleo `ids-core` (el panel) y crean o restablecen sus usuarios;
+  `ids-orq panel confianza ver|agregar|vaciar` es el rescate cuando la lista de IPs de confianza
+  del panel deja fuera al administrador
   (docs/CONTRATO-F1b.md «Integración»).
 
 Importable en Windows (pruebas): nada de fcntl/pwd/grp/AF_UNIX a nivel de módulo.
@@ -108,6 +110,9 @@ PANEL_USUARIOS = PANEL_DIR + "/conf/usuarios.json"     # CONTRATO-F2 §7 (lo esc
 MASTER_KEY = "/etc/ids-maat/master.key"               # en el panel: /run/secrets/master_key (ro)
 ESPERA_PANEL_S = 120
 RE_USUARIO_PANEL = re.compile(r"^[a-z0-9][a-z0-9._-]{0,31}\Z")     # el mismo que ids-panel
+# IP o rango para `panel confianza agregar` (el panel lo valida y normaliza; aqui solo se filtra
+# lo que no puede ser una IP antes de lanzar un contenedor)
+RE_RED_PANEL = re.compile(r"^[0-9A-Fa-f][0-9A-Fa-f:.]{0,44}(/[0-9]{1,3})?\Z")
 RE_ZONA = re.compile(r"^(UTC|[A-Za-z]+(/[A-Za-z0-9_+-]+){1,2})\Z")
 SALIDA_PANEL_YA_EXISTE = 3
 
@@ -3461,6 +3466,13 @@ def construir_parser():
     pc.add_argument("--usuario", default="admin")
     pr = pns.add_parser("restablecer", help="clave nueva para un usuario; imprime CLAVE=<clave>")
     pr.add_argument("usuario")
+    pcf = pns.add_parser("confianza", help="IPs de confianza del panel (para volver a entrar si te quedas fuera)")
+    pcfs = pcf.add_subparsers(dest="accion", required=True)
+    pcfs.add_parser("ver", help="muestra la lista")
+    pca = pcfs.add_parser("agregar", help="deja entrar una IP o rango sin abrir el panel a nadie más")
+    pca.add_argument("red")
+    pca.add_argument("--nota", default="")
+    pcfs.add_parser("vaciar", help="vacía la lista: el panel queda abierto (con bloqueo por fallos)")
     return ap
 
 
@@ -3707,6 +3719,27 @@ def panel_un_uso(orden, usuario):
         raise ErrorOrden("INVALIDO", "orden del panel desconocida")
     if not RE_USUARIO_PANEL.match(usuario or ""):
         raise ErrorOrden("INVALIDO", "usuario inválido: minúsculas, números, . _ - (máx. 32)")
+    return _panel_contenedor([orden, "--usuario", usuario])
+
+
+def panel_confianza(accion, red=None, nota=""):
+    """`ids-panel confianza ver|agregar|vaciar` en el mismo contenedor de un solo uso. La nota va
+    como `--nota=<texto>`: así un texto que empiece por «-» no se lee como otra opción."""
+    if accion not in ("ver", "agregar", "vaciar"):
+        raise ErrorOrden("INVALIDO", "acción desconocida: ver, agregar o vaciar")
+    args = ["confianza", accion]
+    if accion == "agregar":
+        if not RE_RED_PANEL.match(red or ""):
+            raise ErrorOrden("INVALIDO", "IP o rango no válido (ej. 203.0.113.10 o 192.0.2.0/24)")
+        nota = " ".join((nota or "").split())
+        if len(nota) > 60 or any(ord(c) < 32 for c in nota):
+            raise ErrorOrden("INVALIDO", "nota no válida: hasta 60 caracteres, sin saltos de línea")
+        args += [red] + (["--nota=" + nota] if nota else [])
+    return _panel_contenedor(args)
+
+
+def _panel_contenedor(args_panel):
+    """Contenedor de un solo uso con la imagen del panel (ver panel_un_uso)."""
     cfg = config()
     imgs = imagenes_con_panel()
     dirs_panel()
@@ -3716,9 +3749,8 @@ def panel_un_uso(orden, usuario):
             "--pids-limit", "64"]
     for k, v in entorno_panel(cfg).items():
         args += ["-e", "%s=%s" % (k, v)]
-    args += ["-v", "%s:%s" % (host_str(PANEL_DIR), PANEL_DIR), "--entrypoint", "ids-panel", imgs["panel"],
-             orden, "--usuario", usuario]
-    return ejecutar(args, timeout=180)
+    args += ["-v", "%s:%s" % (host_str(PANEL_DIR), PANEL_DIR), "--entrypoint", "ids-panel", imgs["panel"]]
+    return ejecutar(args + list(args_panel), timeout=180)
 
 
 def linea_clave(salida):
@@ -3737,6 +3769,16 @@ def cli_panel(a, salida=None, error=None):
             print("OK panel %s en %s (http://%s:%d, solo desde %s)" % (
                 PANEL_CONTENEDOR, PANEL_IP, cfg.nombre_dns, cfg.puerto_panel,
                 ",".join(str(r) for r in cfg.ips_proxy)), file=salida)
+            return 0
+        if a.sub == "confianza":
+            r = panel_confianza(a.accion, getattr(a, "red", None), getattr(a, "nota", ""))
+            if r.out:
+                print(r.out.rstrip("\n"), file=salida)
+            if r.rc != 0:
+                detalle = (r.err or "").strip().splitlines()
+                print("FALLO ids-panel confianza %s salió con %s%s" % (
+                    a.accion, r.rc, (": " + detalle[-1]) if detalle else ""), file=error)
+                return 2 if r.rc == 2 else 1
             return 0
         usuario = a.usuario
         r = panel_un_uso("crear-admin" if a.sub == "crear-admin" else "restablecer", usuario)

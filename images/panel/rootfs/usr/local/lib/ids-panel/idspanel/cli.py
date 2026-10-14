@@ -1,4 +1,4 @@
-"""ids-panel servir | crear-admin --usuario U | restablecer --usuario U | salud
+"""ids-panel servir | crear-admin --usuario U | restablecer --usuario U | confianza … | salud
 
 El panel es el dashboard de suricata-ids-lab (`dashboard.py`, junto a este paquete). Los
 usuarios van en el formato del dashboard (lista con PBKDF2) en `conf/usuarios.json`; este
@@ -10,11 +10,17 @@ Códigos de salida:
                 el primer admin solo se crea una vez; los demás, desde Ajustes o con restablecer)
   restablecer   0 hecho (stdout: CLAVE=<clave>), 4 el usuario no existe. Expulsa sus sesiones
                 abiertas (la sesión guarda una marca del hash de la clave, que cambia).
+  confianza     IPs de confianza del panel, para volver a entrar si te quedas fuera (p. ej. te
+                cambio la IP): `ver`, `agregar <IP|rango> [--nota N]` (sin abrir el panel a nadie
+                mas) o `vaciar` (lo deja abierto, con bloqueo por fallos, y guarda una copia de la
+                lista). 0 hecho o ya estaba, 2 IP o rango no valido. Hace efecto al momento: el
+                panel relee la lista en cada peticion.
   salud         0 si HEAD / al propio servidor da 200, 1 si no
   2             argumentos o configuración no válidos
 """
 
 import argparse
+import json
 import os
 import re
 import secrets
@@ -40,6 +46,13 @@ def _parser():
     x.add_argument("--usuario", default="admin")
     x = sub.add_parser("restablecer", help="da una clave aleatoria nueva a un usuario y expulsa sus sesiones")
     x.add_argument("--usuario", required=True)
+    x = sub.add_parser("confianza", help="IPs de confianza del panel (para volver a entrar si te quedas fuera)")
+    xs = x.add_subparsers(dest="accion", required=True)
+    xs.add_parser("ver", help="muestra la lista")
+    xa = xs.add_parser("agregar", help="deja entrar una IP o rango sin abrir el panel a nadie más")
+    xa.add_argument("red")
+    xa.add_argument("--nota", default="")
+    xs.add_parser("vaciar", help="vacía la lista: el panel queda abierto (con bloqueo por fallos)")
     sub.add_parser("salud", help="comprobación para el healthcheck")
     return ap
 
@@ -127,6 +140,48 @@ def restablecer(usuario, dash=None):
     return 0
 
 
+def confianza(accion, red=None, nota="", dash=None):
+    """`ids-panel confianza ver|agregar|vaciar`: el rescate cuando la lista de IPs de confianza
+    deja fuera al administrador. Usa las mismas funciones que la web (formato, normalización)."""
+    d = dash or _dash()
+    det = d.cargar_confianza_det()
+    if accion == "ver":
+        if not det:
+            print("(vacía: el panel está abierto a cualquiera, con bloqueo tras %d fallos)" % d.LOGIN_MAX, flush=True)
+        for e in det:
+            print(e["red"] + ("  # " + e["nota"] if e["nota"] else ""), flush=True)
+        return 0
+    d.nodos.asegurar_dirs()
+    if accion == "vaciar":
+        if not det:
+            print("YA la lista ya estaba vacía: el panel está abierto", flush=True)
+            return 0
+        copia = "%s.%s.antes-de-vaciar" % (d.TRUST_FILE, time.strftime("%Y%m%dT%H%M%S"))
+        with open(copia, "w", encoding="utf-8") as f:
+            json.dump(det, f, ensure_ascii=False)
+        os.chmod(copia, 0o600)
+        d.guardar_confianza([])
+        d.bitacora("CONFIANZA-VACIADA", "%d entradas (copia %s)" % (len(det), os.path.basename(copia)),
+                   quien="ids-panel", ip="")
+        print("OK lista vaciada (%d entradas; copia en %s): el panel queda abierto, con bloqueo tras %d fallos"
+              % (len(det), copia, d.LOGIN_MAX), flush=True)
+        return 0
+    try:
+        val = d.normalizar_red(red)
+    except ValueError as e:
+        _err(str(e))
+        return 2
+    nota = " ".join((nota or "").split())[:d.CONF_NOTA_MAX]
+    ya = d.red_cubierta_por(val, [e["red"] for e in det])
+    if ya:
+        print("YA %s ya puede entrar%s" % (val, "" if ya == val else " (la cubre %s)" % ya), flush=True)
+        return 0
+    d.guardar_confianza(det + [{"red": val, "nota": nota}])
+    d.bitacora("CONFIANZA-AGREGADA", val + (" (%s)" % nota if nota else ""), quien="ids-panel", ip="")
+    print("OK agregada %s: ya se puede entrar al panel desde ahí" % val, flush=True)
+    return 0
+
+
 def salud(puerto, timeout=5):
     puerto = getattr(puerto, "puerto", puerto)     # tambien un objeto con .puerto (Config del F1b)
     try:
@@ -156,6 +211,8 @@ def main(argv=None):
         return crear_admin(a.usuario, solo_primero=True)
     if cmd == "restablecer":
         return restablecer(a.usuario)
+    if cmd == "confianza":
+        return confianza(a.accion, getattr(a, "red", None), getattr(a, "nota", ""))
     if cmd == "salud":
         return salud(puerto)
     return servir()

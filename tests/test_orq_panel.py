@@ -289,6 +289,39 @@ class Admin(Base):
         self.assertEqual(self.mod.linea_clave("aviso\nCLAVE=abc123\n"), "CLAVE=abc123")
 
 
+class Confianza(Base):
+    """`ids-orq panel confianza ver|agregar|vaciar`: el rescate cuando la lista de IPs de confianza
+    del panel deja fuera al administrador (el user, 2026-10-13)."""
+
+    def test_agregar_ver_y_vaciar_en_el_contenedor_de_un_solo_uso(self):
+        rc, out, err = self.cli("confianza", "agregar", "198.51.100.0/24", "--nota", "-Casa  nueva")
+        self.assertEqual(rc, 0, err)
+        self.assertIn("OK agregada 198.51.100.0/24", out)
+        run = [a for a in self.s.llamadas if a[:2] == ["docker", "run"]][-1]
+        linea = " ".join(run)
+        for trozo in ("--rm", "--network none", "--log-driver none", "--read-only", "--cap-drop ALL",
+                      "--user 10500:10500", "--entrypoint ids-panel %s confianza agregar" % A.IMG_PANEL):
+            self.assertIn(trozo, linea)
+        # la nota va pegada a su opcion: un texto que empiece por «-» no se lee como otra opcion
+        self.assertEqual(self.s.confianza_args, ["agregar", "198.51.100.0/24", "--nota=-Casa nueva"])
+        rc, out, _ = self.cli("confianza", "ver")
+        self.assertEqual((rc, out), (0, "198.51.100.0/24\n"))
+        rc, out, _ = self.cli("confianza", "vaciar")
+        self.assertEqual(rc, 0)
+        self.assertIn("OK lista vaciada", out)
+        self.assertEqual(json.loads(self.e.ruta("/srv/ids/panel/conf/confianza.json").read_text(encoding="utf-8")), [])
+
+    def test_lo_que_no_es_ip_no_lanza_nada(self):
+        for mala in ("-v", "", "a" * 50, "1.2.3.4;rm", "../x", "1.2.3.4/24/1"):
+            rc, out, err = self.cli("confianza", "agregar", mala)
+            self.assertEqual((rc, out), (2, ""), mala)
+        # los saltos y tabuladores se vuelven un espacio; un caracter de control o una nota larga, no
+        for nota in ("alarma\x07", "x" * 61):
+            rc, _o, err = self.cli("confianza", "agregar", "192.0.2.1", "--nota", nota)
+            self.assertEqual(rc, 2, repr(nota))
+        self.assertFalse([a for a in self.s.llamadas if a[:2] == ["docker", "run"]])
+
+
 class Reconciliar(Base):
     def reconciliar(self):
         r = A.ejecutar_orden(self.orq, "sistema.reconciliar", {})

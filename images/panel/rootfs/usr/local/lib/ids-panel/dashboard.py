@@ -8297,25 +8297,80 @@ def version_panel():
 
 TRUST_FILE = nodos.ruta("conf", "confianza.json")
 
+CONF_NOTA_MAX = 60   # nota de cada IP de confianza («Oficina», «VPN»...)
+
+
+def _red_de(x):
+    """Una entrada del fichero -> (red, nota). Vale el formato viejo (una cadena por IP) y el
+    nuevo ({"red": ..., "nota": ...}): un panel actualizado lee la lista que ya habia."""
+    if isinstance(x, dict):
+        return str(x.get("red") or "").strip(), " ".join(str(x.get("nota") or "").split())[:CONF_NOTA_MAX]
+    return str(x or "").strip(), ""
+
+
+def cargar_confianza_det():
+    """[{"red", "nota"}] de las IPs de confianza, en el orden en que se agregaron."""
+    try:
+        with open(TRUST_FILE, encoding="utf-8") as f:
+            d = json.load(f)
+    except (OSError, ValueError):
+        return []
+    out = []
+    for x in d if isinstance(d, list) else []:
+        red, nota = _red_de(x)
+        if red:
+            out.append({"red": red, "nota": nota})
+    return out
+
+
 def cargar_confianza():
     """Lista de IPs/CIDR de confianza. Vacia = acceso abierto (con bloqueo por fallos)."""
-    try:
-        d = json.load(open(TRUST_FILE, encoding="utf-8"))
-        if isinstance(d, list):
-            return [str(x) for x in d if x]
-    except (OSError, ValueError):
-        pass
-    return []
+    return [e["red"] for e in cargar_confianza_det()]
+
 
 def guardar_confianza(lst):
+    """Guarda la lista (redes sueltas o {"red", "nota"}); siempre en el formato nuevo."""
+    datos = []
+    for x in lst:
+        red, nota = _red_de(x)
+        if red:
+            datos.append({"red": red, "nota": nota})
     tmp = "%s.%d.%d.tmp" % (TRUST_FILE, os.getpid(), threading.get_ident())
     with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(lst, f, ensure_ascii=False)
+        json.dump(datos, f, ensure_ascii=False)
     os.chmod(tmp, 0o600)
     os.replace(tmp, TRUST_FILE)
 
+
+def normalizar_red(val):
+    """IP o rango escrito por una persona -> forma canonica ('203.0.113.10' o '192.0.2.0/24').
+    `192.0.2.5/24` es el rango 192.0.2.0/24 y se guarda asi. ValueError con el motivo."""
+    val = (val or "").strip()
+    if not val:
+        raise ValueError("Escribe una IP o un rango.")
+    try:
+        n = ipaddress.ip_network(val, strict=False)
+    except ValueError:
+        raise ValueError("«%s» no es una IP ni un rango valido (ej. 203.0.113.10 o 192.0.2.0/24)." % val[:60])
+    if n.prefixlen == 0:
+        raise ValueError("Ese rango es todo internet: para dejar entrar a cualquiera, deja la lista vacia.")
+    return str(n.network_address) if n.prefixlen == n.max_prefixlen else str(n)
+
+
+def red_cubierta_por(red, lst):
+    """La entrada de `lst` que ya incluye a `red` (la misma o una mas amplia), o None."""
+    n = ipaddress.ip_network(red, strict=False)
+    for c in lst:
+        try:
+            m = ipaddress.ip_network(c, strict=False)
+        except ValueError:
+            continue
+        if m.version == n.version and n.subnet_of(m):
+            return c
+    return None
+
+
 def ip_en_lista(ip, lst):
-    import ipaddress
     try:
         a = ipaddress.ip_address(ip)
     except ValueError:
@@ -10698,7 +10753,10 @@ def perfil_page(msg="", ok=False, edit_user=None):
             "<th>Usuario</th>" + ("<th>Correo</th>" if hay_correo else "") + "<th>Rol</th><th>Estado</th><th></th>"
             f"</tr></thead><tbody id=ubody>{''.join(rows)}</tbody></table></div>"
             "</section>" + modal_new + modal_edit)
-    # --- tarjeta: accesos y seguridad (log de login + desbloqueo; solo admin) ---
+    # --- tarjeta: IPs de confianza + bloqueos por fallos (solo admin) ---
+    # Rehecha (el user, 2026-10-13): un solo marco, el estado (abierto/restringido) en grande, nota
+    # por entrada, «Usar mi IP», confirmacion al restringir y al abrir, botones con estilo (la
+    # clase mini no existia aqui) y como volver a entrar si te quedas fuera.
     card_acceso = ""
     if es_admin and yo:
         bloq = ips_bloqueadas()
@@ -10710,40 +10768,78 @@ def perfil_page(msg="", ok=False, edit_user=None):
                 f"<input type=hidden name=ip value='{esc(ip)}'>"
                 "<button class=mini type=submit>Desbloquear</button></form></td></tr>"
                 for ip, seg, intentos in bloq)
-            blq = ("<div class=twrap><table class=ut><thead><tr><th>IP bloqueada</th><th>Motivo</th>"
-                   f"<th>Expira en</th><th></th></tr></thead><tbody>{brows}</tbody></table></div>")
+            blq = ("<div class=twrap><table class=ut><thead><tr><th>IP</th><th>Motivo</th>"
+                   f"<th>Se libera en</th><th></th></tr></thead><tbody>{brows}</tbody></table></div>")
         else:
-            blq = "<p class=sub2>No hay IPs bloqueadas ahora.</p>"
-        # IPs de confianza (allowlist del panel)
-        trust = cargar_confianza()
-        myip = getattr(CTX, "ip", "?")
-        if trust:
-            crows = "".join(
-                f"<tr><td class=mono>{esc(t)}</td>"
-                "<td class=acts><form method=post action='/perfil' class=inl>"
-                "<input type=hidden name=accion value=del_trust>"
-                f"<input type=hidden name=ip value='{esc(t)}'>"
-                "<button class='mini danger' type=submit>Quitar</button></form></td></tr>"
-                for t in trust)
-            ctab = ("<div class=twrap><table class=ut><thead><tr><th>IP / CIDR de confianza</th><th></th>"
-                    f"</tr></thead><tbody>{crows}</tbody></table></div>"
-                    "<p class=sub2 style='color:#12805a'><b>Activo:</b> solo estas IPs pueden entrar al panel.</p>")
+            blq = "<p class=sub2>Ninguna ahora mismo.</p>"
+        det = cargar_confianza_det()
+        myip = getattr(CTX, "ip", "") or ""
+        mia = next((e["red"] for e in det if ip_en_lista(myip, [e["red"]])), None)
+        n_conf = len(det)
+        bloqueo_txt = f"una IP queda bloqueada {LOGIN_WINDOW // 60} min tras {LOGIN_MAX} claves mal puestas"
+        if det:
+            cuantas = "la IP" if n_conf == 1 else f"las {n_conf} IPs o rangos"
+            estado = ("<div class='cestado cerrado'><span class=cdot></span><div><b>Restringido</b>: solo se puede "
+                      f"entrar desde {cuantas} de la lista; desde cualquier otra el panel responde "
+                      f"«Acceso restringido». Ademas, {bloqueo_txt}.</div></div>")
+            crows = []
+            for e in det:
+                if n_conf == 1:
+                    conf_q = ("'Abrir el panel'," + js_attr(
+                        "Es la ultima IP de la lista: el panel quedara abierto a cualquiera (con bloqueo "
+                        "tras " + str(LOGIN_MAX) + " fallos).") + ",'Quitar y abrir','danger'")
+                else:
+                    conf_q = ("'Quitar IP de confianza'," + js_attr(
+                        "Desde " + e["red"] + " ya no se podra entrar al panel.") + ",'Quitar','danger'")
+                tuya = " <span class=me>tu IP</span>" if e["red"] == mia else ""
+                nota = esc(e["nota"]) if e["nota"] else "<span class=dash>&mdash;</span>"
+                crows.append(
+                    f"<tr><td><span class=mono>{esc(e['red'])}</span>{tuya}</td><td>{nota}</td>"
+                    f"<td class=acts><form method=post action='/perfil' class=inl onsubmit=\"return ask(this,{conf_q})\">"
+                    "<input type=hidden name=accion value=del_trust>"
+                    f"<input type=hidden name=ip value='{esc(e['red'])}'>"
+                    "<button class='mini danger' type=submit>Quitar</button></form></td></tr>")
+            ctab = ("<div class=twrap><table class=ut><thead><tr><th>IP o rango</th><th>Nota</th><th></th>"
+                    f"</tr></thead><tbody>{''.join(crows)}</tbody></table></div>")
         else:
-            ctab = ("<p class=sub2>Sin IPs de confianza: <b>cualquiera</b> puede intentar entrar y se "
-                    "<b>bloquea tras 8 fallos</b>. Si agregas IPs aqui, <b>solo esas</b> podran acceder.</p>")
+            estado = ("<div class='cestado abierto'><span class=cdot></span><div><b>Abierto</b>: cualquiera puede "
+                      f"intentar entrar; {bloqueo_txt}. Si agregas IPs aqui, solo esas podran entrar.</div></div>")
+            ctab = ""
+        restringir = ("" if det else
+                      " onsubmit=\"return ask(this,'Restringir el acceso'," + js_attr(
+                          "Desde ahora solo las IPs de la lista podran entrar al panel; desde cualquier otra "
+                          "saldra «Acceso restringido». Tu IP (" + myip + ") tiene que quedar incluida.") +
+                      ",'Restringir','danger')\"")
+        if mia:
+            tuip = f"<span class=cok>entra por {esc(mia)}</span>"
+        elif det:
+            tuip = "<span class=cno>no esta en la lista</span>"
+        else:
+            tuip = ""
+        usar = ("" if mia or not myip else
+                f"<button type=button class=mini data-ip='{esc(myip)}' data-nota='{esc('Equipo de ' + yo)}' "
+                "onclick=\"usarMiIp(this)\">Usar mi IP</button>")
         addc = (
-            "<form method=post action='/perfil' class=fotoform style='margin-top:4px'>"
+            f"<form method=post action='/perfil' class=cadd{restringir}>"
             "<input type=hidden name=accion value=add_trust>"
-            "<input type=text name=ip placeholder='IP o CIDR (ej. 200.10.20.30 o 192.168.1.0/24)' style='flex:1;min-width:200px'>"
+            "<input id=cip type=text name=ip required maxlength=49 autocomplete=off "
+            "placeholder='IP o rango, ej. 203.0.113.10 o 192.0.2.0/24'>"
+            f"<input id=cnota type=text name=nota maxlength={CONF_NOTA_MAX} autocomplete=off "
+            "placeholder='Nota (opcional), ej. Oficina'>"
             "<button class=primary type=submit>Agregar</button></form>"
-            f"<p class=sub2>Tu IP actual es <b class=mono>{esc(myip)}</b>. "
-            "Agregala (o un rango que la incluya) antes de restringir, o quedarias fuera.</p>")
+            f"<div class=miip>Tu IP ahora: <b class=mono>{esc(myip or '?')}</b> {tuip} {usar}</div>")
+        rescate = (
+            "<details class=rescate><summary>Si te quedas fuera</summary>"
+            "<p>Por ejemplo, si te cambia la IP. En el servidor, por SSH y como root:</p>"
+            "<pre>ids-orq panel confianza agregar &lt;tu-IP-nueva&gt; --nota Casa\n"
+            "ids-orq panel confianza vaciar\nids-orq panel confianza ver</pre>"
+            "<p><b>agregar</b> deja entrar tu IP nueva sin abrir el panel a nadie mas; <b>vaciar</b> lo deja "
+            "abierto (con bloqueo por fallos) y guarda una copia de la lista. Hace efecto al momento.</p></details>")
         card_acceso = (
-            "<section class=card><h2>Accesos y seguridad</h2>"
-            "<p class=sub2>Controla quien puede entrar al panel. El historial de intentos esta en "
-            "<b>Accesos</b>.</p>"
-            "<h3 class=ch>IPs de confianza</h3>" + ctab + addc +
-            "<h3 class=ch>IPs bloqueadas ahora</h3>" + blq +
+            "<section class='card conf'><h2>IPs de confianza</h2>"
+            "<p class=sub2>Desde donde se puede abrir el panel. Quien entro y cuando esta en el apartado "
+            "<b>Accesos</b>.</p>" + estado + ctab + addc +
+            "<h3 class=ch>IPs bloqueadas por fallos</h3>" + blq + rescate +
             "</section>")
     css = (
         BASE_CSS +
@@ -10871,7 +10967,29 @@ def perfil_page(msg="", ok=False, edit_user=None):
         "justify-content:center;background:linear-gradient(135deg,#2a78d6,#1c5cab)}"
         ".ufprev img{width:100%;height:100%;object-fit:cover}.ufini{color:#fff;font:700 19px system-ui}"
         ".ufacc{display:flex;flex-direction:column;gap:6px;min-width:0;flex:1}"
-        ".ufbtns{display:flex;gap:8px;flex-wrap:wrap;align-items:center}")
+        ".ufbtns{display:flex;gap:8px;flex-wrap:wrap;align-items:center}"
+        # botones pequenos de las tablas (Quitar, Desbloquear, Usar mi IP)
+        ".mini{padding:5px 12px;border:1px solid #d7d6d2;border-radius:8px;background:#fff;color:#52514e;"
+        "font:600 12.5px system-ui;cursor:pointer;white-space:nowrap}.mini:hover{background:#f4f4f2}"
+        ".mini.danger:hover{background:#e34948;color:#fff;border-color:#e34948}"
+        # IPs de confianza
+        ".aptmodal .aptbox.plano.medio{max-width:740px}.conf h2{font-size:17px}"
+        ".cestado{display:flex;gap:10px;align-items:flex-start;padding:11px 14px;border-radius:10px;font-size:13px;"
+        "line-height:1.5;margin:6px 0 14px;color:#33322f}"
+        ".cestado .cdot{width:10px;height:10px;border-radius:50%;flex:none;margin-top:5px}"
+        ".cestado.abierto{background:#fff6e5;border:1px solid #f3dfb5}.cestado.abierto .cdot{background:#d08a00}"
+        ".cestado.abierto b{color:#8a5a00}"
+        ".cestado.cerrado{background:#e6f4ea;border:1px solid #c4e5cd}.cestado.cerrado .cdot{background:#1a7f37}"
+        ".cestado.cerrado b{color:#1a7f37}"
+        ".conf .twrap{margin:0 0 4px}"
+        ".cadd{display:grid;grid-template-columns:1.3fr 1fr auto;gap:8px;margin-top:12px}"
+        ".cadd .primary{margin:0}@media(max-width:600px){.cadd{grid-template-columns:1fr}}"
+        ".miip{font-size:12.5px;color:#6b6a66;margin:8px 0 4px;display:flex;align-items:center;gap:8px;flex-wrap:wrap}"
+        ".miip .cok{color:#1a7f37}.miip .cno{color:#c0392b;font-weight:600}"
+        ".rescate{margin-top:18px;padding-top:14px;border-top:1px solid #f0efec;font-size:12.5px;color:#52514e}"
+        ".rescate summary{cursor:pointer;font-weight:600;color:#33322f}.rescate p{margin:8px 0}"
+        ".rescate pre{background:#f6f6f4;border:1px solid #ecebe7;border-radius:8px;padding:9px 12px;"
+        "font:12px ui-monospace,Consolas,monospace;white-space:pre-wrap;margin:8px 0}")
     script = ("<script>"
               "function foto(inp,p){var f=inp.files&&inp.files[0];if(!f)return;var r=new FileReader();"
               "r.onload=function(){var im=new Image();im.onload=function(){var mx=160,w=im.width,h=im.height;"
@@ -10920,6 +11038,9 @@ def perfil_page(msg="", ok=False, edit_user=None):
               "if(s&&i.files&&i.files[0])s.textContent=i.files[0].name;}"
               "function ufQuitar(p){quitarimg(p);var s=document.getElementById(p+'fname');"
               "if(s)s.textContent=p==='e'?'Se quitara al guardar.':'Ninguna: se ven sus iniciales.';ufSync(p);}"
+              "function usarMiIp(b){var i=document.getElementById('cip'),n=document.getElementById('cnota');"
+              "if(!i)return;i.value=b.getAttribute('data-ip')||'';"
+              "if(n){if(!n.value)n.value=b.getAttribute('data-nota')||'';n.focus();n.select();}}"
               "function abrir(id){document.getElementById(id).hidden=false;}"
               "function cerrar(id){document.getElementById(id).hidden=true;}"
               "function abrirEdit(b){document.getElementById('eu').value=b.getAttribute('data-user');"
@@ -10991,7 +11112,7 @@ def perfil_page(msg="", ok=False, edit_user=None):
     def _mcard(sid, card, clase=""):
         return _modal(sid, card, clase) if card else ""
     modals = (_mcard("perfil", card_pw) + _mcard("empresa", card_empresa, "chico") + _mcard("usuarios", card_users, "plano")
-              + _mcard("acceso", card_acceso) + _mcard("mikrotik", card_mk)
+              + _mcard("acceso", card_acceso, "plano medio") + _mcard("mikrotik", card_mk)
               + _mcard("dns", card_dns) + _mcard("feeds", card_feeds)
               + _mcard("update", card_update))
     if es_admin:
@@ -11580,6 +11701,10 @@ de una cuenta se cambia la clave, el <b>nombre a mostrar</b>, el correo, el rol 
 elimina. El nombre a mostrar es el que sale arriba a la derecha y en la tabla, pero para entrar
 vale el <b>usuario</b> (el menu de arriba lo ensena debajo del nombre). Si hace falta otro
 usuario, crea uno nuevo y elimina el viejo (sin quedarte sin ningun administrador).</p>
+<p>Al crear o editar un usuario, debajo del rol sale lo que puede hacer. La clave tiene que tener al menos
+<b>10 caracteres</b> (las que ya existian siguen valiendo); <b>Generar</b> crea una de 14 y la copia, y
+<b>Ver</b> la muestra. Tu propia cuenta no se borra ni se desactiva desde la tabla: eso lo hace otro
+administrador.</p>
 <p> Las claves se guardan <b>hasheadas</b> (PBKDF2 con sal)
 en <code>/srv/ids/panel/conf/usuarios.json</code>; nunca en texto plano. El primer administrador lo crea
 el instalador del servidor (<code>ids-orq panel crear-admin</code>, que imprime su clave una sola vez).
@@ -12513,6 +12638,22 @@ cuarentena, cambios de configuracion, altas y bajas de usuarios, actualizaciones
 </ul>
 <p>Las dos tienen buscador y paginacion, y las dos se podan a los
 <b>15 dias</b> (<code>LOG_RETENCION_DIAS</code>).</p>
+
+<h2>IPs de confianza: desde donde se entra</h2>
+<p>En <b>Ajustes &rarr; IPs de confianza</b> se decide desde donde se puede abrir el panel. Arriba se
+ve el estado: <b>Abierto</b> (lista vacia: cualquiera puede intentar entrar) o <b>Restringido</b>
+(solo las IPs o rangos de la lista; desde otra IP sale &laquo;Acceso restringido&raquo; con la IP de
+quien intenta, para que se la pase al administrador). En los dos casos una IP queda
+<b>bloqueada 10 min tras 8 claves mal puestas</b>; las bloqueadas se ven y se desbloquean ahi mismo.</p>
+<p>Cada entrada lleva una <b>nota</b> opcional (&laquo;Oficina&raquo;, &laquo;VPN&raquo;) para saber
+de quien es. Se guarda normalizada (<code>192.0.2.5/24</code> queda como <code>192.0.2.0/24</code>) y no
+entra lo que ya cubre otra entrada. <b>Usar mi IP</b> rellena la tuya. La primera IP pide
+confirmacion (restringe el panel) y quitar la ultima tambien (lo deja abierto). El panel no deja
+guardar una lista que no incluya tu IP actual.</p>
+<p><b>Si te quedas fuera</b> (por ejemplo, te cambio la IP), en el servidor por SSH como root:
+<code>ids-orq panel confianza agregar &lt;tu-IP-nueva&gt;</code> deja entrar esa IP sin abrir el panel a
+nadie mas; <code>ids-orq panel confianza vaciar</code> lo deja abierto y guarda una copia de la
+lista; <code>ids-orq panel confianza ver</code> la muestra. Hace efecto al momento.</p>
 
 <h2>Avisos por Telegram</h2>
 <p>Cuando un CPE va a cuarentena (a mano, por politica o por el barrido rapido) se manda un aviso por
@@ -17024,10 +17165,14 @@ class H(BaseHTTPRequestHandler):
                 self.end_headers(); self.wfile.write(data); return
             self.send_error(404); return
         if not ip_confiable(self._client_ip()):
+            # quien queda fuera necesita saber que IP dar al administrador
             return self._html("<!doctype html><meta charset=utf-8><title>Acceso restringido</title>"
                               "<div style='font:15px system-ui;max-width:520px;margin:60px auto;padding:24px;text-align:center'>"
                               "<h2>Acceso restringido</h2><p style='color:#52514e'>Tu IP no esta en la lista de "
-                              "IPs de confianza del panel.</p></div>", 403)
+                              "IPs de confianza del panel.</p><p style='color:#52514e'>Tu IP: <b style='font-family:"
+                              "ui-monospace,Consolas,monospace'>" + html.escape(self._client_ip()) + "</b>. "
+                              "Pidele a un administrador que la agregue en Ajustes &rarr; IPs de confianza.</p>"
+                              "</div>", 403)
         if path == "/login":
             if self._auth_ok():
                 return self._redirect("/")
@@ -17366,9 +17511,9 @@ class H(BaseHTTPRequestHandler):
             # guardado tal cual, de antes)
             if u != u.lower() and not any(r.get("user") == u for r in cargar_usuarios()):
                 u = u.lower()
-            # el bloqueo por fuerza bruta solo aplica cuando NO hay lista de confianza;
-            # con lista, el acceso ya esta restringido a IPs de confianza (no hay que bloquearlas)
-            espera = login_bloqueado(ip) if not cargar_confianza() else 0
+            # el bloqueo por fuerza bruta vale SIEMPRE: antes se apagaba con lista de confianza y,
+            # si la lista tenia un rango, cualquier equipo de ese rango probaba claves sin limite
+            espera = login_bloqueado(ip)
             if espera > 0:
                 login_registrar(ip, u, "BLOQUEADO")
                 time.sleep(1)
@@ -17380,8 +17525,7 @@ class H(BaseHTTPRequestHandler):
                 bitacora("LOGIN", f"rol={role}", quien=u, ip=ip)
                 token = sesion_abrir(u, role)   # se guarda sha256(token) con la marca de la clave
                 return self._redirect("/", cookie=f"sid={token}; Path=/; HttpOnly; SameSite=Strict; Max-Age={SESSION_TTL}{self._cookie_secure()}")
-            if not cargar_confianza():
-                login_fallo(ip)   # solo se cuenta para bloquear si no hay lista de confianza
+            login_fallo(ip)
             login_registrar(ip, u, "FAIL")
             time.sleep(1)   # ralentiza la fuerza bruta
             return self._html(login_page("Usuario o clave incorrectos."))
@@ -18431,34 +18575,42 @@ class H(BaseHTTPRequestHandler):
             login_registrar(self._client_ip(), CTX.user or "?", f"DESBLOQUEO {ip}")
             return self._html(perfil_page(f"IP {ip} desbloqueada." if existia else f"La IP {ip} no estaba bloqueada.", ok=bool(existia)))
         if accion == "add_trust":
-            import ipaddress
-            val = q.get("ip", [""])[0].strip()
             try:
-                ipaddress.ip_network(val, strict=False)
-            except ValueError:
-                return self._html(perfil_page("IP o CIDR invalido.", ok=False))
-            lst = cargar_confianza()
-            if val in lst:
-                return self._html(perfil_page("Esa IP ya esta en la lista.", ok=False))
-            nueva = lst + [val]
+                val = normalizar_red(q.get("ip", [""])[0])
+            except ValueError as ex:
+                return self._html(perfil_page(str(ex), ok=False))
+            nota = " ".join(q.get("nota", [""])[0].split())[:CONF_NOTA_MAX]
+            det = cargar_confianza_det()
+            ya = red_cubierta_por(val, [e["red"] for e in det])
+            if ya:
+                return self._html(perfil_page(
+                    f"{val} ya esta en la lista." if ya == val else f"{val} ya entra: la cubre {ya}.", ok=False))
+            nueva = det + [{"red": val, "nota": nota}]
             # proteccion: no habilitar/ampliar la lista si tu IP actual queda fuera
-            if not ip_en_lista(self._client_ip(), nueva):
+            if not ip_en_lista(self._client_ip(), [e["red"] for e in nueva]):
                 return self._html(perfil_page(
                     f"Agrega primero tu IP actual ({self._client_ip()}) o quedarias fuera del panel.", ok=False))
             try:
                 guardar_confianza(nueva)
             except OSError as ex:
                 return self._html(perfil_page(f"No se pudo guardar: {ex}", ok=False))
-            return self._html(perfil_page(f"IP de confianza agregada: {val}. Ahora solo estas IPs pueden entrar.", ok=True))
+            bitacora("CONFIANZA-AGREGADA", val + (f" ({nota})" if nota else ""))
+            return self._html(perfil_page(
+                f"Agregada {val}." + (" Desde ahora solo las IPs de la lista pueden entrar al panel." if not det else ""),
+                ok=True))
         if accion == "del_trust":
             val = q.get("ip", [""])[0]
-            nueva = [x for x in cargar_confianza() if x != val]
-            if nueva and not ip_en_lista(self._client_ip(), nueva):
+            det = cargar_confianza_det()
+            nueva = [e for e in det if e["red"] != val]
+            if len(nueva) == len(det):
+                return self._html(perfil_page("Esa IP ya no estaba en la lista.", ok=False))
+            if nueva and not ip_en_lista(self._client_ip(), [e["red"] for e in nueva]):
                 return self._html(perfil_page("No puedes quitar tu propia IP mientras la lista siga activa.", ok=False))
             try:
                 guardar_confianza(nueva)
             except OSError as ex:
                 return self._html(perfil_page(f"No se pudo guardar: {ex}", ok=False))
+            bitacora("CONFIANZA-QUITADA", val)
             extra = " La lista quedo vacia: acceso abierto con bloqueo por fallos." if not nueva else ""
             return self._html(perfil_page(f"IP {val} quitada de confianza.{extra}", ok=True))
         if accion == "add_user":
