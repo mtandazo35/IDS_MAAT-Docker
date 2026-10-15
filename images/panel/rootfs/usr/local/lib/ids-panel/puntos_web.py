@@ -473,10 +473,11 @@ def alertas_24h_html(pid, ahora=None, punto=None):
     return _num(n) + ("" if completo else "+"), n
 
 
-# Redes del espejo fuera de los prefijos. Suricata solo trata como abonados ($HOME_NET) los
-# prefijos del punto, y casi todas las reglas miran $HOME_NET -> $EXTERNAL_NET o al reves: si el
-# MikroTik espeja otras redes (espejo puesto a mano, prefijos mal copiados), el punto sale sano y
-# con 0 alertas para siempre (lab, p001, 2026-10-15). Se mira una muestra del eve vivo.
+# Redes del espejo fuera de los prefijos. El Suricata ya las analiza (su HOME_NET es todo lo
+# privado y CGNAT, ids_orq.home_net), pero el panel solo trata como abonados los prefijos: los
+# equipos de esas redes salen en las alertas y no entran en la cuarentena, el ranking de riesgo
+# ni las metricas (lab, p001, 2026-10-15: espejo puesto a mano con otras redes). Se mira una
+# muestra del eve vivo.
 COB_TOPE_BYTES = 4 * 1024 * 1024     # final del eve.json vivo que se mira (miles de eventos)
 COB_MIN_MUESTRA = 200                # IPs privadas minimas para opinar
 COB_AVISO_PCT = 20                   # desde este % de IPs privadas fuera de los prefijos: aviso
@@ -598,11 +599,11 @@ def cobertura_html(cob):
                  "v.push(x)});t.value=v.join('\\n');t.scrollIntoView({behavior:'smooth',block:'center'});"
                  "t.focus()}return false\">Añadir estas redes a los prefijos</button></div>"
                  % esc(" ".join(cob["sugeridas"])))
-    return ("<div class='aviso amb'><b>%s</b>: %s. El Suricata solo trata como abonados los prefijos "
-            "(<code>$HOME_NET</code>) y casi todas las reglas miran ese tráfico: los equipos de esas redes "
-            "no dan alertas. Si son redes de tus abonados, añádelas a los prefijos y guárdalos (el "
-            "Suricata del punto se reinicia). <span class=hint>Muestra: %s IPs de los últimos eventos."
-            "</span>%s</div>" % (esc(cabeza), lista, _num(total), boton))
+    return ("<div class='aviso amb'><b>%s</b>: %s. El Suricata ya las analiza, pero el panel solo trata "
+            "como tus abonados los prefijos: los equipos de esas redes salen en las alertas y no entran en la "
+            "cuarentena, el ranking de riesgo ni las métricas de tu red. Si son redes de tus abonados, "
+            "añádelas a los prefijos y guárdalos (el Suricata no se reinicia). <span class=hint>Muestra: %s "
+            "IPs de los últimos eventos.</span>%s</div>" % (esc(cabeza), lista, _num(total), boton))
 
 
 def _leer_json_pequeno(ruta, tope):
@@ -875,7 +876,7 @@ function pjOrq(id,orden){var c=(orden==='punto.ajustar')?document.getElementById
  else{pjAbrir('Operación en curso',pjEspera('Preguntando al orquestador…'),PJSEG,id);}
  pjSeguir(id,function(j){if(c){c.innerHTML='<b>'+pjEsc(j.titulo||'Operación')+'</b>'+pjProgreso(j);}else{pjAbrir(j.titulo||'Operación',pjProgreso(j),PJSEG,id,1);}},
   function(j){if(c){c.innerHTML='<b>'+pjEsc(j.titulo||'Operación')+(j.ok?' · terminó bien':' · terminó mal')+'</b>'+pjPasos(j);}
-   if(orden==='punto.ajustar'&&j.ok){pjAbrir('Prefijos aplicados en el Suricata',"<p>"+pjEsc(j.mensaje||'')+"</p><p>Falta llevarlos al MikroTik: la address-list <code>ids-vigilados</code> del espejo se cambia desde su vista previa, como siempre.</p>","<button type=button class=btn onclick='pjPlan()'>Llevarlos al MikroTik</button> <button type=button class='btn sec' onclick='pjCerrar()'>Cerrar</button>",id);return;}
+   if(orden==='punto.ajustar'&&j.ok){pjAbrir('Prefijos guardados',"<p>"+pjEsc(j.mensaje||'')+"</p><p>Falta llevarlos al MikroTik: la address-list <code>ids-vigilados</code> del espejo se cambia desde su vista previa, como siempre.</p>","<button type=button class=btn onclick='pjPlan()'>Llevarlos al MikroTik</button> <button type=button class='btn sec' onclick='pjCerrar()'>Cerrar</button>",id);return;}
    pjAbrir(j.titulo_fin||j.titulo||'Operación',j.html||("<p>"+pjEsc(j.mensaje)+"</p>"),'',id);});}
 function ppref(f){var c=document.getElementById('pprog');if(c){c.style.display='block';c.innerHTML='<b>Cambiando los prefijos</b>'+pjEspera('Encolando el cambio…');}
  pjPost(f,{},function(j){if(j.op_id){pjOrq(j.op_id,'punto.ajustar');return;}if(c)c.style.display='none';aviso('No se cambiaron los prefijos',j.error||'Sin respuesta del panel.');},
@@ -2645,9 +2646,14 @@ def ficha(h, pid, mensaje="", codigo=200, ok=False, extra_espejo=""):
         "<label class=l>Prefijos de abonados (uno por línea)</label>"
         "<textarea class=t name=redes rows=4>%s</textarea>"
         "<div class=acciones><button class=btn type=submit onclick=\"if(ask(this,'Cambiar los prefijos',"
-        "'El Suricata del punto toma los prefijos nuevos: el avance se ve aquí, sin recargar. Después se "
-        "llevan al MikroTik desde la vista previa del espejo.','Cambiar'))ppref(this.form);return false;\">"
-        "Guardar prefijos</button></div></form><div id=pprog class=pjcaja style='display:none'></div>"
+        "'Se guardan los prefijos del punto (el avance se ve aquí, sin recargar). El Suricata no se reinicia: "
+        "ya analiza todas las redes privadas y CGNAT; solo lo hace si entra o sale un prefijo público. "
+        "Después se llevan al MikroTik desde la vista previa del espejo.','Cambiar'))ppref(this.form);"
+        "return false;\">Guardar prefijos</button></div></form><div id=pprog class=pjcaja style='display:none'></div>"
+        "<p class=hint>Los prefijos dicen qué redes espeja el MikroTik (address-list <code>ids-vigilados</code>) "
+        "y cuáles trata el panel como tus abonados (cuarentena, métricas, Top). El Suricata analiza siempre "
+        "todo lo privado y CGNAT (<code>10/8</code>, <code>172.16/12</code>, <code>192.168/16</code>, "
+        "<code>100.64/10</code>) más los prefijos públicos que pongas aquí.</p>"
         % (esc(pid), campo_token(), esc("\n".join(p.get("redes") or []))))
     # Servicio
     # «Regenerar»: el router que reintenta con la clave vieja ya no acaba baneado (fail2ban solo cuenta

@@ -212,7 +212,7 @@ Valores que pone el orquestador:
 | Clave | Valor | Origen |
 |---|---|---|
 | `sensor-name` | `p003` | `punto_id`. Suricata lo escribe como `host` en cada evento ([DATOS.md](DATOS.md) §3) |
-| `HOME_NET` | `[redes_abonados del punto]` | punto |
+| `HOME_NET` | `[10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,100.64.0.0/10]` más los `redes_abonados` del punto que caen fuera (públicos, POST-NAT) | fijo + punto (`home_net`). Cambiar prefijos privados no reinicia Suricata (decisión del dueño 2026-10-15); los prefijos deciden el espejo del MikroTik y quién es abonado en el panel |
 | `af-packet` | §5 | orquestador |
 | `threading.set-cpu-affinity` | `no` | la afinidad la da el `cpuset` de Docker |
 | `detect.profile`, `sgh-mpm-context` | según el perfil (§10.2) | punto |

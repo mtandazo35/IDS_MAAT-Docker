@@ -723,7 +723,19 @@ def render_suricata(tmpl, manifiesto, valores):
 
 
 def home_net(redes):
-    return "[" + ",".join(redes) + "]"
+    """HOME_NET del suricata.yaml del punto: todo el espacio de abonados de un ISP
+    (REDES_POR_DEFECTO: privadas y CGNAT) y, detrás, los prefijos del punto que caen fuera de él
+    (públicos: sensor POST-NAT). Decisión del dueño 2026-10-15: Suricata analiza como abonado
+    cualquier red privada que llegue por el espejo, esté o no en los prefijos (con prefijos
+    estrechos el punto salía sano y con 0 alertas), y cambiar prefijos privados no lo reinicia:
+    solo los usan el espejo del MikroTik y el panel."""
+    base = [ipaddress.ip_network(r) for r in REDES_POR_DEFECTO]
+    extra = []
+    for r in redes:
+        n = ipaddress.ip_network(r, strict=False)
+        if r not in extra and not any(n.version == b.version and n.subnet_of(b) for b in base):
+            extra.append(r)
+    return "[" + ",".join(list(REDES_POR_DEFECTO) + extra) + "]"
 
 
 # La CA del VPS va en el script del MikroTik (VPN-01): es pública. Solo pasa lo que cabe en una
@@ -3648,23 +3660,28 @@ class Orquestador:
         if "origen_ip" in prm:
             nuevo["origen_ip"] = prm["origen_ip"]
         # perfil/hilos cambian el compose (memoria, CPU) y las reglas: -T y recrear el contenedor.
-        # Solo los prefijos cambian HOME_NET del suricata.yaml, que va montado y no forma parte del
-        # compose: `compose up -d` no recrearía nada y Suricata seguiría con las redes viejas.
+        # Los prefijos solo tocan Suricata si cambian su HOME_NET (home_net: un prefijo público que
+        # entra o sale); los privados ya están todos y solo se guardan (espejo del MikroTik y panel).
+        # El HOME_NET va en el suricata.yaml montado, fuera del compose: `compose up -d` no
+        # recrearía nada y Suricata seguiría con el viejo, por eso se reinicia.
         cambia_motor = any(nuevo[k] != p[k] for k in ("perfil", "hilos"))
         cambia_redes = nuevo["redes"] != p["redes"]
-        cambia_sur = cambia_motor or cambia_redes
+        cambia_home = home_net(nuevo["redes"]) != home_net(p["redes"])
+        cambia_sur = cambia_motor or cambia_home
         cambia_vpn = any(nuevo[k] != p[k] for k in ("compat_v6", "ros_version"))
         cambia_fw = (nuevo.get("origen_ip") or None) != (p.get("origen_ip") or None)
+        solo_prefijos = cambia_redes and not (cambia_sur or cambia_vpn or cambia_fw)
         recreado = []
-        if not (cambia_sur or cambia_vpn or cambia_fw):
+        if not (cambia_sur or cambia_vpn or cambia_fw or cambia_redes):
             ctx.mensaje = "sin cambios"
             return {"recreado": []}
         imgs = imagenes()
         sube = (PERFILES[nuevo["perfil"]]["mem_limit"] > PERFILES[p["perfil"]]["mem_limit"]
                 or nuevo["hilos"] > p["hilos"])
         activo = p["deseado"] == "activo"
-        ctx.total = ((1 if sube else 0) + (2 if cambia_motor else 1 if cambia_redes else 0)
-                     + (2 if cambia_vpn else 0) + (1 if cambia_fw else 0) + (2 if cambia_sur and activo else 0))
+        ctx.total = ((1 if sube else 0) + (2 if cambia_motor else 1 if cambia_home else 0)
+                     + (2 if cambia_vpn else 0) + (1 if cambia_fw else 0) + (2 if cambia_sur and activo else 0)
+                     + (1 if solo_prefijos else 0))
         dur_T = None
         if sube:
             with ctx.paso("admisión de RAM"):
@@ -3687,16 +3704,25 @@ class Orquestador:
             with ctx.paso("compose.yml"):
                 self.escribir_compose(nuevo, {"vpn": p.get("imagen_vpn") or imgs["vpn"], "suricata": imagen},
                                       cfg.version)
-        elif cambia_redes:
+        elif cambia_home:
             # sin -T: valida con un HOME_NET fijo (validar_T) y no probaría las redes nuevas
             with ctx.paso("suricata.yaml"):
                 self.escribir_yaml(nuevo, imagen)
-        with self.tx() as db:
-            db.execute("UPDATE punto SET perfil=?, hilos=?, redes=?, compat_v6=?, ros_version=?, origen_ip=?, "
-                       "cpuset_suricata=?, actualizado=? WHERE pid=?",
-                       (nuevo["perfil"], nuevo["hilos"], json.dumps(nuevo["redes"]), nuevo["compat_v6"],
-                        nuevo["ros_version"], nuevo.get("origen_ip"), nuevo.get("cpuset_suricata"),
-                        ahora(), pid))
+
+        def guardar():
+            with self.tx() as db:
+                db.execute("UPDATE punto SET perfil=?, hilos=?, redes=?, compat_v6=?, ros_version=?, origen_ip=?, "
+                           "cpuset_suricata=?, actualizado=? WHERE pid=?",
+                           (nuevo["perfil"], nuevo["hilos"], json.dumps(nuevo["redes"]), nuevo["compat_v6"],
+                            nuevo["ros_version"], nuevo.get("origen_ip"), nuevo.get("cpuset_suricata"),
+                            ahora(), pid))
+        if solo_prefijos:
+            with ctx.paso("guardar prefijos (Suricata sin reiniciar)"):
+                guardar()
+            ctx.mensaje = ("prefijos guardados; Suricata no se reinicia: ya analiza todas las redes "
+                           "privadas y CGNAT")
+            return {"recreado": []}
+        guardar()
         if cambia_vpn:
             with ctx.paso("server.conf"):
                 escribir_atomico(ruta("/srv/ids/puntos/%s/vpn/server.conf" % pid),

@@ -1,9 +1,10 @@
 """Ficha y lista de Puntos con espejo real (lab, p001, 2026-10-15):
 
 - Cobertura de prefijos: el MikroTik espejaba 192.168.116-117.x y 172.16.32.x y los prefijos del
-  punto eran otras redes 10.x. Suricata solo trata como abonados ($HOME_NET) los prefijos, asi
-  que el punto salia sano y con 0 alertas para siempre, sin ningun aviso. Ahora la ficha dice que
-  redes llegan fuera de los prefijos y ofrece añadirlas al cuadro de Prefijos (sin guardar).
+  punto eran otras redes 10.x: el punto salia sano y con 0 alertas, sin ningun aviso (entonces
+  HOME_NET eran los prefijos; hoy es todo lo privado, pero el panel sigue sin tratar como
+  abonados, ni cuarentenar, lo que cae fuera). La ficha dice que redes llegan fuera de los
+  prefijos y ofrece añadirlas al cuadro de Prefijos (sin guardar).
 - «Alertas 24 h»: el panel contaba los ultimos 8 MB del eve vivo (minutos con espejo real) y
   salia «0+». Manda el recuento del orquestador (`alertas_24h` en estado.json); sin el, el de
   antes con «+».

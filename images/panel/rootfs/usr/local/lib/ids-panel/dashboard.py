@@ -7097,7 +7097,7 @@ def guardar_publicas(d, origen=None):
 def es_publica_declarada(ip):
     """La IP es una de las publicas que declaraste (o cae en una de sus redes)?
 
-    Existe por el modo POST-NAT: si el sensor mira la WAN, HOME_NET son tus rangos
+    Existe por el modo POST-NAT: si el sensor mira la WAN, los prefijos del punto son tus rangos
     publicos y el panel las trata como CPEs. Mandar tu IP de NAT a la cuarentena dejaria
     sin internet a TODOS los abonados que salen por ella."""
     try:
@@ -12501,12 +12501,21 @@ vieja).</li>
 <p>Comprueba que llega mirando la salud por etapas del punto (<b>Espejo TZSP</b> y <b>Suricata</b>)
 o, en el router, <code>/ip firewall mangle print stats where comment~"ids-maat"</code>.</p>
 
-<h3>Prefijos: por qué a veces no se ven datos</h3>
+<h3>Prefijos: qué deciden y por qué a veces faltan datos</h3>
 <p>El espejo de cada punto llega a su receptor TZSP (en su contenedor VPN) y su Suricata lo inspecciona.
-Pero el panel muestra <b>alertas</b>, no tráfico normal, y las reglas de <b>ataque saliente</b> (escaneo
-de puertos, Telnet/Mirai, fuerza bruta SSH de un CPE) solo disparan si la IP de origen está dentro de
-los <b>prefijos del punto</b> (su <code>HOME_NET</code>).</p>
-<p><b>Síntoma típico:</b> la etapa <b>Espejo TZSP</b> del punto está bien pero el panel se ve casi vacío.
+El Suricata trata como red propia (<code>HOME_NET</code>) <b>todo lo privado y el CGNAT</b>
+(<code>10/8</code>, <code>172.16/12</code>, <code>192.168/16</code>, <code>100.64/10</code>) más los prefijos
+<b>públicos</b> del punto: cualquier red de abonados que llegue por el espejo da alertas, esté o no en
+los prefijos.</p>
+<p>Los <b>prefijos del punto</b> deciden otras dos cosas:</p>
+<ul>
+<li>qué redes <b>espeja el MikroTik</b> (la address-list <code>ids-vigilados</code>, cuando el espejo lo
+monta el panel);</li>
+<li>qué IPs trata el <b>panel</b> como tus abonados: solo esas entran en la <b>cuarentena</b>, el ranking
+de riesgo y las métricas de tu red. Una IP de abonado fuera de los prefijos sale en las alertas, pero
+el panel no la cuarentena.</li>
+</ul>
+<p><b>Síntoma típico:</b> el punto da alertas pero la cuarentena y el Top de tus CPEs se ven casi vacíos.
 Casi siempre es que los prefijos no incluyen las redes de tus clientes.</p>
 <p>El panel lo detecta solo: mira una muestra de los últimos eventos del punto y cuenta las IPs de
 abonado (redes privadas <code>10.x</code>, <code>172.16-31.x</code>, <code>192.168.x</code> y CGNAT
@@ -12522,13 +12531,18 @@ abonados (servidores, gestión) y pulsa <b>Guardar prefijos</b>.</li>
 </ul>
 <p>Al dar de alta el punto los prefijos se ponen solos: todas las redes privadas y el CGNAT
 (<code>10/8</code>, <code>172.16/12</code>, <code>192.168/16</code>, <code>100.64/10</code>) menos las que
-usa el propio servidor (túneles, Docker, gestión). Se cambian en su ficha (<b>Prefijos</b>): el
-orquestador <b>reinicia el Suricata del punto</b> para que tome los nuevos (mientras dura el reinicio ese
-punto no inspecciona nada) y después hay que <b>volver a aplicar el espejo</b> para
-llevarlos a la address-list <code>ids-vigilados</code> del router (con la misma vista previa). Al pulsar
-<b>Guardar prefijos</b> la ficha no se recarga: debajo del formulario se ve el avance del orquestador paso
-a paso, con lo que tardó cada uno, y al terminar sale la ventana <b>Prefijos aplicados en el
-Suricata</b> con el botón <b>Llevarlos al MikroTik</b>, que abre la vista previa del espejo.</p>
+usa el propio servidor (túneles, Docker, gestión). Se cambian en su ficha (<b>Prefijos</b>):</p>
+<ul>
+<li>cambiar prefijos <b>privados</b> o CGNAT <b>no reinicia el Suricata</b> (ya los analiza todos): el
+orquestador solo los guarda y el punto no deja de inspeccionar ni un segundo;</li>
+<li>añadir o quitar un prefijo <b>público</b> (sensor POST-NAT) sí cambia el <code>HOME_NET</code>: el
+orquestador reinicia el Suricata del punto (aprox. un minuto sin inspeccionar mientras carga las reglas);</li>
+<li>en los dos casos, después hay que <b>volver a aplicar el espejo</b> para llevarlos a la address-list
+<code>ids-vigilados</code> del router (con la misma vista previa).</li>
+</ul>
+<p>Al pulsar <b>Guardar prefijos</b> la ficha no se recarga: debajo del formulario se ve el avance del
+orquestador paso a paso, con lo que tardó cada uno, y al terminar sale la ventana <b>Prefijos
+guardados</b> con el botón <b>Llevarlos al MikroTik</b>, que abre la vista previa del espejo.</p>
 
 <h2>Sensor POST-NAT: analizar lo que hacen tus IPs públicas</h2>
 <p>Lo normal es espejar el <b>bridge</b> del MikroTik: ahí se ve quién es cada abonado (<code>10.x</code>)
@@ -12536,12 +12550,13 @@ pero <b>nunca</b> la IP pública por la que salió. Hay un montaje distinto para
 la <b>WAN</b>. Entonces el sensor ve el tráfico <b>ya traducido</b> y el origen es tu IP pública, que
 es exactamente lo que ve -y denuncia- el resto de internet.</p>
 <p>Los dos se complementan: el de la LAN dice <b>quién</b>, el de la WAN dice <b>qué sale por cada
-pública</b>. En el de la WAN, <b>HOME_NET son tus rangos PÚBLICOS</b>, no los privados.</p>
+pública</b>. En el de la WAN, <b>los prefijos son tus rangos PÚBLICOS</b>: el orquestador los añade
+al <code>HOME_NET</code> del Suricata (que ya trae todo lo privado) y el panel los trata como tus CPEs.</p>
 <p>Se monta como un <b>punto aparte</b> en <b>Puntos</b>, con tus rangos <b>públicos</b> como prefijos
 del espejo, y en el MikroTik el espejo apunta a la <b>WAN</b>, no al bridge.</p>
 <h3>Tres avisos que hay que leer antes</h3>
 <ul>
-<li><b>Tu propia pública NO puede ir a la cuarentena.</b> Como HOME_NET son las públicas, el panel
+<li><b>Tu propia pública NO puede ir a la cuarentena.</b> Como los prefijos son las públicas, el panel
 las trata como si fueran CPEs; mandar tu IP de NAT a la address-list dejaría <b>sin internet a todos
 los abonados que salen por ella</b>. El panel lo <b>impide</b> si esas IPs están declaradas en
 <b>Consultar IP &rarr; Tus IPs públicas</b>. Declararlas ahí no es opcional en este modo.</li>
@@ -12597,8 +12612,8 @@ falla. El motivo sale al lado.</li>
 no se queda en ámbar como si fuera lo normal tras un alta.</li>
 <li><b>operativa</b> (verde), <b>degradada</b>, <b>sin datos</b>, <b>deshabilitada</b> (punto parado) y
 <b>desconocido</b> (sin estado reciente del orquestador). <b>Degradada</b> también sale con todas las
-etapas bien si buena parte del espejo es de redes fuera de los prefijos (ver "Prefijos: por qué a
-veces no se ven datos").</li>
+etapas bien si buena parte del espejo es de redes fuera de los prefijos (ver "Prefijos: qué deciden
+y por qué a veces faltan datos").</li>
 </ul>
 <p><b>Alertas 24 h</b> (en Puntos y en la ficha) las cuenta el orquestador con el contador de alertas
 del Suricata del punto, en tramos de 5 minutos. Mientras aún no lleva 24 horas contando (punto nuevo

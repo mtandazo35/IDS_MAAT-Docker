@@ -1,6 +1,7 @@
-"""punto.ajustar (Puntos, apartado A): cambiar los prefijos SÍ llega a Suricata, cambiar perfil o
-hilos recrea de verdad, avance con total y ajustes repetidos juntados en uno. Con el Docker
-simulado, que ahora (como Docker) no recrea nada en un `compose up -d` sin cambios."""
+"""punto.ajustar (Puntos, apartado A): HOME_NET fijo (privadas y CGNAT más los prefijos públicos),
+así que los prefijos privados solo se guardan y uno público SÍ llega a Suricata (reinicio);
+cambiar perfil o hilos recrea de verdad, avance con total y ajustes repetidos juntados en uno.
+Con el Docker simulado, que (como Docker) no recrea nada en un `compose up -d` sin cambios."""
 
 import sys
 import unittest
@@ -52,30 +53,72 @@ class Simulador(Base):
         self.assertNotEqual(c["pid"], antes)
 
 
+BASE = "10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,100.64.0.0/10"
+
+
+class HomeNet(unittest.TestCase):
+    """HOME_NET fijo (decisión del dueño 2026-10-15): todo lo privado y CGNAT, y detrás los
+    prefijos públicos del punto (sensor POST-NAT)."""
+
+    def setUp(self):
+        self.mod = A.cargar_orq()
+
+    def test_prefijos_privados_no_cambian_nada(self):
+        for redes in (["10.0.0.0/24"], ["192.168.117.0/24", "172.16.32.0/24", "100.70.0.0/16"],
+                      ["10.0.0.0/8", "172.16.0.0/12"]):
+            with self.subTest(redes=redes):
+                self.assertEqual(self.mod.home_net(redes), "[%s]" % BASE)
+
+    def test_prefijos_publicos_van_detras_sin_repetir(self):
+        self.assertEqual(self.mod.home_net(["10.0.0.0/24", "203.0.113.0/24", "198.51.100.7/32", "203.0.113.0/24"]),
+                         "[%s,203.0.113.0/24,198.51.100.7/32]" % BASE)
+
+    def test_una_red_que_solo_pisa_en_parte_lo_privado_va_entera(self):
+        """172.0.0.0/8 no cabe en 172.16/12: se añade tal cual (no es «privada» entera)."""
+        self.assertEqual(self.mod.home_net(["172.0.0.0/8"]), "[%s,172.0.0.0/8]" % BASE)
+
+
 class SoloRedes(Base):
-    def test_cambiar_prefijos_reinicia_suricata(self):
-        """Corrección de defecto: compose.yml no depende de las redes y suricata.yaml va montado, así
-        que `compose up -d` no recreaba nada y HOME_NET seguía con las redes viejas."""
+    def test_prefijos_privados_no_reinician_suricata(self):
+        """Decisión del dueño 2026-10-15: con HOME_NET fijo, cambiar prefijos privados solo los
+        guarda (espejo del MikroTik y panel). Antes reiniciaba Suricata (~75 s sin inspeccionar)."""
         vpn, sur = self.pid_proc("vpn"), self.pid_proc("suricata")
+        yaml_antes = self.yaml()
         r = A.ejecutar_orden(self.orq, "punto.ajustar", {"pid": "p001",
                                                          "redes_abonados": ["10.0.0.0/24", "10.1.0.0/24"]})
         self.assertEqual(r["codigo"], "OK", A.explicar(r))
+        self.assertEqual(r["resultado"]["recreado"], [])
+        self.assertIn("no se reinicia", r["mensaje"])
+        self.assertEqual(self.yaml(), yaml_antes)
+        self.assertIn('HOME_NET: "[%s]"' % BASE, self.yaml())
+        self.assertEqual((self.pid_proc("vpn"), self.pid_proc("suricata")), (vpn, sur))
+        self.assertFalse(self.s.ordenes("docker restart"))
+        self.assertEqual(self.orq.punto("p001")["redes"], ["10.0.0.0/24", "10.1.0.0/24"])
+        hechos, total = r["avance"].split("/")
+        self.assertEqual(hechos, total)
+
+    def test_prefijo_publico_reinicia_suricata(self):
+        """Un prefijo público (POST-NAT) cambia HOME_NET: suricata.yaml nuevo y reinicio, que el
+        yaml va montado y `compose up -d` no recrearía nada. La VPN no se toca."""
+        vpn, sur = self.pid_proc("vpn"), self.pid_proc("suricata")
+        r = A.ejecutar_orden(self.orq, "punto.ajustar", {"pid": "p001",
+                                                         "redes_abonados": ["10.0.0.0/24", "203.0.113.0/24"]})
+        self.assertEqual(r["codigo"], "OK", A.explicar(r))
         self.assertEqual(r["resultado"]["recreado"], ["suricata"])
-        self.assertIn('HOME_NET: "[10.0.0.0/24,10.1.0.0/24]"', self.yaml())
+        self.assertIn('HOME_NET: "[%s,203.0.113.0/24]"' % BASE, self.yaml())
         self.assertNotEqual(self.pid_proc("suricata"), sur)        # Suricata arrancó con el yaml nuevo
         self.assertEqual(self.pid_proc("vpn"), vpn)                # la VPN no se toca
         self.assertFalse([a for a in self.s.llamadas if "-T" in a])  # el -T no aporta nada aquí
         self.assertTrue(self.s.ordenes("docker restart --time 30 ids-p001-suricata"))
-        self.assertEqual(self.orq.punto("p001")["redes"], ["10.0.0.0/24", "10.1.0.0/24"])
         hechos, total = r["avance"].split("/")
         self.assertEqual(hechos, total)
 
     def test_punto_parado_solo_escribe(self):
         A.ejecutar_orden(self.orq, "punto.parar", {"pid": "p001"})
         self.s.llamadas.clear()
-        r = A.ejecutar_orden(self.orq, "punto.ajustar", {"pid": "p001", "redes_abonados": ["10.2.0.0/24"]})
+        r = A.ejecutar_orden(self.orq, "punto.ajustar", {"pid": "p001", "redes_abonados": ["203.0.113.0/24"]})
         self.assertEqual(r["codigo"], "OK", A.explicar(r))
-        self.assertIn('HOME_NET: "[10.2.0.0/24]"', self.yaml())
+        self.assertIn('HOME_NET: "[%s,203.0.113.0/24]"' % BASE, self.yaml())
         self.assertFalse(self.s.ordenes("docker restart"))
         self.assertEqual(self.s.contenedores["ids-p001-suricata"]["estado"], "exited")
 
@@ -119,9 +162,10 @@ class Juntar(Base):
         return self.orq.atender(A.peticion("op.estado", {"op_id": op_id}))["datos"]
 
     def test_varios_cambios_de_prefijos_cuentan_como_uno(self):
-        a = self.encolar({"redes_abonados": ["10.1.0.0/24"]})
-        b = self.encolar({"redes_abonados": ["10.2.0.0/24"]})
-        c = self.encolar({"redes_abonados": ["10.3.0.0/24"]})
+        """Prefijos públicos (los que reinician): de tres seguidos solo se aplica el último."""
+        a = self.encolar({"redes_abonados": ["203.0.113.0/24"]})
+        b = self.encolar({"redes_abonados": ["198.51.100.128/25"]})
+        c = self.encolar({"redes_abonados": ["192.0.2.128/25"]})
         while self.orq.procesar_una():
             pass
         ra, rb, rc = self.estado(a), self.estado(b), self.estado(c)
@@ -129,7 +173,7 @@ class Juntar(Base):
         self.assertEqual(ra["resultado"]["sustituida_por"], b)
         self.assertEqual(rb["resultado"]["sustituida_por"], c)
         self.assertEqual(rc["resultado"]["recreado"], ["suricata"])
-        self.assertIn('HOME_NET: "[10.3.0.0/24]"', self.yaml())
+        self.assertIn('HOME_NET: "[%s,192.0.2.128/25]"' % BASE, self.yaml())
         self.assertEqual(len(self.s.ordenes("docker restart --time 30 ids-p001-suricata")), 1)
 
     def test_campos_distintos_no_se_pierden(self):

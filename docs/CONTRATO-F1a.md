@@ -478,7 +478,7 @@ con `str.replace` y **falla** si sobra o falta algún marcador respecto a `plant
 | Marcador | Ejemplo | Lo decide |
 |---|---|---|
 | `@@SENSOR_NAME@@` | `p003` | `pid` (sale como `host` en cada evento) |
-| `@@HOME_NET@@` | `[10.0.0.0/24,192.168.88.0/24]` | `redes_abonados` del punto, sin espacios |
+| `@@HOME_NET@@` | `[10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,100.64.0.0/10,198.51.100.0/24]` | fijo (privadas y CGNAT) más los `redes_abonados` del punto que caen fuera (públicos), sin espacios (`home_net`, 2026-10-15) |
 | `@@RULE_PATH@@` | `/reglas/current/reducido` | perfil → `completo` o `reducido` |
 | `@@CLUSTER_ID@@` | `103` | `100 + N` |
 | `@@HILOS@@` | `1` | punto, 1–2 |
