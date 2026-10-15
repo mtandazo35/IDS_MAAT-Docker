@@ -132,17 +132,21 @@ class BotonEnlace(unittest.TestCase):
 
     def test_desde_puntos_se_vuelve_a_ajustes(self):
         """Correccion de defecto (2026-10-14, «puntos cuando ingreso no tiene para regresar a
-        ajustes»): Puntos solo se abre desde Ajustes y no tenia enlace de vuelta. Ahora cada pagina
-        lleva «← Ajustes / Puntos»; en la lista, Puntos es donde estas (sin enlace)."""
+        ajustes»; 2026-10-15, la ruta «← Ajustes / Puntos» de arriba «no debe estar asi» y «en la
+        ventana Puntos falta el boton de regresar a Ajustes»): sin ruta arriba en ninguna pagina; la
+        lista lleva el boton «Volver a Ajustes» y la ficha y el alta, «Volver a Puntos»."""
         p = PanelP()
         self.addCleanup(p.cerrar)
         ana = p.entrar("ana")
         lista = p.pedir("GET", "/puntos", cookie=ana).texto
-        self.assertIn("<nav class=migas aria-label='Ruta'><a href='/ajustes'>&larr; Ajustes</a>"
-                      "<span>/</span><b>Puntos</b></nav>", lista)
-        for ruta in ("/puntos/p001", "/puntos/nuevo"):
-            h = p.pedir("GET", ruta, cookie=ana).texto
-            self.assertIn("<a href='/ajustes'>&larr; Ajustes</a><span>/</span><a href='/puntos'>Puntos</a>", h, ruta)
+        self.assertIn("<div class=ptbtns><a class='btn sec' href='/ajustes'>Volver a Ajustes</a>"
+                      "<a class=btn href='/puntos/nuevo'>Agregar punto</a></div>", lista)
+        for ruta, h in (("/puntos", lista), ("/puntos/p001", p.pedir("GET", "/puntos/p001", cookie=ana).texto),
+                        ("/puntos/nuevo", p.pedir("GET", "/puntos/nuevo", cookie=ana).texto)):
+            self.assertNotIn("class=migas", h, ruta)
+            self.assertNotIn("&larr; Ajustes", h, ruta)
+            if ruta != "/puntos":
+                self.assertIn("<a class='btn sec' href='/puntos'>Volver a Puntos</a>", h, ruta)
 
     def test_los_botones_no_palpitan_al_pasar_el_raton(self):
         """Correccion de defecto (2026-10-14, «estos botones como que palpitan»): el :hover de .btn y

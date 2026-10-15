@@ -729,6 +729,7 @@ def error_html(p, ahora=None, boton=""):
 _CSS = (
     "main{max-width:1360px;padding:20px 28px 40px}"
     ".ptit{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin:0 0 12px}"
+    ".ptbtns{display:flex;gap:8px;flex-wrap:wrap}"
     ".card{padding:16px 18px}"
     ".pchip{display:inline-block;color:#fff;font-size:11px;font-weight:700;padding:2px 9px;border-radius:20px}"
     ".pwarn{color:#b06a00;font-weight:600}"
@@ -747,9 +748,6 @@ _CSS = (
     ".btn.sec:hover{background:#f4f4f2;color:#33322f}.btn.peligro{background:#c0392b}"
     ".btn.peligro:hover{color:#fff}"
     ".btn[disabled]{opacity:.5;cursor:default}"
-    ".migas{display:flex;align-items:center;gap:8px;margin:0 0 12px;font-size:13px;color:#8a93a0}"
-    ".migas a{color:#1c5cab;font-weight:600;text-decoration:none}.migas a:hover{text-decoration:underline}"
-    ".migas b{color:#33322f;font-weight:600}"
     ".acciones{display:flex;gap:8px;flex-wrap:wrap;margin:10px 0}.acciones form{margin:0}"
     ".datos{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px}"
     ".dato .et{color:#6b6a66;font-size:12px}"
@@ -907,17 +905,16 @@ def aviso(texto, tipo="err"):
     return "<div class='aviso %s'>%s</div>" % (tipo, esc(texto))
 
 
-def pagina(d, titulo, cuerpo, refresco=0, en_lista=False):
+def pagina(d, titulo, cuerpo, refresco=0):
     meta = "<meta http-equiv=refresh content=%d>" % refresco if refresco else ""
-    # Puntos solo se abre desde Ajustes (no esta en la barra): sin esta ruta no habia como volver
-    # (el user, 2026-10-14). En la lista «Puntos» es donde estas; en lo demas, enlace a la lista.
-    migas = ("<nav class=migas aria-label='Ruta'><a href='/ajustes'>&larr; Ajustes</a><span>/</span>"
-             + ("<b>Puntos</b>" if en_lista else "<a href='/puntos'>Puntos</a>") + "</nav>")
+    # Sin la ruta «← Ajustes / Puntos» de arriba (puesta el 2026-10-14 y quitada a peticion del
+    # user el 2026-10-15): se vuelve con «Volver a Puntos» de cada pagina y con Ajustes, que la
+    # barra ya marca.
     return ("<!doctype html><html lang=es><head><meta charset=utf-8>"
             "<link rel=icon type=image/png href=/favicon.ico>"
             "<meta name=viewport content='width=device-width,initial-scale=1'>" + meta +
             "<title>%s</title><style>%s%s</style></head><body>" % (esc(titulo), d.BASE_CSS, _CSS)
-            + d.nav("/ajustes") + "<main>" + migas + cuerpo + "</main>" + _MODAL_TRABAJO + _JS + _JS_TRABAJOS
+            + d.nav("/ajustes") + "<main>" + cuerpo + "</main>" + _MODAL_TRABAJO + _JS + _JS_TRABAJOS
             + "</body></html>")
 
 
@@ -1087,7 +1084,8 @@ def lista(h, consulta):
     cuerpo = (
         "<div class=ptit><div><h1>Puntos</h1><p class=sub>Cada punto es un MikroTik con su propia VPN y su "
         "propio Suricata. Cola del orquestador: %s &middot; pendientes: %s &middot; caben más puntos: %s</p></div>"
-        "<a class=btn href='/puntos/nuevo'>Agregar punto</a></div>%s%s"
+        "<div class=ptbtns><a class='btn sec' href='/ajustes'>Volver a Ajustes</a>"
+        "<a class=btn href='/puntos/nuevo'>Agregar punto</a></div></div>%s%s"
         "<div class='card tablewrap'><table><thead><tr><th>Punto</th><th>Estado</th><th>Salud por etapas</th>"
         "<th>VPN</th><th>Espejo</th><th>Suricata</th><th class=num>Alertas 24 h</th>"
         "<th>Retención efectiva</th><th>Acciones</th></tr></thead><tbody>%s</tbody></table></div>"
@@ -1098,8 +1096,7 @@ def lista(h, consulta):
            filas, RETENCION_OBJETIVO_DIAS))
     # sin <meta refresh>: recargaria la pagina con el modal de Eliminar a medio escribir. Se recarga
     # cada 30 s solo si no hay ningun modal abierto.
-    return h._html(pagina(d, "Puntos", cuerpo + _MODAL_BAJA + _RECARGA_LISTA + _retomar_lista_html(d),
-                          en_lista=True))
+    return h._html(pagina(d, "Puntos", cuerpo + _MODAL_BAJA + _RECARGA_LISTA + _retomar_lista_html(d)))
 
 
 def _acciones_fila(p):
@@ -1180,7 +1177,8 @@ def form_nuevo(h, valores=None, mensaje="", codigo=200):
     cap = (((nodos.leer_estado() or {}).get("capacidad") or {}).get("caben")) or {}
     caben = cap.get(PERFIL_ALTA)
     cuerpo = (
-        "<h1>Agregar punto</h1><p class=sub>Un punto es un MikroTik que manda una copia de su tráfico (el "
+        "<div class=ptit><h1>Agregar punto</h1><a class='btn sec' href='/puntos'>Volver a Puntos</a></div>"
+        "<p class=sub>Un punto es un MikroTik que manda una copia de su tráfico (el "
         "espejo) al sensor por una VPN propia. Al crearlo, el servidor prepara su VPN y su Suricata y te da "
         "los comandos para pegar en el MikroTik: sirven para RouterOS 6.49 o superior y para RouterOS 7.</p>%s%s"
         "<form method=post action='/puntos/nuevo' class=card onsubmit=\"var b=this.querySelector('button');"
@@ -1722,8 +1720,9 @@ def pagina_op(h, op_id):
     if vm is None:
         return _html_privado(h, pagina(d, "Operación", "<h1>Operación desconocida</h1><p>Esa operación no "
                                        "existe o no la pediste tu.</p>"), 404)
-    tit = "<h1>%s%s</h1>" % (esc(ORDENES.get(vm.get("orden"), vm.get("orden") or "Operación")),
-                             (" &middot; " + esc(vm.get("titulo"))) if vm.get("titulo") else "")
+    tit = ("<div class=ptit><h1>%s%s</h1><a class='btn sec' href='/puntos'>Volver a Puntos</a></div>"
+           % (esc(ORDENES.get(vm.get("orden"), vm.get("orden") or "Operación")),
+              (" &middot; " + esc(vm.get("titulo"))) if vm.get("titulo") else ""))
     if not vm.get("terminada"):
         # sin <meta refresh>: antes la pagina entera se recargaba cada 2 s (saltaba y parpadeaba).
         # Ahora el JS pide /operaciones/<op_id>?json=1 y cambia la barra, los pasos y, al terminar,
