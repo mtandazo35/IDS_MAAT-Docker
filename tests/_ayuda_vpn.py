@@ -109,9 +109,11 @@ def normalizar_nft(texto):
 
     Sirve para comparar el .nft que se carga (`table x; delete table x; table x { ... }`, cadenas
     en una línea) con lo que devuelve `nft list table`: quita los contadores (`packets N bytes N`),
-    las comillas, las líneas `table`/`delete table` y la forma (llaves, `;`, sangría). Las reglas
-    quedan en orden, una por elemento: una regla de más, de menos o distinta cambia la lista."""
+    la ráfaga por defecto que `nft list` añade a un `limit rate` (`burst 5 packets`), las comillas,
+    las líneas `table`/`delete table` y la forma (llaves, `;`, sangría). Las reglas quedan en
+    orden, una por elemento: una regla de más, de menos o distinta cambia la lista."""
     texto = re.sub(r"\bpackets \d+ bytes \d+", "", texto).replace('"', "")
+    texto = re.sub(r"(\blimit rate \d+/\w+) burst 5 packets\b", r"\1", texto)
     out = []
     for trozo in re.split(r"[{};\n]", texto):
         t = " ".join(trozo.split())
