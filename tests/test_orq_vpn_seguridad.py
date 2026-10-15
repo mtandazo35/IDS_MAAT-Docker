@@ -45,28 +45,46 @@ def props(orden):
     return dict(m.groups() for m in re.finditer(r'([a-z-]+)=("[^"]*"|\S+)', orden))
 
 
-_MOVER = re.compile(r'^:do \{/ip firewall filter move \[/ip firewall filter find comment=("[^"]*")\] '
+_QUITAR = re.compile(r'^/ip firewall filter remove \[find comment=("[^"]*") in-interface=(\S+)\]$')
+_MOVER = re.compile(r'^:do \{/ip firewall filter move \[/ip firewall filter find comment=("[^"]*") '
+                    r'in-interface=(\S+)\] '
                     r'destination=\[:pick \[/ip firewall filter find dynamic=no\] 0\]\} on-error=\{\}$')
 
 
+def _es(r, comment, iface):
+    """`find comment=X in-interface=Y` de RouterOS: casan las dos propiedades, tal cual."""
+    return r.get("comment") == comment and r.get("in-interface") == iface
+
+
 def aplicar_filter(previas, cmds):
-    """Lo que hace RouterOS con el bloque: `/ip firewall filter add` al final (una sola lista para
-    todas las cadenas) y el `move` de las del comentario delante de la primera regla no dinámica.
-    Si esa regla es una de las que se mueven, RouterOS da error y el on-error lo deja como está."""
+    """Lo que hace RouterOS con el bloque, sobre /ip firewall filter (una sola lista para todas las
+    cadenas):
+    - `remove [find comment=X in-interface=Y]`: quita las reglas cuyo comentario Y in-interface
+      casan; las del mismo comentario sin ese in-interface (el espejo) se quedan.
+    - `add`: al final.
+    - `move [find comment=X in-interface=Y] destination=<primera no dinámica>`: las que casan van,
+      en su orden, delante de esa regla. Si esa regla es una de las que se mueven (o no hay
+      ninguna), RouterOS da error y el on-error lo deja como está.
+    Cualquier otra orden de filter (place-before incluido) hace fallar la prueba."""
     reglas = list(previas)
     for c in cmds:
         m = _MOVER.match(c)
         if m:
+            com, iface = m.groups()
             fijas = [r for r in reglas if r.get("dynamic") != "yes"]
-            if not fijas or fijas[0].get("comment") == m.group(1):
+            mover = [r for r in reglas if _es(r, com, iface)]
+            if not fijas or not mover or any(fijas[0] is r for r in mover):
                 continue
             destino = fijas[0]
-            mover = [r for r in reglas if r.get("comment") == m.group(1)]
-            resto = [r for r in reglas if r.get("comment") != m.group(1)]
-            i = resto.index(destino)
+            resto = [r for r in reglas if not _es(r, com, iface)]
+            i = next(n for n, r in enumerate(resto) if r is destino)
             reglas = resto[:i] + mover + resto[i:]
             continue
-        if not c.startswith("/ip firewall filter "):
+        m = _QUITAR.match(c)
+        if m:
+            reglas = [r for r in reglas if not _es(r, *m.groups())]
+            continue
+        if "/ip firewall filter" not in c:
             continue
         if not c.startswith("/ip firewall filter add "):
             raise AssertionError("orden de filter que el simulador no conoce: %s" % c)
@@ -84,15 +102,24 @@ def _casa(valor, dato):
     return str(dato) == valor
 
 
-def veredicto(reglas, chain, in_iface, src, proto="tcp", dport=None):
+def _en_lista(valor, listas):
+    """`src-address-list` de la regla (con `!` = negado) contra las listas del origen."""
+    if valor.startswith("!"):
+        return valor[1:] not in listas
+    return valor in listas
+
+
+def veredicto(reglas, chain, in_iface, src, proto="tcp", dport=None, listas=()):
     """La primera regla que casa decide (accept/drop); si ninguna, la política (accept). Las
-    dinámicas (fasttrack) no deciden aquí."""
+    dinámicas (fasttrack) no deciden aquí. `listas`: las address-list en que está el origen."""
     for r in reglas:
         if r.get("chain") != chain or r.get("dynamic") == "yes":
             continue
         if "in-interface" in r and not _casa(r["in-interface"], in_iface):
             continue
         if "src-address" in r and not _casa(r["src-address"], src):
+            continue
+        if "src-address-list" in r and not _en_lista(r["src-address-list"], listas):
             continue
         if "protocol" in r and not _casa(r["protocol"], proto):
             continue
@@ -172,6 +199,20 @@ class CaYVerificacion(Base):
         self.assertNotIn("# AVISO", r["resultado"]["comandos"])
         self.assertIn("password=%s " % r["resultado"]["clave"], r["resultado"]["comandos"])
         self.assertNotIn("# AVISO", self.comandos())
+
+    def test_la_huella_de_la_clave_vigente_cambia_al_regenerar(self):
+        """El panel guarda la clave cifrada con `clave_id` y solo la pone en los comandos si es la
+        vigente: el alta y punto.comandos dan la misma huella; regenerar (por la CLI también) la
+        cambia; y la huella no contiene la clave."""
+        c1 = self.orq.atender(A.peticion("punto.comandos", {"pid": "p001"}))["datos"]["clave_id"]
+        self.assertRegex(c1, r"^[0-9a-f]{16}$")
+        self.assertEqual(self.crear["clave_id"], c1)
+        r = A.ejecutar_orden(self.orq, "punto.vpn.regenerar", {"pid": "p001"})
+        self.assertEqual(r["codigo"], "OK", A.explicar(r))
+        c2 = self.orq.atender(A.peticion("punto.comandos", {"pid": "p001"}))["datos"]["clave_id"]
+        self.assertNotEqual(c1, c2)
+        self.assertEqual(r["resultado"]["clave_id"], c2)
+        self.assertNotIn(r["resultado"]["clave"], c2)
 
     def test_regenerar_con_certificado_bueno_no_lo_toca(self):
         crt = self.e.ruta("/srv/ids/puntos/p001/vpn/server.crt")
@@ -268,6 +309,82 @@ class Aislamiento(unittest.TestCase):
             for i, c in enumerate(cmds):
                 if "in-interface=ids-vpn" in c:
                     self.assertGreater(i, i_ovpn, titulo)
+
+    def del_punto(self, reglas):
+        """Las reglas del aislamiento: comentario del alta e in-interface=ids-vpn."""
+        return [r for r in reglas if r.get("comment") == '"IDS ids-maat:p003"' and r.get("in-interface") == "ids-vpn"]
+
+    def test_pegarlo_dos_veces_deja_cinco_y_sigue_aislada(self):
+        """Router ya dado de alta: volver a pegar el bloque entero (o desde el remove, como dice su
+        comentario) no duplica reglas ni las deja por debajo de las del router."""
+        previas = [{"chain": "forward", "action": "passthrough", "dynamic": "yes"},
+                   {"chain": "input", "action": "accept"},
+                   {"chain": "forward", "action": "accept"}]
+        for titulo, cmds in self.bloques().items():
+            with self.subTest(bloque=titulo):
+                dos = aplicar_filter(aplicar_filter(previas, cmds), cmds)
+                self.assertEqual(len(self.del_punto(dos)), 5)
+                self.assertEqual(len(dos), len(previas) + 5)
+                self.comprobar_aislada(dos, 8729)
+                self.assertEqual([i for i, r in enumerate(dos) if r in self.del_punto(dos)], [1, 2, 3, 4, 5])
+                i = next(n for n, c in enumerate(cmds) if c.startswith("/ip firewall filter remove "))
+                tres = aplicar_filter(dos, cmds[i:])
+                self.assertEqual(len(self.del_punto(tres)), 5)
+                self.assertEqual(len(tres), len(previas) + 5)
+                self.comprobar_aislada(tres, 8729)
+
+    def test_rehacer_sobre_un_alta_vieja_con_el_orden_roto(self):
+        """Un alta de antes (place-before=0 seguidos): el drop de input tapaba el accept de la API.
+        Pegar el bloque nuevo las quita y deja la API abierta solo al sensor."""
+        com = '"IDS ids-maat:p003"'
+        viejas = [{"chain": "forward", "in-interface": "ids-vpn", "action": "drop", "comment": com},
+                  {"chain": "input", "in-interface": "ids-vpn", "action": "drop", "comment": com},
+                  {"chain": "input", "in-interface": "ids-vpn", "src-address": "100.64.3.1", "protocol": "tcp",
+                   "dst-port": "8729", "action": "accept", "comment": com},
+                  {"chain": "input", "action": "accept"}]
+        self.assertEqual(veredicto(viejas, "input", "ids-vpn", "100.64.3.1", dport=8729), "drop")
+        for titulo, cmds in self.bloques().items():
+            with self.subTest(bloque=titulo):
+                reglas = aplicar_filter(viejas, cmds)
+                self.assertEqual(len(self.del_punto(reglas)), 5)
+                self.assertEqual(len(reglas), 1 + 5)
+                self.comprobar_aislada(reglas, 8729)
+
+    def test_el_remove_no_toca_el_espejo_con_el_mismo_comentario(self):
+        """Las reglas forward del espejo de versiones anteriores llevan el comentario del alta pero
+        no in-interface=ids-vpn: ni el remove ni el move las tocan (tampoco pegando dos veces)."""
+        com = '"IDS ids-maat:p003"'
+        espejo = {"chain": "forward", "src-address-list": "ids-vigilados", "action": "accept", "comment": com}
+        previas = [{"chain": "forward", "action": "passthrough", "dynamic": "yes"},
+                   espejo,
+                   {"chain": "input", "action": "accept"},
+                   {"chain": "forward", "action": "drop"}]
+        abonado = ("forward", "ether2", "10.0.0.5")
+        self.assertEqual(veredicto(previas, *abonado, dport=443, listas=("ids-vigilados",)), "accept")
+        for titulo, cmds in self.bloques().items():
+            with self.subTest(bloque=titulo):
+                una = aplicar_filter(previas, cmds)
+                for reglas in (una, aplicar_filter(una, cmds)):
+                    self.assertEqual([r for r in reglas if r == espejo], [espejo])
+                    self.assertEqual(len(reglas), len(previas) + 5)
+                    # el abonado vigilado sigue pasando por la regla del espejo; el resto, por el drop
+                    self.assertEqual(veredicto(reglas, *abonado, dport=443, listas=("ids-vigilados",)), "accept")
+                    self.assertEqual(veredicto(reglas, *abonado, dport=443), "drop")
+                    self.comprobar_aislada(reglas, 8729)
+                    # el aislamiento queda delante de la regla del espejo
+                    idx = [i for i, r in enumerate(reglas) if r in self.del_punto(reglas)]
+                    self.assertEqual(idx, [1, 2, 3, 4, 5])
+                    self.assertEqual(reglas.index(espejo), 6)
+
+    def test_el_simulador_rechaza_lo_que_no_conoce(self):
+        """Sin in-interface en el find (se llevaría el espejo) o con place-before, la prueba falla."""
+        for c in ('/ip firewall filter add chain=input action=drop place-before=0',
+                  '/ip firewall filter remove [find comment="IDS ids-maat:p003"]',
+                  ':do {/ip firewall filter move [/ip firewall filter find comment="IDS ids-maat:p003"] '
+                  'destination=[:pick [/ip firewall filter find dynamic=no] 0]} on-error={}'):
+            with self.subTest(orden=c[:40]):
+                with self.assertRaises(AssertionError):
+                    aplicar_filter([], [c])
 
     def test_el_espejo_no_las_toma_por_suyas(self):
         """mikrotik_init (panel) retira del filter solo lo que reconoce como del espejo: con el

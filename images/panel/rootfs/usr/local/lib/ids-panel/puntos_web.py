@@ -46,6 +46,7 @@ import zlib
 
 import eventos_web
 import nodos
+import secretos
 from idspanel import operaciones as _operaciones
 from idspanel import orq as _orq
 
@@ -627,12 +628,23 @@ _CSS = (
     ".pdesban input.t{width:auto;min-width:200px;flex:0 1 240px}"
 )
 
+# Copiar: el panel va por HTTP (sin HTTPS en el VPS) y ahi el navegador NO da navigator.clipboard
+# (solo en HTTPS o localhost): «Copiar» fallaba siempre (el user, 2026-10-15). Fuera de un contexto
+# seguro se copia con un textarea + execCommand('copy'), en el MISMO clic (fuera del gesto el
+# navegador lo niega); si ni asi, el texto queda seleccionado para Ctrl+C.
 _JS = ("<script>function pcopiar(id,b){var e=document.getElementById(id);if(!e)return;"
        "var t=e.textContent;function ok(){var o=b.textContent;b.textContent='Copiado';"
        "setTimeout(function(){b.textContent=o;},1500);}"
-       "if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(t).then(ok,"
-       "function(){aviso('No se pudo copiar','Selecciona el texto y cópialo a mano.');});}"
-       "else{aviso('No se pudo copiar','Selecciona el texto y cópialo a mano.');}}"
+       "function viejo(){var a=document.createElement('textarea'),r=false;a.value=t;a.setAttribute('readonly','');"
+       "a.style.position='fixed';a.style.top='0';a.style.left='0';a.style.opacity='0';"
+       "document.body.appendChild(a);a.focus();a.select();a.setSelectionRange(0,t.length);"
+       "try{r=document.execCommand('copy');}catch(x){r=false;}document.body.removeChild(a);return r;}"
+       "function mano(){try{var s=window.getSelection(),g=document.createRange();g.selectNodeContents(e);"
+       "s.removeAllRanges();s.addRange(g);}catch(x){}"
+       "aviso('No se pudo copiar','El texto quedó seleccionado: pulsa Ctrl+C para copiarlo.');}"
+       "if(window.isSecureContext&&navigator.clipboard&&navigator.clipboard.writeText){"
+       "navigator.clipboard.writeText(t).then(ok,function(){if(viejo())ok();else mano();});}"
+       "else if(viejo()){ok();}else{mano();}}"
        "function pnombre(i){var f=i.form,b=f.querySelector('button[type=submit]');"
        "if(b)b.disabled=(i.value!==f.getAttribute('data-nombre'));}</script>")
 
@@ -1236,6 +1248,143 @@ def _pasos_limpios(pasos):
 
 
 ORDENES_CON_CLAVE = ("punto.crear", "punto.vpn.regenerar")
+
+# --------------------------------------------------------------------------------------------
+# Clave de la VPN de cada punto, guardada CIFRADA en el panel (el user, 2026-10-15: los comandos
+# de la ficha salian con <CLAVE-VPN> y el MikroTik se quedaba con ese texto de clave). El
+# orquestador solo guarda su hash (ovpn-auth la verifica); el panel, que es quien la USA para
+# armar los comandos, la guarda cifrada con la clave maestra, como la clave de la API del router
+# (routers.json). Sin clave maestra no se guarda nada en claro: la ficha pide regenerarla.
+# --------------------------------------------------------------------------------------------
+_VPN_CLAVES_LOCK = threading.Lock()
+PLACEHOLDER_VPN = "<CLAVE-VPN>"
+
+
+def _vpn_claves_ruta():
+    return nodos.ruta("conf", "vpn-claves.json")
+
+
+def _asoc_vpn(pid):
+    return "vpn:%s" % pid
+
+
+def _vpn_claves(apartar=False):
+    """{pid: {usuario, clave cifrada, clave_id, ts}}. Un fichero ilegible se lee como vacío; con
+    `apartar` (antes de reescribirlo) se mueve a .corrupto-<ts>, para no perder en silencio las
+    claves de los demás puntos al guardar la de uno."""
+    ruta = _vpn_claves_ruta()
+    try:
+        with open(ruta, encoding="utf-8") as f:
+            v = json.load(f)
+    except FileNotFoundError:
+        return {}
+    except (OSError, ValueError) as e:
+        if apartar and os.path.exists(ruta):
+            destino = "%s.corrupto-%d" % (ruta, int(time.time()))
+            try:
+                os.replace(ruta, destino)
+                sys.stderr.write("puntos: %s ilegible (%s): apartado en %s\n" % (ruta, e, destino))
+            except OSError:
+                pass
+        return {}
+    v = v.get("puntos") if isinstance(v, dict) else None
+    return {k: x for k, x in (v or {}).items() if nodos.pid_valido(k) and isinstance(x, dict)}
+
+
+def _escribir_vpn_claves(todo):
+    ruta = _vpn_claves_ruta()
+    os.makedirs(os.path.dirname(ruta), mode=0o700, exist_ok=True)
+    tmp = "%s.%d.%d.tmp" % (ruta, os.getpid(), threading.get_ident())
+    try:
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump({"v": 1, "puntos": todo}, f, ensure_ascii=False, indent=1)
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, ruta)
+    except OSError:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def guardar_clave_vpn(pid, usuario, clave, clave_id=None):
+    """Guarda cifrada la clave de la VPN de `pid` (la ultima entregada) con la huella de la clave
+    vigente que da el orquestador (`clave_id`). True si quedo guardada. Sin clave maestra, o si el
+    disco falla, no guarda nada (nunca en claro) y no lanza: la clave se sigue mostrando."""
+    if not (nodos.pid_valido(pid) and usuario and clave):
+        return False
+    try:
+        enc = secretos.cifrar(str(clave), _asoc_vpn(pid))
+    except Exception as e:
+        sys.stderr.write("puntos: clave VPN de %s sin guardar: %s\n" % (pid, e))
+        return False
+    try:
+        with _VPN_CLAVES_LOCK:
+            todo = _vpn_claves(apartar=True)
+            todo[pid] = {"usuario": str(usuario), "clave": enc, "clave_id": clave_id or "",
+                         "ts": int(time.time())}
+            _escribir_vpn_claves(todo)
+    except OSError as e:
+        sys.stderr.write("puntos: clave VPN de %s sin guardar: %s\n" % (pid, e))
+        return False
+    return True
+
+
+def clave_vpn(pid, clave_id=None):
+    """(usuario, clave) de la VPN de `pid` si el panel la tiene y se puede descifrar; si no, None.
+    Con `clave_id` (la huella de la clave VIGENTE que da el orquestador), solo si es la misma que
+    se guardo: tras regenerarla por la CLI o con la entrega perdida, la guardada ya no vale."""
+    g = _vpn_claves().get(pid) if nodos.pid_valido(pid) else None
+    if not g or not g.get("usuario") or not g.get("clave"):
+        return None
+    if clave_id is not None and g.get("clave_id") != clave_id:
+        return None
+    try:
+        return g["usuario"], secretos.descifrar(g["clave"], _asoc_vpn(pid))
+    except Exception:
+        return None
+
+
+def olvidar_clave_vpn(pid):
+    """Borra la clave guardada de `pid` (baja del punto, o regenerada sin llegar al panel). True si
+    habia una."""
+    with _VPN_CLAVES_LOCK:
+        todo = _vpn_claves()
+        if todo.pop(pid, None) is None:
+            return False
+        _escribir_vpn_claves(todo)
+    return True
+
+
+def con_clave_vpn(texto, pid, clave_id=None):
+    """Los comandos del orquestador (con <CLAVE-VPN>) con la clave guardada puesta. Solo si es la
+    vigente (`clave_id`, ver clave_vpn) y el usuario de los comandos es el de la clave guardada;
+    si no, se dejan como vienen. Devuelve (texto, clave puesta o None)."""
+    cv = clave_vpn(pid, clave_id)
+    if not texto or not cv or PLACEHOLDER_VPN not in texto:
+        return texto, None
+    usuario, clave = cv
+    if not re.search(r"(^|\s)user=%s(\s|$)" % re.escape(usuario), texto, re.M):
+        return texto, None
+    return texto.replace(PLACEHOLDER_VPN, clave), clave
+
+
+def orden_set_clave(clave):
+    """La orden que pone la clave en la ids-vpn que el router ya tiene (y la activa). Con la
+    verificacion del servidor, como el script del alta: un router de antes de VPN-01 la necesita
+    tras renovar el certificado, y en los demas ya estaba."""
+    return "/interface ovpn-client set [find name=ids-vpn] password=%s verify-server-certificate=yes disabled=no\n" % clave
+
+
+def regenerar_form(pid, texto="Regenerar la clave VPN", clase="btn"):
+    return ("<form method=post action='/puntos/%s/regenerar' onsubmit=\"return ask(this,"
+            "'Regenerar la clave VPN','Se crea una clave nueva para la VPN de este punto. El MikroTik deja "
+            "de conectar hasta que le pongas la nueva (el panel te da la orden con la clave ya puesta).',"
+            "'Regenerar')\">%s<button class='%s' type=submit>%s</button></form>"
+            % (esc(pid), campo_token(), clase, esc(texto)))
+
+
 MAX_LOG_LINEAS = 120
 MAX_LOG_LARGO = 600
 # lo que nunca se ensena de un log aunque el orquestador ya lo filtre (password|key, como logs())
@@ -1320,6 +1469,19 @@ def vista_op(d, op_id, usuario):
     ya = bool(res.get("ya_entregada"))
     if codigo != "OK":
         vm["log_tail"] = log_limpio(dd.get("log_tail"))
+    if (codigo == "OK" and rec.get("orden") in ORDENES_CON_CLAVE and res.get("clave")
+            and guardar_clave_vpn(pid, res.get("usuario"), res.get("clave"), res.get("clave_id"))):
+        # la entrega el orquestador una sola vez, a esta respuesta: el panel se la queda cifrada
+        # para que la ficha del punto de los comandos con la clave puesta
+        vm["clave_guardada"] = True
+        _bit(d, "PUNTO-VPN-CLAVE-GUARDADA", pid=pid or "", resultado="ok", extra="op=%s" % op_id)
+    elif (codigo == "OK" and rec.get("orden") == "punto.vpn.regenerar" and not res.get("clave")
+          and pid and nodos.pid_valido(pid)):
+        # regenerada pero la clave no llego (orquestador reiniciado): la guardada ya no vale
+        try:
+            olvidar_clave_vpn(pid)
+        except OSError:
+            pass
     entrega = _entrega_clave(rec.get("orden"), codigo, res)
     primera = ops().terminar(op_id, codigo=codigo, mensaje=mensaje, pid=pid, pasos=_pasos_limpios(pasos),
                              ya_existia=ya)
@@ -1448,32 +1610,37 @@ def _cuerpo_fin(d, vm):
         return cuerpo
     r = vm.get("resultado") or {}
     if r.get("clave"):
-        cuerpo += aviso("Listo. Copia ahora la clave: el panel NO la vuelve a mostrar. Si la pierdes, "
-                        "regenérala desde la ficha del punto.", "amb")
+        cuerpo += aviso("Listo. La clave de la VPN ya va puesta en los comandos de abajo y la ficha del punto "
+                        "los vuelve a dar completos." if vm.get("clave_guardada") else
+                        "Listo. Copia ahora la clave: el panel no la pudo guardar (falta la clave maestra) y no "
+                        "la vuelve a mostrar. Si la pierdes, regenérala desde la ficha del punto.",
+                        "ok" if vm.get("clave_guardada") else "amb")
         cuerpo += ("<div class='card cred'><div><span class=hint>Usuario de la VPN</span><br>"
                    "<code id=cred-usuario>%s</code> <button type=button class='btn sec' "
                    "onclick=\"pcopiar('cred-usuario',this)\">Copiar</button></div>"
-                   "<div><span class=hint>Clave de la VPN (se muestra una sola vez)</span><br>"
+                   "<div><span class=hint>Clave de la VPN</span><br>"
                    "<code id=cred-clave>%s</code> <button type=button class='btn sec' "
                    "onclick=\"pcopiar('cred-clave',this)\">Copiar</button></div></div>"
                    % (esc(r.get("usuario")), esc(r.get("clave"))))
         if vm.get("orden") == "punto.vpn.regenerar":
-            # el router ya tiene ids-vpn: no se vuelve a crear, se le cambia la clave. Si el servidor
-            # renovo su certificado (punto de antes de VPN-01), el router necesita ademas la CA del VPS
-            # y la verificacion, que traen los bloques de abajo.
+            # el router ya tiene ids-vpn: no se vuelve a crear, se le cambia la clave con UNA orden,
+            # ya con la clave puesta. Si el servidor renovo su certificado (punto de antes de VPN-01),
+            # el router necesita ademas la CA del VPS y la verificacion, que traen los bloques de abajo.
             renovado = "certificado del servidor renovado" in str(vm.get("mensaje") or "")
-            cuerpo += aviso("En el router ya existe la VPN: pon la clave nueva con /interface ovpn-client set "
-                            "[find name=ids-vpn] password=<la clave de arriba> verify-server-certificate=yes."
-                            + (" El servidor renovó además su certificado: antes, pega en el router las líneas "
-                               "de la CA del VPS del bloque de abajo (y, si no las tiene, las reglas de "
-                               "/ip firewall filter que aíslan ids-vpn)." if renovado else ""), "amb" if renovado else "info")
+            cuerpo += ("<h2>Si el router ya tiene la VPN</h2><p class=hint>Pega solo esta orden: cambia la "
+                       "clave de <code>ids-vpn</code> y el túnel vuelve a conectar.</p>")
+            cuerpo += _bloque("op-set", "Cambiar la clave en el MikroTik", orden_set_clave(r.get("clave")))
+            if renovado:
+                cuerpo += aviso("El servidor renovó además su certificado: antes, pega en el router las líneas "
+                                "de la CA del VPS del bloque de abajo (y, si no las tiene, las reglas de "
+                                "/ip firewall filter que aíslan ids-vpn).", "amb")
         cuerpo += ("<h2>Comandos para el MikroTik</h2><p class=hint>Ya llevan la clave de la VPN. "
                    "<code>&lt;CLAVE-API&gt;</code> es la clave que elijas para el usuario de la API del router; "
                    "después ponla en la ficha del punto (API).</p>")
         cuerpo += comandos_html(r.get("comandos", ""), vm.get("ros_version"), "op")
     elif vm.get("orden") == "punto.crear" and (r.get("ya_entregada") or vm.get("ya_existia")):
-        cuerpo += aviso("Ese punto ya existía con los mismos datos. La clave de la VPN ya se entregó; si no "
-                        "la tienes, regenérala desde la ficha del punto.", "amb")
+        cuerpo += aviso("Ese punto ya existía con los mismos datos. Los comandos para el MikroTik están en la "
+                        "ficha del punto (VPN); si allí salen sin la clave, regenérala desde la misma ficha.", "amb")
     elif vm.get("orden") == "punto.ajustar":
         cuerpo += aviso("Prefijos cambiados en el Suricata del punto. Falta llevarlos al MikroTik: vuelve a "
                         "aplicar el espejo (address-list ids-vigilados) desde la ficha, con su vista previa.", "info")
@@ -1483,16 +1650,10 @@ def _cuerpo_fin(d, vm):
         cuerpo += aviso("La clave no llegó al panel (el orquestador se reinició antes de entregarla) y ya no "
                         "se puede recuperar. Regénérala: el MikroTik no puede conectar sin ella.", "err")
         if pid and nodos.pid_valido(pid):
-            cuerpo += ("<form method=post action='/puntos/%s/regenerar' onsubmit=\"return ask(this,"
-                       "'Regenerar la clave VPN','Se crea una clave nueva y se muestra una sola vez, con los "
-                       "comandos para el MikroTik.','Regenerar')\">%s<p><button class=btn type=submit>"
-                       "Regenerar la clave VPN</button></p></form>" % (esc(pid), campo_token()))
-    elif vm.get("orden") in ORDENES_CON_CLAVE and vm.get("entrega_clave") == "mostrada":
-        cuerpo += aviso("La operación terminó bien. La clave ya se mostró una vez y el panel no la guarda: si "
-                        "no la copiaste, regénérala desde la ficha del punto.", "info")
+            cuerpo += "<p>%s</p>" % regenerar_form(pid)
     elif vm.get("orden") in ORDENES_CON_CLAVE:
-        cuerpo += aviso("La operación terminó bien. El panel no guarda la clave: si no la tienes, regénérala "
-                        "desde la ficha del punto.", "info")
+        cuerpo += aviso("La operación terminó bien. Los comandos para el MikroTik, con la clave de la VPN "
+                        "puesta, están en la ficha del punto (VPN).", "info")
     else:
         cuerpo += aviso("La operación terminó bien.", "info")
     if pid and nodos.pid_valido(pid):
@@ -1998,6 +2159,12 @@ def limpiar_punto(d, pid, motivo=""):
             and os.path.dirname(os.path.abspath(dirp)) == os.path.abspath(nodos.NODOS)):
         shutil.rmtree(dirp, ignore_errors=True)
         hecho.append("salidas")
+    try:
+        if olvidar_clave_vpn(pid):
+            hecho.append("clave-vpn")
+    except OSError as e:
+        ok = False
+        hecho.append("clave-vpn: fallo %s" % str(e)[:80])
     purgar = getattr(d, "purgar_punto", None)
     if purgar is not None:
         try:
@@ -2174,12 +2341,32 @@ def ficha(h, pid, mensaje="", codigo=200, ok=False, extra_espejo=""):
             ("Perfil / RouterOS", esc("%s · v%s" % (p.get("perfil") or "-", p.get("ros_version") or "-"))),
             ("Prefijos espejados", esc(", ".join(p.get("redes") or []) or "-")),
         ))
-    # VPN: comandos sin la clave
+    # VPN: el orquestador da los comandos con <CLAVE-VPN>; el panel pone la clave que guarda cifrada
+    # (la del alta o la ultima regenerada). Sin ella, se dice y se ofrece regenerarla.
     r = cliente().pedir("punto.comandos", {"pid": pid}, quien="panel:%s" % _usuario(d), ip=_ip(d))
     cmds = (r.get("datos") or {}).get("comandos") if r.get("codigo") == "OK" else None
-    vpn_html = (comandos_html(cmds, p.get("ros_version"), "ficha") if cmds else
-                aviso("No se pudieron obtener los comandos: %s" % _orq.traducir(r.get("codigo"), r.get("mensaje")),
-                      "amb"))
+    # la huella de la clave vigente: un orquestador viejo no la da (None) y entonces solo se mira
+    # el usuario; si la da y no es la de la clave guardada (regenerada por la CLI), no se pone
+    cmds_txt, puesta = con_clave_vpn(cmds, pid, (r.get("datos") or {}).get("clave_id"))
+    if not cmds:
+        vpn_html = aviso("No se pudieron obtener los comandos: %s" % _orq.traducir(r.get("codigo"), r.get("mensaje")),
+                         "amb")
+    elif puesta:
+        vpn_html = ("<p class=hint>Llevan la clave de la VPN puesta: cópialos y pégalos en el router tal cual. "
+                    "<code>&lt;CLAVE-API&gt;</code> es la clave que elijas para el usuario de la API del router.</p>"
+                    "<details><summary>El router ya tiene <code>ids-vpn</code> (por ejemplo, con la clave "
+                    "mal puesta): basta con esta orden</summary>%s</details>"
+                    % _bloque("ficha-set", "Cambiar la clave en el MikroTik", orden_set_clave(puesta))
+                    + comandos_html(cmds_txt, p.get("ros_version"), "ficha"))
+    else:
+        vpn_html = (aviso("El panel no tiene la clave vigente de la VPN de este punto (se creó antes de que el "
+                          "panel la guardara, se regeneró desde la consola del servidor, o falta la clave maestra). "
+                          "Regenérala desde aquí: el panel te da la orden para "
+                          "el router con la clave puesta, y desde entonces estos comandos salen completos. No "
+                          "pegues password=<CLAVE-VPN> tal cual: el router se queda con ese texto de clave y no "
+                          "conecta.", "amb")
+                    + "<p>%s</p>" % regenerar_form(pid)
+                    + comandos_html(cmds_txt, p.get("ros_version"), "ficha"))
     # API
     rt = _router(d, pid) or {}
     # la huella se lee por el tunel: sin el MikroTik conectado (lo normal tras el alta) la lectura
@@ -2244,9 +2431,10 @@ def ficha(h, pid, mensaje="", codigo=200, ok=False, extra_espejo=""):
     # «Regenerar»: el router que reintenta con la clave vieja ya no acaba baneado (fail2ban solo cuenta
     # usuarios desconocidos, VPN-04); un punto de antes de VPN-01 (el script lo avisa con «# AVISO:»)
     # renueva ademas el certificado del servidor y el router necesita la CA y la verificacion.
-    txt_regenerar = ("Se crea una clave nueva, que se muestra una sola vez con los comandos. La VPN actual del "
-                     "MikroTik se corta hasta que pongas la nueva en el router; mientras tanto el router no queda "
-                     "baneado por reintentar con la vieja.")
+    txt_regenerar = ("Se crea una clave nueva y el panel te da la orden para el router con ella puesta (también "
+                     "quedan completos los comandos de esta ficha). La VPN actual del MikroTik se corta hasta que "
+                     "pongas la nueva en el router; mientras tanto el router no queda baneado por reintentar con "
+                     "la vieja.")
     if cmds and "# AVISO:" in cmds:
         txt_regenerar += (" Este punto tiene el certificado del servidor de antes de la verificación: también se "
                           "renueva, y en el router hay que pegar las líneas de la CA del VPS y activar "
@@ -2284,8 +2472,7 @@ def ficha(h, pid, mensaje="", codigo=200, ok=False, extra_espejo=""):
         "<section class=card id=resumen><h2>Resumen</h2><div class=datos>%s</div>"
         "<h3 style='font-size:14px'>Salud por etapas</h3>%s</section>"
         "<section class=card><h2>Servicio</h2><div class=acciones>%s</div>%s</section>"
-        "<section class=card id=vpn><h2>VPN: comandos para el MikroTik</h2><p class=hint>Sin la clave: donde dice "
-        "<code>&lt;CLAVE-VPN&gt;</code> va la que se mostró al crear el punto.</p>%s</section>"
+        "<section class=card id=vpn><h2>VPN: comandos para el MikroTik</h2>%s</section>"
         "<section class=card id=api><h2>API del MikroTik</h2>%s</section>"
         "<section class=card id=espejo><h2>Espejo</h2>%s</section>"
         "<section class=card id=prefijos><h2>Prefijos del espejo</h2>%s</section>"
@@ -2295,7 +2482,8 @@ def ficha(h, pid, mensaje="", codigo=200, ok=False, extra_espejo=""):
            esc(pid), datos, salud_etapas_html(sal), serv, desbanear_html(p, pid), vpn_html, api_html, espejo_html,
            pref_html, baja,
            _retomar_html(d, pid)))
-    return h._html(pagina(d, nombre, cuerpo), codigo)
+    # lleva la clave de la VPN: ni el navegador ni un proxy la guardan (como la pagina de la operacion)
+    return _html_privado(h, pagina(d, nombre, cuerpo), codigo)
 
 
 HUELLA_CACHE_S = 600

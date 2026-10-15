@@ -622,6 +622,17 @@ def render_usuarios(pid, usuario, hash_txt):
     return "# ids-maat %s — generado por ids-orq; no editar\n%s:%s\n" % (pid, usuario, hash_txt)
 
 
+def huella_clave_vpn(pid):
+    """Huella de la clave VPN VIGENTE del punto: sha256 del fichero de usuarios (usuario + hash
+    scrypt con sal propia), recortada. Cambia en cada regeneración (también por la CLI) y no dice
+    nada de la clave. El panel la guarda junto a la clave cifrada y solo la pone en los comandos
+    si coincide: así nunca da una clave vieja como buena. None si el fichero no se puede leer."""
+    try:
+        return hashlib.sha256(ruta("/srv/ids/puntos/%s/vpn/usuarios" % pid).read_bytes()).hexdigest()[:16]
+    except OSError:
+        return None
+
+
 def render_threshold(pid):
     return "# ids-maat %s — generado por ids-orq; no editar\n" % pid
 
@@ -2410,7 +2421,7 @@ class Orquestador:
             if p is None:
                 raise ErrorOrden("NO_EXISTE", "no existe %s" % params["pid"])
         if orden == "punto.comandos":
-            return {"comandos": self.comandos(p, config().nombre_dns)}
+            return {"comandos": self.comandos(p, config().nombre_dns), "clave_id": huella_clave_vpn(p["pid"])}
         if orden == "punto.logs":
             return self.logs(p, params["parte"], params["lineas"])
         if orden == "punto.api.huella":
@@ -3147,7 +3158,7 @@ class Orquestador:
              "usuario": p["usuario"], "nombre": p["nombre"], "perfil": p["perfil"],
              "hilos": p["hilos"], "cpuset": p.get("cpuset_suricata"),
              "mem_limit": "%dm" % PERFILES[p["perfil"]]["mem_limit"],
-             "comandos": self.comandos(p, cfg.nombre_dns)}
+             "comandos": self.comandos(p, cfg.nombre_dns), "clave_id": huella_clave_vpn(p["pid"])}
         if ya:
             d["ya_entregada"] = True
         sec = None

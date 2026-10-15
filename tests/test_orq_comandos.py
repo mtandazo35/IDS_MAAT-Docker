@@ -16,7 +16,10 @@ CA_PRUEBA = "-----BEGIN CERTIFICATE-----\nMIIBszCCAVmgAwIBAgIU\nAbC+/9==\n-----E
 # Cambiado a propósito (auditoría VPN-01 y VPN-02): la CA del VPS entra en el router y el
 # ovpn-client verifica al servidor; ids-vpn queda aislada (drop en forward e input). Los drop de
 # input van negados para que el orden respecto al accept de la API no importe, y sin place-before=0
-# (que en un script pegado no apunta a nada fijo): la última línea las sube por comentario.
+# (que en un script pegado no apunta a nada fijo): la última línea las sube por comentario. La
+# primera quita las de un alta anterior; las dos buscan con in-interface=ids-vpn para no tocar las
+# reglas del espejo que llevan el mismo comentario. La cabecera pide el reloj en hora (el
+# certificado del servidor vale desde 2 días antes de emitirse).
 _CA_P003 = r"""# CA del VPS (pública): con ella el MikroTik verifica al servidor (verify-server-certificate)
 /file print file=ids-maat-ca-p003
 :delay 2s
@@ -27,24 +30,26 @@ _CA_P003 = r"""# CA del VPS (pública): con ella el MikroTik verifica al servido
 """
 _COMUN_P003 = r"""/user group add name=ids-api policy=read,write,api
 /user add name=ids-api group=ids-api address=100.64.3.1/32 password=<CLAVE-API>
-# ids-vpn aislada: por ella solo entra la API desde el sensor (el orden de estas cinco da igual).
-# Router configurado antes: quita primero las reglas viejas del alta con
-#   /ip firewall filter remove [find comment="IDS ids-maat:p003"]
+# Aislamiento de ids-vpn: por el túnel solo entra la API desde el sensor y nada se enruta
+# desde él. Las reglas no dependen del orden entre ellas y la última línea las sube encima
+# de las del router. Para rehacerlo en un router ya dado de alta, pega desde aquí hasta el
+# final: la primera línea quita las reglas de antes.
+/ip firewall filter remove [find comment="IDS ids-maat:p003" in-interface=ids-vpn]
 /ip firewall filter add chain=input in-interface=ids-vpn src-address=!100.64.3.1 action=drop \
     comment="IDS ids-maat:p003"
 /ip firewall filter add chain=input in-interface=ids-vpn protocol=!tcp action=drop \
     comment="IDS ids-maat:p003"
-/ip firewall filter add chain=input in-interface=ids-vpn protocol=tcp dst-port=!8729 action=drop \
-    comment="IDS ids-maat:p003"
+/ip firewall filter add chain=input in-interface=ids-vpn protocol=tcp dst-port=!8729 \
+    action=drop comment="IDS ids-maat:p003"
 /ip firewall filter add chain=input in-interface=ids-vpn src-address=100.64.3.1 protocol=tcp \
     dst-port=8729 action=accept comment="IDS ids-maat:p003"
-/ip firewall filter add chain=forward in-interface=ids-vpn action=drop \
-    comment="IDS ids-maat:p003"
-# arriba del todo (con la lista vacía no hay nada que mover y no pasa nada):
-:do {/ip firewall filter move [/ip firewall filter find comment="IDS ids-maat:p003"] destination=[:pick [/ip firewall filter find dynamic=no] 0]} on-error={}
+/ip firewall filter add chain=forward in-interface=ids-vpn action=drop comment="IDS ids-maat:p003"
+:do {/ip firewall filter move [/ip firewall filter find comment="IDS ids-maat:p003" in-interface=ids-vpn] destination=[:pick [/ip firewall filter find dynamic=no] 0]} on-error={}
 """
 V7_CONTRATO = r"""# ids-maat p003 (norte) · N=3 · puerto 1196 · túnel 100.64.3.0/24 · declarado RouterOS v7
 # El bloque v6 solo conecta tras: ids-orq punto ajustar p003 --ros 6
+# Antes de pegar: el reloj del router en hora (/system ntp client). El certificado del
+# servidor vale desde 2 días antes de emitirse; con el reloj más atrasado, el MikroTik lo rechaza.
 #
 # --- Certificado API-SSL ids-promax (6.49 y v7; si ya existe, solo la última línea) ---
 /certificate

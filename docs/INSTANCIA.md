@@ -315,7 +315,9 @@ management /run/ids-ctl/ovpn-mgmt.sock unix
      (`motivo=clave`).
   4. Escribe una línea `<ip>:<puerto> ovpn-auth: rechazado usuario=<u|-> motivo=<m>` (o `aceptado`).
      fail2ban solo cuenta `formato` y `usuario` ([RED-Y-FIREWALL.md](RED-Y-FIREWALL.md) §9).
-- **La clave en claro se muestra una sola vez.** El orquestador guarda solo el hash.
+- **El orquestador guarda solo el hash** y entrega la clave en claro una sola vez, al panel. El panel
+  la guarda **cifrada** con la clave maestra (`/srv/ids/panel/conf/vpn-claves.json`, 600, ligada al
+  punto) para dar en la ficha los comandos del MikroTik con la clave puesta; la borra en la baja.
 - Más frenos en el host: el `meter` de conexiones nuevas y la jaula `ids-vpn`
   ([RED-Y-FIREWALL.md](RED-Y-FIREWALL.md) §7 y §9).
 

@@ -131,7 +131,8 @@ con la clave VPN y haría de «sensor» para el router.
   1. «Regenerar la clave VPN» en la ficha del punto (o `ids-orq punto vpn-regenerar <pid>`): renueva
      el certificado del servidor y reinicia OpenVPN.
   2. Pegar en el router las 7 líneas de la CA, poner la clave nueva y activar la verificación:
-     `/interface ovpn-client set [find name=ids-vpn] password=<CLAVE-VPN> verify-server-certificate=yes`.
+     `/interface ovpn-client set [find name=ids-vpn] password=<CLAVE-VPN> verify-server-certificate=yes`
+     (en el panel, la página de regenerar y la ficha ya la dan con la clave puesta).
 - **Por confirmar en el canario de 6.49:** que `/file print file=` + `/file set contents=` + `/certificate
   import` funcionan pegados en la terminal (la línea de la CA mide ~1,3 KB) y que 6.49 acepta el
   certificado con la verificación activa. `verify-server-certificate` ya existe en 6.45 y en v7.

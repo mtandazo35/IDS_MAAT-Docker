@@ -154,15 +154,18 @@ Petición (una por conexión, JSON + `\n`): `{"v":1,"op_id":"<uuid4>","token":"<
 |---|---|---|
 | `punto.crear` | `nombre`, `redes_abonados` (lista de CIDR IPv4 normalizados), `perfil` (`reducido`/`completo`), `ros_version` (6/7). Lo demás, por defecto | Agregar punto |
 | `op.estado` | `op_id` | avance (`pasos`, `paso`, `avance`, `delante`) y `resultado` |
-| `punto.comandos` | `pid` | ficha: comandos sin clave |
+| `punto.comandos` | `pid` | ficha: comandos con `<CLAVE-VPN>` y `clave_id` (huella de la clave vigente) |
 | `punto.borrar` | `pid`, `confirmar` | Borrar |
 | `punto.vpn.regenerar` | `pid` | Regenerar la clave |
 
 - El panel genera el `op_id` y lo guarda en `operaciones.json` **antes** de llamar.
-- **Clave una sola vez:** el orquestador entrega `clave` (y `comandos` con la clave) en el primer
-  `op.estado` tras terminar. El panel la muestra en esa respuesta (usuario, clave y bloques v7/v6 y
-  certificado, cada uno con «Copiar») y **no la guarda**; después muestra «La clave ya se mostró» y
-  la ficha da los comandos con `<CLAVE-VPN>` y el botón de regenerar.
+- **Clave:** el orquestador entrega `clave` (y `comandos` con la clave) una sola vez, en el primer
+  `op.estado` tras terminar, y guarda solo su hash. El panel la muestra en esa respuesta (usuario,
+  clave y bloques v7/v6 y certificado, cada uno con «Copiar») y desde 2026-10-15 la **guarda cifrada**
+  con la clave maestra (`conf/vpn-claves.json`, 600) junto a `clave_id`, la huella de la clave vigente
+  que dan el resultado y `punto.comandos`. La ficha (solo admin, `Cache-Control: no-store`) pone la
+  clave en los comandos solo si `clave_id` coincide; si no (punto anterior, regenerada por la CLI o
+  entrega perdida), lo dice y ofrece regenerarla. La baja la borra.
 - Comandos: el bloque de `punto.comandos` se parte por sus marcas (`# --- Certificado API-SSL`,
   `# --- RouterOS v7`, `# --- RouterOS v6`); primero la versión declarada, la otra plegada. Si el
   formato cambiara, se muestra entero.
@@ -184,7 +187,7 @@ orquestador falso que valida con el `validar_params` real y genera los comandos 
 | `test_panel_login.py` | redirección sin sesión, cookie `HttpOnly`/`SameSite=Strict` (y `__Host-…; Secure` tras proxy https), mensaje neutro, freno por IP que ignora `X-Forwarded-For` ajeno y usa el del proxy (última entrada), freno por usuario, salir, `restablecer` cierra sesiones, invitación y cambio de clave |
 | `test_panel_csrf.py` | reglas de `origen_ajeno`, cabeceras del proxy solo desde el proxy, login con otro `Origin` → 403, `X-Forwarded-Host` ajeno ignorado, POST sin token de sesión → 403, cabeceras de seguridad y nada en línea |
 | `test_panel_paginas.py` | Puntos con un `estado.json` de ejemplo (semáforo, conectado, último espejo, alertas 24 h, «Toda la empresa»), avisos de estado ausente/viejo, ficha y filtro por IP, alertas sin mezclar IPs repetidas entre puntos, escape HTML (firma, `IDS_EMPRESA`, formulario) |
-| `test_panel_crear.py` | crear punto: parámetros exactos, `quien`/`ip`/token, avance, clave y comandos una sola vez (ni páginas ni ficheros después), bitácora sin secretos, otro usuario no ve la operación, formulario inválido no llega al orquestador, errores en claro (incluido sin socket y token malo), revertida; borrar exige el nombre (panel y orquestador); regenerar |
+| `test_panel_crear.py` | crear punto: parámetros exactos, `quien`/`ip`/token, avance, clave y comandos en la página de la operación una sola vez (después, solo la ficha con la clave cifrada en el panel), bitácora sin secretos, otro usuario no ve la operación, formulario inválido no llega al orquestador, errores en claro (incluido sin socket y token malo), revertida; borrar exige el nombre (panel y orquestador); regenerar |
 | `test_panel_eve.py` | lectura hacia atrás con bloques pequeños, línea a medias, filtro por IP exacto, rotado `.1`, tope de bytes, conteo de 24 h incremental, rotación y truncado, parada al pasar las 24 h |
 | `test_panel_orq.py` | formato de la petición, sin token/sin socket, socket AF_UNIX real una petición por conexión (Linux), traducciones, partir los comandos reales, formulario ⊂ `validar_crear` real, configuración por entorno, `ids-panel servir` + `salud` con el ejecutable |
 

@@ -99,7 +99,15 @@ def main():
         # (nuevos, §3 y §10.4) uno de otro punto y uno con evidencia vieja
         {"ip": "10.0.0.12", "router": "p002", "riesgo": 90, "banda": "ALTO", "cats_top": {"Botnet CnC": 20}},
         {"ip": "10.0.0.11", "router": "", "riesgo": 88, "banda": "ALTO", "cats_top": {"Botnet CnC": 20}},
+        # (nuevo, 2026-10-15, auditoria A-12) en «Nunca bloquear» de ESTE punto: no se manda
+        # aunque la politica de botnet diga cortar
+        {"ip": "10.0.0.13", "router": "", "riesgo": 92, "banda": "ALTO", "cats_top": {"Botnet CnC": 20}},
+        # ... y en «Nunca bloquear» solo de OTRO punto: aqui si se manda
+        {"ip": "10.0.0.14", "router": "", "riesgo": 91, "banda": "ALTO", "cats_top": {"Botnet CnC": 20}},
     ]}
+    nunca = os.path.join(td, "nunca-bloquear.lst")
+    with open(nunca, "w", encoding="utf-8") as f:
+        f.write("# prueba\np001|10.0.0.13\np002|10.0.0.14\n")
     os.makedirs(nod.dir_salida("p001"), exist_ok=True)
     with open(nod.salida("cuarentena.json", "p001"), "w", encoding="utf-8") as f:
         json.dump(cq, f)
@@ -137,7 +145,9 @@ def main():
              "cargar_enviados": cargar_enviados, "guardar_enviados": guardar_enviados,
              "MK_SENT": "SENT", "MK_SENT_DNS": "DNS", "_motivo_bloqueo": lambda k: {},
              "notificar_cuarentena": lambda *a, **k: None,
-             "mk_log": lambda accion, ip, quien, det="": logs.append((accion, ip, det))}
+             "mk_log": lambda accion, ip, quien, det="": logs.append((accion, ip, det)),
+             # «Nunca bloquear» REAL (nunca_bloquear y su lectura) sobre un archivo de prueba
+             "ipaddress": __import__("ipaddress"), "NUNCA_FILE": nunca}
     ns2 = piezas(BASE + ("aplicar_politicas", "clave_cpe", "ip_de", "rid_de", "_suf_nodo", "mk_listo",
                          "_registrar_enviados", "_ENV_LOCK", "cuarentena_json", "_cargar_cuarentena",
                          # F1 (auditoria A-15): las bajas del registro quedan fechadas
@@ -145,7 +155,10 @@ def main():
                          # (adaptada, 2026-10-14) la tanda de una conexion y la pausa de routers caidos
                          "_mk_tanda", "mk_pausa", "_mk_conexion_ok", "_mk_conexion_fallida",
                          "_MK_PAUSA", "_MK_PAUSA_LOCK", "MK_PAUSA_FALLOS", "MK_PAUSA_BASE",
-                         "MK_PAUSA_TOPE", "PuntoEnBaja"),
+                         "MK_PAUSA_TOPE", "PuntoEnBaja",
+                         # (nuevo, 2026-10-15) la lista «Nunca bloquear» por punto, pieza real
+                         "nunca_bloquear", "_nunca_listas", "_nunca_entrada", "_NUNCA_CACHE",
+                         "cargar_nunca", "_sello", "_SELLO_VISTO", "_SELLO_CADA"),
                  extra)
     ns2["aplicar_politicas"]("p001")
     check("la botnet ALTA va a la lista de SU clase, no a la heredada",
@@ -174,6 +187,12 @@ def main():
     check("evidencia vieja: no se envia y queda en la bitacora",
           not any(ip == "10.0.0.11" for ip, _l in anadidos)
           and any(a == "POLITICA-EVIDENCIA-VIEJA" and ip == "10.0.0.11" for a, ip, _d in logs), logs)
+    # (nuevo, 2026-10-15) «Nunca bloquear» por punto (claves pNNN|IP, auditoria A-12)
+    check("en «Nunca bloquear» de este punto: no se manda aunque la politica diga cortar",
+          not any(ip == "10.0.0.13" for ip, _l in anadidos) and "p001|10.0.0.13" not in envs["sent"],
+          (anadidos, envs["sent"]))
+    check("en «Nunca bloquear» solo de OTRO punto: aqui si se manda",
+          ("10.0.0.14", "clientes-botnet") in anadidos and "p001|10.0.0.14" in envs["sent"], anadidos)
 
     # --- barrido rapido: se rige por la politica de botnet ------------------------------
     br = DASH[DASH.index("def barrido_alto_rapido"):]

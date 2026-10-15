@@ -13324,8 +13324,8 @@ fila), nunca al que tengas elegido en el selector. En «Todos» las acciones mas
 RouterOS (6.49+ o 7) y perfil (reducido por defecto). Un doble clic no crea dos puntos.</li>
 <li>El servidor crea la VPN y el Suricata del punto; se ve el avance paso a paso, con lo que tarda
 cada uno, sin que la página se recargue.</li>
-<li>Al terminar salen, <b>una sola vez</b>, la clave de la VPN y los comandos para el MikroTik; si la
-clave se pierde o no llega, ver "La VPN de cada punto".</li>
+<li>Al terminar salen la clave de la VPN y los comandos para el MikroTik con la clave puesta. La ficha
+del punto los vuelve a dar completos cuando quieras; si la clave no llega, ver "La VPN de cada punto".</li>
 <li>Hasta que pegas los comandos en el router, el punto sale en <b>ámbar</b>, «esperando MikroTik»: es lo
 esperado, no un fallo.</li>
 <li>En la ficha: la clave de la <b>API</b>, <b>La huella coincide: confirmar</b> (tras compararla con la
@@ -13440,16 +13440,24 @@ puerto y su red de túnel (el sensor es la <code>.1</code> y el MikroTik la <cod
 compatible con RouterOS 6.49+ y 7.</p>
 <ul>
 <li>La crea el alta del punto (ver "Puntos: un MikroTik, su VPN y su Suricata"). Al terminar se muestran
-<b>una sola vez</b> el usuario y la clave de la VPN y los comandos para el MikroTik (v7 y v6) con la clave
-puesta; en la ficha quedan los comandos sin la clave.</li>
+el usuario y la clave de la VPN y los comandos para el MikroTik (v7 y v6) con la clave puesta.</li>
+<li><b>El panel guarda la clave de la VPN cifrada</b> con la clave maestra del servidor, como la de la API
+del router (el servidor de la VPN solo guarda su hash). Por eso la ficha del punto (VPN) da siempre los
+comandos con la clave puesta, listos para pegar, y una orden corta para un router que ya tiene
+<code>ids-vpn</code>: <code>/interface ovpn-client set [find name=ids-vpn] password=&lt;clave&gt; verify-server-certificate=yes disabled=no</code>.
+Solo los ven los administradores, y la página no se guarda en el navegador. Los puntos creados antes de
+este cambio no la tienen: la ficha lo dice y ofrece regenerarla. No pegues
+<code>password=&lt;CLAVE-VPN&gt;</code> tal cual: el router se queda con ese texto de clave y no conecta.
+En la baja del punto la clave se borra.</li>
 <li><b>La VPN solo trae el espejo y la API del propio router</b>: no enruta tráfico de abonados, no lleva
 a otras redes y un punto no ve a otro.</li>
 <li>Cambiar, regenerar o borrar la VPN de un punto <b>no corta a los demás</b>.</li>
-<li><b>Regenerar la clave VPN</b> (ficha del punto) es para cuando la pierdes, y para cuando el
-orquestador se reinició antes de entregarla: la página del alta lo dice («La clave no llegó al panel») y
-trae ese mismo botón, porque sin clave el MikroTik no puede conectar. Corta la VPN de ese MikroTik hasta
-que pongas la nueva:
-<code>/interface ovpn-client set [find name=ids-vpn] password=&lt;clave nueva&gt; verify-server-certificate=yes</code>.
+<li><b>Regenerar la clave VPN</b> (ficha del punto) es para cuando el panel no la tiene (puntos de antes
+de que la guardara) o la quieres cambiar, y para cuando el orquestador se reinició antes de entregarla: la
+página del alta lo dice («La clave no llegó al panel») y trae ese mismo botón, porque sin clave el MikroTik
+no puede conectar. Corta la VPN de ese MikroTik hasta que pongas la nueva; la página de regenerar te da la
+orden con la clave puesta:
+<code>/interface ovpn-client set [find name=ids-vpn] password=&lt;clave nueva&gt; verify-server-certificate=yes disabled=no</code>.
 Mientras reintenta con la vieja, el router <b>no queda baneado</b>: solo se frenan sus intentos.</li>
 </ul>
 <h3>El MikroTik verifica al servidor</h3>

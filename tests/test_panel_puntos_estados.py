@@ -245,13 +245,14 @@ class Operacion(_Base):
             self.assertIn('"entrega_clave": "no_llego"', f.read())
 
     def test_clave_mostrada_no_dice_que_no_llego(self):
-        """La clave llegó y se mostró: la visita siguiente dice que ya se mostró, no que no llegó."""
+        """La clave llegó y se mostró: la visita siguiente remite a la ficha (que la da con los
+        comandos), no dice que no llegó, y la página de la operación no la vuelve a pintar."""
         url = self._crear()
         self.assertIn("CLAVE-VPN-UNICA-7Q2", self.get(url))
         h = self.get(url)
         self.assertNotIn("CLAVE-VPN-UNICA-7Q2", h)
         self.assertNotIn("La clave no llegó", h)
-        self.assertIn("La clave ya se mostró una vez", h)
+        self.assertIn("están en la ficha del punto", h)
         with open(os.path.join(self.p.nodos.ESTADO, "operaciones.json"), encoding="utf-8") as f:
             texto = f.read()
         self.assertNotIn("CLAVE-VPN-UNICA-7Q2", texto)
