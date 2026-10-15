@@ -84,8 +84,9 @@ Reglas del contrato:
 | 22 | §5.11: reserva del panel 1024 MiB | **F2:** `RESERVA_PANEL_MB = 1536` (compose `mem_limit` y admisión) | CONTRATO-F2 §6: el dashboard heredado y el generador por nodo (`RLIMIT_AS` 1 GiB, de uno en uno) |
 | 23 | §3 (fila 16 de §0.2): fail2ban cuenta todos los `ovpn-auth: rechazado` salvo `freno-global`; §5.13: 6 líneas | solo `motivo=formato` y `motivo=usuario`; §5.13 con 8 líneas (añade una de cada), casan la 5.ª y la 6.ª; orden inmediata `vpn.desbanear {ip}` (`ids-orq vpn desbanear <ip>`); el freno global de `ovpn-auth` no frena a la última IP aceptada durante 24 h | auditoría VPN-04/VPN-08 (2026-10-14): tras «Regenerar la clave VPN» el MikroTik reintentaba con la vieja y acababa baneado en todos los puertos hasta 1 semana |
 | 24 | §4.4: `max-clients 2`, sin `hand-window` (60 s) | `max-clients 16` y `hand-window 20`, sin `duplicate-cn` | auditoría VPN-03: las conexiones sin autenticar ocupan plaza y no llegan a fail2ban; 2 `nc` colgados dejaban fuera al MikroTik |
-| 25 | §3: certificado de servidor `CN=server-<pid>`; §5.12: el script sin CA ni verificación del servidor | `OU=server-<pid>`, `CN=<NOMBRE_DNS>`, `subjectAltName=DNS:<NOMBRE_DNS>`; el script importa la CA del VPS (`ids-maat-ca-<pid>`) y pone `verify-server-certificate=yes` en v6 y v7; añade `drop` de `input` y `forward` desde `ids-vpn` debajo del `accept` de la API; `punto.vpn.regenerar` renueva un certificado sin el nombre | auditoría VPN-01/VPN-02: el router no verificaba al servidor y no aislaba `ids-vpn`; RouterOS compara `connect-to` con el CN o el SAN |
+| 25 | §3: certificado de servidor `CN=server-<pid>`; §5.12: el script sin CA ni verificación del servidor | `OU=server-<pid>`, `CN=<NOMBRE_DNS>`, `subjectAltName=DNS:<NOMBRE_DNS>`; el script importa la CA del VPS (`ids-maat-ca-<pid>`) y pone `verify-server-certificate=yes` en v6 y v7; añade `drop` de `input` y `forward` desde `ids-vpn` debajo del `accept` de la API (quitados después, fila 27); `punto.vpn.regenerar` renueva un certificado sin el nombre | auditoría VPN-01/VPN-02: el router no verificaba al servidor y no aislaba `ids-vpn`; RouterOS compara `connect-to` con el CN o el SAN |
 | 26 | §4.3: `suricata` con `cap_add: [NET_RAW, NET_ADMIN]` | `cap_add: [NET_RAW]` | auditoría VPN-05: af-packet no necesita `NET_ADMIN` (promisc y offloads los pone el `vpn`, `disable-offloading: false`) |
+| 27 | §5.12 (y fila 25): el script lleva la ruta blackhole `100.64.N.0/24` de distancia 250 y reglas de `/ip firewall filter` para `ids-vpn` | el script no lleva reglas de firewall ni rutas: certificado `ids-promax`, CA del VPS con `ovpn-client` y `verify-server-certificate=yes`, y usuario y grupo `ids-api` (`address=<sensor>/32`); los routers ya dados de alta quitan lo viejo con `/ip firewall filter remove [find comment="IDS ids-maat:<pid>"]` y `/ip route remove [find comment="IDS ids-maat:<pid>"]` | decisión del dueño (2026-10-15): el firewall y las rutas del router los gestiona el operador. Sin blackhole, si el túnel cae, el espejo sigue la ruta por defecto del router |
 
 ---
 
@@ -947,6 +948,8 @@ sí, ya sustituida):
 ```
 # ids-maat p003 (norte) · N=3 · puerto 1196 · túnel 100.64.3.0/24 · declarado RouterOS v7
 # El bloque v6 solo conecta tras: ids-orq punto ajustar p003 --ros 6
+# Antes de pegar: el reloj del router en hora (/system ntp client). El certificado del
+# servidor vale desde 2 días antes de emitirse; con el reloj más atrasado, el MikroTik lo rechaza.
 #
 # --- Certificado API-SSL ids-promax (6.49 y v7; si ya existe, solo la última línea) ---
 /certificate
@@ -958,30 +961,40 @@ add name=ids-promax common-name=ids-promax \
 /ip service set api-ssl certificate=ids-promax
 #
 # --- RouterOS v7 ---
+# CA del VPS (pública): con ella el MikroTik verifica al servidor (verify-server-certificate)
+/file print file=ids-maat-ca-p003
+:delay 2s
+/file set [find name="ids-maat-ca-p003.txt"] contents="-----BEGIN CERTIFICATE-----\nMIID…\n-----END CERTIFICATE-----\n"
+/certificate import file-name=ids-maat-ca-p003.txt passphrase=""
+/certificate set [find name~"^ids-maat-ca-p003"] trusted=yes
+/file remove [find name="ids-maat-ca-p003.txt"]
 /interface ovpn-client add name=ids-vpn connect-to=ids.empresa.example port=1196 protocol=tcp mode=ip \
-    user=vpn3a9f2c password=<CLAVE-VPN> cipher=aes256-gcm auth=sha1 \
+    user=vpn3a9f2c password=<CLAVE-VPN> cipher=aes256-gcm auth=sha1 verify-server-certificate=yes \
     add-default-route=no use-peer-dns=no disabled=no
-/ip route add dst-address=100.64.3.0/24 blackhole distance=250 comment="IDS ids-maat:p003"
 /user group add name=ids-api policy=read,write,api
 /user add name=ids-api group=ids-api address=100.64.3.1/32 password=<CLAVE-API>
-/ip firewall filter add chain=input in-interface=ids-vpn src-address=100.64.3.1 protocol=tcp \
-    dst-port=8729 action=accept place-before=0 comment="IDS ids-maat:p003"
 #
 # --- RouterOS v6 (6.49 o superior) ---
+# CA del VPS (pública): con ella el MikroTik verifica al servidor (verify-server-certificate)
+/file print file=ids-maat-ca-p003
+:delay 2s
+/file set [find name="ids-maat-ca-p003.txt"] contents="-----BEGIN CERTIFICATE-----\nMIID…\n-----END CERTIFICATE-----\n"
+/certificate import file-name=ids-maat-ca-p003.txt passphrase=""
+/certificate set [find name~"^ids-maat-ca-p003"] trusted=yes
+/file remove [find name="ids-maat-ca-p003.txt"]
 /interface ovpn-client add name=ids-vpn connect-to=ids.empresa.example port=1196 mode=ip \
-    user=vpn3a9f2c password=<CLAVE-VPN> cipher=aes256 auth=sha1 \
+    user=vpn3a9f2c password=<CLAVE-VPN> cipher=aes256 auth=sha1 verify-server-certificate=yes \
     add-default-route=no disabled=no
-/ip route add dst-address=100.64.3.0/24 type=blackhole distance=250 comment="IDS ids-maat:p003"
 /user group add name=ids-api policy=read,write,api
 /user add name=ids-api group=ids-api address=100.64.3.1/32 password=<CLAVE-API>
-/ip firewall filter add chain=input in-interface=ids-vpn src-address=100.64.3.1 protocol=tcp \
-    dst-port=8729 action=accept place-before=0 comment="IDS ids-maat:p003"
 ```
 
 - Con `ros_version = 6`, la cabecera dice `declarado RouterOS v6` y la nota apunta a `--ros 7`; el
   bloque v7 lleva `cipher=aes256-cbc`.
-- `connect-to` = `NOMBRE_DNS`; `dst-port` = `api_puerto`. La API usa siempre `<CLAVE-API>`: en F1a
-  el orquestador no guarda credenciales de la API.
+- `connect-to` = `NOMBRE_DNS`. La API usa siempre `<CLAVE-API>`: en F1a el orquestador no guarda
+  credenciales de la API.
+- Sin reglas de firewall ni rutas (fila 27 de §0.2): el firewall y las rutas del router los
+  gestiona el operador.
 
 Salida de `ids-orq estado`:
 

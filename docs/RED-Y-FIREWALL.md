@@ -128,21 +128,23 @@ Reglas del espejo:
   de interfaz y origen lo hace la tabla nft del netns, y además el receptor lleva su propia lista
   `TZSP_ALLOW=100.64.N.2/32`, que rechaza todo lo demás.
 
-### 3.1 Ruta de seguridad si cae el túnel
+### 3.1 Si cae el túnel
 
-Si el túnel cae, el destino `100.64.N.1` puede resolverse por la ruta por defecto, y el espejo de
-los abonados saldría **en claro por la WAN**. Para evitarlo, el MikroTik lleva una ruta blackhole
-hacia `100.64.N.0/24` con distancia 250.
+El script del MikroTik no lleva rutas (decisión del dueño: el firewall y las rutas del router los
+gestiona el operador). Si el túnel cae, el espejo hacia `100.64.N.1` sigue la ruta por defecto del
+router; el operador decide en su router si lo evita.
 
-La regla es que el blackhole **no sea más específico que la ruta conectada del túnel**:
+Si el operador pone una ruta propia para eso (un blackhole hacia `100.64.N.0/24` con distancia
+alta), la regla es que **no sea más específica que la ruta conectada del túnel**:
 
 - La distancia solo decide entre rutas del mismo prefijo.
 - Con el túnel arriba manda la conectada, y eso funciona tanto si el `ovpn-client` recibe un /24
   como un /32.
-- Con el túnel caído, el blackhole /24 le gana a la ruta por defecto.
+- Con el túnel caído, un blackhole /24 le gana a la ruta por defecto.
 - Un blackhole /32 hacia `.1` ganaría siempre y cortaría el espejo también con el túnel arriba.
 
-Los comandos están en [OPERACION.md](OPERACION.md) §1.
+Los routers dados de alta con el script anterior llevan esa ruta con el comentario
+`IDS ids-maat:<pid>`; cómo quitarla, en [OPERACION.md](OPERACION.md) §1.5.
 
 ## 4. Flujo de la API: un relé por punto
 
@@ -189,12 +191,10 @@ socat UNIX-LISTEN:/run/ids/api.sock,fork,unlink-early,mode=660,max-children=4 \
   handshake sin certificado).
 - **Del lado del router**, el origen es `100.64.N.1`:
   - usuario API exclusivo del IDS, con `address=100.64.N.1/32`;
-  - un bloque de aislamiento de `ids-vpn` en `/ip firewall filter`: en `input` solo se acepta
-    `100.64.N.1` al puerto de la API y el ICMP de respuesta del sensor al ping del router, con tres
-    `drop` negados (otro origen, no TCP salvo respuestas, otro puerto) que no dependen del orden, y
-    todo `forward` desde `ids-vpn` se descarta; una línea `move` sube las seis reglas por encima de
-    las del router ([OPERACION.md](OPERACION.md) §1.5). El sensor no puede iniciar nada hacia el
-    router salvo la API, y el router no depende de que el sensor se porte bien;
+  - el script no pone reglas de firewall: lo que entra por `ids-vpn` lo decide el firewall del
+    operador, y desde el túnel se llega a lo que ese firewall permita. Si la cadena `input` del
+    router acaba en `drop`, el operador acepta en ella la API desde `100.64.N.1`
+    ([OPERACION.md](OPERACION.md) §1.5);
   - **no se toca `/ip service … address=`**, porque esa lista es del servicio entero y puede
     usarla otro sistema de la empresa, como la facturación.
 - **El router verifica al servidor:** importa la CA del VPS y conecta con
@@ -202,8 +202,8 @@ socat UNIX-LISTEN:/run/ids/api.sock,fork,unlink-early,mode=660,max-children=4 \
   OpenVPN no recibe la clave VPN ni hace de `100.64.N.1`.
 - **Defensa en profundidad:** la tabla del netns solo deja salir hacia `100.64.N.2` y el puerto de
   la API, aunque alguien cambiara el relé. Esa tabla frena el forwarding IP, pero no a un root con
-  `CAP_NET_RAW` dentro del netns (un socket `AF_PACKET` no pasa por los hooks `inet`): por eso el
-  aislamiento de verdad son los `drop` del router, y Suricata ya no tiene `NET_ADMIN`
+  `CAP_NET_RAW` dentro del netns (un socket `AF_PACKET` no pasa por los hooks `inet`): lo que llegue
+  así al router lo filtra el firewall del operador, y Suricata ya no tiene `NET_ADMIN`
   ([INSTANCIA.md](INSTANCIA.md) §2.1).
 - **Alternativas descartadas:**
   - el panel conectado a todas las redes con rutas, que lo deja a un salto de cada túnel;
@@ -219,8 +219,8 @@ socat UNIX-LISTEN:/run/ids/api.sock,fork,unlink-early,mode=660,max-children=4 \
 - Ninguna LAN de abonados entra en una tabla de rutas del VPS. Por eso dos puntos con
   `10.0.0.0/24` no chocan en la red; solo podrían mezclarse en los datos, y eso lo resuelve
   [DATOS.md](DATOS.md) §3.
-- Un contenedor comprometido no sirve de puente hacia la red de un cliente: el VPS no enruta, y el
-  router descarta en `forward` todo lo que entra por `ids-vpn` (§4).
+- Un contenedor comprometido no sirve de puente hacia la red de un cliente a través del VPS: el VPS
+  no enruta. En el router, lo que entra por `ids-vpn` lo decide el firewall del operador (§4).
 
 ## 6. Red de túneles y CGNAT
 

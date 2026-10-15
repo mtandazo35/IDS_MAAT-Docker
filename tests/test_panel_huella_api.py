@@ -14,7 +14,7 @@
   «Revisar la huella»; con 8728, un aviso discreto.
 - D1 «Desbanear IP del MikroTik» (VPN-04): IP del túnel o la última conocida, orden inmediata
   vpn.desbanear del orquestador, resultado en JSON para el modal y línea en el Registro.
-- T1 Textos: lo que queda en el MikroTik tras la baja (CA y reglas de aislamiento), el «# AVISO:» del
+- T1 Textos: lo que queda en el MikroTik tras la baja (CA y, si es de antes, ruta y reglas), el «# AVISO:» del
   script destacado y el aviso de «Regenerar» para un punto con el certificado viejo; documentación.
 
 Tipo «corrección de defecto» o «capacidad nueva»: cada una falla sin el arreglo. Sin red: el router es
@@ -509,12 +509,17 @@ class Desbanear(_Panel):
 
 
 class Textos(_Panel):
-    def test_baja_dice_como_quitar_la_ca_y_el_aislamiento(self):
+    def test_baja_dice_como_quitar_la_ca_y_lo_del_script_anterior(self):
+        """El script de hoy no lleva firewall ni rutas (2026-10-15): la baja da la CA y, para routers
+        dados de alta con el script anterior, quitar su ruta y sus reglas por el comentario EXACTO
+        del alta (sin `~`, que casaría también el `:espejo` y otros puntos)."""
         html = self.p.pw._cuerpo_fin(self.p.d, {"orden": "punto.borrar", "ok": True, "pid": "p001"})
         self.assertIn('/certificate remove [find name~"^ids-maat-ca-p001"]', html)
         self.assertIn('/file remove [find name~"^ids-maat-ca-p001"]', html)
-        self.assertIn("IDS ids-maat:p001", html)
-        self.assertIn("aíslan", html)
+        self.assertIn('/ip firewall filter remove [find comment="IDS ids-maat:p001"]', html)
+        self.assertIn('/ip route remove [find comment="IDS ids-maat:p001"]', html)
+        self.assertNotIn("comment~", html)
+        self.assertIn("script anterior", html)
 
     def test_aviso_del_script_destacado_y_regenerar(self):
         """Con el script real del orquestador para un punto con el certificado viejo: el «# AVISO:» sale
@@ -551,7 +556,10 @@ class Textos(_Panel):
     def test_documentacion(self):
         doc = self.p.d.documentacion_page(pagina="todo")
         for txt in ("La huella coincide: confirmar", "Fijada automáticamente", "Desbanear IP del MikroTik",
-                    "verify-server-certificate", "ids-maat-ca-", "in-interface=ids-vpn"):
+                    "verify-server-certificate", "ids-maat-ca-",
+                    # el script no lleva firewall ni rutas (2026-10-15): lo dice y explica la limpieza
+                    "Firewall y rutas del router: los gestionas tú", "no lleva reglas de firewall ni rutas",
+                    '/ip firewall filter remove [find comment="IDS ids-maat:&lt;punto&gt;"]'):
             self.assertIn(txt, doc, txt)
 
 

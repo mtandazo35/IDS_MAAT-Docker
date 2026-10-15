@@ -1,9 +1,11 @@
 """El espejo nunca toca lo que el alta deja en el router (auditoria A-02).
 
-El alta del punto pega en el MikroTik una regla `chain=input ... action=accept` para la API-SSL
-desde el sensor, con el comentario del alta `IDS ids-maat:<pid>` (OPERACION §1.2/§1.3). Antes,
-el espejo usaba ese MISMO comentario y aplicar/retirar la quitaban como «regla filter del punto
-que ya no corresponde»: con la cadena input en drop, el panel se quedaba sin API en ese router.
+Las altas de versiones anteriores pegaban en el MikroTik una regla `chain=input ... action=accept`
+para la API-SSL desde el sensor, con el comentario del alta `IDS ids-maat:<pid>`; el script de hoy
+ya no lleva firewall (decisión del dueño, 2026-10-15), pero esos routers la conservan y el
+operador puede tener reglas con ese comentario. Antes, el espejo usaba ese MISMO comentario y
+aplicar/retirar la quitaban como «regla filter del punto que ya no corresponde»: con la cadena
+input en drop, el panel se quedaba sin API en ese router.
 
 Ahora el espejo usa su comentario propio `IDS ids-maat:<pid>:espejo` y, de lo que lleva el del
 alta (espejos de versiones anteriores), solo reconoce lo que tiene forma de espejo (sniff-tzsp,
@@ -58,7 +60,7 @@ class Base(unittest.TestCase):
 
 class ReglaApiDelAlta(Base):
     def test_aplicar_pausar_retirar_no_tocan_la_regla_api(self):
-        """Correccion de defecto (A-02): con la regla input de la API-SSL del alta en la tabla,
+        """Correccion de defecto (A-02): con la regla input de la API-SSL de un alta anterior en la tabla,
         el plan no la nombra, y aplicar, pausar y retirar la dejan exactamente igual. Antes:
         plan `/ip firewall filter remove <id>` y la regla desaparecia al aplicar."""
         r = sim.router_isp()

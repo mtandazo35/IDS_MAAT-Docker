@@ -61,28 +61,12 @@ add name=ids-promax common-name=ids-promax \
 /interface ovpn-client add name=ids-vpn connect-to=ids.empresa.example port=1196 protocol=tcp mode=ip \
     user=vpn3a9f2c password=<CLAVE-VPN> cipher=aes256-gcm auth=sha1 verify-server-certificate=yes \
     add-default-route=no use-peer-dns=no disabled=no
-/ip route add dst-address=100.64.3.0/24 blackhole distance=250 comment="IDS ids-maat:p003"
 /user group add name=ids-api policy=read,write,api
 /user add name=ids-api group=ids-api address=100.64.3.1/32 password=<CLAVE-API>
-# Aislamiento de ids-vpn: por el túnel solo entra la API desde el sensor (y la respuesta al
-# ping del router al sensor) y nada se enruta desde él.
-# Las reglas no dependen del orden entre ellas y la última línea las sube encima
-# de las del router. Para rehacerlo en un router ya dado de alta, pega desde aquí hasta el
-# final: la primera línea quita las reglas de antes.
-/ip firewall filter remove [find comment="IDS ids-maat:p003" in-interface=ids-vpn]
-/ip firewall filter add chain=input in-interface=ids-vpn src-address=!100.64.3.1 action=drop \
-    comment="IDS ids-maat:p003"
-/ip firewall filter add chain=input in-interface=ids-vpn protocol=!tcp \
-    connection-state=!established,related action=drop comment="IDS ids-maat:p003"
-/ip firewall filter add chain=input in-interface=ids-vpn src-address=100.64.3.1 protocol=icmp \
-    connection-state=established,related action=accept comment="IDS ids-maat:p003"
-/ip firewall filter add chain=input in-interface=ids-vpn protocol=tcp dst-port=!8729 \
-    action=drop comment="IDS ids-maat:p003"
-/ip firewall filter add chain=input in-interface=ids-vpn src-address=100.64.3.1 protocol=tcp \
-    dst-port=8729 action=accept comment="IDS ids-maat:p003"
-/ip firewall filter add chain=forward in-interface=ids-vpn action=drop comment="IDS ids-maat:p003"
-:do {/ip firewall filter move [/ip firewall filter find comment="IDS ids-maat:p003" in-interface=ids-vpn] destination=[:pick [/ip firewall filter find dynamic=no] 0]} on-error={}
 ```
+
+El script no lleva reglas de firewall ni rutas: crea la VPN (con la CA del VPS) y el usuario de la
+API. El firewall y las rutas del router los gestiona el operador (§1.5).
 
 - **El cifrado del bloque v7 sale de la versión declarada del punto.** Con el punto declarado
   RouterOS 7, el bloque v7 lleva `cipher=aes256-gcm`. Con el punto declarado RouterOS 6, el servidor
@@ -100,10 +84,8 @@ add name=ids-promax common-name=ids-promax \
 /interface ovpn-client add name=ids-vpn connect-to=ids.empresa.example port=1196 mode=ip \
     user=vpn3a9f2c password=<CLAVE-VPN> cipher=aes256 auth=sha1 verify-server-certificate=yes \
     add-default-route=no disabled=no
-/ip route add dst-address=100.64.3.0/24 type=blackhole distance=250 comment="IDS ids-maat:p003"
 /user group add name=ids-api policy=read,write,api
 /user add name=ids-api group=ids-api address=100.64.3.1/32 password=<CLAVE-API>
-# (el mismo bloque de aislamiento que en v7: la línea remove, 6 reglas y la línea move)
 ```
 
 v6 solo admite TCP, así que no lleva `protocol=`, y no tiene `use-peer-dns`. Si el handshake TLS
@@ -149,60 +131,39 @@ con la clave VPN y haría de «sensor» para el router.
 - **La lista de `/ip service api-ssl address=` no se toca.** Si ya tiene direcciones y no incluye
   `100.64.3.1`, el paso API del asistente lo detecta y muestra el comando para **añadirla**
   conservando las demás. Lo aplica el operador.
-- **`ids-vpn` queda aislada en el router.** Por el túnel solo entra la API desde el sensor
-  (`100.64.3.1` → `8729`) y la respuesta del sensor al ping del router; el resto de `input` y todo
-  `forward` desde `ids-vpn` se descartan. Así, un sensor comprometido (o un impostor) no llega ni a
-  Winbox/SSH del core ni a las redes del ISP, ni puede iniciar nada hacia el router salvo la API (un
-  ping o un UDP nuevo desde el túnel caen en un `drop`). El espejo no se ve afectado: `sniff-tzsp` lo
-  genera el propio router (sale por `output`), y el sensor no envía nada más al router (su netns solo
-  deja salir la API y las respuestas, [RED-Y-FIREWALL.md](RED-Y-FIREWALL.md) §8).
+- **El script no toca el firewall ni las rutas del router** (decisión del dueño). Lo que entra
+  por `ids-vpn` y adónde llega lo decide el firewall del operador: sin reglas propias del IDS, desde
+  el túnel se alcanza lo que ese firewall permita. Para que el panel hable con el router, el `input`
+  del router tiene que dejar pasar la API-SSL desde el sensor (`100.64.3.1` → `8729` por
+  `ids-vpn`); si la cadena `input` acaba en `drop`, el operador añade ese `accept` en su firewall.
+  Del lado del sensor no cambia nada: su netns solo deja salir el espejo TZSP, la API y la respuesta
+  al ping del MikroTik ([RED-Y-FIREWALL.md](RED-Y-FIREWALL.md) §8).
+- **Sin ruta blackhole.** Si el túnel cae, el espejo hacia `100.64.3.1` sigue la ruta por defecto
+  del router ([RED-Y-FIREWALL.md](RED-Y-FIREWALL.md) §3.1); el operador decide si pone su propia
+  ruta o regla para evitarlo.
 - **Comprobar el túnel desde el router:** `/ping 100.64.3.1` (el sensor es `100.64.N.1`, con N el
   número del punto) o `/interface ovpn-client monitor ids-vpn`. El sensor contesta al ping solo si
   viene de la IP del MikroTik en el túnel (`100.64.3.2`), con tope de 5 por segundo.
-- **El bloque de aislamiento no depende del orden de sus reglas.** La primera línea (`remove`) quita
-  las reglas de un alta anterior; después van seis reglas, todas con el comentario
-  `IDS ids-maat:<pid>` y añadidas al final de la lista:
-  - `input` desde `ids-vpn` con origen distinto del sensor → `drop`;
-  - `input` desde `ids-vpn` que no es TCP y no es `established,related` → `drop`;
-  - `input` desde `ids-vpn`, origen el sensor, ICMP `established,related` (la respuesta al ping del
-    router) → `accept`;
-  - `input` desde `ids-vpn` TCP a un puerto distinto del de la API → `drop`;
-  - `input` desde `ids-vpn`, origen el sensor, TCP al puerto de la API → `accept`;
-  - `forward` desde `ids-vpn` → `drop`.
+- **Routers dados de alta con el script anterior** (el que llevaba la ruta blackhole y el bloque
+  de aislamiento de `ids-vpn` en `/ip firewall filter`): esas reglas y esa ruta se quitan a mano con
 
-  Los tres `drop` de `input` están negados, así que ninguno casa con lo que acepta un `accept`: da
-  igual en qué orden queden entre ellas. El `drop` de «no TCP» deja pasar las respuestas a lo que
-  pidió el propio router, y el `accept` del ICMP admite la del ping sin depender de las reglas del
-  router. La última línea (`:do {… move …} on-error={}`) las sube
-  todas juntas por encima de la primera regla no dinámica del router, sin usar números (en la
-  terminal de RouterOS los números son los del último `print` de esa sesión, y con varios
-  `place-before=0` seguidos el orden salía al revés y el `drop` de `input` tapaba la API). La regla
-  dinámica del contador de FastTrack, si existe, queda donde está.
-- **Si el `move` falla** (lo absorbe el `on-error`), las seis reglas se quedan al final de la lista:
-  el aislamiento vale igual, pero una regla del operador que esté antes puede decidir antes que
-  ellas (por ejemplo, un `drop` de `input` general taparía la API). Se comprueba con
-  `/ip firewall filter print where comment="IDS ids-maat:p003"` y, si no están arriba, se suben a
-  mano con `move`.
-- **Routers ya desplegados** (dados de alta con un script anterior: el de tres reglas con
-  `place-before=0`, o el de cinco reglas sin el ping): se pega de nuevo el bloque de aislamiento
-  **entero**, desde su primer comentario hasta la línea `move`. Su primera línea,
-  `/ip firewall filter remove [find comment="IDS ids-maat:p003" in-interface=ids-vpn]`, quita las
-  reglas viejas del alta. Ese `remove` solo toca `/ip firewall filter`, el comentario exacto del alta
-  y la interfaz `ids-vpn`: no alcanza al espejo (`IDS ids-maat:p003:espejo`), ni a la ruta
-  blackhole, ni a las cuarentenas. El bloque actual se copia de la ficha del punto («Ver comando»)
-  o de `ids-orq punto ovpn-client p003`. **No** sirve lo que se indicaba antes (pegar solo las dos
-  reglas `drop` del script anterior con `place-before=0`): quedan encima del `accept` viejo y
-  **cortan la API**. Si un router ya está así (el panel no conecta con su API desde entonces), el
-  arreglo es el mismo: el bloque entero.
+  ```
+  /ip firewall filter remove [find comment="IDS ids-maat:p003"]
+  /ip route remove [find comment="IDS ids-maat:p003"]
+  ```
+
+  Las dos líneas buscan el comentario **exacto** del alta: no tocan el espejo
+  (`IDS ids-maat:p003:espejo`) ni las cuarentenas. Antes de quitarlas, si la cadena `input` del
+  router acaba en `drop`, el operador deja puesto su propio `accept` de la API desde el sensor (el
+  del bloque viejo se va con el `remove`).
 - **El ping necesita también el sensor nuevo.** En un punto creado antes de este cambio, la regla
   del ping de la tabla `inet ids_punto` ([RED-Y-FIREWALL.md](RED-Y-FIREWALL.md) §8) entra al recrear
   su contenedor `vpn` con la imagen nueva: `ids-orq punto reconfigurar p003` (§1.6). Hasta entonces
-  el sensor descarta el ping aunque el router ya tenga el bloque nuevo.
-- **El blackhole va siempre como /24** ([RED-Y-FIREWALL.md](RED-Y-FIREWALL.md) §3.1).
-- **Puerto 8728 (API en claro): el panel no conecta.** El orquestador acepta `api_puerto=8728` y el
-  script lo pone en `dst-port`, pero el panel habla **siempre** TLS con el router: contra el servicio
-  `api` en claro el saludo TLS falla y no hay conexión (la ficha del punto lo dice así). Para que el
-  panel llegue a la API, el punto tiene que usar 8729 (`api-ssl`).
+  el sensor descarta el ping.
+- **Puerto 8728 (API en claro): el panel no conecta.** El orquestador acepta `api_puerto=8728`, pero
+  el panel habla **siempre** TLS con el router: contra el servicio `api` en claro el saludo TLS falla
+  y no hay conexión (la ficha del punto lo dice así). Para que el panel llegue a la API, el punto
+  tiene que usar 8729 (`api-ssl`).
 
 ### 1.6 Llevar una corrección a lo ya desplegado
 
@@ -213,7 +174,7 @@ por su camino:
 |---|---|---|
 | Host (fail2ban, journald, sysctl, firewall del host) y el orquestador | filtros y jaulas de fail2ban, `journald.conf.d/90-ids.conf`, `ids_orq.py` y sus plantillas, unidades systemd | volver a ejecutar `install.sh` con las mismas opciones (`--nombre`, `--gestion`, `--proxy`…); es idempotente y respalda antes de tocar nada (§3.1). El panel no actualiza el orquestador |
 | Cada punto (contenedores `vpn` y `suricata`) | `server.conf` (p. ej. `max-clients 16`, `hand-window 20`), `suricata.yaml`, `compose.yml` (p. ej. `NET_RAW` sin `NET_ADMIN`, `start_interval`) y las imágenes actuales de `imagenes.json` (p. ej. `ovpn-auth` y `salud-vpn` nuevos) | `ids-orq punto reconfigurar p003` (en el servidor, como root; el botón del panel «Aplicar la configuración actual» está pendiente). Va por la cola: reescribe los tres ficheros con las plantillas actuales, pasa el punto a las imágenes actuales, recrea los contenedores y espera la salud; si no queda sano, vuelve a los ficheros y a las imágenes de antes y deja el motivo. Devuelve qué se recreó y qué cambió (`recreado`, `cambios`). Mientras se recrean los contenedores, ese punto no captura y su VPN se corta (el MikroTik reconecta solo) |
-| Cada MikroTik | lo que va en el script del router (p. ej. el bloque de aislamiento de §1.5, la CA y la verificación de §1.4) | a mano en el router: no se puede hacer desde el VPS. Para el aislamiento, `remove` de las reglas viejas y el bloque entero (§1.5); para la verificación del servidor, §1.4 |
+| Cada MikroTik | lo que va en el script del router (p. ej. la CA y la verificación de §1.4) | a mano en el router: no se puede hacer desde el VPS. Para la verificación del servidor, §1.4; para quitar la ruta y las reglas del script anterior, §1.5 |
 
 Orden recomendado tras una corrección: `install.sh` (host y orquestador) → «Aplicar la configuración
 actual» punto por punto, empezando por uno y comprobando que vuelve a `activo` → los routers.
@@ -235,12 +196,9 @@ Es equivalente a:
 /ip firewall mangle add chain=forward dst-address-list=ids-vigilados connection-bytes=0-10000     action=sniff-tzsp sniff-target=100.64.3.1 sniff-target-port=37008 comment="IDS ids-maat:p003:espejo"
 ```
 
-**Comentario propio del espejo: `IDS ids-maat:<pid>:espejo`.** Lo del alta (§1.2/§1.3: el bloque
-de aislamiento de `ids-vpn`, con el `accept` de la API-SSL desde el sensor, §1.5, y el blackhole
-del túnel) lleva
-`IDS ids-maat:<pid>` y **el espejo no lo toca nunca**: ni al aplicar, ni al pausar, ni al retirar.
-Sin esa regla, en un router con la cadena `input` en `drop`, el panel se quedaría sin API en ese
-punto. Un espejo montado por una versión anterior (con el comentario del alta) se reconoce solo
+**Comentario propio del espejo: `IDS ids-maat:<pid>:espejo`.** Lo que lleva `IDS ids-maat:<pid>`
+(en un router dado de alta con el script anterior, la ruta blackhole y el bloque de aislamiento de
+`ids-vpn`, §1.5) **el espejo no lo toca nunca**: ni al aplicar, ni al pausar, ni al retirar. Un espejo montado por una versión anterior (con el comentario del alta) se reconoce solo
 por su forma (mangle `sniff-tzsp`; filter `chain=forward` que usa `ids-vigilados`; entradas de
 `ids-vigilados`) y al volver a aplicar pasa al comentario propio.
 
@@ -273,9 +231,9 @@ que deciden qué conexiones se aceleran y nunca qué tráfico pasa:
 - **Idempotente**: aplicar dos veces no duplica nada (se busca por comentario y por las condiciones).
 - **Pausa**: deshabilita los dos mangle del espejo (`disabled=yes`, por comentario). El fasttrack queda como está.
 - **Retirada**: borra lo que lleva el comentario del espejo y devuelve a `<id-ft>` sus valores originales de
-  `src-address-list`/`dst-address-list` (del respaldo). Nunca borra reglas sin ese comentario, ni las del
-  alta (`IDS ids-maat:<pid>`: aislamiento de `ids-vpn` con la API-SSL, y blackhole), que se quitan
-  a mano al terminar la baja (§2.1).
+  `src-address-list`/`dst-address-list` (del respaldo). Nunca borra reglas sin ese comentario, ni las que
+  lleven el comentario del alta (`IDS ids-maat:<pid>`, de un script anterior), que se quitan a mano
+  (§1.5, §2.1).
 - **Prueba de aceptación** (laboratorio, con un MikroTik real de cada versión): mismo resultado antes y
   después en tráfico permitido, bloqueado y en cuarentena; espejo en las dos direcciones; aceleración
   pasados los 10 KB; aplicar dos veces sin duplicar; retirar sin tocar reglas ajenas.
@@ -287,8 +245,9 @@ router por la API: saca de las address-lists las IPs que puso él (cuarentenas, 
 bloqueados) y **retira el espejo** (address-list `ids-vigilados`, los dos mangle, los fasttrack de
 los vigilados, y devuelve la regla fasttrack del operador a sus valores originales; con el respaldo
 previo de §2). **Nada más.** Lo del alta se queda en el router porque es el camino por el que el
-panel habla con él: el bloque de aislamiento de `filter` (con el `accept` de la API), la ruta
-blackhole, la interfaz `ids-vpn`, el usuario y el grupo `ids-api`, y la CA del VPS con su fichero.
+panel habla con él: la interfaz `ids-vpn`, el usuario y el grupo `ids-api`, y la CA del VPS con su
+fichero (y, en un router dado de alta con el script anterior, la ruta blackhole y el bloque de
+aislamiento de `ids-vpn` en `filter`).
 Eso se quita a mano, después de la baja, con el bloque de **terminar una baja con API** de abajo
 (todo menos el espejo, que ya no está). El certificado `ids-promax` no se borra en ningún caso:
 puede usarlo otro servicio del router.
@@ -331,9 +290,9 @@ expresiones: borra solo lo que lleva exactamente su comentario.
 /file remove [find name~"^ids-maat-ca-p003"]
 ```
 
-Las seis reglas del bloque de aislamiento de `ids-vpn` (§1.5) llevan el comentario del alta, así
-que la línea de `filter` también las quita (y, en un router del script anterior, las tres reglas
-viejas).
+El script actual no pone reglas de `filter` ni rutas; las líneas de `filter` y `route` con el
+comentario del alta quitan lo que dejó un script anterior (la ruta blackhole y el bloque de
+aislamiento de `ids-vpn`, §1.5) y, si no hay nada, no hacen nada.
 
 ## 3. Respaldos y recuperación
 

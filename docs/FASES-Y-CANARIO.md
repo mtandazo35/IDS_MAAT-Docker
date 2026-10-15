@@ -141,8 +141,9 @@ Reglas para todas las fases:
     sus exclusiones y su bitácora están vacíos;
   - **baja con API:** antes de encolar la baja, el panel saca del router las IPs que puso
     (cuarentenas y destinos bloqueados) y retira el espejo (con su respaldo y la regla fasttrack
-    devuelta a sus valores originales); en el router **siguen** lo del alta (bloque de aislamiento
-    de `filter`, ruta blackhole, `ids-vpn`, usuario y grupo `ids-api`, CA del VPS), que se quita con
+    devuelta a sus valores originales); en el router **siguen** lo del alta (`ids-vpn`, usuario y grupo
+    `ids-api`, CA del VPS; en un router del script anterior, también la ruta blackhole y el bloque
+    de aislamiento de `filter`), que se quita con
     el bloque «terminar una baja con API» de [OPERACION.md](OPERACION.md) §2.1, y tras pegarlo no
     queda ninguna entrada `ids-maat:p001`;
   - **baja sin API:** el panel avisa de que las entradas quedan en el router y entrega los
@@ -150,7 +151,8 @@ Reglas para todas las fases:
   - las credenciales borradas ya no conectan;
   - la confirmación exige escribir el nombre exacto del punto;
   - la pausa deshabilita el mangle y el `vpn` sigue sano;
-  - con la ruta blackhole y el túnel caído no sale TZSP por la WAN (captura en el CHR);
+  - con el túnel caído se anota por dónde sale el TZSP (sin ruta del IDS, sigue la ruta por defecto
+    del router; el operador decide si lo evita);
   - una ruta estática del CHR dentro de `100.64.N.0/24` deshabilita el mangle y avisa;
   - con el panel parado, un punto en error llega por Telegram desde el orquestador.
 - **Hecho cuando:** tras una baja no queda ninguna fila ni archivo del punto, y un operador sin
@@ -253,8 +255,8 @@ El canario es un VPS de pruebas con 2 puntos que **repiten la misma LAN** (dos C
 | 9 | **RouterOS 6.49** (el más antiguo de la flota y la versión mínima): TLS moderno; si falla, `SECLEVEL=0` y luego `legacy` | decisión d de ARQUITECTURA §10 |
 | 10 | `connect-to` por nombre DNS y el certificado `ids-promax` en 6.49 (tiempo del `sign`, flags K/T) | nombre DNS por empresa y alta de la API-SSL |
 | 11 | v7 con `cipher=aes256-gcm` y `verify-server-certificate=yes`; **6.49** pegando el bloque tal cual: `/file print file=` + `/file set contents=` (línea de ~1,3 KB) + `/certificate import` dejan `ids-maat-ca-<pid>.txt_0` con flag T, y el túnel conecta con la verificación activa; con un `connect-to` que no está en el certificado, no conecta | el script v6/v7 de [OPERACION.md](OPERACION.md) §1.4 |
-| 11b | Aislamiento de `ids-vpn` en 6.49 y v7, pegando el bloque tal cual (la línea `remove`, 6 reglas y la línea `move`) **en una sesión de terminal recién abierta, sin ningún `print` antes**, y en un router **con FastTrack activo** (en `filter` la posición 0 es la regla dinámica del contador de FastTrack): el `move` con varias reglas y `destination=[:pick [find dynamic=no] 0]` funciona en las dos versiones y deja las seis reglas juntas encima de la primera regla no dinámica (comprobar con `/ip firewall filter print`); con `filter` sin más reglas que las del bloque, el `on-error` absorbe el fallo y no queda nada roto; la API del panel sigue entrando (el `accept` cuenta en `print stats`); el espejo sigue llegando; `/ping 100.64.N.1` desde el router responde (con el `vpn` recreado con la imagen nueva) y un ping desde el netns del `vpn` hacia `100.64.N.2` no llega; en el VPS de laboratorio, con la tabla `inet ids_punto` relajada a mano, `nc 100.64.N.2 22` y un UDP desde el netns del `vpn` no llegan (los cuentan los `drop` de `input`); y en un router con las reglas de un script anterior (las 3 con `place-before=0` o las 5 sin el ping), pegar el bloque entero (su primera línea es el `remove`) deja la API funcionando | [OPERACION.md](OPERACION.md) §1.5 |
-| 12 | Sintaxis del blackhole en v7 y, con el túnel caído, ningún TZSP por la WAN | ruta de seguridad |
+| 11b | Router dado de alta con el script anterior (ruta blackhole y bloque de aislamiento de `ids-vpn`), en 6.49 y v7: `/ip firewall filter remove [find comment="IDS ids-maat:<pid>"]` y `/ip route remove [find comment="IDS ids-maat:<pid>"]` quitan solo eso y no tocan el espejo (`IDS ids-maat:<pid>:espejo`) ni las cuarentenas; con el `accept` de la API del operador en su cadena `input`, la API del panel sigue entrando; el espejo sigue llegando; `/ping 100.64.N.1` desde el router responde (con el `vpn` recreado con la imagen nueva) | [OPERACION.md](OPERACION.md) §1.5 |
+| 12 | Con el túnel caído, por dónde sale el TZSP (sin ruta del IDS en el router) | dato para el operador ([RED-Y-FIREWALL.md](RED-Y-FIREWALL.md) §3.1) |
 | 13 | `fail2ban-regex` de `ids-vpn` sobre fallos reales | jaula OpenVPN |
 | 14 | El encierro systemd del orquestador no rompe docker, nft, `systemd-run` ni `fail2ban-client` (el `ids-orq vpn desbanear <ip>` desbanea de verdad con `ProtectSystem=strict`) | `ReadWritePaths` |
 | 15 | Actualización de `vX` a `vX+1` y una reversión forzada (fallo de salud simulado en el punto 2) | flujo de actualización |
@@ -272,13 +274,13 @@ El canario es un VPS de pruebas con 2 puntos que **repiten la misma LAN** (dos C
 | 7 | 30–90 s ciego por punto en cada cambio de reglas | huecos de detección | una vez al día de madrugada; threshold agrupado cada 15 min |
 | 8 | `flush ruleset` o `iptables-persistent` | se caen los puertos de Docker | tablas propias con `delete table`; ninguno de los dos se instala |
 | 9 | Red de túnel choca con el CGNAT | túnel roto o espejo mal enrutado | base `100.64` o `198.18` elegida al instalar, validación al alta, diagnóstico periódico que deshabilita el mangle |
-| 10 | Espejo en claro por la WAN si cae el túnel | fuga de tráfico de abonados | blackhole /24 de distancia 250 |
+| 10 | Espejo en claro por la WAN si cae el túnel | fuga de tráfico de abonados | a cargo del operador en su router: el script no lleva rutas (decisión del dueño, [RED-Y-FIREWALL.md](RED-Y-FIREWALL.md) §3.1) |
 | 11 | Espejo por túnel TCP | latencia, colas, ancho de banda | recorte obligatorio, `TZSP_BYTES`, vigilar el desperdicio |
 | 12 | TZSP fragmentado en `tun0` | pérdidas silenciosas | `ipfrag_*` por netns |
 | 13 | Fasttrack del router | el mangle no ve la conexión o la CPU sube | fasttrack de los vigilados a partir de `connection-bytes=10000-0`, sin `accept`; medir |
 | 14 | OpenSSL 3 con RouterOS 6.49 | el v6 no conecta | prueba en F1a; `SECLEVEL=0` y después `legacy`, solo en ese punto; nada anterior a 6.49 |
 | 15 | Puertos OpenVPN abiertos a internet | fuerza bruta, CPU por scrypt | `meter` en el host, freno antes de scrypt, jaula `ids-vpn`, origen fijo opcional |
-| 16 | `/ip service … address=` pisa a otros sistemas | facturación sin API | usuario API exclusivo y regla de entrada propia; el panel nunca toca la lista |
+| 16 | `/ip service … address=` pisa a otros sistemas | facturación sin API | usuario API exclusivo; el panel nunca toca la lista |
 | 17 | API sin certificado (ADH) o en claro | suplantación del router | API-SSL con certificado y huella confirmada por un administrador (VPN-06); una huella vacía heredada (ADH) se sigue aceptando y la ficha avisa para revisarla; con 8728 (en claro) el panel no conecta, porque habla siempre TLS |
 | 18 | `tzsp-decap` en Python | techo de pps | `SO_RCVBUFFORCE`, comparar rx con tx; receptor en C/Go si hace falta |
 | 19 | Disco lleno | capturas vacías sin error | logrotate cada 30 min (`ids-logrotate.timer`) por tamaño (`maxsize 1G`, `rotate -1`, sin `maxage`); el orquestador comprime los rotados, poda por fecha a los 30 días y, si `/srv/ids` baja del 15 % libre, borra los rotados más viejos y avisa (`DISCO`, `RETENCION-REDUCIDA`; [ORQUESTADOR.md](ORQUESTADOR.md) §8.1) |

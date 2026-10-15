@@ -247,7 +247,8 @@ de espejo ya recortado.
   `punto.vpn.regenerar` lo detecta (`openssl x509 -ext subjectAltName`), lo renueva y reinicia
   OpenVPN; hasta entonces el script lo avisa en la cabecera.
 - La seguridad del punto la da su **usuario y clave**, y la del router frente a un impostor, la
-  verificación del servidor.
+  verificación del servidor. El script no lleva reglas de firewall ni rutas: lo que entra al router
+  por `ids-vpn` lo decide el firewall del operador ([OPERACION.md](OPERACION.md) §1.5).
 
 ### 7.2 `server.conf` (lo esencial)
 

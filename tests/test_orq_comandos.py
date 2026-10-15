@@ -13,15 +13,11 @@ import _ayuda_orq as A  # noqa: E402
 # La CA del VPS de las pruebas (texto con la forma de un PEM; la de verdad la prueba test_orq_pki)
 CA_PRUEBA = "-----BEGIN CERTIFICATE-----\nMIIBszCCAVmgAwIBAgIU\nAbC+/9==\n-----END CERTIFICATE-----\n"
 
-# Cambiado a propósito (auditoría VPN-01 y VPN-02): la CA del VPS entra en el router y el
-# ovpn-client verifica al servidor; ids-vpn queda aislada (drop en forward e input). Los drop de
-# input van negados para que el orden respecto al accept de la API no importe, y sin place-before=0
-# (que en un script pegado no apunta a nada fijo): la última línea las sube por comentario. La
-# primera quita las de un alta anterior; las dos buscan con in-interface=ids-vpn para no tocar las
-# reglas del espejo que llevan el mismo comentario. La cabecera pide el reloj en hora (el
-# certificado del servidor vale desde 2 días antes de emitirse). Ping del router al sensor
-# (2026-10-15): el drop de «no TCP» deja pasar established,related y un accept admite el ICMP de
-# respuesta del sensor; un ping o un UDP NUEVO desde el túnel siguen cayendo.
+# Cambiado a propósito (auditoría VPN-01): la CA del VPS entra en el router y el ovpn-client
+# verifica al servidor. La cabecera pide el reloj en hora (el certificado del servidor vale desde
+# 2 días antes de emitirse). Decisión del dueño (2026-10-15): el script NO lleva reglas de
+# firewall ni rutas (ni el aislamiento de ids-vpn ni la ruta blackhole); solo el certificado
+# API-SSL, la CA, el ovpn-client y el usuario de la API limitado al sensor.
 _CA_P003 = r"""# CA del VPS (pública): con ella el MikroTik verifica al servidor (verify-server-certificate)
 /file print file=ids-maat-ca-p003
 :delay 2s
@@ -32,24 +28,6 @@ _CA_P003 = r"""# CA del VPS (pública): con ella el MikroTik verifica al servido
 """
 _COMUN_P003 = r"""/user group add name=ids-api policy=read,write,api
 /user add name=ids-api group=ids-api address=100.64.3.1/32 password=<CLAVE-API>
-# Aislamiento de ids-vpn: por el túnel solo entra la API desde el sensor (y la respuesta al
-# ping del router al sensor) y nada se enruta desde él.
-# Las reglas no dependen del orden entre ellas y la última línea las sube encima
-# de las del router. Para rehacerlo en un router ya dado de alta, pega desde aquí hasta el
-# final: la primera línea quita las reglas de antes.
-/ip firewall filter remove [find comment="IDS ids-maat:p003" in-interface=ids-vpn]
-/ip firewall filter add chain=input in-interface=ids-vpn src-address=!100.64.3.1 action=drop \
-    comment="IDS ids-maat:p003"
-/ip firewall filter add chain=input in-interface=ids-vpn protocol=!tcp \
-    connection-state=!established,related action=drop comment="IDS ids-maat:p003"
-/ip firewall filter add chain=input in-interface=ids-vpn src-address=100.64.3.1 protocol=icmp \
-    connection-state=established,related action=accept comment="IDS ids-maat:p003"
-/ip firewall filter add chain=input in-interface=ids-vpn protocol=tcp dst-port=!8729 \
-    action=drop comment="IDS ids-maat:p003"
-/ip firewall filter add chain=input in-interface=ids-vpn src-address=100.64.3.1 protocol=tcp \
-    dst-port=8729 action=accept comment="IDS ids-maat:p003"
-/ip firewall filter add chain=forward in-interface=ids-vpn action=drop comment="IDS ids-maat:p003"
-:do {/ip firewall filter move [/ip firewall filter find comment="IDS ids-maat:p003" in-interface=ids-vpn] destination=[:pick [/ip firewall filter find dynamic=no] 0]} on-error={}
 """
 V7_CONTRATO = r"""# ids-maat p003 (norte) · N=3 · puerto 1196 · túnel 100.64.3.0/24 · declarado RouterOS v7
 # El bloque v6 solo conecta tras: ids-orq punto ajustar p003 --ros 6
@@ -69,13 +47,11 @@ add name=ids-promax common-name=ids-promax \
 """ + _CA_P003 + r"""/interface ovpn-client add name=ids-vpn connect-to=ids.empresa.example port=1196 protocol=tcp mode=ip \
     user=vpn3a9f2c password=<CLAVE-VPN> cipher=aes256-gcm auth=sha1 verify-server-certificate=yes \
     add-default-route=no use-peer-dns=no disabled=no
-/ip route add dst-address=100.64.3.0/24 blackhole distance=250 comment="IDS ids-maat:p003"
 """ + _COMUN_P003 + r"""#
 # --- RouterOS v6 (6.49 o superior) ---
 """ + _CA_P003 + r"""/interface ovpn-client add name=ids-vpn connect-to=ids.empresa.example port=1196 mode=ip \
     user=vpn3a9f2c password=<CLAVE-VPN> cipher=aes256 auth=sha1 verify-server-certificate=yes \
     add-default-route=no disabled=no
-/ip route add dst-address=100.64.3.0/24 type=blackhole distance=250 comment="IDS ids-maat:p003"
 """ + _COMUN_P003
 
 
@@ -91,10 +67,10 @@ def comandos(mod, p, clave=None, **extra):
 
 
 def ovpn(b):
-    """La orden /interface ovpn-client (3 líneas con continuación) y la ruta blackhole."""
+    """La orden /interface ovpn-client (3 líneas con continuación)."""
     lineas = b.split("\n")
     i = [n for n, x in enumerate(lineas) if x.startswith("/interface ovpn-client")][0]
-    return "\n".join(lineas[i:i + 4])
+    return "\n".join(lineas[i:i + 3])
 
 
 def bloque(txt, titulo):
@@ -119,11 +95,10 @@ class OvpnClient(unittest.TestCase):
             txt = comandos(self.mod, punto3(self.mod, ros_version=ros), clave="X" * 24)
             v6 = ovpn(bloque(txt, "RouterOS v6"))
             v7 = ovpn(bloque(txt, "RouterOS v7"))
-            # v6: sin protocol=, sin use-peer-dns, cifrado aes256, blackhole type=
+            # v6: sin protocol=, sin use-peer-dns, cifrado aes256
             self.assertNotIn("protocol=", v6)
             self.assertNotIn("use-peer-dns", v6)
             self.assertRegex(v6, r"cipher=aes256 ")
-            self.assertIn("type=blackhole", v6)
             # v7: protocol=tcp y cifrado válido
             self.assertIn("protocol=tcp", v7)
             self.assertRegex(v7, r"cipher=aes256-(gcm|cbc) ")
@@ -131,14 +106,15 @@ class OvpnClient(unittest.TestCase):
                 self.assertIn("disabled=no", b)
                 self.assertIn("add-default-route=no", b)
                 self.assertIn("password=%s " % ("X" * 24), b)
-                # blackhole /24 (no más específico que la conectada) con distancia 250
-                self.assertRegex(b, r"dst-address=100\.64\.3\.0/24 (type=)?blackhole distance=250")
                 self.assertNotIn("tls-crypt", b)
             self.assertNotIn("<CLAVE-VPN>", txt)
 
     def test_api_8728(self):
+        """Sin reglas de firewall, el puerto de la API no sale en el script: con 8728 es el mismo
+        texto que con 8729."""
         txt = comandos(self.mod, punto3(self.mod, api_puerto=8728))
-        self.assertEqual(len(re.findall(r"dst-port=8728 ", txt)), 2)
+        self.assertEqual(txt, V7_CONTRATO)
+        self.assertNotIn("dst-port", txt)
 
 
 class TransporteFalso:

@@ -198,11 +198,12 @@ Cuatro ideas fijan la red (el detalle está en [RED-Y-FIREWALL.md](RED-Y-FIREWAL
 - **El espejo** va por `forward` en el MikroTik, recortado a 10 KB por conexión en las dos
   direcciones, por el túnel TCP, hasta `tzsp-decap`. De ahí pasa al veth `ids-in`/`ids-mon`, que
   Suricata captura; el ingreso de `ids-mon` se descarta para que la pila IP no procese el espejo.
-  Una ruta blackhole /24 de distancia 250 en el router impide que el espejo salga en claro si cae
-  el túnel.
+  El script del router no lleva rutas: si cae el túnel, el espejo sigue la ruta por defecto del
+  router, y el operador decide en su router si lo evita.
 - **La API** va del panel al socket del relé, de ahí a `100.64.N.2:8729` y por `tun0`, con TLS de
-  extremo a extremo. En el router hay un usuario API exclusivo y una regla de entrada propia; la
-  lista `address=` del servicio no se toca.
+  extremo a extremo. En el router hay un usuario API exclusivo; la lista `address=` del
+  servicio no se toca, y el script no pone reglas de firewall: lo que entra por `ids-vpn` lo decide
+  el firewall del operador.
 - **No hay rutas hacia los abonados:** `ip_forward=0`, sin `iroute` ni `push`. Todo termina o se
   origina en el `vpn`.
 - **CGNAT:** la base de túneles se elige al instalar: `100.64` o `198.18` (decisión a). El alta y un diagnóstico periódico
@@ -353,7 +354,7 @@ La tabla completa está en [FASES-Y-CANARIO.md](FASES-Y-CANARIO.md) §3.
 | Netns huérfano tras reiniciar el `vpn` (punto ciego que parece sano) | el orquestador compara los inodos de `ns/net` y reinicia `suricata`; Suricata espera a `ids-mon` |
 | Datos de puntos mezclados (cuarentena al abonado equivocado) | `CpeRef`, carpeta + `host`, `AlcanceRequerido`, `ROUTER-NO-COINCIDE`, borrado total en la baja, pruebas F2 y F3 |
 | Cabeceras `X-Forwarded-*` falsificadas | solo se creen si la conexión viene de una IP del proxy; el firewall solo deja llegar al proxy |
-| Espejo en claro por la WAN si cae el túnel | blackhole /24 de distancia 250 |
+| Espejo en claro por la WAN si cae el túnel | a cargo del operador en su router: el script no lleva rutas ([RED-Y-FIREWALL.md](RED-Y-FIREWALL.md) §3.1) |
 | Desperdicio del espejo por un túnel TCP | `connection-bytes=0-10000` obligatorio y recorte en el receptor |
 | Choque con el CGNAT del ISP | base `100.64` o `198.18` elegida al instalar, validación al alta, diagnóstico periódico que deshabilita el mangle |
 | Romper el firewall de Docker (`flush ruleset`, `iptables-persistent`) | tablas propias; ninguno de los dos se instala |

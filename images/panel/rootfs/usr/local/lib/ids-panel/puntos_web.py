@@ -1600,13 +1600,21 @@ def _cuerpo_fin(d, vm):
         return cuerpo
     if vm.get("orden") == "punto.borrar":
         cuerpo += aviso("Punto borrado: se quitaron su VPN, su Suricata y sus datos del servidor y del panel.", "ok")
-        cuerpo += ("<p class=hint>En el MikroTik quedan la interfaz <code>ids-vpn</code>, la ruta, el usuario "
-                   "<code>ids-api</code>, lo que lleve el comentario <code>IDS ids-maat:%s</code> (también las "
-                   "reglas que aíslan <code>ids-vpn</code> en <code>input</code> y <code>forward</code>) y la CA "
-                   "del VPS que importó el alta. Quítalos a mano (Documentación &rarr; Puntos); la CA, con:</p>"
+        # el script del alta ya no pone firewall ni rutas (decision del 2026-10-15): en el router
+        # queda la VPN, el usuario de la API y la CA; la ruta y las reglas solo las tienen los
+        # routers dados de alta con el script anterior (comentario EXACTO: no toca el `:espejo`)
+        cuerpo += ("<p class=hint>En el MikroTik quedan la interfaz <code>ids-vpn</code>, el usuario y el grupo "
+                   "<code>ids-api</code> y la CA del VPS que importó el alta. Quítalos a mano (Documentación "
+                   "&rarr; Puntos); la CA, con:</p>"
                    "<pre class=cmd>/certificate remove [find name~\"^ids-maat-ca-%s\"]\n"
                    "/file remove [find name~\"^ids-maat-ca-%s\"]</pre>"
-                   "<p><a class=btn href='/puntos'>Volver a Puntos</a></p>" % (esc(pid), esc(pid), esc(pid)))
+                   "<p class=hint>Si el router se dio de alta con el script anterior, lleva además una ruta y "
+                   "reglas de firewall con el comentario <code>IDS ids-maat:%s</code>. Se quitan con estas dos "
+                   "órdenes (comentario exacto: no tocan nada del espejo):</p>"
+                   "<pre class=cmd>/ip firewall filter remove [find comment=\"IDS ids-maat:%s\"]\n"
+                   "/ip route remove [find comment=\"IDS ids-maat:%s\"]</pre>"
+                   "<p><a class=btn href='/puntos'>Volver a Puntos</a></p>"
+                   % (esc(pid), esc(pid), esc(pid), esc(pid), esc(pid)))
         return cuerpo
     r = vm.get("resultado") or {}
     if r.get("clave"):
@@ -1632,8 +1640,7 @@ def _cuerpo_fin(d, vm):
             cuerpo += _bloque("op-set", "Cambiar la clave en el MikroTik", orden_set_clave(r.get("clave")))
             if renovado:
                 cuerpo += aviso("El servidor renovó además su certificado: antes, pega en el router las líneas "
-                                "de la CA del VPS del bloque de abajo (y, si no las tiene, las reglas de "
-                                "/ip firewall filter que aíslan ids-vpn).", "amb")
+                                "de la CA del VPS del bloque de abajo.", "amb")
         cuerpo += ("<h2>Comandos para el MikroTik</h2><p class=hint>Ya llevan la clave de la VPN. "
                    "<code>&lt;CLAVE-API&gt;</code> es la clave que elijas para el usuario de la API del router; "
                    "después ponla en la ficha del punto (API).</p>")

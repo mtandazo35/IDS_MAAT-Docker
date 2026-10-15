@@ -10,10 +10,12 @@ documento. Requisito que manda sobre todo:
     original del router rechazaba. Por eso aqui NO SE CREA NINGUNA REGLA `accept`.
 
 Lo que se monta, todo con el comentario PROPIO del espejo `IDS ids-maat:<pid>:espejo`
-(auditoria A-02): el alta del punto pone con `IDS ids-maat:<pid>` la regla `chain=input` que
-deja entrar a la API-SSL desde el tunel y el blackhole del tunel, y el espejo NO los toca nunca
-(sin esa regla, con la cadena input en drop, el panel se queda sin API en ese router). La baja
-manual de OPERACION §2.1 (`comment~"ids-maat:<pid>(:|$)"`) sigue quitandolo todo:
+(auditoria A-02). El script del alta ya no pone reglas de firewall ni rutas (2026-10-15), pero
+los routers dados de alta con el anterior pueden llevar con `IDS ids-maat:<pid>` una regla
+`chain=input` que deja entrar a la API-SSL desde el tunel, el blackhole del tunel y las reglas
+que aislaban ids-vpn: el espejo NO las toca nunca, ni cuenta con que existan (sin aquella regla,
+con la cadena input en drop, el panel se queda sin API en ese router). La baja manual de
+OPERACION §2.1 (`comment~"ids-maat:<pid>(:|$)"`) sigue quitandolo todo:
 
   - address-list `<lista>` con cada red del punto (prefijos editables: una red con nuestro
     comentario que ya no esta en `redes` se quita; una direccion que ya estaba en la lista sin
@@ -245,14 +247,16 @@ def en_terminal(orden, args):
 # --- utilidades -------------------------------------------------------------------------
 def comentario(pid):
     """El comentario de todo lo que el espejo del punto crea en el router. Es PROPIO del espejo:
-    lo que el alta pone con `comentario_alta(pid)` (la regla input de la API-SSL, el blackhole)
-    no es del espejo y el espejo no lo toca (auditoria A-02)."""
+    lo que el alta del script anterior ponia con `comentario_alta(pid)` (la regla input de la
+    API-SSL, el blackhole, el aislamiento de ids-vpn) no es del espejo y el espejo no lo toca
+    (auditoria A-02); si no existe, tampoco pasa nada."""
     return "IDS ids-maat:%s:espejo" % pid
 
 
 def comentario_alta(pid):
-    """El comentario del alta del punto (OPERACION §1.2/§1.3). Las versiones anteriores del
-    espejo tambien lo usaban: por eso solo cuenta como del espejo con forma de espejo."""
+    """El comentario del alta del punto (OPERACION §1.2/§1.3). El script del alta actual ya no
+    pone nada con el (ni firewall ni rutas); lo llevan los routers dados de alta con el anterior
+    y las versiones anteriores del espejo: por eso solo cuenta como del espejo con forma de espejo."""
     return "IDS ids-maat:%s" % pid
 
 

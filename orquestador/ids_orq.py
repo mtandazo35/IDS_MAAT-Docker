@@ -775,51 +775,6 @@ def lineas_ca_mikrotik(pid, ca_pem):
         % (nombre, fichero, cuerpo, fichero, nombre, fichero))
 
 
-def bloque_aislamiento(pid, sensor, api):
-    """Las líneas RouterOS que aíslan ids-vpn (VPN-02, revisión C1/C2): por el túnel solo entra la
-    API desde el sensor y nada se enruta desde él.
-
-    Sin `place-before`: en RouterOS ese número es el del ÚLTIMO `print` de la sesión (sin print,
-    «no such item»; con print, tres `place-before=0` seguidos quedan en el orden en que se
-    escriben y el drop de input tapa el accept). Aquí cada regla se añade al final y ninguna
-    depende del orden entre ellas: los drop van negados (otro origen, otro protocolo, otro puerto)
-    y no casan con lo que acepta el accept. La última línea las sube todas por encima de las
-    reglas del router, delante de la primera no dinámica (delante de una dinámica no se puede);
-    si falla (p. ej. la lista estaba vacía y ya son las primeras), `on-error` la deja pasar.
-    La primera línea quita las de un alta anterior (con su orden roto): así el bloque se puede
-    volver a pegar solo en un router ya dado de alta. `in-interface=ids-vpn` en los `find`: las
-    reglas forward del espejo de versiones anteriores llevan el mismo comentario y no se tocan.
-
-    Ping (el user, 2026-10-15): el router puede hacer ping al sensor. El drop de «no TCP» deja
-    pasar lo `established,related` (respuestas a lo que pidió el propio router) y un accept
-    explícito admite el ICMP de respuesta del sensor, para que no dependa de las reglas del
-    router. El sensor sigue sin poder INICIAR nada hacia el router salvo la API (un ping o un UDP
-    nuevo desde el túnel caen en el drop). Ninguna regla casa con lo que otra decide: el orden
-    entre ellas sigue dando igual."""
-    com = "IDS ids-maat:%s" % pid
-    return (
-        "# Aislamiento de ids-vpn: por el túnel solo entra la API desde el sensor (y la respuesta al\n"
-        "# ping del router al sensor) y nada se enruta desde él.\n"
-        "# Las reglas no dependen del orden entre ellas y la última línea las sube encima\n"
-        "# de las del router. Para rehacerlo en un router ya dado de alta, pega desde aquí hasta el\n"
-        "# final: la primera línea quita las reglas de antes.\n"
-        "/ip firewall filter remove [find comment=\"%(c)s\" in-interface=ids-vpn]\n"
-        "/ip firewall filter add chain=input in-interface=ids-vpn src-address=!%(s)s action=drop \\\n"
-        "    comment=\"%(c)s\"\n"
-        "/ip firewall filter add chain=input in-interface=ids-vpn protocol=!tcp \\\n"
-        "    connection-state=!established,related action=drop comment=\"%(c)s\"\n"
-        "/ip firewall filter add chain=input in-interface=ids-vpn src-address=%(s)s protocol=icmp \\\n"
-        "    connection-state=established,related action=accept comment=\"%(c)s\"\n"
-        "/ip firewall filter add chain=input in-interface=ids-vpn protocol=tcp dst-port=!%(a)s \\\n"
-        "    action=drop comment=\"%(c)s\"\n"
-        "/ip firewall filter add chain=input in-interface=ids-vpn src-address=%(s)s protocol=tcp \\\n"
-        "    dst-port=%(a)s action=accept comment=\"%(c)s\"\n"
-        "/ip firewall filter add chain=forward in-interface=ids-vpn action=drop comment=\"%(c)s\"\n"
-        ":do {/ip firewall filter move [/ip firewall filter find comment=\"%(c)s\" in-interface=ids-vpn] "
-        "destination=[:pick [/ip firewall filter find dynamic=no] 0]} on-error={}\n"
-        % {"c": com, "s": sensor, "a": api})
-
-
 def comandos_mikrotik(p, nombre_dns, clave=None, ca_pem=None, aviso_cert=None):
     """Bloque de `ids-orq punto ovpn-client` (§5.12). p: pid, nombre, n, puerto, tun_net, sensor,
     ros_version, api_puerto. Sin clave se imprime <CLAVE-VPN>. `ca_pem`: el ca.crt del VPS (si no
@@ -830,13 +785,13 @@ def comandos_mikrotik(p, nombre_dns, clave=None, ca_pem=None, aviso_cert=None):
     pw = clave if clave else "<CLAVE-VPN>"
     otro = 7 if ros == 6 else 6
     cifrado_v7 = "aes256-cbc" if ros == 6 else "aes256-gcm"
-    api = p["api_puerto"]
     sensor = p["sensor"]
     ca = lineas_ca_mikrotik(pid, ca_pem if ca_pem is not None else leer_ca_pem())
+    # Sin reglas de firewall ni rutas en el router (el user, 2026-10-15: «eso no va»): el script
+    # solo crea la VPN y el usuario de la API. El firewall y las rutas del router son del operador.
     comun = (
         "/user group add name=ids-api policy=read,write,api\n"
-        "/user add name=ids-api group=ids-api address=%s/32 password=<CLAVE-API>\n"
-        "%s" % (sensor, bloque_aislamiento(pid, sensor, api)))
+        "/user add name=ids-api group=ids-api address=%s/32 password=<CLAVE-API>\n" % sensor)
     cabecera_aviso = "".join("# AVISO: %s\n" % x for x in (aviso_cert or "").splitlines() if x.strip())
     return (
         "# ids-maat %s (%s) · N=%s · puerto %s · túnel %s · declarado RouterOS v%d\n"
@@ -852,7 +807,6 @@ def comandos_mikrotik(p, nombre_dns, clave=None, ca_pem=None, aviso_cert=None):
         "/interface ovpn-client add name=ids-vpn connect-to=%s port=%s protocol=tcp mode=ip \\\n"
         "    user=%s password=%s cipher=%s auth=sha1 verify-server-certificate=yes \\\n"
         "    add-default-route=no use-peer-dns=no disabled=no\n"
-        "/ip route add dst-address=%s blackhole distance=250 comment=\"IDS ids-maat:%s\"\n"
         "%s"
         "#\n"
         "# --- RouterOS v6 (6.49 o superior) ---\n"
@@ -860,7 +814,6 @@ def comandos_mikrotik(p, nombre_dns, clave=None, ca_pem=None, aviso_cert=None):
         "/interface ovpn-client add name=ids-vpn connect-to=%s port=%s mode=ip \\\n"
         "    user=%s password=%s cipher=aes256 auth=sha1 verify-server-certificate=yes \\\n"
         "    add-default-route=no disabled=no\n"
-        "/ip route add dst-address=%s type=blackhole distance=250 comment=\"IDS ids-maat:%s\"\n"
         "%s"
         % (pid, p["nombre"], p["n"], p["puerto"], p["tun_net"], ros,
            otro, pid, otro,
@@ -868,10 +821,10 @@ def comandos_mikrotik(p, nombre_dns, clave=None, ca_pem=None, aviso_cert=None):
            CERT_IDS_PROMAX,
            ca,
            nombre_dns, p["puerto"], p["usuario"], pw, cifrado_v7,
-           p["tun_net"], pid, comun,
+           comun,
            ca,
            nombre_dns, p["puerto"], p["usuario"], pw,
-           p["tun_net"], pid, comun))
+           comun))
 
 
 # --------------------------------------------------------------------------------------------
