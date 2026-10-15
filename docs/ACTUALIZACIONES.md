@@ -13,7 +13,7 @@ Las reglas ET y los feeds se actualizan aparte ([INSTANCIA.md](INSTANCIA.md) §1
 
 | Imagen | Contiene |
 |---|---|
-| `ghcr.io/<owner>/ids-maat-panel` | el panel; los servicios `web` y `worker` de compose usan la misma imagen sin s6. Incluye los assets (mapa, GeoIP) y `cryptography` instalado con `--require-hashes` |
+| `ghcr.io/<owner>/ids-maat-panel` | el panel; los servicios `web` y `worker` de compose usan la misma imagen sin s6. Incluye los assets (mapa, GeoIP: DB-IP lite fijada por commit y SHA256 en `geo_base.py`; el panel la renueva cada 30 días en `/srv/ids/panel/geo`) y `cryptography` instalado con `--require-hashes` |
 | `ghcr.io/<owner>/ids-maat-vpn` | s6-overlay v3, OpenVPN, `tzsp-decap`, socat, nft, `ovpn-auth`, `salud-vpn` |
 | `ghcr.io/<owner>/ids-maat-suricata` | Suricata del paquete de Debian (versión en `LABEL`), plantilla de `suricata.yaml`, `local.rules`, suricata-update |
 

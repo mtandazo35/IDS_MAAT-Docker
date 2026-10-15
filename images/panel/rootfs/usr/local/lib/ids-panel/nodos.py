@@ -46,11 +46,12 @@ CONF = ruta("conf")            # configuración (0600: lleva claves)
 ESTADO = ruta("estado")        # registros JSON del panel
 LOG = ruta("log")              # bitácoras de texto
 FEEDS = ruta("feeds")          # feeds de reputación que baja el panel
-GEO = ruta("geo")              # base GeoIP (se baja en ejecución)
+GEO = ruta("geo")              # base GeoIP renovada por el panel (manda sobre la de la imagen)
 CACHE = ruta("cache")          # cachés que se pueden perder (PTR/RDAP...)
 RESPALDOS = ruta("respaldos")  # respaldos del firewall de los MikroTik
 NODOS = ruta("nodos")          # salidas por nodo y la acumulada (_todos)
 MAPA = os.path.join(SHARE, "mapa")
+GEO_IMAGEN = os.path.join(SHARE, "geo")   # base GeoIP que trae la imagen (geo_base.py imagen)
 
 
 def asegurar_dirs():

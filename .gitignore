@@ -4,3 +4,5 @@ __pycache__/
 *.local
 .claude/
 .panel-local/
+# la base GeoIP se construye al hacer la imagen (geo_base.py imagen), no se versiona
+images/panel/rootfs/usr/local/share/ids-panel/geo/

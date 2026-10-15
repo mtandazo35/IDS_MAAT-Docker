@@ -21,6 +21,7 @@ _AQUI = os.path.dirname(os.path.abspath(__file__))
 if _AQUI not in sys.path:
     sys.path.insert(0, _AQUI)
 import nodos, secretos   # noqa: E402  (rutas/nodo del hilo y secretos cifrados: CONTRATO-F2 §2, §10.3)
+import geo_base          # noqa: E402  (base GeoIP del mapa: la de la imagen y la que renueva el panel)
 
 IDS_TZ = (os.environ.get("IDS_TZ") or "America/Guayaquil").strip() or "America/Guayaquil"
 
@@ -8988,68 +8989,56 @@ def partes_top():
     mt = _TOP_RE.search(doc)
     return css, (mt.group(0) if mt else "")
 
-# --- Mapa (assets de la imagen) + base GeoIP (se baja en ejecucion) ---
+# --- Mapa y base GeoIP (las dos en la imagen; la GeoIP la renueva el panel) ---
 # Los ficheros del mapa (TopoJSON + topojson-client) van DENTRO de la imagen, en nodos.MAPA:
-# la raiz es de solo lectura y no se baja codigo en caliente. La base GeoIP IP->pais si se
-# baja (una vez, en segundo plano) a nodos.GEO, que es del panel.
+# la raiz es de solo lectura y no se baja codigo en caliente. La base GeoIP IP->pais tambien
+# viene en la imagen (geo_base.py imagen, CSV fijado por commit y SHA256), asi el mapa funciona
+# desde el primer arranque y sin internet; el panel baja la ultima a nodos.GEO cada
+# geo_base.REFRESCO_S y esa manda sobre la de la imagen (html_report._geo_load).
 _MAPA_DIR = nodos.MAPA
 _GEOIP_BIN2 = os.path.join(nodos.GEO, "ipv4.bin")
-_GEO_CSV_URL = "https://raw.githubusercontent.com/sapics/ip-location-db/main/dbip-country/dbip-country-ipv4.csv"
-GEO_REINTENTO_S = 3600      # sin base GeoIP (sin salida a internet al arrancar...), otro intento cada hora
+_GEOIP_IMAGEN = os.path.join(nodos.GEO_IMAGEN, "ipv4.bin")
+_GEO_CSV_URL = geo_base.URL_ULTIMA
+GEO_REINTENTO_S = 3600      # sin ninguna base que usar: otro intento cada hora
+GEO_REVISION_S = 86400      # con base: una vez al dia se mira si toca renovarla
 
 def _provisionar_geo():
-    """Asegura la base GeoIP si falta. No bloquea el panel. True si la base esta (o se acaba
-    de escribir); False si no se pudo, con el motivo en el log del contenedor. Antes se callaba
-    todo: sin ca-certificates en la imagen la descarga fallaba siempre y el mapa salia vacio
-    sin dejar rastro (lab .152, 2026-10-15)."""
-    # base GeoIP IP->pais (DB-IP lite via ip-location-db, CC-BY-4.0) -> binario compacto
+    """Renueva la base GeoIP del panel si falta o tiene mas de geo_base.REFRESCO_S. No bloquea el
+    panel. True si esta al dia (o se acaba de escribir); False si tocaba bajarla y no se pudo,
+    con el motivo en el log del contenedor. Antes el error se callaba y no habia otra base: sin
+    ca-certificates en la imagen el mapa salio vacio sin dejar rastro (lab .152, 2026-10-15)."""
     try:
-        if os.path.exists(_GEOIP_BIN2) and os.path.getsize(_GEOIP_BIN2) > 0:
+        if (os.path.getsize(_GEOIP_BIN2) > 0
+                and time.time() - os.path.getmtime(_GEOIP_BIN2) < geo_base.REFRESCO_S):
             return True
-        import array, struct
-        raw = urllib.request.urlopen(_GEO_CSV_URL, timeout=180).read().decode("utf-8", "replace")
-        rows = []
-        for ln in raw.splitlines():
-            p = ln.split(",")
-            if len(p) < 3:
-                continue
-            cc = p[2].strip().upper()
-            if len(cc) != 2 or not cc.isalpha():
-                continue
-            try:
-                s = int(ipaddress.IPv4Address(p[0].strip())); e = int(ipaddress.IPv4Address(p[1].strip()))
-            except Exception:
-                continue
-            if e >= s:
-                rows.append((s, e, cc))
-        if len(rows) < 1000:
-            sys.stderr.write("GeoIP: la base bajada solo trae %d rangos; no se usa (el mapa sale "
-                             "vacio; otro intento en %d min)\n" % (len(rows), GEO_REINTENTO_S // 60))
-            return False
-        rows.sort()
-        st = array.array("I", [r[0] for r in rows]); en = array.array("I", [r[1] for r in rows])
-        if st.itemsize != 4:
-            sys.stderr.write("GeoIP: array('I') no es de 4 bytes en esta plataforma; sin mapa\n")
-            return False
-        ccb = b"".join(r[2].encode("ascii") for r in rows)
-        os.makedirs(os.path.dirname(_GEOIP_BIN2), exist_ok=True)
-        tmp = _GEOIP_BIN2 + ".tmp"
-        with open(tmp, "wb") as f:
-            f.write(struct.pack("<I", len(rows))); st.tofile(f); en.tofile(f); f.write(ccb)
-        os.replace(tmp, _GEOIP_BIN2)
-        globals()["FORCE_REGEN"] = True   # regenerar el reporte para pintar el mapa con el nuevo geoip
-        sys.stderr.write("GeoIP: base instalada (%d rangos)\n" % len(rows))
-        return True
+    except OSError:
+        pass
+    try:
+        n, datos = geo_base.construir(geo_base.bajar(_GEO_CSV_URL))
+        geo_base.escribir(datos, _GEOIP_BIN2)
     except Exception as e:
-        sys.stderr.write("GeoIP: no se pudo bajar la base de %s: %s (el mapa sale vacio; otro "
-                         "intento en %d min)\n" % (_GEO_CSV_URL, e, GEO_REINTENTO_S // 60))
+        queda = geo_base.disponible(_GEOIP_BIN2, _GEOIP_IMAGEN)
+        if queda == _GEOIP_BIN2:
+            sigue = "el mapa sigue con la base anterior"
+        elif queda:
+            sigue = "el mapa sigue con la de la imagen"
+        else:
+            sigue = "sin base: el mapa sale vacio; otro intento en %d min" % (GEO_REINTENTO_S // 60)
+        sys.stderr.write("GeoIP: no se pudo renovar la base desde %s: %s (%s)\n" % (_GEO_CSV_URL, e, sigue))
         return False
+    globals()["FORCE_REGEN"] = True   # regenerar el reporte para pintar el mapa con la base nueva
+    sys.stderr.write("GeoIP: base renovada (%d rangos)\n" % n)
+    return True
 
 def _geo_hilo():
-    """La base GeoIP al arrancar y, mientras falte, otro intento cada GEO_REINTENTO_S (antes
-    era una sola vez: si no habia salida a internet en ese momento, sin mapa hasta reiniciar)."""
-    while _provisionar_geo() is False and not _PARAR.wait(GEO_REINTENTO_S):
-        pass
+    """Al arrancar y luego una vez al dia: renueva la base GeoIP del panel cuando toca. Si falla y
+    no queda ninguna base que usar, otro intento cada GEO_REINTENTO_S (antes era una sola vez al
+    arrancar: sin internet en ese momento, sin mapa hasta reiniciar). Para con el panel."""
+    while True:
+        ok = _provisionar_geo()
+        hay = geo_base.disponible(_GEOIP_BIN2, _GEOIP_IMAGEN)
+        if _PARAR.wait(GEO_REINTENTO_S if ok is False and not hay else GEO_REVISION_S):
+            return
 
 # --- tareas de fondo ----------------------------------------------------------------------
 _PARAR = threading.Event()          # SIGTERM: los hilos de fondo terminan su vuelta y salen
@@ -12594,12 +12583,11 @@ TopoJSON, más Kosovo. Si un país no tiene nombre traducido, se usa el del prop
 <li><b>Solo destinos públicos:</b> las IPs privadas (tu red) o sin país no cuentan en el mapa.</li>
 <li><b>El mapa</b> se dibuja en el navegador con un <b>TopoJSON</b> del mundo servido por el
 propio panel (viene en su imagen); no llama a ningún CDN externo.</li>
-<li>Si el mapa sale vacío, casi siempre es que la base GeoIP no se instaló (no había internet
-en la instalación). El panel <b>se auto-provisiona</b> al arrancar: si falta, baja y construye la
-base GeoIP en segundo plano (el mapa no se baja: viene en la imagen). Si no puede, lo dice en el
-log del panel (<code>docker logs ids-core-panel</code>, línea «GeoIP: …» con el motivo) y lo
-<b>vuelve a intentar cada hora</b> mientras falte; también se reconstruye reiniciando el panel.
-Necesita salida a internet la primera vez.</li>
+<li>La <b>base GeoIP</b> (IP&rarr;país, DB-IP lite) <b>viene en la imagen</b>: el mapa funciona
+desde el primer arranque, sin internet. El panel baja la última publicada en segundo plano y la
+<b>renueva cada 30 días</b>; la renovada manda sobre la de la imagen. Si no puede bajarla, lo dice
+en el log del panel (<code>docker logs ids-core-panel</code>, línea «GeoIP: …» con el motivo) y
+sigue con la que tiene. Si el mapa sale vacío con alertas a destinos públicos, mira esa línea.</li>
 </ul>
 <p class="muted" style="color:#52514e;font-size:12px">Mapa inspirado en
 <b>MikroDash</b> (MIT). Geometría del mundo: World Atlas / Natural Earth (dominio público).</p>
@@ -13744,7 +13732,7 @@ o <code>ids-orq estado</code></td></tr>
 <tr><td>Logs</td><td><code>docker logs ids-core-panel</code>; los de un punto, en su ficha (Logs) o con
 <code>ids-orq punto logs</code></td></tr>
 <tr><td>Reglas</td><td><code>/srv/ids/reglas/current/</code>; actualizar: <code>ids-orq reglas actualizar</code></td></tr>
-<tr><td>Base GeoIP del mapa</td><td><code>/srv/ids/panel/geo/</code> (IP&rarr;país, offline)</td></tr>
+<tr><td>Base GeoIP del mapa</td><td><code>/srv/ids/panel/geo/</code> (IP&rarr;país, offline; la renueva el panel cada 30 días) y la de la imagen en <code>/usr/local/share/ids-panel/geo/</code></td></tr>
 </table>"""
     # --- La documentacion se parte en PAGINAS (una por tema), agrupadas en categorias.
     # Antes era un unico muro con indice lateral: con 23 temas costaba encontrar nada.

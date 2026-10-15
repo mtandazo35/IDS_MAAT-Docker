@@ -162,8 +162,10 @@ listadas en `inv_C.md` §5.1), pintada con `wrap()`/`nav()` del dashboard y sus 
 
 - Feeds: `feeds_update.py` corre en el panel (hilo cada 15 min o botón) **sin** la parte de dataset,
   `suricata -T` y recarga; escribe en `FEEDS`. El dataset de dominios de Suricata sigue siendo del orquestador.
-- Mapa: los ficheros vendorizados se sirven desde `nodos.MAPA`; la base GeoIP se baja en ejecución a `GEO`
-  (como hoy, solo cambia la ruta).
+- Mapa: los ficheros vendorizados se sirven desde `nodos.MAPA`. La base GeoIP viene en la imagen
+  (`nodos.GEO_IMAGEN`, construida por `geo_base.py imagen` con el CSV fijado por commit y SHA256) y el
+  panel baja la última a `GEO` cada 30 días; la de `GEO` manda sobre la de la imagen. Corrección
+  2026-10-15: antes solo se bajaba en ejecución y la imagen sin `ca-certificates` no la bajó nunca.
 - Informe diario (`informe_diario.py`): hilo del panel a las 07:30 en `IDS_TZ`, por nodo, un mensaje de
   Telegram con una sección por nodo y `IDS_EMPRESA` como nombre.
 

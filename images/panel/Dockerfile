@@ -38,6 +38,16 @@ RUN set -eux; \
     groupadd -g 10500 ids-panel; \
     useradd -u 10500 -g 10500 -M -d /nonexistent -s /usr/sbin/nologin ids-panel
 
+# Base GeoIP del mapa DENTRO de la imagen (DB-IP lite, CC-BY-4.0, vía sapics/ip-location-db): el
+# CSV va fijado por commit y SHA256 en geo_base.py y con él el mapa funciona desde el primer
+# arranque y sin internet (antes solo se bajaba en ejecución y, sin ca-certificates, nunca llegó).
+# Va antes de COPY rootfs para que esta capa, y su descarga, solo se rehagan si cambia geo_base.py.
+# El panel baja después la última a /srv/ids/panel/geo cada 30 días; esa manda sobre esta.
+COPY rootfs/usr/local/lib/ids-panel/geo_base.py /usr/local/lib/ids-panel/geo_base.py
+RUN set -eux; \
+    python3 /usr/local/lib/ids-panel/geo_base.py imagen /usr/local/share/ids-panel/geo/ipv4.bin; \
+    test -s /usr/local/share/ids-panel/geo/ipv4.bin
+
 COPY rootfs/ /
 
 # git en Windows no guarda el bit +x de forma fiable: modos explícitos. El código se precompila
@@ -54,6 +64,7 @@ RUN set -eux; \
     find /usr/local/lib/ids-panel -type f -name '*.pyc' -exec chmod 0644 {} +; \
     test -s /usr/local/share/ids-panel/mapa/countries-110m.json; \
     test -s /usr/local/share/ids-panel/mapa/topojson-client.min.js; \
+    test -s /usr/local/share/ids-panel/geo/ipv4.bin; \
     cd /usr/local/lib/ids-panel; \
     python3 -c 'import nodos, secretos, mikrotik_init, informe_diario, informe_pdf; from cryptography.hazmat.primitives.ciphers.aead import AESGCM; AESGCM(bytes(32))'; \
     e=$(mktemp -d); mkdir -p "$e/panel" "$e/datos" "$e/run"; \

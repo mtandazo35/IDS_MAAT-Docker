@@ -668,9 +668,11 @@ def _cuenta_acotada(contador, clave):
 
 # --- GeoIP IP->pais (offline, base DB-IP lite via ip-location-db, CC-BY-4.0) ---
 # Formato compacto en geo/ipv4.bin: [uint32 N][N x start u32]
-# [N x end u32][N x 2 bytes cc]. Lo genera el instalador; aqui solo se consulta con
-# busqueda binaria (Python puro, sin dependencias). Si falta, pais() devuelve "".
+# [N x end u32][N x 2 bytes cc]. La construye geo_base.py (una en la imagen y la que renueva
+# el panel); aqui solo se consulta con busqueda binaria (Python puro, sin dependencias). Vale
+# la renovada si esta y si no la de la imagen; sin ninguna, pais() devuelve "".
 GEOIP_BIN = os.path.join(nodos.GEO, "ipv4.bin")
+GEOIP_BIN_IMAGEN = os.path.join(nodos.GEO_IMAGEN, "ipv4.bin")
 _G_S = _G_E = _G_C = None
 _G_loaded = False
 _G_ok = False
@@ -681,16 +683,19 @@ def _geo_load():
     if _G_loaded:
         return
     _G_loaded = True
-    try:
-        with open(GEOIP_BIN, "rb") as f:
-            n = struct.unpack("<I", f.read(4))[0]
-            s = array.array("I"); s.fromfile(f, n)
-            e = array.array("I"); e.fromfile(f, n)
-            c = f.read(n * 2)
-        if n > 0 and len(c) == n * 2 and s.itemsize == 4:
-            _G_S, _G_E, _G_C, _G_ok = s, e, c, True
-    except Exception:
-        _G_ok = False
+    _G_ok = False
+    for ruta in (GEOIP_BIN, GEOIP_BIN_IMAGEN):
+        try:
+            with open(ruta, "rb") as f:
+                n = struct.unpack("<I", f.read(4))[0]
+                s = array.array("I"); s.fromfile(f, n)
+                e = array.array("I"); e.fromfile(f, n)
+                c = f.read(n * 2)
+            if n > 0 and len(c) == n * 2 and s.itemsize == 4:
+                _G_S, _G_E, _G_C, _G_ok = s, e, c, True
+                return
+        except Exception:
+            continue
 
 def pais(ip):
     """ISO2 del pais de una IPv4 publica (o '' si no se sabe / es privada / IPv6)."""
