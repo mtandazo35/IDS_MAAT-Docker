@@ -102,6 +102,9 @@ def nft_punto(cfg):
         "    ct state established,related accept\n"
         '    iifname "eth0" tcp dport 1194 accept comment "OpenVPN (DNAT del host)"\n'
         f'    iifname "tun0" ip saddr {mk} udp dport {cfg["tzsp_puerto"]} counter accept comment "espejo TZSP"\n'
+        # ping del MikroTik del punto al sensor (el user, 2026-10-15: para comprobar el tunel);
+        # solo echo-request y desde su IP del tunel, con tope. La respuesta sale por established.
+        f'    iifname "tun0" ip saddr {mk} icmp type echo-request limit rate 5/second accept comment "ping del MikroTik"\n'
         '    counter comment "resto"\n'
         "  }\n"
         "  chain output {\n"

@@ -7,6 +7,7 @@ table inet ids_punto {
     ct state established,related accept
     iifname "eth0" tcp dport 1194 accept comment "OpenVPN (DNAT del host)"
     iifname "tun0" ip saddr 100.64.3.2 udp dport 37008 counter accept comment "espejo TZSP"
+    iifname "tun0" ip saddr 100.64.3.2 icmp type echo-request limit rate 5/second accept comment "ping del MikroTik"
     counter comment "resto"
   }
   chain output {

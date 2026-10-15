@@ -19,7 +19,9 @@ CA_PRUEBA = "-----BEGIN CERTIFICATE-----\nMIIBszCCAVmgAwIBAgIU\nAbC+/9==\n-----E
 # (que en un script pegado no apunta a nada fijo): la última línea las sube por comentario. La
 # primera quita las de un alta anterior; las dos buscan con in-interface=ids-vpn para no tocar las
 # reglas del espejo que llevan el mismo comentario. La cabecera pide el reloj en hora (el
-# certificado del servidor vale desde 2 días antes de emitirse).
+# certificado del servidor vale desde 2 días antes de emitirse). Ping del router al sensor
+# (2026-10-15): el drop de «no TCP» deja pasar established,related y un accept admite el ICMP de
+# respuesta del sensor; un ping o un UDP NUEVO desde el túnel siguen cayendo.
 _CA_P003 = r"""# CA del VPS (pública): con ella el MikroTik verifica al servidor (verify-server-certificate)
 /file print file=ids-maat-ca-p003
 :delay 2s
@@ -30,15 +32,18 @@ _CA_P003 = r"""# CA del VPS (pública): con ella el MikroTik verifica al servido
 """
 _COMUN_P003 = r"""/user group add name=ids-api policy=read,write,api
 /user add name=ids-api group=ids-api address=100.64.3.1/32 password=<CLAVE-API>
-# Aislamiento de ids-vpn: por el túnel solo entra la API desde el sensor y nada se enruta
-# desde él. Las reglas no dependen del orden entre ellas y la última línea las sube encima
+# Aislamiento de ids-vpn: por el túnel solo entra la API desde el sensor (y la respuesta al
+# ping del router al sensor) y nada se enruta desde él.
+# Las reglas no dependen del orden entre ellas y la última línea las sube encima
 # de las del router. Para rehacerlo en un router ya dado de alta, pega desde aquí hasta el
 # final: la primera línea quita las reglas de antes.
 /ip firewall filter remove [find comment="IDS ids-maat:p003" in-interface=ids-vpn]
 /ip firewall filter add chain=input in-interface=ids-vpn src-address=!100.64.3.1 action=drop \
     comment="IDS ids-maat:p003"
-/ip firewall filter add chain=input in-interface=ids-vpn protocol=!tcp action=drop \
-    comment="IDS ids-maat:p003"
+/ip firewall filter add chain=input in-interface=ids-vpn protocol=!tcp \
+    connection-state=!established,related action=drop comment="IDS ids-maat:p003"
+/ip firewall filter add chain=input in-interface=ids-vpn src-address=100.64.3.1 protocol=icmp \
+    connection-state=established,related action=accept comment="IDS ids-maat:p003"
 /ip firewall filter add chain=input in-interface=ids-vpn protocol=tcp dst-port=!8729 \
     action=drop comment="IDS ids-maat:p003"
 /ip firewall filter add chain=input in-interface=ids-vpn src-address=100.64.3.1 protocol=tcp \

@@ -190,10 +190,11 @@ socat UNIX-LISTEN:/run/ids/api.sock,fork,unlink-early,mode=660,max-children=4 \
 - **Del lado del router**, el origen es `100.64.N.1`:
   - usuario API exclusivo del IDS, con `address=100.64.N.1/32`;
   - un bloque de aislamiento de `ids-vpn` en `/ip firewall filter`: en `input` solo se acepta
-    `100.64.N.1` al puerto de la API, con tres `drop` negados (otro origen, no TCP, otro puerto) que
-    no dependen del orden, y todo `forward` desde `ids-vpn` se descarta; una línea `move` sube las
-    cinco reglas por encima de las del router ([OPERACION.md](OPERACION.md) §1.5). El router no
-    depende de que el sensor se porte bien;
+    `100.64.N.1` al puerto de la API y el ICMP de respuesta del sensor al ping del router, con tres
+    `drop` negados (otro origen, no TCP salvo respuestas, otro puerto) que no dependen del orden, y
+    todo `forward` desde `ids-vpn` se descarta; una línea `move` sube las seis reglas por encima de
+    las del router ([OPERACION.md](OPERACION.md) §1.5). El sensor no puede iniciar nada hacia el
+    router salvo la API, y el router no depende de que el sensor se porte bien;
   - **no se toca `/ip service … address=`**, porque esa lista es del servicio entero y puede
     usarla otro sistema de la empresa, como la facturación.
 - **El router verifica al servidor:** importa la CA del VPS y conecta con
@@ -324,6 +325,7 @@ table inet ids_punto {
     ct state established,related accept
     iifname "eth0" tcp dport 1194 accept comment "OpenVPN (DNAT del host)"
     iifname "tun0" ip saddr 100.64.3.2 udp dport 37008 counter accept comment "espejo TZSP"
+    iifname "tun0" ip saddr 100.64.3.2 icmp type echo-request limit rate 5/second accept comment "ping del MikroTik"
     counter comment "resto"
   }
   chain output {
@@ -341,8 +343,11 @@ table netdev ids_mon {
 }
 ```
 
-- Por la VPN **solo entran el espejo y las respuestas** a lo que abre el sensor, que es la API. No
-  se llega al panel, al SSH ni a otros puntos.
+- Por la VPN **solo entran el espejo, el ping del MikroTik y las respuestas** a lo que abre el
+  sensor, que es la API. No se llega al panel, al SSH ni a otros puntos.
+- **El MikroTik del punto puede hacer ping al sensor** (`100.64.N.1`), para comprobar el túnel desde
+  el router: solo `echo-request`, solo desde su IP del túnel (`100.64.N.2`) y con tope de 5 por
+  segundo. La respuesta sale por `ct state established,related`; `output` no abre nada nuevo.
 - La salida a internet del `vpn` está cerrada. Si se compromete, no sirve de pivote.
 - **`netdev ids_mon` descarta lo inyectado.** AF_PACKET recibe su copia antes del hook de ingreso,
   así que Suricata ve las tramas pero conntrack y la pila IP no las procesan. En el canario se

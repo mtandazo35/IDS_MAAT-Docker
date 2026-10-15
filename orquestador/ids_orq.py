@@ -788,18 +788,28 @@ def bloque_aislamiento(pid, sensor, api):
     si falla (p. ej. la lista estaba vacía y ya son las primeras), `on-error` la deja pasar.
     La primera línea quita las de un alta anterior (con su orden roto): así el bloque se puede
     volver a pegar solo en un router ya dado de alta. `in-interface=ids-vpn` en los `find`: las
-    reglas forward del espejo de versiones anteriores llevan el mismo comentario y no se tocan."""
+    reglas forward del espejo de versiones anteriores llevan el mismo comentario y no se tocan.
+
+    Ping (el user, 2026-10-15): el router puede hacer ping al sensor. El drop de «no TCP» deja
+    pasar lo `established,related` (respuestas a lo que pidió el propio router) y un accept
+    explícito admite el ICMP de respuesta del sensor, para que no dependa de las reglas del
+    router. El sensor sigue sin poder INICIAR nada hacia el router salvo la API (un ping o un UDP
+    nuevo desde el túnel caen en el drop). Ninguna regla casa con lo que otra decide: el orden
+    entre ellas sigue dando igual."""
     com = "IDS ids-maat:%s" % pid
     return (
-        "# Aislamiento de ids-vpn: por el túnel solo entra la API desde el sensor y nada se enruta\n"
-        "# desde él. Las reglas no dependen del orden entre ellas y la última línea las sube encima\n"
+        "# Aislamiento de ids-vpn: por el túnel solo entra la API desde el sensor (y la respuesta al\n"
+        "# ping del router al sensor) y nada se enruta desde él.\n"
+        "# Las reglas no dependen del orden entre ellas y la última línea las sube encima\n"
         "# de las del router. Para rehacerlo en un router ya dado de alta, pega desde aquí hasta el\n"
         "# final: la primera línea quita las reglas de antes.\n"
         "/ip firewall filter remove [find comment=\"%(c)s\" in-interface=ids-vpn]\n"
         "/ip firewall filter add chain=input in-interface=ids-vpn src-address=!%(s)s action=drop \\\n"
         "    comment=\"%(c)s\"\n"
-        "/ip firewall filter add chain=input in-interface=ids-vpn protocol=!tcp action=drop \\\n"
-        "    comment=\"%(c)s\"\n"
+        "/ip firewall filter add chain=input in-interface=ids-vpn protocol=!tcp \\\n"
+        "    connection-state=!established,related action=drop comment=\"%(c)s\"\n"
+        "/ip firewall filter add chain=input in-interface=ids-vpn src-address=%(s)s protocol=icmp \\\n"
+        "    connection-state=established,related action=accept comment=\"%(c)s\"\n"
         "/ip firewall filter add chain=input in-interface=ids-vpn protocol=tcp dst-port=!%(a)s \\\n"
         "    action=drop comment=\"%(c)s\"\n"
         "/ip firewall filter add chain=input in-interface=ids-vpn src-address=%(s)s protocol=tcp \\\n"

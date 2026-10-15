@@ -102,6 +102,7 @@ LISTADO_PUNTO = """table inet ids_punto {
 \t\tct state established,related accept
 \t\tiifname "eth0" tcp dport 1194 accept comment "OpenVPN (DNAT del host)"
 \t\tiifname "tun0" ip saddr 100.64.3.2 udp dport 37008 counter packets 12 bytes 3456 accept comment "espejo TZSP"
+\t\tiifname "tun0" ip saddr 100.64.3.2 icmp type echo-request limit rate 5/second accept comment "ping del MikroTik"
 \t\tcounter packets 0 bytes 0 comment "resto"
 \t}
 

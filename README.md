@@ -6,7 +6,7 @@ OpenVPN y su propio Suricata.
 
 - Cada punto en su red aislada: los puntos pueden repetir IPs privadas; el panel filtra
   por punto.
-- Por la VPN de cada punto solo entra el espejo de trafico (TZSP); el panel y SSH solo
+- Por la VPN de cada punto solo entran el espejo de trafico (TZSP), la API del MikroTik y su ping al sensor; el panel y SSH solo
   desde las redes de gestion.
 - Alta de un punto desde el panel: crea los contenedores y entrega el `/interface
   ovpn-client` para RouterOS v6 y v7.

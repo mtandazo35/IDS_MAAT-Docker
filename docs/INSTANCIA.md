@@ -135,7 +135,10 @@ ese límite cuando hay `NET_ADMIN`. Como respaldo, el host lo sube en `/etc/sysc
 ### 4.1 Entrypoint del `vpn` (en este orden)
 
 1. **Carga la tabla `inet ids_punto`** ([RED-Y-FIREWALL.md](RED-Y-FIREWALL.md) §8). El netns queda
-   cerrado antes de que exista ningún servicio.
+   cerrado antes de que exista ningún servicio. Por `tun0` solo entran, desde el MikroTik del punto,
+   el espejo TZSP y el ping (`echo-request`, con tope de 5 por segundo); solo sale la API por el
+   relé. La tabla se genera al arrancar el contenedor: un punto ya creado recibe una regla nueva al
+   recrear su `vpn` con la imagen nueva (`ids-orq punto reconfigurar <pid>`, [OPERACION.md](OPERACION.md) §1.6).
 2. **Crea el veth y apaga los offloads:**
 
    ```sh

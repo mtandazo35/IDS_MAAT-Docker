@@ -64,17 +64,24 @@ add name=ids-promax common-name=ids-promax \
 /ip route add dst-address=100.64.3.0/24 blackhole distance=250 comment="IDS ids-maat:p003"
 /user group add name=ids-api policy=read,write,api
 /user add name=ids-api group=ids-api address=100.64.3.1/32 password=<CLAVE-API>
-# ids-vpn aislada: solo la API desde el sensor (bloque de aislamiento, §1.5)
+# Aislamiento de ids-vpn: por el túnel solo entra la API desde el sensor (y la respuesta al
+# ping del router al sensor) y nada se enruta desde él.
+# Las reglas no dependen del orden entre ellas y la última línea las sube encima
+# de las del router. Para rehacerlo en un router ya dado de alta, pega desde aquí hasta el
+# final: la primera línea quita las reglas de antes.
+/ip firewall filter remove [find comment="IDS ids-maat:p003" in-interface=ids-vpn]
 /ip firewall filter add chain=input in-interface=ids-vpn src-address=!100.64.3.1 action=drop \
     comment="IDS ids-maat:p003"
-/ip firewall filter add chain=input in-interface=ids-vpn protocol=!tcp action=drop \
-    comment="IDS ids-maat:p003"
-/ip firewall filter add chain=input in-interface=ids-vpn protocol=tcp dst-port=!8729 action=drop \
-    comment="IDS ids-maat:p003"
+/ip firewall filter add chain=input in-interface=ids-vpn protocol=!tcp \
+    connection-state=!established,related action=drop comment="IDS ids-maat:p003"
+/ip firewall filter add chain=input in-interface=ids-vpn src-address=100.64.3.1 protocol=icmp \
+    connection-state=established,related action=accept comment="IDS ids-maat:p003"
+/ip firewall filter add chain=input in-interface=ids-vpn protocol=tcp dst-port=!8729 \
+    action=drop comment="IDS ids-maat:p003"
 /ip firewall filter add chain=input in-interface=ids-vpn src-address=100.64.3.1 protocol=tcp \
     dst-port=8729 action=accept comment="IDS ids-maat:p003"
 /ip firewall filter add chain=forward in-interface=ids-vpn action=drop comment="IDS ids-maat:p003"
-:do {/ip firewall filter move [/ip firewall filter find comment="IDS ids-maat:p003"] destination=[:pick [/ip firewall filter find dynamic=no] 0]} on-error={}
+:do {/ip firewall filter move [/ip firewall filter find comment="IDS ids-maat:p003" in-interface=ids-vpn] destination=[:pick [/ip firewall filter find dynamic=no] 0]} on-error={}
 ```
 
 - **El cifrado del bloque v7 sale de la versión declarada del punto.** Con el punto declarado
@@ -96,7 +103,7 @@ add name=ids-promax common-name=ids-promax \
 /ip route add dst-address=100.64.3.0/24 type=blackhole distance=250 comment="IDS ids-maat:p003"
 /user group add name=ids-api policy=read,write,api
 /user add name=ids-api group=ids-api address=100.64.3.1/32 password=<CLAVE-API>
-# (el mismo bloque de aislamiento que en v7: 5 reglas y la línea move)
+# (el mismo bloque de aislamiento que en v7: la línea remove, 6 reglas y la línea move)
 ```
 
 v6 solo admite TCP, así que no lleva `protocol=`, y no tiene `use-peer-dns`. Si el handshake TLS
@@ -143,40 +150,54 @@ con la clave VPN y haría de «sensor» para el router.
   `100.64.3.1`, el paso API del asistente lo detecta y muestra el comando para **añadirla**
   conservando las demás. Lo aplica el operador.
 - **`ids-vpn` queda aislada en el router.** Por el túnel solo entra la API desde el sensor
-  (`100.64.3.1` → `8729`); el resto de `input` y todo `forward` desde `ids-vpn` se descartan. Así, un
-  sensor comprometido (o un impostor) no llega ni a Winbox/SSH del core ni a las redes del ISP. El
-  espejo no se ve afectado: `sniff-tzsp` lo genera el propio router (sale por `output`), y el sensor
-  no envía nada más al router (su netns solo deja salir la API, [RED-Y-FIREWALL.md](RED-Y-FIREWALL.md)
-  §8).
-- **El bloque de aislamiento no depende del orden de sus reglas.** Son cinco reglas, todas con el
-  comentario `IDS ids-maat:<pid>` y añadidas al final de la lista:
+  (`100.64.3.1` → `8729`) y la respuesta del sensor al ping del router; el resto de `input` y todo
+  `forward` desde `ids-vpn` se descartan. Así, un sensor comprometido (o un impostor) no llega ni a
+  Winbox/SSH del core ni a las redes del ISP, ni puede iniciar nada hacia el router salvo la API (un
+  ping o un UDP nuevo desde el túnel caen en un `drop`). El espejo no se ve afectado: `sniff-tzsp` lo
+  genera el propio router (sale por `output`), y el sensor no envía nada más al router (su netns solo
+  deja salir la API y las respuestas, [RED-Y-FIREWALL.md](RED-Y-FIREWALL.md) §8).
+- **Comprobar el túnel desde el router:** `/ping 100.64.3.1` (el sensor es `100.64.N.1`, con N el
+  número del punto) o `/interface ovpn-client monitor ids-vpn`. El sensor contesta al ping solo si
+  viene de la IP del MikroTik en el túnel (`100.64.3.2`), con tope de 5 por segundo.
+- **El bloque de aislamiento no depende del orden de sus reglas.** La primera línea (`remove`) quita
+  las reglas de un alta anterior; después van seis reglas, todas con el comentario
+  `IDS ids-maat:<pid>` y añadidas al final de la lista:
   - `input` desde `ids-vpn` con origen distinto del sensor → `drop`;
-  - `input` desde `ids-vpn` que no es TCP → `drop`;
+  - `input` desde `ids-vpn` que no es TCP y no es `established,related` → `drop`;
+  - `input` desde `ids-vpn`, origen el sensor, ICMP `established,related` (la respuesta al ping del
+    router) → `accept`;
   - `input` desde `ids-vpn` TCP a un puerto distinto del de la API → `drop`;
   - `input` desde `ids-vpn`, origen el sensor, TCP al puerto de la API → `accept`;
   - `forward` desde `ids-vpn` → `drop`.
 
-  Los tres `drop` de `input` están negados, así que ninguno casa con lo que acepta el `accept`: da
-  igual en qué orden queden entre ellas. La última línea (`:do {… move …} on-error={}`) las sube
+  Los tres `drop` de `input` están negados, así que ninguno casa con lo que acepta un `accept`: da
+  igual en qué orden queden entre ellas. El `drop` de «no TCP» deja pasar las respuestas a lo que
+  pidió el propio router, y el `accept` del ICMP admite la del ping sin depender de las reglas del
+  router. La última línea (`:do {… move …} on-error={}`) las sube
   todas juntas por encima de la primera regla no dinámica del router, sin usar números (en la
   terminal de RouterOS los números son los del último `print` de esa sesión, y con varios
   `place-before=0` seguidos el orden salía al revés y el `drop` de `input` tapaba la API). La regla
   dinámica del contador de FastTrack, si existe, queda donde está.
-- **Si el `move` falla** (lo absorbe el `on-error`), las cinco reglas se quedan al final de la lista:
+- **Si el `move` falla** (lo absorbe el `on-error`), las seis reglas se quedan al final de la lista:
   el aislamiento vale igual, pero una regla del operador que esté antes puede decidir antes que
   ellas (por ejemplo, un `drop` de `input` general taparía la API). Se comprueba con
   `/ip firewall filter print where comment="IDS ids-maat:p003"` y, si no están arriba, se suben a
   mano con `move`.
-- **Routers ya desplegados** (dados de alta con el script anterior, de tres reglas con
-  `place-before=0`): primero se quitan las reglas viejas del alta,
-  `/ip firewall filter remove [find comment="IDS ids-maat:p003"]`, y después se pega el bloque de
-  aislamiento **entero**, con la línea `move`. Ese `remove` solo toca `/ip firewall filter` y el
-  comentario exacto del alta: no alcanza al espejo (`IDS ids-maat:p003:espejo`), ni a la ruta
+- **Routers ya desplegados** (dados de alta con un script anterior: el de tres reglas con
+  `place-before=0`, o el de cinco reglas sin el ping): se pega de nuevo el bloque de aislamiento
+  **entero**, desde su primer comentario hasta la línea `move`. Su primera línea,
+  `/ip firewall filter remove [find comment="IDS ids-maat:p003" in-interface=ids-vpn]`, quita las
+  reglas viejas del alta. Ese `remove` solo toca `/ip firewall filter`, el comentario exacto del alta
+  y la interfaz `ids-vpn`: no alcanza al espejo (`IDS ids-maat:p003:espejo`), ni a la ruta
   blackhole, ni a las cuarentenas. El bloque actual se copia de la ficha del punto («Ver comando»)
   o de `ids-orq punto ovpn-client p003`. **No** sirve lo que se indicaba antes (pegar solo las dos
   reglas `drop` del script anterior con `place-before=0`): quedan encima del `accept` viejo y
   **cortan la API**. Si un router ya está así (el panel no conecta con su API desde entonces), el
-  arreglo es el mismo: `remove` y el bloque entero.
+  arreglo es el mismo: el bloque entero.
+- **El ping necesita también el sensor nuevo.** En un punto creado antes de este cambio, la regla
+  del ping de la tabla `inet ids_punto` ([RED-Y-FIREWALL.md](RED-Y-FIREWALL.md) §8) entra al recrear
+  su contenedor `vpn` con la imagen nueva: `ids-orq punto reconfigurar p003` (§1.6). Hasta entonces
+  el sensor descarta el ping aunque el router ya tenga el bloque nuevo.
 - **El blackhole va siempre como /24** ([RED-Y-FIREWALL.md](RED-Y-FIREWALL.md) §3.1).
 - **Puerto 8728 (API en claro): el panel no conecta.** El orquestador acepta `api_puerto=8728` y el
   script lo pone en `dst-port`, pero el panel habla **siempre** TLS con el router: contra el servicio
@@ -191,7 +212,7 @@ por su camino:
 | Parte | Qué recibe | Cómo |
 |---|---|---|
 | Host (fail2ban, journald, sysctl, firewall del host) y el orquestador | filtros y jaulas de fail2ban, `journald.conf.d/90-ids.conf`, `ids_orq.py` y sus plantillas, unidades systemd | volver a ejecutar `install.sh` con las mismas opciones (`--nombre`, `--gestion`, `--proxy`…); es idempotente y respalda antes de tocar nada (§3.1). El panel no actualiza el orquestador |
-| Cada punto (contenedores `vpn` y `suricata`) | `server.conf` (p. ej. `max-clients 16`, `hand-window 20`), `suricata.yaml`, `compose.yml` (p. ej. `NET_RAW` sin `NET_ADMIN`, `start_interval`) y las imágenes actuales de `imagenes.json` (p. ej. `ovpn-auth` y `salud-vpn` nuevos) | ficha del punto → **«Aplicar la configuración actual»** (solo administradores) o `ids-orq punto reconfigurar p003`. Va por la cola: reescribe los tres ficheros con las plantillas actuales, pasa el punto a las imágenes actuales, recrea los contenedores y espera la salud; si no queda sano, vuelve a los ficheros y a las imágenes de antes y deja el motivo. Devuelve qué se recreó y qué cambió (`recreado`, `cambios`). Mientras se recrean los contenedores, ese punto no captura y su VPN se corta (el MikroTik reconecta solo) |
+| Cada punto (contenedores `vpn` y `suricata`) | `server.conf` (p. ej. `max-clients 16`, `hand-window 20`), `suricata.yaml`, `compose.yml` (p. ej. `NET_RAW` sin `NET_ADMIN`, `start_interval`) y las imágenes actuales de `imagenes.json` (p. ej. `ovpn-auth` y `salud-vpn` nuevos) | `ids-orq punto reconfigurar p003` (en el servidor, como root; el botón del panel «Aplicar la configuración actual» está pendiente). Va por la cola: reescribe los tres ficheros con las plantillas actuales, pasa el punto a las imágenes actuales, recrea los contenedores y espera la salud; si no queda sano, vuelve a los ficheros y a las imágenes de antes y deja el motivo. Devuelve qué se recreó y qué cambió (`recreado`, `cambios`). Mientras se recrean los contenedores, ese punto no captura y su VPN se corta (el MikroTik reconecta solo) |
 | Cada MikroTik | lo que va en el script del router (p. ej. el bloque de aislamiento de §1.5, la CA y la verificación de §1.4) | a mano en el router: no se puede hacer desde el VPS. Para el aislamiento, `remove` de las reglas viejas y el bloque entero (§1.5); para la verificación del servidor, §1.4 |
 
 Orden recomendado tras una corrección: `install.sh` (host y orquestador) → «Aplicar la configuración
@@ -310,7 +331,7 @@ expresiones: borra solo lo que lleva exactamente su comentario.
 /file remove [find name~"^ids-maat-ca-p003"]
 ```
 
-Las cinco reglas del bloque de aislamiento de `ids-vpn` (§1.5) llevan el comentario del alta, así
+Las seis reglas del bloque de aislamiento de `ids-vpn` (§1.5) llevan el comentario del alta, así
 que la línea de `filter` también las quita (y, en un router del script anterior, las tres reglas
 viejas).
 
@@ -455,7 +476,7 @@ rsync -a --chmod=F600 'root@ids.empresa.example:/root/backups/ids-maat-install-*
 | Rotar la clave maestra | todavía no existe (no hay `kid`; [DATOS.md](DATOS.md) §6): cambiarla exige volver a guardar cada secreto |
 | Cambiar la IP del VPS | restaurar o mover y cambiar el registro DNS `ids.empresa.example`; los MikroTik no se tocan |
 | Actualizar el orquestador y el host | volver a ejecutar `install.sh` con la versión nueva y las mismas opciones (§1.6). No hay script aparte ni actualización desde el panel |
-| Llevar un punto a la configuración y las imágenes actuales | ficha del punto → «Aplicar la configuración actual» (admin) o `ids-orq punto reconfigurar <pid>` (§1.6) |
+| Llevar un punto a la configuración y las imágenes actuales | `ids-orq punto reconfigurar <pid>` en el servidor (§1.6; el botón del panel está pendiente) |
 | Ver los logs de un punto | `ids-orq punto logs <pid>` (OpenVPN) o `ids-orq punto logs <pid> --parte suricata`; `--lineas N` (≤ 500) |
 
 **Cuándo banea `ids-vpn` y cómo desbanear.** La jaula cuenta solo las líneas

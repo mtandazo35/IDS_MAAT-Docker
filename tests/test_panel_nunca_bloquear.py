@@ -13,7 +13,6 @@ Panel real sobre el arbol de `fixtures/panel2/_dash.py` (p001 y p002 con la mism
 misma IP 10.0.0.5 con alertas recientes), MikroTik simulado por punto; el generador corre como
 subproceso. Datos RFC 5737 / 10.x.
 """
-import json
 import os
 import sys
 import time

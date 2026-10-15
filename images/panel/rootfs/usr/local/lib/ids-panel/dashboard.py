@@ -12885,7 +12885,7 @@ legítimo sin que nadie entienda por qué.</li>
 <li><b>La lista se descarga del panel</b> (<code>/blocklist.rsc</code>, con sesión de
 administrador; en «Todos» o por nodo) y se importa en el router con <code>/import</code>. Ninguna
 pantalla la enlaza todavía: se abre escribiendo esa dirección detrás de la del panel. El MikroTik
-no llega al panel por el túnel (por él solo pasan el espejo y la API), así que ya no se la baja solo.
+no llega al panel por el túnel (por él solo pasan el espejo, la API y el ping al sensor), así que ya no se la baja solo.
 Meterle miles de entradas una a una por la API tardaría horas.</li>
 </ul>
 <p>Nunca entran en la lista tus propias redes ni las de <b>Nunca bloquear</b>, y cada importación
@@ -13403,8 +13403,8 @@ MikroTik va en segundo plano y se ve en una ventana («IPs quitadas 12 de 40», 
 el router quedó limpio se encola la baja y se pasa a su página de avance. Se borra todo el punto en el servidor (VPN, Suricata y
 eventos) y en el panel (sus reportes, su conexión y sus registros); queda una línea en el Registro. Los
 identificadores no se reutilizan. En el MikroTik quedan lo que lleva el comentario
-<code>IDS ids-maat:&lt;punto&gt;</code> (el alta: la ruta, el <code>accept</code> de la API y los cuatro
-<code>drop</code> que aíslan <code>ids-vpn</code>) o <code>IDS ids-maat:&lt;punto&gt;:espejo</code> (el espejo),
+<code>IDS ids-maat:&lt;punto&gt;</code> (el alta: la ruta y las seis reglas que aíslan <code>ids-vpn</code>, dos
+<code>accept</code> y cuatro <code>drop</code>) o <code>IDS ids-maat:&lt;punto&gt;:espejo</code> (el espejo),
 la interfaz <code>ids-vpn</code>, el usuario <code>ids-api</code> y la <b>CA del VPS</b> que importó el alta
 (los certificados no llevan comentario: se buscan por su nombre, <code>ids-maat-ca-&lt;punto&gt;</code>). El
 <code>comment~</code> de abajo encuentra lo del alta y lo del espejo:</p>
@@ -13451,6 +13451,11 @@ este cambio no la tienen: la ficha lo dice y ofrece regenerarla. No pegues
 En la baja del punto la clave se borra.</li>
 <li><b>La VPN solo trae el espejo y la API del propio router</b>: no enruta tráfico de abonados, no lleva
 a otras redes y un punto no ve a otro.</li>
+<li><b>Comprobar el túnel desde el router:</b> <code>/ping 100.64.N.1</code> (N es el número del punto; el
+sensor es la <code>.1</code>) o <code>/interface ovpn-client monitor ids-vpn</code>. El sensor solo contesta
+al ping del MikroTik de su punto, desde su IP del túnel y con tope de 5 por segundo; no abre nada más. En
+un punto creado antes de esto, el sensor contesta cuando su contenedor <code>vpn</code> se recrea con la
+imagen nueva (<code>ids-orq punto reconfigurar &lt;punto&gt;</code> en el servidor).</li>
 <li>Cambiar, regenerar o borrar la VPN de un punto <b>no corta a los demás</b>.</li>
 <li><b>Regenerar la clave VPN</b> (ficha del punto) es para cuando el panel no la tiene (puntos de antes
 de que la guardara) o la quieres cambiar, y para cuando el orquestador se reinició antes de entregarla: la
@@ -13474,18 +13479,24 @@ punto; después, en el router, pega las líneas de la CA del bloque nuevo y pon 
 <li>La página del resultado de Regenerar lo recuerda cuando el certificado se renovó.</li>
 </ul>
 <h3>ids-vpn aislada en el router</h3>
-<p>Por la interfaz <code>ids-vpn</code> solo entra la API desde el sensor del punto: el script pone un
-<code>accept</code> de la API desde el sensor y cuatro <code>drop</code> para todo lo demás que entre por
-<code>in-interface=ids-vpn</code> (en <code>input</code>, lo que no venga del sensor, no sea TCP o no vaya
-al puerto de la API; en <code>forward</code>, todo), con el comentario <code>IDS ids-maat:&lt;punto&gt;</code>.
-Los <code>drop</code> de <code>input</code> van negados, así que el orden entre las cinco reglas da igual, y
+<p>Por la interfaz <code>ids-vpn</code> solo entra la API desde el sensor del punto y la respuesta del
+sensor al ping del router: el script pone un <code>accept</code> de la API desde el sensor, un
+<code>accept</code> del ICMP de respuesta del sensor (<code>connection-state=established,related</code>) y
+cuatro <code>drop</code> para todo lo demás que entre por <code>in-interface=ids-vpn</code> (en
+<code>input</code>, lo que no venga del sensor, no sea TCP salvo las respuestas a lo que pidió el router, o
+no vaya al puerto de la API; en <code>forward</code>, todo), con el comentario
+<code>IDS ids-maat:&lt;punto&gt;</code>. El router puede hacer ping al sensor, pero el sensor no puede iniciar
+nada hacia el router salvo la API.
+Los <code>drop</code> de <code>input</code> van negados, así que el orden entre las seis reglas da igual, y
 la última línea del script las sube por encima de la primera regla no dinámica del router (sin
 <code>place-before=0</code>, que en un script pegado no apunta a una regla fija). Con
 <code>/ip firewall filter</code> vacía no hay nada que mover y no pasa nada. Aunque el sensor se viera
 comprometido, no llegaría ni al resto de servicios del router ni a las redes del ISP. El espejo no se ve
 afectado: lo genera el propio router y sale hacia el sensor. En un router que ya tenía las reglas de un alta
-anterior, quítalas antes con <code>/ip firewall filter remove [find comment="IDS ids-maat:&lt;punto&gt;"]</code>
-(el script lo recuerda).</p>
+anterior (también las de antes del ping), pega de nuevo el bloque de aislamiento entero desde la ficha
+(«Ver comando»): su primera línea,
+<code>/ip firewall filter remove [find comment="IDS ids-maat:&lt;punto&gt;" in-interface=ids-vpn]</code>, quita
+las reglas viejas.</p>
 <p>Si el router queda baneado por fail2ban, ver "Puntos: un MikroTik, su VPN y su Suricata", apartado
 <b>Desbanear la IP del MikroTik</b>.</p>
 
