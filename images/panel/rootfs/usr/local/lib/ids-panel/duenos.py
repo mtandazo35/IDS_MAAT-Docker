@@ -277,7 +277,16 @@ def _guardar(nuevas):
             tmp = "%s.%d.%d.tmp" % (CACHE, os.getpid(), threading.get_ident())
             with open(tmp, "w", encoding="utf-8") as f:
                 json.dump(d, f)
-            os.replace(tmp, CACHE)
+            # en Windows replace falla con PermissionError si alguien tiene la cache abierta en ese
+            # instante (un lector, el antivirus): se reintenta un poco en vez de perder la entrada
+            for intento in range(10):
+                try:
+                    os.replace(tmp, CACHE)
+                    break
+                except PermissionError:
+                    if intento == 9:
+                        raise
+                    time.sleep(0.05)
         except OSError:
             pass
 

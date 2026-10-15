@@ -94,7 +94,11 @@ class Duenos(unittest.TestCase):
         t = time.monotonic()
         self.assertEqual(self.d.resolver(IPS[:3], espera=0.1), {})
         self.assertLess(time.monotonic() - t, 0.5)
-        time.sleep(1.0)
+        # a que terminen las tres en vuelo (no un tiempo fijo: el runner de Windows del CI va lento)
+        tope = time.monotonic() + 10
+        while self.d._VUELO and time.monotonic() < tope:
+            time.sleep(0.05)
+        self.assertFalse(self.d._VUELO, "las consultas en vuelo no terminaron")
         n = len(self.ptr_llamadas)
         self.assertEqual(len(self.d.resolver(IPS[:3], espera=0.1)), 3)
         self.assertEqual(len(self.ptr_llamadas), n)       # salio de la cache
