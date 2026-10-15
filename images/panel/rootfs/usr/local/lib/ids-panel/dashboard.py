@@ -13355,8 +13355,9 @@ fila), nunca al que tengas elegido en el selector. En «Todos» las acciones mas
 </ul>
 <h3>Alta</h3>
 <ol>
-<li><b>Puntos &rarr; Agregar punto</b>: nombre, <b>prefijos de abonados</b> que se espejan, versión de
-RouterOS (6.49+ o 7) y perfil (reducido por defecto). Un doble clic no crea dos puntos.</li>
+<li><b>Puntos &rarr; Agregar punto</b>: solo el nombre y los <b>prefijos de abonados</b> que se espejan.
+No se pregunta la versión: la VPN vale para RouterOS 6.49+ y 7 (los comandos traen el bloque de cada
+una) y el perfil es el reducido. Un doble clic no crea dos puntos.</li>
 <li>El servidor crea la VPN y el Suricata del punto; se ve el avance paso a paso, con lo que tarda
 cada uno, sin que la página se recargue.</li>
 <li>Al terminar salen la clave de la VPN y los comandos para el MikroTik con la clave puesta. La ficha

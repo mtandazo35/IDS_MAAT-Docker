@@ -84,11 +84,14 @@ class OvpnClient(unittest.TestCase):
     def test_v7_exacto(self):
         self.assertEqual(comandos(self.mod, punto3(self.mod)), V7_CONTRATO)
 
-    def test_v6_declarado(self):
+    def test_v6_compatible(self):
+        """ros_version 6 (el alta del panel): respaldo CBC en el servidor, conectan los dos bloques."""
         txt = comandos(self.mod, punto3(self.mod, ros_version=6))
-        self.assertIn("· declarado RouterOS v6\n# El bloque v7 solo conecta tras: ids-orq punto ajustar p003 --ros 7\n",
-                      txt)
+        self.assertIn("· RouterOS 6.49+ o 7 (AES-256-CBC)\n"
+                      "# Conectan los dos bloques: pega el de la versión de tu MikroTik.\n", txt)
+        self.assertNotIn("solo conecta tras", txt)
         self.assertIn("cipher=aes256-cbc auth=sha1", bloque(txt, "RouterOS v7"))
+        self.assertIn("cipher=aes256 auth=sha1", bloque(txt, "RouterOS v6"))
 
     def test_reglas_routeros(self):
         for ros in (6, 7):

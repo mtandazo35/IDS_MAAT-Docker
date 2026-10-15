@@ -21,8 +21,8 @@ class Puntos(unittest.TestCase):
         return re.search(r"name=op value='([0-9a-f-]{36})'", r.texto).group(1)
 
     def _crear(self, token, nombre="este"):
-        return self.p.pedir("POST", "/puntos/nuevo", {"op": token, "nombre": nombre, "redes": "10.1.0.0/24\n10.2.0.0/24",
-                                                      "ros_version": "6", "perfil": "reducido"}, cookie=self.ana)
+        return self.p.pedir("POST", "/puntos/nuevo", {"op": token, "nombre": nombre, "redes": "10.1.0.0/24\n10.2.0.0/24"},
+                            cookie=self.ana)
 
     def test_alta_llama_punto_crear_y_redirige(self):
         """Capacidad nueva: el alta pide punto.crear con los datos del formulario y lleva al avance."""
@@ -36,6 +36,20 @@ class Puntos(unittest.TestCase):
         self.assertEqual(pet[0]["params"], {"nombre": "este", "redes_abonados": ["10.1.0.0/24", "10.2.0.0/24"],
                                             "perfil": "reducido", "ros_version": 6})
         self.assertEqual(pet[0]["quien"], "panel:ana")
+
+    def test_alta_solo_pide_nombre_y_prefijos(self):
+        """Capacidad nueva (el user, 2026-10-15): el alta no pregunta RouterOS ni perfil. La VPN sale
+        compatible con 6.49+ y 7 (ros_version 6) y el perfil es el reducido, aunque el POST traiga otros."""
+        r = self.p.pedir("GET", "/puntos/nuevo", cookie=self.ana)
+        for campo in ("name=nombre", "name=redes"):
+            self.assertIn(campo, r.texto)
+        for campo in ("name=ros_version", "name=perfil"):
+            self.assertNotIn(campo, r.texto)
+        tok = re.search(r"name=op value='([0-9a-f-]{36})'", r.texto).group(1)
+        self.p.pedir("POST", "/puntos/nuevo", {"op": tok, "nombre": "otro", "redes": "10.3.0.0/24",
+                                               "ros_version": "7", "perfil": "completo"}, cookie=self.ana)
+        prm = self.p.orq.ordenes("punto.crear")[0]["params"]
+        self.assertEqual((prm["ros_version"], prm["perfil"]), (6, "reducido"))
 
     def test_doble_envio_no_crea_dos(self):
         """Capacidad nueva (idempotencia): el mismo formulario enviado dos veces es una sola orden."""
@@ -66,7 +80,9 @@ class Puntos(unittest.TestCase):
         r = self.p.pedir("GET", "/operaciones/%s" % tok, cookie=self.ana)
         self.assertEqual(r.status, 200)
         self.assertIn("CLAVE-VPN-UNICA-7Q2", r.texto)
-        self.assertIn("RouterOS 6 (la versión declarada", r.texto)
+        # ros_version 6: conectan los dos bloques, el v7 primero y ninguno «declarado»
+        self.assertIn("Ver el bloque de RouterOS 6", r.texto)
+        self.assertNotIn("versión declarada", r.texto)
         r = self.p.pedir("GET", "/operaciones/%s" % tok, cookie=self.ana)
         self.assertEqual(r.status, 200)
         self.assertNotIn("CLAVE-VPN-UNICA-7Q2", r.texto)
@@ -95,6 +111,8 @@ class Puntos(unittest.TestCase):
         for sec in ("id=resumen", "id=vpn", "id=api", "id=espejo", "id=prefijos", "id=baja"):
             self.assertIn(sec, r.texto)
         self.assertIn("&lt;CLAVE-VPN&gt;", r.texto)
+        self.assertIn("reducido · RouterOS 7", r.texto)
+        self.assertIn("reducido · RouterOS 6.49+ o 7", self.p.pedir("GET", "/puntos/p002", cookie=self.ana).texto)
         self.assertEqual(self.p.pedir("GET", "/puntos/p009", cookie=self.ana).status, 404)
 
 

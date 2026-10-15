@@ -83,7 +83,7 @@ class Operaciones(unittest.TestCase):
         self.assertIn("data-ciphers-fallback AES-256-CBC", conf)
         self.assertIn("tls-cert-profile legacy", conf)
         self.assertTrue(self.s.ordenes("docker exec ids-p001-vpn /command/s6-svc -r /run/service/openvpn"))
-        self.assertIn("declarado RouterOS v6", r["resultado"]["comandos"])
+        self.assertIn("RouterOS 6.49+ o 7 (AES-256-CBC)", r["resultado"]["comandos"])
         self.assertIn('ip saddr != 203.0.113.45 counter drop comment "origen fijo p001"', self.s.nft_aplicado[-1])
         r = A.ejecutar_orden(self.orq, "punto.ajustar", {"pid": "p001", "origen_ip": None})
         self.assertNotIn("origen fijo", self.s.nft_aplicado[-1])

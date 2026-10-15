@@ -783,8 +783,16 @@ def comandos_mikrotik(p, nombre_dns, clave=None, ca_pem=None, aviso_cert=None):
     pid = p["pid"]
     ros = int(p["ros_version"])
     pw = clave if clave else "<CLAVE-VPN>"
-    otro = 7 if ros == 6 else 6
     cifrado_v7 = "aes256-cbc" if ros == 6 else "aes256-gcm"
+    # v6: el respaldo del servidor es AES-256-CBC y RouterOS 7 no negocia el cifrado (solo manda
+    # IV_PROTO=2), asi que con cipher=aes256-cbc tambien conecta: valen los dos bloques (asi crea el
+    # panel todos los puntos). v7: respaldo GCM, y el v6 (solo CBC) no conecta.
+    if ros == 6:
+        version = "RouterOS 6.49+ o 7 (AES-256-CBC)"
+        nota = "Conectan los dos bloques: pega el de la versión de tu MikroTik."
+    else:
+        version = "declarado RouterOS v7"
+        nota = "El bloque v6 solo conecta tras: ids-orq punto ajustar %s --ros 6" % pid
     sensor = p["sensor"]
     ca = lineas_ca_mikrotik(pid, ca_pem if ca_pem is not None else leer_ca_pem())
     # Sin reglas de firewall ni rutas en el router (el user, 2026-10-15: «eso no va»): el script
@@ -794,8 +802,8 @@ def comandos_mikrotik(p, nombre_dns, clave=None, ca_pem=None, aviso_cert=None):
         "/user add name=ids-api group=ids-api address=%s/32 password=<CLAVE-API>\n" % sensor)
     cabecera_aviso = "".join("# AVISO: %s\n" % x for x in (aviso_cert or "").splitlines() if x.strip())
     return (
-        "# ids-maat %s (%s) · N=%s · puerto %s · túnel %s · declarado RouterOS v%d\n"
-        "# El bloque v%d solo conecta tras: ids-orq punto ajustar %s --ros %d\n"
+        "# ids-maat %s (%s) · N=%s · puerto %s · túnel %s · %s\n"
+        "# %s\n"
         "# Antes de pegar: el reloj del router en hora (/system ntp client). El certificado del\n"
         "# servidor vale desde 2 días antes de emitirse; con el reloj más atrasado, el MikroTik lo rechaza.\n"
         "%s"
@@ -815,8 +823,8 @@ def comandos_mikrotik(p, nombre_dns, clave=None, ca_pem=None, aviso_cert=None):
         "    user=%s password=%s cipher=aes256 auth=sha1 verify-server-certificate=yes \\\n"
         "    add-default-route=no disabled=no\n"
         "%s"
-        % (pid, p["nombre"], p["n"], p["puerto"], p["tun_net"], ros,
-           otro, pid, otro,
+        % (pid, p["nombre"], p["n"], p["puerto"], p["tun_net"], version,
+           nota,
            cabecera_aviso,
            CERT_IDS_PROMAX,
            ca,

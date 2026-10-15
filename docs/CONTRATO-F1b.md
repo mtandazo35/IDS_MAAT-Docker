@@ -112,7 +112,7 @@ Lecturas (solo lectura, nunca escribe fuera de `IDS_PANEL_DIR`):
 | `GET /entrar` · `POST /entrar` (`usuario`, `clave`) | no | 303 a `/puntos` con cookie; 401 «Usuario o clave incorrectos.»; 429 frenado |
 | `POST /salir` (`csrf`) | sí | borra la sesión y la cookie |
 | `GET /puntos` · `GET /puntos/tabla` | sí | pantalla Puntos; el fragmento se refresca cada 15 s (401 sin sesión) |
-| `GET /puntos/nuevo` · `POST /puntos/nuevo` (`csrf`, `nombre`, `redes`, `ros_version` 6/7, `perfil` reducido/completo) | sí | 303 a `/operaciones/<op_id>`; 400/409/503 con el formulario y el error en claro |
+| `GET /puntos/nuevo` · `POST /puntos/nuevo` (`csrf`, `nombre`, `redes`; desde 2026-10-15 no se preguntan `ros_version` ni `perfil`, y si llegan se ignoran) | sí | 303 a `/operaciones/<op_id>`; 400/409/503 con el formulario y el error en claro |
 | `GET /puntos/<pid>` (`?ip=`) | sí | ficha: estado, comandos sin clave (`punto.comandos`), regenerar, últimas 100 alertas del punto, borrar |
 | `POST /puntos/<pid>/borrar` (`csrf`, `confirmar`) | sí | exige `confirmar` = nombre (si `estado.json` lo trae; si no, lo comprueba el orquestador) |
 | `POST /puntos/<pid>/regenerar` (`csrf`) | sí | `punto.vpn.regenerar` |
@@ -152,7 +152,7 @@ Petición (una por conexión, JSON + `\n`): `{"v":1,"op_id":"<uuid4>","token":"<
 
 | Orden | Parámetros que manda el panel | Uso |
 |---|---|---|
-| `punto.crear` | `nombre`, `redes_abonados` (lista de CIDR IPv4 normalizados), `perfil` (`reducido`/`completo`), `ros_version` (6/7). Lo demás, por defecto | Agregar punto |
+| `punto.crear` | `nombre`, `redes_abonados` (lista de CIDR IPv4 normalizados), `perfil` `reducido` y `ros_version` 6 fijos (VPN compatible con RouterOS 6.49+ y 7). Lo demás, por defecto | Agregar punto |
 | `op.estado` | `op_id` | avance (`pasos`, `paso`, `avance`, `delante`) y `resultado` |
 | `punto.comandos` | `pid` | ficha: comandos con `<CLAVE-VPN>` y `clave_id` (huella de la clave vigente) |
 | `punto.borrar` | `pid`, `confirmar` | Borrar |
@@ -167,7 +167,7 @@ Petición (una por conexión, JSON + `\n`): `{"v":1,"op_id":"<uuid4>","token":"<
   clave en los comandos solo si `clave_id` coincide; si no (punto anterior, regenerada por la CLI o
   entrega perdida), lo dice y ofrece regenerarla. La baja la borra.
 - Comandos: el bloque de `punto.comandos` se parte por sus marcas (`# --- Certificado API-SSL`,
-  `# --- RouterOS v7`, `# --- RouterOS v6`); primero la versión declarada, la otra plegada. Si el
+  `# --- RouterOS v7`, `# --- RouterOS v6`); el v7 primero y el v6 plegado (con `ros_version` 7, el v7 sale como la versión declarada). Si el
   formato cambiara, se muestra entero.
 - Errores en lenguaje claro: `INVALIDO` «Los datos no son válidos: …», `CONFLICTO` «No se puede
   hacer ahora: … Caben ahora: …», `CONFLICTO_PUERTO`, `NO_EXISTE`, `REVERTIDA` «falló y se deshizo
@@ -417,6 +417,6 @@ visibilidad y relanzar el job.
 - Rutas que usa el e2e (las de `app.py` de P a 2026-10-11): `POST /entrar` (`usuario`, `clave`) →
   303 a `/puntos` con cookie `ids_s` por HTTP; `GET /puntos` (lista con el nombre de cada punto
   entre etiquetas, `>web<`); `GET /puntos/nuevo` con `<input type="hidden" name="csrf" value="…">`;
-  `POST /puntos/nuevo` (`csrf`, `nombre`, `redes`, `ros_version`, `perfil`) → 303 a
+  `POST /puntos/nuevo` (`csrf`, `nombre`, `redes`; `ros_version` y `perfil` se ignoran) → 303 a
   `/operaciones/<op_id>`; POST con `Origin` de otro host → 403; clave mala → 401. Si P cambia
   alguna, se ajusta el paso 7 de `tests/integracion/test_e2e.sh`.

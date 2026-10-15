@@ -102,7 +102,7 @@ listadas en `inv_C.md` §5.1), pintada con `wrap()`/`nav()` del dashboard y sus 
 | Ruta | Hace |
 |---|---|
 | `GET /puntos` | tabla de puntos (estado, VPN, espejo Mbps, Suricata, alertas 24 h, avisos), capacidad restante, «Agregar punto» |
-| `GET /puntos/nuevo`, `POST /puntos/nuevo` | alta (nombre, redes de abonados, RouterOS 6/7, perfil `reducido` por defecto) → `punto.crear` → `303 /operaciones/<op_id>` |
+| `GET /puntos/nuevo`, `POST /puntos/nuevo` | alta (solo nombre y redes de abonados; VPN compatible con RouterOS 6.49+ y 7, `ros_version` 6, y perfil `reducido`) → `punto.crear` → `303 /operaciones/<op_id>` |
 | `GET /operaciones/<op_id>` | avance; al terminar enseña **una sola vez** usuario y clave de la VPN y los comandos v7/v6 |
 | `GET /puntos/<pid>` | ficha: Resumen, VPN (comandos sin clave), API (usuario/clave/probar/huella), Espejo (plan/aplicar), Redes, Logs, Baja |
 | `POST /puntos/<pid>/{borrar,regenerar,arrancar,parar,reiniciar,ajustar,api,espejo}` | órdenes del orquestador o configuración del router del punto; `borrar` exige escribir el nombre |

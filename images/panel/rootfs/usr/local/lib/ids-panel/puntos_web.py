@@ -58,7 +58,6 @@ RE_NOMBRE = re.compile(r"^[a-z0-9][a-z0-9-]{1,30}$")
 # solo ASCII y sin salto final (`$` admite un salto; `\d`, digitos de cualquier escritura): B-13
 RE_RUTA_PID = re.compile(r"^/puntos/(p[0-9]{3})(?:/([a-z]+))?\Z")
 RE_RUTA_OP = re.compile(r"^/operaciones/([0-9a-f-]{36})\Z")
-PERFILES = ("reducido", "completo")
 MAX_REDES = 64
 PREFIJO_MINIMO = 8           # una red de abonados mas ancha que /8 es un error (A-28)
 RETENCION_OBJETIVO_DIAS = 30
@@ -163,8 +162,17 @@ def _bit(d, accion, pid="", objetivo="", resultado="", extra="", quien=None, ip=
         pass
 
 
+# El alta solo pide nombre y prefijos (el user, 2026-10-15: «no preguntes»). RouterOS 7 no negocia
+# el cifrado de datos (solo manda IV_PROTO=2: lab, p001 y p002) y OpenVPN usa el respaldo del
+# servidor; con ros_version 6 ese respaldo es AES-256-CBC y conectan igual un RouterOS 6.49+
+# (cipher=aes256) y un 7 (su bloque sale con cipher=aes256-cbc). El perfil, el de por defecto.
+ROS_ALTA = 6
+PERFIL_ALTA = "reducido"
+
+
 def validar_formulario_punto(f):
-    """(params para punto.crear, mensaje de error). Igual que idspanel/app.py (F1b-min)."""
+    """(params para punto.crear, mensaje de error). Solo nombre y prefijos: RouterOS y perfil no se
+    preguntan (ROS_ALTA, PERFIL_ALTA)."""
     nombre = (f.get("nombre") or "").strip()
     if not RE_NOMBRE.match(nombre):
         return None, ("El nombre solo admite minúsculas, números y guiones, de 2 a 31 caracteres, "
@@ -172,13 +180,7 @@ def validar_formulario_punto(f):
     redes, err = validar_redes(f.get("redes") or "")
     if err:
         return None, err
-    ros = (f.get("ros_version") or "7").strip()
-    if ros not in ("6", "7"):
-        return None, "La versión de RouterOS tiene que ser 6 o 7."
-    perfil = (f.get("perfil") or "reducido").strip()
-    if perfil not in PERFILES:
-        return None, "El perfil tiene que ser reducido o completo."
-    return {"nombre": nombre, "redes_abonados": redes, "perfil": perfil, "ros_version": int(ros)}, ""
+    return {"nombre": nombre, "redes_abonados": redes, "perfil": PERFIL_ALTA, "ros_version": ROS_ALTA}, ""
 
 
 def validar_redes(texto):
@@ -774,8 +776,14 @@ def avisos_script(texto):
             % esc(" ".join(x for x in lineas if x)))
 
 
+def ros_txt(ros_version):
+    """RouterOS del punto en la ficha: con 6 (respaldo CBC) conectan los dos, 6.49+ y 7."""
+    return {"6": "RouterOS 6.49+ o 7", "7": "RouterOS 7"}.get(str(ros_version), "-")
+
+
 def comandos_html(texto, ros_version, prefijo):
-    """Bloques v7/v6 (el declarado primero) y el del certificado API-SSL, cada uno con Copiar. Las
+    """Bloques v7/v6 (el v7 primero, el v6 plegado) y el del certificado API-SSL, cada uno con Copiar.
+    Con ros_version 6 (respaldo CBC en el servidor) conectan los dos y ninguno es «el declarado». Las
     lineas «# AVISO:» salen ademas destacadas arriba."""
     partes = _orq.partir_comandos(texto)
     if "todo" in partes:
@@ -784,12 +792,12 @@ def comandos_html(texto, ros_version, prefijo):
         ros = int(ros_version)
     except (TypeError, ValueError):
         ros = 7
-    orden = ["v7", "v6"] if ros != 6 else ["v6", "v7"]
+    orden = ["v7", "v6"]
     out = avisos_script(partes.get("cabecera", ""))
     if partes.get("cabecera"):
         out += "<pre class=cmd>%s</pre>" % esc(partes["cabecera"])
     for i, k in enumerate(orden):
-        tit = "RouterOS %s" % k[1] + (" (la versión declarada de este punto)" if i == 0 else "")
+        tit = "RouterOS %s" % k[1] + (" (la versión declarada de este punto)" if i == 0 and ros != 6 else "")
         b = _bloque("%s-%s" % (prefijo, k), tit, partes.get(k, ""))
         out += b if i == 0 else ("<details><summary>Ver el bloque de RouterOS %s</summary>%s</details>"
                                  % (k[1], b))
@@ -1001,17 +1009,13 @@ def _retomar_lista_html(d):
 def form_nuevo(h, valores=None, mensaje="", codigo=200):
     d = _dash(h)
     v = valores or {}
-    ros = str(v.get("ros_version") or "7")
-    perfil = v.get("perfil") or "reducido"
     token = v.get("op") if _operaciones.RE_OPID.match(v.get("op") or "") else str(uuid.uuid4())
     cap = (((nodos.leer_estado() or {}).get("capacidad") or {}).get("caben")) or {}
-
-    def marcado(a, b):
-        return " checked" if a == b else ""
+    caben = cap.get(PERFIL_ALTA)
     cuerpo = (
         "<h1>Agregar punto</h1><p class=sub>Un punto es un MikroTik que manda una copia de su tráfico (el "
         "espejo) al sensor por una VPN propia. Al crearlo, el servidor prepara su VPN y su Suricata y te da "
-        "los comandos para pegar en el MikroTik.</p>%s%s"
+        "los comandos para pegar en el MikroTik: sirven para RouterOS 6.49 o superior y para RouterOS 7.</p>%s%s"
         "<form method=post action='/puntos/nuevo' class=card onsubmit=\"var b=this.querySelector('button');"
         "if(b){b.disabled=true;b.textContent='Creando...';}\">"
         "<input type=hidden name=op value='%s'>"
@@ -1019,18 +1023,11 @@ def form_nuevo(h, valores=None, mensaje="", codigo=200):
         "<input class=t name=nombre required maxlength=31 value='%s'>"
         "<label class=l>Prefijos de abonados que se espejan <span class=hint>(CIDR, uno por línea)</span></label>"
         "<textarea class=t name=redes rows=4 required placeholder='10.0.0.0/24'>%s</textarea>"
-        "<label class=l>Versión de RouterOS</label>"
-        "<label><input type=radio name=ros_version value=7%s> RouterOS 7</label> "
-        "<label><input type=radio name=ros_version value=6%s> RouterOS 6 (6.49 o superior)</label>"
-        "<label class=l>Perfil de reglas</label>"
-        "<label><input type=radio name=perfil value=reducido%s> Reducido (por defecto; menos memoria)</label> "
-        "<label><input type=radio name=perfil value=completo%s> Completo (casi el doble de memoria)</label>"
         "<div class=acciones><button class=btn type=submit>Crear punto</button>"
         "<a class='btn sec' href='/puntos'>Cancelar</a></div></form>"
-        % (aviso(mensaje), ("<p class=hint>Caben ahora en el servidor: %s.</p>"
-                            % esc(", ".join("%s %s" % kv for kv in cap.items()))) if cap else "",
-           esc(token), esc(v.get("nombre", "")), esc(v.get("redes", "")), marcado(ros, "7"), marcado(ros, "6"),
-           marcado(perfil, "reducido"), marcado(perfil, "completo")))
+        % (aviso(mensaje), ("<p class=hint>Caben ahora en el servidor: %d punto%s más.</p>"
+                            % (caben, "" if caben == 1 else "s")) if isinstance(caben, int) else "",
+           esc(token), esc(v.get("nombre", "")), esc(v.get("redes", ""))))
     return h._html(pagina(d, "Agregar punto", cuerpo), codigo)
 
 
@@ -2345,7 +2342,7 @@ def ficha(h, pid, mensaje="", codigo=200, ok=False, extra_espejo=""):
             ("Alertas 24 h", "<a href='/eventos?nodo=%s'>%s%s</a>" % (esc(pid), _num(n24), "+" if not completo else "")),
             ("Retención efectiva", retencion_html(retencion(pid, p), ahora)),
             ("Puerto VPN / red del túnel", esc("%s/tcp · %s" % (p.get("puerto") or "-", p.get("tun_net") or "-"))),
-            ("Perfil / RouterOS", esc("%s · v%s" % (p.get("perfil") or "-", p.get("ros_version") or "-"))),
+            ("Perfil / RouterOS", esc("%s · %s" % (p.get("perfil") or "-", ros_txt(p.get("ros_version"))))),
             ("Prefijos espejados", esc(", ".join(p.get("redes") or []) or "-")),
         ))
     # VPN: el orquestador da los comandos con <CLAVE-VPN>; el panel pone la clave que guarda cifrada

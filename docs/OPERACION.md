@@ -68,12 +68,13 @@ add name=ids-promax common-name=ids-promax \
 El script no lleva reglas de firewall ni rutas: crea la VPN (con la CA del VPS) y el usuario de la
 API. El firewall y las rutas del router los gestiona el operador (§1.5).
 
-- **El cifrado del bloque v7 sale de la versión declarada del punto.** Con el punto declarado
-  RouterOS 7, el bloque v7 lleva `cipher=aes256-gcm`. Con el punto declarado RouterOS 6, el servidor
-  solo ofrece CBC como respaldo y por eso el bloque v7 sale con `cipher=aes256-cbc` (la cabecera del
-  script avisa: «El bloque v7 solo conecta tras: ids-orq punto ajustar p003 --ros 7»). Si el router
-  es v7, lo correcto es `ids-orq punto ajustar p003 --ros 7` (o RouterOS en la ficha) y volver a
-  copiar el bloque v7, que entonces sale con GCM.
+- **El cifrado del bloque v7 sale de la versión del punto.** RouterOS 7 no negocia el cifrado de
+  datos (solo manda `IV_PROTO=2`) y OpenVPN usa el respaldo del servidor (`data-ciphers-fallback`).
+  Con `ros_version` 7 el respaldo es GCM y el bloque v7 lleva `cipher=aes256-gcm`; el v6 no conecta.
+  Con `ros_version` 6 el respaldo es CBC y el bloque v7 sale con `cipher=aes256-cbc`: conectan los dos
+  bloques, y la cabecera lo dice. **El panel crea así todos los puntos**, sin preguntar la versión.
+  Para pasar a GCM un punto cuyo MikroTik es v7: `ids-orq punto ajustar p003 --ros 7` y volver a
+  copiar el bloque v7.
 - El contenido de `/file set` es el `ca.crt` del VPS (`/srv/ids/pki/ca.crt`) con cada salto de línea
   escrito como `\n`. El panel y `ids-orq punto ovpn-client <pid>` lo dan ya puesto.
 

@@ -989,8 +989,8 @@ add name=ids-promax common-name=ids-promax \
 /user add name=ids-api group=ids-api address=100.64.3.1/32 password=<CLAVE-API>
 ```
 
-- Con `ros_version = 6`, la cabecera dice `declarado RouterOS v6` y la nota apunta a `--ros 7`; el
-  bloque v7 lleva `cipher=aes256-cbc`.
+- Con `ros_version = 6`, la cabecera dice `RouterOS 6.49+ o 7 (AES-256-CBC)` y la nota, que conectan
+  los dos bloques; el bloque v7 lleva `cipher=aes256-cbc`.
 - `connect-to` = `NOMBRE_DNS`. La API usa siempre `<CLAVE-API>`: en F1a el orquestador no guarda
   credenciales de la API.
 - Sin reglas de firewall ni rutas (fila 27 de §0.2): el firewall y las rutas del router los
