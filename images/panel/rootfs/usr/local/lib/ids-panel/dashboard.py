@@ -9232,16 +9232,19 @@ def _vuelta_refrescador(estado):
     # minuto de REGEN_MIN_SECS (es una accion del operador y es rara); volver a intentar la
     # MISMA si espera ese minuto, para no relanzar el generador cada 10 s si falla.
     ventana_pend = False
-    if pids:
-        _va = ventana_actual()
-        _vg = ventana_generada(nodos.TODOS)
-        if _vg and _vg != _va:
-            _ult_v, _ult_t = estado.get("vpend", (0, 0.0))
-            if _va != _ult_v or time.time() - _ult_t >= REGEN_MIN_SECS:
-                forzado = ventana_pend = True
-                estado["vpend"] = (_va, time.time())
+    # «Todos» se genera aunque no haya ningún punto: sin él, En vivo se quedaba para siempre en
+    # «aparecerá aquí en unos minutos» en un VPS recién instalado (el user, 2026-10-15). Con
+    # cero puntos el generador saca el resumen en ceros; y tras la baja del último punto,
+    # «Todos» se rehace y deja de enseñar sus datos.
+    _va = ventana_actual()
+    _vg = ventana_generada(nodos.TODOS)
+    if _vg and _vg != _va:
+        _ult_v, _ult_t = estado.get("vpend", (0, 0.0))
+        if _va != _ult_v or time.time() - _ult_t >= REGEN_MIN_SECS:
+            forzado = ventana_pend = True
+            estado["vpend"] = (_va, time.time())
     stale = forzado
-    for nodo in pids + ([nodos.TODOS] if pids else []):
+    for nodo in pids + [nodos.TODOS]:
         if stale:
             break
         nr = newest_report(nodo)
@@ -9259,7 +9262,7 @@ def _vuelta_refrescador(estado):
     # Sigue acotado: la misma ventana fallida no se reintenta antes de REGEN_MIN_SECS.
     if stale and not ventana_pend and ult_dur > REFRESH_SECS and (time.time() - ult_fin) < ult_dur:
         stale = False
-    if stale and pids:
+    if stale:
         if forzado:
             ult_forzado = time.time()
         try:

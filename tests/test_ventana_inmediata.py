@@ -73,6 +73,20 @@ class VentanaInmediata(unittest.TestCase):
         self.estado["vpend"] = (v, time.time() - self.d.REGEN_MIN_SECS - 1)
         self.assertEqual(self.vuelta(30), [30])
 
+    def test_sin_puntos_tambien_se_genera_todos(self):
+        """Correccion de defecto (el user, 2026-10-15): en un VPS sin puntos «Todos» no se
+        generaba nunca y En vivo decia «aparecerá aquí en unos minutos» para siempre. Sin
+        resumen previo se genera en la primera vuelta, y un cambio de ventana tambien."""
+        raiz = tempfile.mkdtemp(prefix="vacio-")
+        self.addCleanup(shutil.rmtree, raiz, True)
+        d = _dash.cargar(_dash.Arbol(raiz, puntos={}))
+        self.assertEqual(d.pids_activos(), [])
+        llamadas = []
+        d.generar_reporte = lambda nodo, vmin: llamadas.append((nodo, vmin)) or 0.1
+        d.CFG["VENTANA_MIN"] = "30"
+        d._vuelta_refrescador({k: time.time() for k in CLAVES} | {"ult_dur": 0.0, "ult_fin": 0.0})
+        self.assertEqual(llamadas, [(d.nodos.TODOS, 30)])
+
     def test_el_freno_no_retiene_la_ventana_elegida(self):
         """Correccion de defecto: tras una corrida lenta (558 s medidos en local) el freno dejaba
         la ventana elegida en «generando…» otro tanto (el user, 2026-10-13). La elegida pasa."""
