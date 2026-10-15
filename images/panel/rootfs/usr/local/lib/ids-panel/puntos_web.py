@@ -65,11 +65,11 @@ RETENCION_OBJETIVO_DIAS = 30
 ESTADOS = {"creando": "creando", "activo": "activo", "parado": "parado", "error": "con error",
            "borrando": "borrando"}
 AVISOS = {
-    "SIN-ESPEJO": "No llega el espejo del MikroTik desde hace 10 min o mas",
+    "SIN-ESPEJO": "No llega el espejo del MikroTik desde hace 10 min o más",
     "ESPEJO-NO-LLEGA": "El espejo llega a la VPN pero Suricata no ve paquetes",
     "NETNS-DISTINTO": "VPN y Suricata quedaron en redes distintas (el orquestador lo corrige)",
-    "REINICIOS": "3 o mas reinicios en la ultima hora",
-    "DISCO": "Queda poco disco libre en el servidor (< 15 %): pueden borrarse eventos antes de 30 dias",
+    "REINICIOS": "3 o más reinicios en la última hora",
+    "DISCO": "Queda poco disco libre en el servidor (< 15 %): pueden borrarse eventos antes de 30 días",
 }
 # estados de la salud por etapas (CONTRATO-F2 §10.6). Tras un alta correcta el punto NO es rojo:
 # la VPN sana esperando al MikroTik es ámbar («esperando MikroTik»), mientras se crea o arranca es
@@ -82,7 +82,7 @@ SALUD_COLOR = {"operativa": "#1a7f37", "degradada": "#e58a00", "sin datos": "#8a
                "desconectada": "#c0392b", "deshabilitada": "#6b6a66", "desconocido": "#9a9a95",
                "creando": "#8a8a86", "arrancando": "#8a8a86", "esperando": "#d4a000", "error": "#c0392b"}
 MAX_MOTIVO = 300             # paso_error: el orquestador ya lo corta a 300; aqui tambien
-ETAPAS = (("vpn", "VPN conectada"), ("tzsp", "TZSP recibido"), ("suricata", "Trafico procesado"),
+ETAPAS = (("vpn", "VPN conectada"), ("tzsp", "TZSP recibido"), ("suricata", "Tráfico procesado"),
           ("eventos", "Eventos actualizados"), ("datos", "Datos consultables"))
 ORDENES = {"punto.crear": "Crear punto", "punto.borrar": "Borrar punto",
            "punto.vpn.regenerar": "Regenerar la clave de la VPN", "punto.arrancar": "Arrancar el punto",
@@ -166,14 +166,14 @@ def validar_formulario_punto(f):
     """(params para punto.crear, mensaje de error). Igual que idspanel/app.py (F1b-min)."""
     nombre = (f.get("nombre") or "").strip()
     if not RE_NOMBRE.match(nombre):
-        return None, ("El nombre solo admite minusculas, numeros y guiones, de 2 a 31 caracteres, "
-                      "empezando por letra o numero (p. ej. norte).")
+        return None, ("El nombre solo admite minúsculas, números y guiones, de 2 a 31 caracteres, "
+                      "empezando por letra o número (p. ej. norte).")
     redes, err = validar_redes(f.get("redes") or "")
     if err:
         return None, err
     ros = (f.get("ros_version") or "7").strip()
     if ros not in ("6", "7"):
-        return None, "La version de RouterOS tiene que ser 6 o 7."
+        return None, "La versión de RouterOS tiene que ser 6 o 7."
     perfil = (f.get("perfil") or "reducido").strip()
     if perfil not in PERFILES:
         return None, "El perfil tiene que ser reducido o completo."
@@ -191,7 +191,7 @@ def validar_redes(texto):
         try:
             net = ipaddress.IPv4Network(r, strict=False)
         except ValueError:
-            return None, "«%s» no es una red IPv4 valida (ejemplo: 10.0.0.0/24)." % r[:45]
+            return None, "«%s» no es una red IPv4 válida (ejemplo: 10.0.0.0/24)." % r[:45]
         if net.prefixlen < PREFIJO_MINIMO:
             return None, ("«%s» es demasiado ancha para una red de abonados (como mucho /%d)."
                           % (str(net), PREFIJO_MINIMO))
@@ -249,7 +249,7 @@ def salud_chip(sal):
 
 def salud_etapas_html(sal):
     if not sal.get("etapas"):
-        return ("<div class=hint>Sin medicion por etapas todavia: estado <b>%s</b>.</div>"
+        return ("<div class=hint>Sin medición por etapas todavía: estado <b>%s</b>.</div>"
                 % esc(SALUD_TXT.get(sal.get("estado"), sal.get("estado"))))
     out = "<ul class=etapas>"
     for e in sal["etapas"]:
@@ -355,15 +355,15 @@ def retencion(pid, punto=None):
 def retencion_html(ret, ahora=None):
     ahora = ahora or time.time()
     if not ret.get("desde"):
-        return "<span class=hint>sin eventos todavia</span>"
+        return "<span class=hint>sin eventos todavía</span>"
     dias = max(0, int((ahora - ret["desde"]) // 86400))
-    txt = ("desde <b>%s</b> (%d dia%s)" % (time.strftime("%d/%m/%Y", time.localtime(ret["desde"])), dias,
+    txt = ("desde <b>%s</b> (%d día%s)" % (time.strftime("%d/%m/%Y", time.localtime(ret["desde"])), dias,
                                            "" if dias == 1 else "s"))
     if ret.get("anticipado"):
-        txt += (" <span class=pwarn>borrado anticipado por disco: no hay %d dias</span>"
+        txt += (" <span class=pwarn>borrado anticipado por disco: no hay %d días</span>"
                 % RETENCION_OBJETIVO_DIAS)
     elif dias < RETENCION_OBJETIVO_DIAS:
-        txt += " <span class=hint>(objetivo %d dias)</span>" % RETENCION_OBJETIVO_DIAS
+        txt += " <span class=hint>(objetivo %d días)</span>" % RETENCION_OBJETIVO_DIAS
     return txt
 
 
@@ -464,7 +464,7 @@ def _edad(seg):
         return "%d min" % (seg // 60)
     if seg < 172800:
         return "%d h" % (seg // 3600)
-    return "%d dias" % (seg // 86400)
+    return "%d días" % (seg // 86400)
 
 
 def _num(n):
@@ -631,8 +631,8 @@ _JS = ("<script>function pcopiar(id,b){var e=document.getElementById(id);if(!e)r
        "var t=e.textContent;function ok(){var o=b.textContent;b.textContent='Copiado';"
        "setTimeout(function(){b.textContent=o;},1500);}"
        "if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(t).then(ok,"
-       "function(){aviso('No se pudo copiar','Selecciona el texto y copialo a mano.');});}"
-       "else{aviso('No se pudo copiar','Selecciona el texto y copialo a mano.');}}"
+       "function(){aviso('No se pudo copiar','Selecciona el texto y cópialo a mano.');});}"
+       "else{aviso('No se pudo copiar','Selecciona el texto y cópialo a mano.');}}"
        "function pnombre(i){var f=i.form,b=f.querySelector('button[type=submit]');"
        "if(b)b.disabled=(i.value!==f.getAttribute('data-nombre'));}</script>")
 
@@ -777,7 +777,7 @@ def comandos_html(texto, ros_version, prefijo):
     if partes.get("cabecera"):
         out += "<pre class=cmd>%s</pre>" % esc(partes["cabecera"])
     for i, k in enumerate(orden):
-        tit = "RouterOS %s" % k[1] + (" (la version declarada de este punto)" if i == 0 else "")
+        tit = "RouterOS %s" % k[1] + (" (la versión declarada de este punto)" if i == 0 else "")
         b = _bloque("%s-%s" % (prefijo, k), tit, partes.get(k, ""))
         out += b if i == 0 else ("<details><summary>Ver el bloque de RouterOS %s</summary>%s</details>"
                                  % (k[1], b))
@@ -821,7 +821,7 @@ def _kpis(total, operativos, vpn, alertas):
     return ("<div class='tw-mb-4 tw-grid tw-grid-cols-[repeat(2,minmax(0,1fr))] tw-gap-3 lg:tw-grid-cols-[repeat(4,minmax(0,1fr))]'>"
             + k("Puntos", _num(total), "registrados", "tw-text-ink")
             + k("Operativos", "%s / %s" % (_num(operativos), _num(total)), "salud por etapas", sano)
-            + k("VPN conectadas", "%s / %s" % (_num(vpn), _num(total)), "tuneles activos",
+            + k("VPN conectadas", "%s / %s" % (_num(vpn), _num(total)), "túneles activos",
                 "tw-text-ok" if total and vpn == total else "tw-text-warn")
             + k("Alertas 24 h", _num(alertas), "todos los puntos", "tw-text-ink")
             + "</div>")
@@ -845,7 +845,7 @@ def lista(h, consulta):
         su = p.get("suricata") or {}
         estado = ESTADOS.get(p.get("estado"), p.get("estado") or "-")
         if p.get("deseado") == "parado" and p.get("estado") != "parado":
-            estado += " (se esta parando)"
+            estado += " (se está parando)"
         avisos = "".join("<div class=pwarn>%s</div>" % esc(AVISOS.get(a, a)) for a in (p.get("avisos") or []))
         avisos += error_html(p, ahora)       # punto en error: su motivo y desde cuando (D3)
         descarte = ""
@@ -878,7 +878,7 @@ def lista(h, consulta):
                _num(n24), "+" if not completo else "",
                retencion_html(retencion(pid, p), ahora), _acciones_fila(p)))
     if not filas:
-        filas = ("<tr><td colspan=9 class=hint style='padding:16px'>Todavia no hay puntos. "
+        filas = ("<tr><td colspan=9 class=hint style='padding:16px'>Todavía no hay puntos. "
                  "<a href='/puntos/nuevo'>Agrega el primero</a>.</td></tr>")
     cola = est.get("cola") or {}
     en = cola.get("en_curso")
@@ -895,18 +895,18 @@ def lista(h, consulta):
         viejo = aviso("No se puede leer el estado del orquestador (estado.json). Si acabas de instalar, "
                       "espera unos segundos; si sigue, revisa el servicio ids-orq en el servidor.", "amb")
     elif edad_est > 60:
-        viejo = aviso("El estado tiene %s: el orquestador no lo esta actualizando (deberia ser cada 15 s)."
+        viejo = aviso("El estado tiene %s: el orquestador no lo está actualizando (debería ser cada 15 s)."
                       % _edad(edad_est), "amb")
     cuerpo = (
         "<div class=ptit><div><h1>Puntos</h1><p class=sub>Cada punto es un MikroTik con su propia VPN y su "
-        "propio Suricata. Cola del orquestador: %s &middot; pendientes: %s &middot; caben mas puntos: %s</p></div>"
+        "propio Suricata. Cola del orquestador: %s &middot; pendientes: %s &middot; caben más puntos: %s</p></div>"
         "<a class=btn href='/puntos/nuevo'>Agregar punto</a></div>%s%s"
         "<div class='card tablewrap'><table><thead><tr><th>Punto</th><th>Estado</th><th>Salud por etapas</th>"
         "<th>VPN</th><th>Espejo</th><th>Suricata</th><th class=num>Alertas 24 h</th>"
-        "<th>Retencion efectiva</th><th>Acciones</th></tr></thead><tbody>%s</tbody></table></div>"
-        "<p class=hint>Retencion: el objetivo es %d dias de eventos por punto; la columna dice desde cuando "
-        "hay datos de verdad (si el disco se llena, se borran antes los mas viejos y aqui se ve). La "
-        "captura es reducida: los primeros 10 KB de cada conexion de los prefijos elegidos.</p>"
+        "<th>Retención efectiva</th><th>Acciones</th></tr></thead><tbody>%s</tbody></table></div>"
+        "<p class=hint>Retención: el objetivo es %d días de eventos por punto; la columna dice desde cuando "
+        "hay datos de verdad (si el disco se llena, se borran antes los más viejos y aquí se ve). La "
+        "captura es reducida: los primeros 10 KB de cada conexión de los prefijos elegidos.</p>"
         % (esc(linea_cola), esc(cola.get("pendientes", 0)), esc(caben), viejo, _kpis(len(nodos.puntos()), n_ok, n_vpn, tot_24),
            filas, RETENCION_OBJETIVO_DIAS))
     # sin <meta refresh>: recargaria la pagina con el modal de Eliminar a medio escribir. Se recarga
@@ -938,9 +938,9 @@ _MODAL_BAJA = (
     "<div id=pbajaov class=pbajaov><form method=post id=pbajaf class=pbajabox data-nombre='' "
     "onsubmit='return pbajaAjax(this)'>"
     "<h3>Eliminar el punto <span id=pbajan></span></h3>"
-    "<p>Quita del servidor su VPN, su Suricata y <b>todos sus datos</b>, y del panel sus salidas, su conexion "
+    "<p>Quita del servidor su VPN, su Suricata y <b>todos sus datos</b>, y del panel sus salidas, su conexión "
     "y sus registros. No se puede deshacer.</p>"
-    "<p class=hint>Antes, mientras el tunel sigue arriba, el panel limpia el MikroTik: saca de sus "
+    "<p class=hint>Antes, mientras el túnel sigue arriba, el panel limpia el MikroTik: saca de sus "
     "address-lists las IPs que puso en cuarentena y retira el espejo. Si el router no responde, no se elimina; "
     "si ese router ya no existe, desmarca la casilla.</p>"
     "<input type=hidden name=op id=pbajaop value=''>"
@@ -978,17 +978,17 @@ def form_nuevo(h, valores=None, mensaje="", codigo=200):
     def marcado(a, b):
         return " checked" if a == b else ""
     cuerpo = (
-        "<h1>Agregar punto</h1><p class=sub>Un punto es un MikroTik que manda una copia de su trafico (el "
+        "<h1>Agregar punto</h1><p class=sub>Un punto es un MikroTik que manda una copia de su tráfico (el "
         "espejo) al sensor por una VPN propia. Al crearlo, el servidor prepara su VPN y su Suricata y te da "
         "los comandos para pegar en el MikroTik.</p>%s%s"
         "<form method=post action='/puntos/nuevo' class=card onsubmit=\"var b=this.querySelector('button');"
         "if(b){b.disabled=true;b.textContent='Creando...';}\">"
         "<input type=hidden name=op value='%s'>"
-        "<label class=l>Nombre del punto <span class=hint>(minusculas, numeros y guiones; p. ej. norte)</span></label>"
+        "<label class=l>Nombre del punto <span class=hint>(minúsculas, números y guiones; p. ej. norte)</span></label>"
         "<input class=t name=nombre required maxlength=31 value='%s'>"
-        "<label class=l>Prefijos de abonados que se espejan <span class=hint>(CIDR, uno por linea)</span></label>"
+        "<label class=l>Prefijos de abonados que se espejan <span class=hint>(CIDR, uno por línea)</span></label>"
         "<textarea class=t name=redes rows=4 required placeholder='10.0.0.0/24'>%s</textarea>"
-        "<label class=l>Version de RouterOS</label>"
+        "<label class=l>Versión de RouterOS</label>"
         "<label><input type=radio name=ros_version value=7%s> RouterOS 7</label> "
         "<label><input type=radio name=ros_version value=6%s> RouterOS 6 (6.49 o superior)</label>"
         "<label class=l>Perfil de reglas</label>"
@@ -1020,8 +1020,8 @@ def crear(h, form):
                               ros_version=params["ros_version"])
     if previa is not None:
         if previa.get("usuario") != usuario or previa.get("orden") != "punto.crear":
-            return h._html(pagina(d, "Operacion duplicada", aviso("Ese formulario ya se uso para otra "
-                                                                   "operacion. Recarga la pagina.")), 409)
+            return h._html(pagina(d, "Operación duplicada", aviso("Ese formulario ya se uso para otra "
+                                                                   "operación. Recarga la página.")), 409)
         _bit(d, "PUNTO-CREAR", objetivo=previa.get("nombre") or "", resultado="REPETIDA",
              extra="op=%s" % op_id)
         return h._redirect("/operaciones/%s" % op_id)
@@ -1131,16 +1131,16 @@ def _repetida(h, pid, accion, est, ajax=False):
                                    409, False, ""), ajax)
     if est[0] == "en_curso":
         _bit(d, "PUNTO-" + accion.upper(), pid=pid, resultado="REPETIDA-EN-CURSO")
-        return _responder(h, pid, ("Esa orden ya se esta haciendo (doble clic o reintento): espera unos "
+        return _responder(h, pid, ("Esa orden ya se está haciendo (doble clic o reintento): espera unos "
                                    "segundos y recarga la ficha.", 409, False, ""), ajax)
     _bit(d, "PUNTO-" + accion.upper(), pid=pid, resultado="REPETIDA")
     if isinstance(est[1], str):
         # ese formulario lanzo un trabajo del panel (por fetch): su resultado esta en el trabajo
         return _responder(h, pid, ("Esa orden ya se lanzó desde la ficha: su resultado se vio allí. "
-                                   "(Ese formulario ya se habia enviado: no se repitio la orden.)", 409, False, ""), ajax)
+                                   "(Ese formulario ya se había enviado: no se repitió la orden.)", 409, False, ""), ajax)
     mensaje, codigo, ok, extra = est[1]
     return _responder(h, pid, (((mensaje + " ") if mensaje else "")
-                               + "(Ese formulario ya se habia enviado: no se repitio la orden.)", codigo, ok, extra),
+                               + "(Ese formulario ya se había enviado: no se repitió la orden.)", codigo, ok, extra),
                       ajax)
 
 
@@ -1283,9 +1283,9 @@ def vista_op(d, op_id, usuario):
         vm.update({"terminada": False, "error_canal": _orq.traducir(r.get("codigo"), r.get("mensaje"))})
         return vm
     if r.get("codigo") == "NO_EXISTE":
-        ops().terminar(op_id, codigo="FALLO", mensaje="el orquestador no conoce esta operacion")
+        ops().terminar(op_id, codigo="FALLO", mensaje="el orquestador no conoce esta operación")
         vm.update({"terminada": True, "ok": False,
-                   "mensaje": "El orquestador no conoce esta operacion (¿se reinicio el servidor?). "
+                   "mensaje": "El orquestador no conoce esta operación (¿se reinició el servidor?). "
                               "Mira el estado en Puntos antes de repetirla."})
         return vm
     dd = r.get("datos") or {}
@@ -1358,7 +1358,7 @@ def _avance_html(vm):
     """El avance de una operacion aun abierta (la primera pintura; luego lo cambia el JS)."""
     out = aviso(vm.get("error_canal"), "amb")
     if vm.get("delante"):
-        out += "<p class=pjest>En cola: %s operacion(es) delante.</p>" % esc(vm.get("delante"))
+        out += "<p class=pjest>En cola: %s operación(es) delante.</p>" % esc(vm.get("delante"))
     else:
         out += "<p class=pjest>%s</p>" % esc(("Paso actual: %s (%s)" % (vm.get("paso"), vm.get("avance")))
                                              if vm.get("paso") else "Esperando al orquestador...")
@@ -1375,9 +1375,9 @@ def pagina_op(h, op_id):
     barrer_bajas(d)
     vm = vista_op(d, op_id, _usuario(d))
     if vm is None:
-        return _html_privado(h, pagina(d, "Operacion", "<h1>Operacion desconocida</h1><p>Esa operacion no "
+        return _html_privado(h, pagina(d, "Operación", "<h1>Operación desconocida</h1><p>Esa operación no "
                                        "existe o no la pediste tu.</p>"), 404)
-    tit = "<h1>%s%s</h1>" % (esc(ORDENES.get(vm.get("orden"), vm.get("orden") or "Operacion")),
+    tit = "<h1>%s%s</h1>" % (esc(ORDENES.get(vm.get("orden"), vm.get("orden") or "Operación")),
                              (" &middot; " + esc(vm.get("titulo"))) if vm.get("titulo") else "")
     if not vm.get("terminada"):
         # sin <meta refresh>: antes la pagina entera se recargaba cada 2 s (saltaba y parpadeaba).
@@ -1387,9 +1387,9 @@ def pagina_op(h, op_id):
                   "<p class=hint>Esta página sigue el avance sola, sin recargarse.</p></div>"
                   "<script>document.addEventListener('DOMContentLoaded',function(){popSeguir('%s');});</script>"
                   % esc(op_id))
-        return _html_privado(h, pagina(d, "Operacion", cuerpo))
+        return _html_privado(h, pagina(d, "Operación", cuerpo))
     _anotar_op(op_id, vista=True)
-    return _html_privado(h, pagina(d, "Operacion", tit + "<div id=opcuerpo>" + _cuerpo_fin(d, vm) + "</div>"))
+    return _html_privado(h, pagina(d, "Operación", tit + "<div id=opcuerpo>" + _cuerpo_fin(d, vm) + "</div>"))
 
 
 def _cuerpo_fin(d, vm):
@@ -1430,7 +1430,7 @@ def _cuerpo_fin(d, vm):
     r = vm.get("resultado") or {}
     if r.get("clave"):
         cuerpo += aviso("Listo. Copia ahora la clave: el panel NO la vuelve a mostrar. Si la pierdes, "
-                        "regenerala desde la ficha del punto.", "amb")
+                        "regenérala desde la ficha del punto.", "amb")
         cuerpo += ("<div class='card cred'><div><span class=hint>Usuario de la VPN</span><br>"
                    "<code id=cred-usuario>%s</code> <button type=button class='btn sec' "
                    "onclick=\"pcopiar('cred-usuario',this)\">Copiar</button></div>"
@@ -1450,11 +1450,11 @@ def _cuerpo_fin(d, vm):
                                "ids-vpn)." if renovado else ""), "amb" if renovado else "info")
         cuerpo += ("<h2>Comandos para el MikroTik</h2><p class=hint>Ya llevan la clave de la VPN. "
                    "<code>&lt;CLAVE-API&gt;</code> es la clave que elijas para el usuario de la API del router; "
-                   "despues ponla en la ficha del punto (API).</p>")
+                   "después ponla en la ficha del punto (API).</p>")
         cuerpo += comandos_html(r.get("comandos", ""), vm.get("ros_version"), "op")
     elif vm.get("orden") == "punto.crear" and (r.get("ya_entregada") or vm.get("ya_existia")):
-        cuerpo += aviso("Ese punto ya existia con los mismos datos. La clave de la VPN ya se entrego; si no "
-                        "la tienes, regenerala desde la ficha del punto.", "amb")
+        cuerpo += aviso("Ese punto ya existía con los mismos datos. La clave de la VPN ya se entregó; si no "
+                        "la tienes, regenérala desde la ficha del punto.", "amb")
     elif vm.get("orden") == "punto.ajustar":
         cuerpo += aviso("Prefijos cambiados en el Suricata del punto. Falta llevarlos al MikroTik: vuelve a "
                         "aplicar el espejo (address-list ids-vigilados) desde la ficha, con su vista previa.", "info")
@@ -1741,7 +1741,7 @@ def ajuste_pendiente(d, pid, usuario="?", ip=""):
             continue
         r = cliente().pedir("op.estado", {"op_id": op_id}, quien="panel:%s" % usuario, ip=ip)
         if r.get("codigo") == "NO_EXISTE":
-            ops().terminar(op_id, codigo="FALLO", mensaje="el orquestador no conoce esta operacion")
+            ops().terminar(op_id, codigo="FALLO", mensaje="el orquestador no conoce esta operación")
             continue
         dd = (r.get("datos") or {}) if r.get("codigo") == "OK" else {}
         if dd.get("estado") == "terminada":
@@ -1819,7 +1819,7 @@ def _confirmar_baja(d, op_id, rec):
     """Pregunta al orquestador por una baja aun abierta. True si termino bien."""
     r = cliente().pedir("op.estado", {"op_id": op_id}, quien="panel:barrido-bajas", ip=_ip(d))
     if r.get("codigo") == "NO_EXISTE":
-        ops().terminar(op_id, codigo="FALLO", mensaje="el orquestador no conoce esta operacion")
+        ops().terminar(op_id, codigo="FALLO", mensaje="el orquestador no conoce esta operación")
         return False
     dd = (r.get("datos") or {}) if r.get("codigo") == "OK" else {}
     if dd.get("estado") != "terminada":
@@ -1923,7 +1923,7 @@ def _barrer(d, ahora):
         elif not fresco:
             continue
         elif pid in pedidas:
-            motivo = "baja pedida desde el panel; el punto ya no esta en estado.json"
+            motivo = "baja pedida desde el panel; el punto ya no está en estado.json"
         else:
             prev = _AUSENTES.get(pid)
             if prev is None:
@@ -2120,12 +2120,12 @@ def ficha(h, pid, mensaje="", codigo=200, ok=False, extra_espejo=""):
             ("Salud", salud_chip(sal)),
             ("VPN", pill_vpn(p) + " " + esc(_contenedor(cont.get("vpn"))) + " &middot; MikroTik " + mk_txt),
             ("Espejo", ("%.0f paq/s" % pps if pps is not None else "sin medida")
-             + (" &middot; ultimo hace %s" % _edad(ahora - ultimo) if ultimo else "")),
+             + (" &middot; último hace %s" % _edad(ahora - ultimo) if ultimo else "")),
             ("Suricata", esc(_contenedor(cont.get("suricata"))) + " &middot; %s / %s paquetes vistos/descartados"
              % (_num(su.get("kernel_packets")), _num(su.get("kernel_drops")))),
             ("Alertas 24 h", "<a href='/eventos?nodo=%s'>%s%s</a>" % (esc(pid), _num(n24), "+" if not completo else "")),
-            ("Retencion efectiva", retencion_html(retencion(pid, p), ahora)),
-            ("Puerto VPN / red del tunel", esc("%s/tcp · %s" % (p.get("puerto") or "-", p.get("tun_net") or "-"))),
+            ("Retención efectiva", retencion_html(retencion(pid, p), ahora)),
+            ("Puerto VPN / red del túnel", esc("%s/tcp · %s" % (p.get("puerto") or "-", p.get("tun_net") or "-"))),
             ("Perfil / RouterOS", esc("%s · v%s" % (p.get("perfil") or "-", p.get("ros_version") or "-"))),
             ("Prefijos espejados", esc(", ".join(p.get("redes") or []) or "-")),
         ))
@@ -2153,18 +2153,18 @@ def ficha(h, pid, mensaje="", codigo=200, ok=False, extra_espejo=""):
         "(cuarentena)</label>"
         "<div class=acciones><button class=btn type=submit>Guardar</button>"
         "<button class='btn sec' type=submit name=accion value=probar onclick='return papiProbar(this)'>"
-        "Probar la conexion</button></div></form>"
-        "<p class=hint>La conexion va por el relé del tunel del punto (API-SSL, puerto %s del router) con TLS "
+        "Probar la conexión</button></div></form>"
+        "<p class=hint>La conexión va por el relé del túnel del punto (API-SSL, puerto %s del router) con TLS "
         "extremo a extremo. La clave se guarda cifrada con la clave maestra y no se vuelve a mostrar; solo "
         "se manda al router cuya huella confirmaste.</p>%s"
         % (esc(pid), campo_token(), esc(rt.get("USER", "")), "(guardada)" if rt.get("PASS") else "",
-           "dejar vacio para conservar" if rt.get("PASS") else "clave del usuario ids-api",
+           "dejar vacío para conservar" if rt.get("PASS") else "clave del usuario ids-api",
            " checked" if rt.get("ENABLED") == "1" else "", esc(p.get("api_puerto") or 8729),
            caja_huella))
     # Espejo
     espejo_html = (
-        "<p class=sub>Copia hacia el sensor del trafico de los prefijos elegidos (primeros 10 KB de cada "
-        "conexion), por el tunel. Nunca anade reglas <code>accept</code>: no autoriza nada que tu firewall "
+        "<p class=sub>Copia hacia el sensor del tráfico de los prefijos elegidos (primeros 10 KB de cada "
+        "conexión), por el túnel. Nunca añade reglas <code>accept</code>: no autoriza nada que tu firewall "
         "rechazaba. Siempre con vista previa y respaldo (export en el router y copia en el panel).</p>"
         + extra_espejo +
         "<div class=acciones>"
@@ -2188,7 +2188,7 @@ def ficha(h, pid, mensaje="", codigo=200, ok=False, extra_espejo=""):
     # al terminar sale un modal con «Llevarlos al MikroTik» (la vista previa del espejo)
     pref_html = (
         "<form method=post action='/puntos/%s/ajustar'>%s"
-        "<label class=l>Prefijos de abonados (uno por linea)</label>"
+        "<label class=l>Prefijos de abonados (uno por línea)</label>"
         "<textarea class=t name=redes rows=4>%s</textarea>"
         "<div class=acciones><button class=btn type=submit onclick=\"if(ask(this,'Cambiar los prefijos',"
         "'El Suricata del punto toma los prefijos nuevos: el avance se ve aquí, sin recargar. Después se "
@@ -2218,8 +2218,8 @@ def ficha(h, pid, mensaje="", codigo=200, ok=False, extra_espejo=""):
     baja = (
         "<div class=card style='border-color:#f3c4c4'><h2>Dar de baja el punto</h2>"
         "<p>Quita del servidor su VPN, su Suricata y <b>todos sus datos</b>, y del panel sus salidas, su "
-        "conexion y sus registros. No se puede deshacer.</p>"
-        "<p class=hint>Antes, mientras el tunel sigue arriba, el panel limpia el MikroTik: retira el espejo "
+        "conexión y sus registros. No se puede deshacer.</p>"
+        "<p class=hint>Antes, mientras el túnel sigue arriba, el panel limpia el MikroTik: retira el espejo "
         "(devuelve el fasttrack como estaba) y saca de sus address-lists las IPs que puso en cuarentena y los "
         "destinos bloqueados. Si el router no responde, la baja <b>no sigue</b> y te dice que falta; si ese "
         "router ya no existe, desmarca la casilla.</p>"
@@ -2240,13 +2240,13 @@ def ficha(h, pid, mensaje="", codigo=200, ok=False, extra_espejo=""):
         "<h3 style='font-size:14px'>Salud por etapas</h3>%s</section>"
         "<section class=card><h2>Servicio</h2><div class=acciones>%s</div>%s</section>"
         "<section class=card id=vpn><h2>VPN: comandos para el MikroTik</h2><p class=hint>Sin la clave: donde dice "
-        "<code>&lt;CLAVE-VPN&gt;</code> va la que se mostro al crear el punto.</p>%s</section>"
+        "<code>&lt;CLAVE-VPN&gt;</code> va la que se mostró al crear el punto.</p>%s</section>"
         "<section class=card id=api><h2>API del MikroTik</h2>%s</section>"
         "<section class=card id=espejo><h2>Espejo</h2>%s</section>"
         "<section class=card id=prefijos><h2>Prefijos del espejo</h2>%s</section>"
         "<div id=baja>%s</div>%s"
         % (esc(nombre), esc(pid), aviso(mensaje, "ok" if ok else "err"), caja_error,
-           "" if p else aviso("El punto aun no aparece en el estado del orquestador (se actualiza cada 15 s).", "info"),
+           "" if p else aviso("El punto aún no aparece en el estado del orquestador (se actualiza cada 15 s).", "info"),
            esc(pid), datos, salud_etapas_html(sal), serv, desbanear_html(p, pid), vpn_html, api_html, espejo_html,
            pref_html, baja,
            _retomar_html(d, pid)))
@@ -2402,16 +2402,16 @@ def accion_api(h, pid, form, ajax=False):
     d = _dash(h)
     acc = form.get("accion") or "guardar"
     if acc not in ("guardar", "probar", "olvidar_huella", "confirmar_huella"):
-        return _responder(h, pid, ("Accion de la API desconocida.", 400, False, ""), ajax)
+        return _responder(h, pid, ("Acción de la API desconocida.", 400, False, ""), ajax)
     user = (form.get("user") or "").strip()[:64]
     huella = (form.get("huella") or "").strip().lower()
 
     def validar():
         if not any(x.get("id") == pid for x in d.cargar_routers()):
-            return ("Ese punto todavia no tiene router en el panel (espera a que aparezca en el "
+            return ("Ese punto todavía no tiene router en el panel (espera a que aparezca en el "
                     "estado del orquestador).", 409, False, "")
         if acc in ("guardar", "probar") and user and not re.match(r"^[A-Za-z0-9._@-]+\Z", user):
-            return "El usuario de la API tiene caracteres no validos.", 400, False, ""
+            return "El usuario de la API tiene caracteres no válidos.", 400, False, ""
         if acc == "confirmar_huella" and not RE_HUELLA_API.fullmatch(huella):
             return "Falta la huella que comparaste (64 caracteres hexadecimales).", 400, False, ""
         return None
@@ -2422,7 +2422,7 @@ def accion_api(h, pid, form, ajax=False):
         rs = d.cargar_routers()
         r = next((x for x in rs if x.get("id") == pid), None)
         if r is None:
-            return ("Ese punto todavia no tiene router en el panel (espera a que aparezca en el "
+            return ("Ese punto todavía no tiene router en el panel (espera a que aparezca en el "
                     "estado del orquestador).", 409, False, "")
         if acc == "olvidar_huella":
             r.update({"CERT_FP": "", "CERT_FP_QUIEN": "", "CERT_FP_CUANDO": ""})
@@ -2441,7 +2441,7 @@ def accion_api(h, pid, form, ajax=False):
         if acc != "probar":
             _bit(d, "PUNTO-API", pid=pid, objetivo="conexion", resultado="guardada",
                  extra="usuario=%s enviar=%s" % (user or "-", r["ENABLED"]))
-            return "Conexion de la API guardada.", 200, True, ""
+            return "Conexión de la API guardada.", 200, True, ""
         ok, msg = probar_api(d, pid)
         _bit(d, "PUNTO-API", pid=pid, objetivo="probar", resultado="ok" if ok else "fallo")
         return "Prueba: " + msg, 200 if ok else 502, ok, ""
@@ -2592,9 +2592,9 @@ def probar_api(d, pid):
             for a in f:
                 if a.startswith("=name="):
                     nombre = a[len("=name="):]
-        return (True, "conexion OK con '%s'." % (nombre or pid)) if ok else (False, err or "sin respuesta")
+        return (True, "conexión OK con '%s'." % (nombre or pid)) if ok else (False, err or "sin respuesta")
     except Exception as e:
-        return False, "no conecto: %s" % str(e)[:200]
+        return False, "no conectó: %s" % str(e)[:200]
 
 
 def _plan_html(pe, pid, con_boton=False, titulo=""):
@@ -2616,7 +2616,7 @@ def _plan_html(pe, pid, con_boton=False, titulo=""):
     if pe["lineas"]:
         out += "<pre class=cmd id=plan-%s>%s</pre>" % (esc(pid), esc("\n".join(pe["lineas"])))
     elif pe["ok"] and not pe["bloqueos"]:
-        out += aviso("El plan no tiene ordenes: el espejo del router ya esta como pide el punto.", "info")
+        out += aviso("El plan no tiene órdenes: el espejo del router ya está como pide el punto.", "info")
     if con_boton and pe["ok"] and pe["lineas"] and not pe["bloqueos"] and not pe["accept"]:
         # la huella de ESTE plan va en el formulario: el nucleo solo aplica el plan de esa huella
         # (A-01, A-21). Por fetch: se aplica en segundo plano y el resultado sale en el modal.
@@ -2638,7 +2638,7 @@ def _resultado_html(res, pid):
         out += "<pre class=cmd id=resultado-%s>%s</pre>" % (esc(pid), esc("\n".join(lineas)))
     nuevo = res.get("plan") if isinstance(res, dict) else None
     if isinstance(nuevo, dict):
-        out += _plan_html(plan_espejo(nuevo), pid, titulo="El router cambio: este seria el plan ahora "
+        out += _plan_html(plan_espejo(nuevo), pid, titulo="El router cambió: este sería el plan ahora "
                                                           "(pide otra vez la vista previa para aplicarlo)")
     return out
 
@@ -2647,7 +2647,7 @@ def _huella_plan(lineas):
     return hashlib.sha256("\n".join(lineas).encode("utf-8")).hexdigest()[:32]
 
 
-MSG_ACCEPT = ("El plan incluye una regla accept y el espejo nunca puede autorizar trafico: no se aplica. "
+MSG_ACCEPT = ("El plan incluye una regla accept y el espejo nunca puede autorizar tráfico: no se aplica. "
               "Avisa al soporte.")
 
 
@@ -2689,15 +2689,15 @@ def _plan_no_aplicable(d, pid, pe, huella, quien, ip):
                 _plan_html(pe, pid))
     if pe["bloqueos"]:
         _bit(d, "ESPEJO-APLICAR", pid=pid, resultado="bloqueado", quien=quien, ip=ip)
-        return ("El plan tiene bloqueos: no se aplica. Resuelvelos en el router y vuelve a pedir la vista "
+        return ("El plan tiene bloqueos: no se aplica. Resuélvelos en el router y vuelve a pedir la vista "
                 "previa.", 409, False, _plan_html(pe, pid))
     if not pe["lineas"]:
         _bit(d, "ESPEJO-APLICAR", pid=pid, resultado="plan-vacio", quien=quien, ip=ip)
-        return "No hay nada que aplicar: el espejo del router ya esta como pide el plan.", 409, False, \
+        return "No hay nada que aplicar: el espejo del router ya está como pide el plan.", 409, False, \
             _plan_html(pe, pid)
     if huella != pe["huella"]:
         _bit(d, "ESPEJO-APLICAR", pid=pid, resultado="plan-cambiado", quien=quien, ip=ip)
-        return ("El plan cambio desde la vista previa (el router o los prefijos se movieron). Revisa el "
+        return ("El plan cambió desde la vista previa (el router o los prefijos se movieron). Revisa el "
                 "plan nuevo antes de aplicarlo.", 409, False, _plan_html(pe, pid, con_boton=True))
     return None
 
@@ -2811,9 +2811,9 @@ def accion_espejo(h, pid, form, ajax=False):
             return h._json({"error": msg, "titulo": "No se puede", "token": str(uuid.uuid4())}, codigo)
         return ficha(h, pid, msg, codigo)
     if acc not in _NOMBRES_ESPEJO:
-        return responder("Accion de espejo desconocida.", 400)
+        return responder("Acción de espejo desconocida.", 400)
     if getattr(d, _NOMBRES_ESPEJO[acc], None) is None or getattr(d, "espejo_plan", None) is None:
-        return responder("El montaje del espejo no esta disponible en este panel.", 501)
+        return responder("El montaje del espejo no está disponible en este panel.", 501)
     usuario, ip = _usuario(d), _ip(d)
     huella = (form.get("plan") or "").strip()
     if acc == "aplicar":
@@ -2931,8 +2931,8 @@ def get(h, ruta, consulta):
         return True
     pid = m.group(1)
     if not nodos.existe(pid):
-        h._html(pagina(_dash(h), "Punto inexistente", "<h1>Punto inexistente</h1><p>No hay ningun punto %s "
-                       "(quiza se dio de baja).</p>" % esc(pid)), 404)
+        h._html(pagina(_dash(h), "Punto inexistente", "<h1>Punto inexistente</h1><p>No hay ningún punto %s "
+                       "(quizá se dio de baja).</p>" % esc(pid)), 404)
         return True
     if m.group(2) == "logs":
         logs(h, pid, consulta)
@@ -2992,11 +2992,11 @@ def post(h, ruta, form):
             res = limpiar(pid, usuario=_usuario(d), op=tok)
             if not res.get("ok"):
                 _bit(d, "PUNTO-BORRAR", pid=pid, resultado="router-sin-limpiar")
-                ficha(h, pid, "No se dio de baja: %s.%s Arregla la conexion con el router y vuelve a intentarlo; "
+                ficha(h, pid, "No se dio de baja: %s.%s Arregla la conexión con el router y vuelve a intentarlo; "
                               "si ese router ya no existe, desmarca \"Limpiar antes el MikroTik\" (lo que el "
-                              "panel le puso tendras que quitarlo a mano)." % (
+                              "panel le puso tendrás que quitarlo a mano)." % (
                                   res.get("mensaje", "fallo"),
-                                  " OJO: el router ya se toco (se quitaron IPs de sus listas)." if res.get("tocado")
+                                  " OJO: el router ya se tocó (se quitaron IPs de sus listas)." if res.get("tocado")
                                   else ""), 409)
                 return True
             nota = ("El router YA se limpio (%s): el punto sigue activo pero sin espejo; vuelve a montar el espejo "

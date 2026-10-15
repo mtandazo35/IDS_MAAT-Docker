@@ -315,7 +315,7 @@ class EvidenciaRecienteHTTP(EvidenciaReciente):
         st, _c, txt = self.p.pedir("POST", "/cuarentena/enviar?nodo=p001", {"ip": K1, "score": "9"}, "olga")
         self.assertEqual(st, 200)
         self.assertIn("es vieja", txt)
-        self.assertIn("ultima alerta hace", txt)
+        self.assertIn("última alerta hace", txt)
         self.assertIn("name=confirmar_vieja value=1", txt)
         self.assertEqual(self.p.lista("p001", "clientes-botnet"), [])
         st, _c, _t = self.p.pedir("POST", "/cuarentena/enviar?nodo=p001",

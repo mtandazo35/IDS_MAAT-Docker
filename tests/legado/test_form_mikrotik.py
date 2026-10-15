@@ -118,7 +118,7 @@ def main():
     # (adaptada, CONTRATO-F2 §3) el aviso se deduplica por `pid|ip`: notificar_cuarentena
     # recibe la clave del CPE, no la IP pelada; lo que se protege (la lista) es lo mismo
     check("el aviso de Telegram nombra la lista a la que FUE, no la heredada",
-          'notificar_cuarentena(clave, "Infeccion CnC", _lst' in env
+          'notificar_cuarentena(clave, "Infección CnC", _lst' in env
           and '"Infeccion CnC", m.get("LIST"' not in env, "")
 
     # --- un nombre con comillas no rompe el HTML -----------------------------------------

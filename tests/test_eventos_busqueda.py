@@ -351,7 +351,7 @@ class PorPagina(Paginacion):
             self.comprobar(filas, esperado)
             self.assertEqual([len(x["filas"]) for x in resps], [100, 100, 60])
             pag = self.ev.pagina(self.q(por="todos"), self.n.TODOS)
-            self.assertIn("muestra hasta 100 por pagina", pag)
+            self.assertIn("muestra hasta 100 por página", pag)
 
     def test_por_defecto_10(self):
         """El user (2026-10-13): por defecto la pagina trae 10 eventos."""
@@ -397,7 +397,7 @@ class Incompletos(Base):
         self.assertGreaterEqual(r["incompletas"], 3)
         pag = self.ev.pagina(self.q(), "p001")
         self.assertEqual(filas_html(pag), ["p001", "p001"])
-        self.assertIn("incompletas o con JSON no valido saltadas", pag)
+        self.assertIn("incompletas o con JSON no válido saltadas", pag)
 
 
 class Topes(Base):
@@ -436,7 +436,7 @@ class Topes(Base):
             self.assertTrue(all(x["ts_us"] > r["hasta_us"] for x in r["filas"]))
             pag = self.ev.pagina(self.q(), "p001")
             self.assertIn("<b>parcial</b>", pag)
-            self.assertIn("Continuar la busqueda", pag)
+            self.assertIn("Continuar la búsqueda", pag)
             self.assertNotIn("Sin coincidencias", pag)
             filas, resps = self.todas_las_paginas("p001", maximo=500)
         claves = [c for c, _ in filas]
@@ -470,9 +470,9 @@ class Topes(Base):
             r = self.buscar("p001")
             pag = self.ev.pagina(self.q(), "p001")
         self.assertTrue(r["parcial"])
-        self.assertIn("s de busqueda", r["motivo"])
+        self.assertIn("s de búsqueda", r["motivo"])
         self.assertNotIn("Sin coincidencias", pag)
-        self.assertIn("No hay coincidencias en lo que se llego a revisar", pag)
+        self.assertIn("No hay coincidencias en lo que se llegó a revisar", pag)
 
 
 class Escapado(Base):

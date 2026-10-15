@@ -50,11 +50,11 @@ class Ficha(unittest.TestCase):
         f = self.ficha()
         self.assertLess(f.index("class='fdec vig'"), f.index("<table class=ficha>"))
         self.assertIn("<div class=fkl>Alertas</div><div class=fkv>5</div>", f)
-        self.assertIn("<div class=fkl>Ultima alerta</div>", f)
-        self.assertIn("<th>Reputacion del destino</th>", f)
+        self.assertIn("<div class=fkl>Última alerta</div>", f)
+        self.assertIn("<th>Reputación del destino</th>", f)
         self.assertNotIn("<th>Coincidencia</th>", f)
         self.assertNotIn("<th>Vigencia</th>", f)
-        self.assertNotIn("<th>Decision</th>", f)
+        self.assertNotIn("<th>Decisión</th>", f)
 
     def test_sin_rev_no_sale_guion_y_veces_centrado(self):
         """Correccion de defecto: sin revision no sale «rev -»; «Veces» centrado bajo su titulo."""
@@ -77,7 +77,7 @@ class Tabla(unittest.TestCase):
         el modal se ajusta al alto de la ficha."""
         h = self.p.pedir("GET", "/cuarentena?nodo=_todos", cookie=self.ana).texto
         self.assertIn("<th>CPE (IP origen)</th><th>Router</th><th class='cen'>Riesgo / confianza</th>", h)
-        self.assertIn("<th class='cen'>Accion</th>", h)
+        self.assertIn("<th class='cen'>Acción</th>", h)
         routers = re.findall(r"<td data-label='Router'><span class=rnom>([^<]+)</span>", h)
         self.assertEqual(sorted(routers), ["norte", "sur"])
         # guardado: el iframe vacio dispara onload antes de que exista fichaAlto (error JS)

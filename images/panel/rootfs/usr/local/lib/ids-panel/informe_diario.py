@@ -75,14 +75,14 @@ REGLAS = [
       "trojan", "ransom", " rat ", "coinmin", "cryptomin", "compromised"),
      1, "equipo infectado hablando con su centro de mando", "aislar/cuarentena y avisar al cliente"),
     (("ssh scan", "brute", "password"),
-     2, "atacando contrasenas (SSH/servicios) hacia afuera", "bloquear salida y revisar el equipo"),
+     2, "atacando contraseñas (SSH/servicios) hacia afuera", "bloquear salida y revisar el equipo"),
     (("scan", "recon", "sweep", "escanea", "barrido", "portscan"),
-     2, "escaneando puertos hacia internet (tipico de infeccion)", "revisar el equipo, muy probable infeccion"),
+     2, "escaneando puertos hacia internet (típico de infección)", "revisar el equipo, muy probable infección"),
     (("exploit", "attack", "cve-", "shellcode", "attempted-admin"),
      2, "intentando explotar/atacar hacia afuera", "revisar el equipo"),
     (("malware", "dns query", "tld", "dyn_dns", "dynamic_dns", "duckdns", "dyndns", "no-ip",
       "suspicious", "likely hostile", "adware", "pup", "observed dns"),
-     3, "consultas a dominios sospechosos (dyndns/.cc/.su/.top/reputacion malware)", "vigilar; comun en equipos comprometidos"),
+     3, "consultas a dominios sospechosos (dyndns/.cc/.su/.top/reputación malware)", "vigilar; común en equipos comprometidos"),
 ]
 
 def clasifica(sig):
@@ -195,9 +195,9 @@ def analizar(pid, excl, cutoff, umbral):
     for ip in list(by_src_nivel):
         if by_src_nivel[ip] == 1 and not (n1_hits[ip] >= umbral or len(n1_sids[ip]) >= 2):
             by_src_nivel[ip] = 2
-            by_src_expl[ip] = (f"posible infeccion SIN confirmar: solo {n1_hits[ip]} alerta(s) de "
+            by_src_expl[ip] = (f"posible infección SIN confirmar: solo {n1_hits[ip]} alerta(s) de "
                                f"CnC aislada(s) (se piden {umbral} o 2 firmas distintas)")
-            by_src_accion[ip] = "confirmar primero: ver si se repite o hay mas indicadores antes de aislar"
+            by_src_accion[ip] = "confirmar primero: ver si se repite o hay más indicadores antes de aislar"
     grupos = defaultdict(list)
     for ip in by_src_total:
         grupos[by_src_nivel[ip]].append(ip)
@@ -211,7 +211,7 @@ def seccion(pid, r):
     L.append(f"== Nodo {nodos.nombre(pid)} ({pid}) ==")
     L.append(f"Infectados: {n1}   Atacando: {n2}   Sospechosos: {n3}   (alertas graves: {r['total']})")
     if not r["total"]:
-        L.append("Sin alertas graves. Revisa que este llegando trafico del espejo.")
+        L.append("Sin alertas graves. Revisa que esté llegando tráfico del espejo.")
     for nivel in (1, 2, 3):
         ips = grupos.get(nivel, [])
         if not ips:
@@ -224,7 +224,7 @@ def seccion(pid, r):
             L.append(f"  {ip:16s}  {r['expl'][ip]}")
             L.append(f"  {'':16s}  -> {r['accion'][ip]}  ({veces} alertas)")
         if len(ips) > 15:
-            L.append(f"  ... y {len(ips)-15} equipos mas en este grupo")
+            L.append(f"  ... y {len(ips)-15} equipos más en este grupo")
     return "\n".join(L)
 
 def guardar(pid, texto, ahora):

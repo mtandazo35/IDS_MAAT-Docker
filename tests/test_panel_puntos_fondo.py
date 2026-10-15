@@ -267,7 +267,7 @@ class EspejoReal(_Base):
         huella = re.search(r"name=plan value='([0-9a-f]{32})'", f["html"]).group(1)
         r = self.p.pedir("POST", "/puntos/p001/espejo", {"accion": "aplicar", "plan": "cd" * 16}, cookie=self.ana)
         self.assertEqual(r.status, 409)
-        self.assertIn("El plan cambio desde la vista previa", r.texto)
+        self.assertIn("El plan cambió desde la vista previa", r.texto)
         self.assertIn("name=plan value='%s'" % huella, r.texto)
         self.assertEqual(self.lecturas, 2)
 
@@ -388,7 +388,7 @@ class Ficha(_Base):
         r, j, _dt = self.ajax("/puntos/p001/api", {"accion": "probar", "user": "ids-api", "pass": "clave-api", "op": tok})
         self.assertEqual(r.status, 502)
         self.assertFalse(j["ok"])
-        self.assertIn("no conecto", j["mensaje"])
+        self.assertIn("no conectó", j["mensaje"])
         self.assertRegex(j["token"], RE_UUID)
 
 
@@ -479,7 +479,7 @@ class Publicas(_Base):
         nueva). Ahora JSON sin recargar y las dos revisiones, solo de la nueva."""
         d = self.p.d
         real_valida = d.aidb_ip_valida
-        d.aidb_ip_valida = lambda ip: (ip.startswith("198.51.100."), "no es una IP publica")  # RFC 5737
+        d.aidb_ip_valida = lambda ip: (ip.startswith("198.51.100."), "no es una IP pública")  # RFC 5737
         d.guardar_publicas_de("p001", "198.51.100.1", origen_nuevas="manual")
         lanzadas = []
         d.vigilar_dnsbl = lambda solo=None: lanzadas.append(("dnsbl", solo))

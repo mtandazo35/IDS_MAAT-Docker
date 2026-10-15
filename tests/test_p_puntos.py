@@ -66,7 +66,7 @@ class Puntos(unittest.TestCase):
         r = self.p.pedir("GET", "/operaciones/%s" % tok, cookie=self.ana)
         self.assertEqual(r.status, 200)
         self.assertIn("CLAVE-VPN-UNICA-7Q2", r.texto)
-        self.assertIn("RouterOS 6 (la version declarada", r.texto)
+        self.assertIn("RouterOS 6 (la versión declarada", r.texto)
         r = self.p.pedir("GET", "/operaciones/%s" % tok, cookie=self.ana)
         self.assertEqual(r.status, 200)
         self.assertNotIn("CLAVE-VPN-UNICA-7Q2", r.texto)

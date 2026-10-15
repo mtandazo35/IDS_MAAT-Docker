@@ -140,7 +140,7 @@ def main():
     check("un router bien montado no tiene ningun 'falta'",
           not [t for e, t, _d, _f in c2 if e == "falta"],
           [t for e, t, _d, _f in c2 if e == "falta"])
-    check("se reconoce el espejo activo", any("espejo esta activo" in t for _e, t, _d, _f in c2))
+    check("se reconoce el espejo activo", any("espejo está activo" in t for _e, t, _d, _f in c2))
     check("y que detecta escaneos por si solo",
           any("detecta escaneos por si solo" in t for _e, t, _d, _f in c2))
     # CONTRATO-F2 §4: el espejo cuenta si va al sensor de ESTE punto y en los dos sentidos
@@ -178,7 +178,7 @@ def main():
     check("'loose' no se da por bueno", any("falsificada" in t for _e, t, _d, _f in c5))
     det = [d for _e, t, d, _f in c5 if "falsificada" in t][0]
     check("y se avisa de que 'strict' rompe con rutas asimetricas",
-          "asimetric" in det.lower(), det[:120])
+          "asimétric" in det.lower(), det[:120])
 
     # --- la accion configurada por clase: aplicada o le faltan cambios ---
     ns6 = entorno({"/ip/firewall/mangle/print": ESPEJO_P001,
@@ -191,7 +191,7 @@ def main():
     e6 = estados(c6)
     check("la accion aplicada sale en verde", any(k.startswith("Botnet / CnC: 'Cortar todo' aplicada") and v == "ok" for k, v in e6.items()), e6)
     check("la accion sin aplicar sale como falta, con los cambios que le faltan",
-          any(k.startswith("Spam: 'Sin correo saliente (25/465/587/2525)' NO esta aplicada (3 cambio(s))") and v == "falta" for k, v in e6.items()), e6)
+          any(k.startswith("Spam: 'Sin correo saliente (25/465/587/2525)' NO está aplicada (3 cambio(s))") and v == "falta" for k, v in e6.items()), e6)
     check("una clase sin accion no aparece", not any(k.startswith("Escaneo:") for k in e6), e6)
     check("y el arreglo apunta a Ajustes", any("Ver / aplicar en el router" in f for _e, _t, _d, f in c6), "")
 

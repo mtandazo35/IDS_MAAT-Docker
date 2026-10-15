@@ -363,7 +363,7 @@ def rutas_del_panel():
           and "MikroTik" not in urllib.parse.unquote(url), url)
     msg, marcar = abrir(url)
     check("  y el GET traduce el codigo al mensaje del panel",
-          "publica(s) nueva(s) del MikroTik" in msg, msg)
+          "pública(s) nueva(s) del MikroTik" in msg, msg)
     check("  avisa de las 2 declaradas desde el MikroTik que ya no son de la WAN",
           "2 declarada(s) antes desde el MikroTik ya no son de la WAN" in msg
           and "192.0.2.0/25" in msg and "203.0.113.53" in msg, msg)
@@ -390,7 +390,7 @@ def rutas_del_panel():
     msg, marcar = abrir(pulsar_detectar())
     check("deteccion vacia: no marca nada ni acusa a nadie de 'ya no es de la WAN'",
           not marcar and "ya no son de la WAN" not in msg
-          and "ninguna direccion publica" in msg, (msg, marcar))
+          and "ninguna dirección pública" in msg, (msg, marcar))
 
     # de punta a punta: la deteccion de verdad con /ip/address/print fallando (timeout)
     # y la WAN encontrada. Antes salia solo el pool y la WAN 198.51.100.0/30 llegaba

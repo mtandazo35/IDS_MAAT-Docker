@@ -160,7 +160,7 @@ def main():
     check("y el modal de confirmacion nombra esa misma lista",
           "entra en la lista {esc(_lst)}" in DASH, "")
     check("la seccion ya no promete una lista unica",
-          "address-list de <b>su categoria</b>" in DASH, "")
+          "address-list de <b>su categoría</b>" in DASH, "")
 
     # =====================================================================================
     # Las listas se pueden ver: cuales son y quien esta dentro

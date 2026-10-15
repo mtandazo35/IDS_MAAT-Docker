@@ -69,13 +69,13 @@ def main():
     check("queda registrado como error", any("ERROR-QUITAR" in str(l) for l in logs), logs)
 
     _, resp, _ = correr("cuar|p001|no-es-ip")
-    check("IP manipulada: error claro", resp["ok"] is False and resp["err"] == "IP invalida", resp)
+    check("IP manipulada: error claro", resp["ok"] is False and resp["err"] == "IP inválida", resp)
 
     # HALLAZGO de la auditoria: pedir una IP por la lista equivocada daba un visto bueno falso
     logs = []
     _, resp, estado = correr("cuar|p001|10.6.0.144", logs=logs)   # esa IP vive en la lista DNS
     check("pedirla por la lista equivocada NO da falso exito",
-          resp["ok"] is False and "no esta en esa lista" in resp["err"], resp)
+          resp["ok"] is False and "no está en esa lista" in resp["err"], resp)
     check("y no se toca el router ni el registro",
           "p001|10.6.0.144" in estado["dns"] and not logs, (estado, logs))
 

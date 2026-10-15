@@ -109,7 +109,7 @@ def entorno(tmp, contenido=None, clave="k", modelo="m-1", fallo=None):
 CAND = {
     "ip": "10.8.0.199", "banda": "MEDIO", "riesgo": 67,
     "total_alertas": 382, "destinos": 3, "puertos": 2,
-    "evidencias": ["4 firmas DNS distintas", "patron compartido con otros CPE (campana)"],
+    "evidencias": ["4 firmas DNS distintas", "patrón compartido con otros CPE (campaña)"],
     "reputacion": [{"fuente": "urlhaus", "categoria": "malware_download",
                     "cidr": "198.51.100.0/24", "ip": "198.51.100.7"}],
     "pruebas": [
@@ -156,7 +156,7 @@ def main():
     check("y el puerto de destino", 8080 in datos.get("puertos_destino", []), datos)
     check("y de que fuente viene la reputacion", "urlhaus" in crudo, crudo)
     check("y las evidencias independientes",
-          "campana" in crudo and len(datos.get("evidencias_independientes") or []) == 2, datos)
+          "campaña" in crudo and len(datos.get("evidencias_independientes") or []) == 2, datos)
 
     # nada que identifique al cliente
     for k in ("cliente", "nombre", "mac", "router", "abonado"):
@@ -243,7 +243,7 @@ def main():
     check("todo lo que devuelve el modelo se escapa antes de pintarlo",
           "esc(_ia.get('explicacion'" in _f and "esc(_ia.get('accion'" in _f, "")
     check("la ficha avisa de que es una opinion, no una medicion",
-          "Es una opinion, no una medicion" in DASH, "")
+          "Es una opinión, no una medición" in DASH, "")
     check("y de que la decision sigue siendo del operador",
           "el corte siguen" in DASH or "siguen siendo tuyos" in DASH, "")
     # si la lectura no sale, la fila no aparece: la ficha queda como antes de existir esto
@@ -268,13 +268,13 @@ def main():
     d6 = tempfile.mkdtemp()
     ns = entorno(d6, BUENA)
     niv, txt = ns["ia_estado_txt"]()
-    check("configurada pero sin usar, se nota", niv == "aviso" and "aun no se ha usado" in txt,
+    check("configurada pero sin usar, se nota", niv == "aviso" and "aún no se ha usado" in txt,
           (niv, txt))
 
     ns["ia_preguntar"](CAND)
     niv, txt = ns["ia_estado_txt"]()
     check("tras una lectura buena, dice que funciona", niv == "ok", (niv, txt))
-    check("y cuando fue la ultima", "ultima lectura" in txt, txt)
+    check("y cuando fue la ultima", "última lectura" in txt, txt)
     check("y cuanta cuota queda", "quedan" in txt, txt)
 
     # un fallo tiene que distinguirse, y decir CUAL
@@ -296,7 +296,7 @@ def main():
     ns = entorno(d9, "esto no es json")
     ns["ia_preguntar"](CAND)
     check("un modelo que no devuelve JSON se distingue de un corte de red",
-          "no devolvio JSON" in ns["ia_estado_txt"]()[1], ns["ia_estado_txt"]())
+          "no devolvió JSON" in ns["ia_estado_txt"]()[1], ns["ia_estado_txt"]())
 
     # agotar la cuota no es un fallo: es un limite, y se dice como tal
     d10 = tempfile.mkdtemp()
@@ -304,7 +304,7 @@ def main():
     ns["_ia_guardar_estado"]({"dia": time.strftime("%Y-%m-%d"), "gastadas": ns["IA_CUOTA"]})
     niv, txt = ns["ia_estado_txt"]()
     check("quedarse sin cuota es un aviso, no un error",
-          niv == "aviso" and "manana" in txt, (niv, txt))
+          niv == "aviso" and "mañana" in txt, (niv, txt))
 
     check("y la linea sale en Ajustes, junto a la clave",
           "_groq_estado_linea()" in DASH, "")

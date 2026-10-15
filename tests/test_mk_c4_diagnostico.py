@@ -132,13 +132,13 @@ class Diagnostico(Base):
         self.d._registrar_enviados(self.d.MK_SENT, {"p001|10.0.0.5": {
             "cuando": 1, "router": "p001", "lista": "clientes-botnet"}}, [])
         c = self.checks()
-        e, det, fix = c["La lista de categoria botnet / cnc NO corta nada"]
+        e, det, fix = c["La lista de categoría botnet / cnc NO corta nada"]
         self.assertEqual(e, "falta")
         self.assertIn("Botnet / CnC", fix)
         self.assertIn("Ver / aplicar en el router", fix)
         # y con la plantilla puesta en raw deja de faltar
         self.r.cargar(RAW, [{"chain": "prerouting", "action": "drop", "src-address-list": "clientes-botnet"}])
-        self.assertEqual(self.checks()["La lista de categoria botnet / cnc corta"][0], "ok")
+        self.assertEqual(self.checks()["La lista de categoría botnet / cnc corta"][0], "ok")
 
     def test_cada_tabla_se_lee_una_vez(self):
         self.checks()

@@ -54,7 +54,7 @@ class Detalle(Base):
     def rechazada(self, q, nodo="p001"):
         with self.sin_leer():
             out = self.ev.detalle(q, nodo)
-        self.assertIn("Referencia de evento no valida", out)
+        self.assertIn("Referencia de evento no válida", out)
         self.assertNotIn("<pre", out)
         return out
 
@@ -127,7 +127,7 @@ class Detalle(Base):
         for off in (tam, tam + 10 ** 9, 5, 10 ** 14):
             firmada = dict(q, o=str(off), s=self.ev.firmar("p001", "eve.json", off, q["h"]))
             out = self.ev.detalle(firmada, "p001")
-            self.assertIn("Referencia de evento no valida", out)
+            self.assertIn("Referencia de evento no válida", out)
             self.assertNotIn("<pre", out)
         for malo in ("-1", "1e3", "0x10", "", "9" * 16):
             self.rechazada(dict(q, o=malo))
@@ -148,7 +148,7 @@ class Detalle(Base):
         q = {"p": "p001", "f": "eve.json.9", "o": "0", "h": h, "s": self.ev.firmar("p001", "eve.json.9", 0, h)}
         out = self.ev.detalle(q, "p001")
         self.assertNotIn("NO DEBE SALIR", out)
-        self.assertIn("Referencia de evento no valida", out)
+        self.assertIn("Referencia de evento no válida", out)
 
     def test_enlace_simbolico_simulado(self):
         """Correccion de defecto (§10.5), tambien donde no se pueden crear enlaces: si la ruta
@@ -172,7 +172,7 @@ class Detalle(Base):
                 with mock.patch.object(self.ev.nodos, "ficheros_eventos",
                                        return_value=[("p001", self.ruta("p001", "eve.json.9"))]):
                     out = self.ev.detalle(q, "p001")
-        self.assertIn("Referencia de evento no valida", out)
+        self.assertIn("Referencia de evento no válida", out)
 
     def test_evento_rotado_se_encuentra(self):
         """Correccion de defecto (§10.5 «rotacion»): si el vivo rota despues de pintar la lista,
@@ -186,7 +186,7 @@ class Detalle(Base):
         self.assertIn("eve.json.1", out)
         os.remove(self.ruta("p001", "eve.json.1"))
         out = self.ev.detalle(q, "p001")
-        self.assertIn("ya no esta", out)
+        self.assertIn("ya no está", out)
         self.assertNotIn("7777777", out)
 
     def test_linea_que_no_es_json(self):
@@ -199,7 +199,7 @@ class Detalle(Base):
         h = self.ev.huella(roto)
         out = self.ev.detalle({"p": "p001", "f": "eve.json", "o": str(off), "h": h,
                                "s": self.ev.firmar("p001", "eve.json", off, h)}, "p001")
-        self.assertIn("no es JSON valido", out)
+        self.assertIn("no es JSON válido", out)
 
 
 class Clave(Base):

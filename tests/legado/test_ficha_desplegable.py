@@ -71,7 +71,7 @@ def main():
     check("la ficha se puede armar sola, sin la pagina", "203.0.113.6" in f, f[:120])
     check("dice quien es el operador", "ISP de prueba" in f, "")
     check("cuantas denuncias y de cuantos", "14" in f and "7" in f, "")
-    check("y que suele haber detras", "Que suele haber detras" in f, "")
+    check("y que suele haber detras", "Qué suele haber detrás" in f, "")
     check("sin nada denunciado lo dice, no deja el hueco",
           "sin denuncias" in ns["ficha_ip_html"]({"ip": "203.0.113.1", "score": 0}), "")
 

@@ -225,7 +225,7 @@ def main():
     d4, _o, err4 = ns["aidb_consultar"]("8.8.8.8", auto=True)
     check("el enriquecimiento automatico se frena en la reserva",
           len(red.llamadas) == antes and d4 is None, (len(red.llamadas), err4))
-    check("y lo dice", "automatico" in err4, err4)
+    check("y lo dice", "automático" in err4, err4)
     red.guion.append(FICHA)
     _d5, orig5, _e = ns["aidb_consultar"]("8.8.8.8")
     check("pero el operador SI puede seguir consultando a mano",
@@ -247,7 +247,7 @@ def main():
     pag = ns["reputacion_page"](res=[("1.1.1.1", d, "cache", "")])
     check("la clave NO se filtra al HTML", "CLAVE-DE-PRUEBA-NO-REAL" not in pag)
     check("la pagina muestra las categorias en castellano", "SSH" in pag and "Escaneo de puertos" in pag)
-    check("y que suele haber detras", "Que suele haber detras" in pag)
+    check("y que suele haber detras", "Qué suele haber detrás" in pag)
     check("y cuanta cuota queda", "900" in pag)
 
     # --- 9) una RED entera: UNA peticion cubre todas sus direcciones ---
@@ -319,14 +319,14 @@ def main():
     check("el formulario va por GET, para que el boton Atras funcione",
           "method=get" in pag_red and "method=post action='/reputacion'" not in pag_red)
     check("cada direccion de la red recuerda de donde viene",
-          "volver=200.0.0.0/24" in pag_red, pag_red[pag_red.find("ver que hace") - 200:][:200])
+          "volver=200.0.0.0/24" in pag_red, pag_red[pag_red.find("ver qué hace") - 200:][:200])
 
     pag_ip = ns["reputacion_page"](res=[("200.0.0.7", d, "cache", "")],
                                    texto="200.0.0.7", volver="200.0.0.0/24")
     check("al mirar una direccion hay boton de vuelta a su red",
           "Volver a 200.0.0.0/24" in pag_ip)
     check("se dice CUANDO se verifico, no de donde salio el dato",
-          "ultima verificacion" in pag_ip and "de cache" not in pag_ip, "")
+          "última verificación" in pag_ip and "de cache" not in pag_ip, "")
     check("y la vuelta va ANTES del resultado, no al final de la pagina",
           pag_ip.index("Volver a 200.0.0.0/24") < pag_ip.index("Confianza de abuso"),
           (pag_ip.index("Volver a 200.0.0.0/24"), pag_ip.index("Confianza de abuso")))
@@ -397,7 +397,7 @@ def main():
     check("el boton nace deshabilitado, hasta marcar algo",
           'class=delbtn' in adm and ' disabled' in adm, "")
     check("el titulo 'Tus IPs publicas' no sale dos veces",
-          adm.count("Tus IPs publicas") == 1, adm.count("Tus IPs publicas"))
+          adm.count("Tus IPs públicas") == 1, adm.count("Tus IPs públicas"))
     check("el buscador es un campo pequeño en la cabecera, no una seccion",
           "name=ips size=22" in adm and "class=busca" in adm, "")
     check("ya no hay una seccion aparte 'Consultar cualquier IP o red'",
@@ -429,15 +429,15 @@ def main():
     # mirando un resultado, el bloque de publicas estorba: para volver esta el boton
     res_adm = ns["reputacion_page"](res=[("1.1.1.1", d, "cache", "")], es_admin=True)
     check("con un resultado a la vista NO sale 'Tus IPs publicas'",
-          "Tus IPs publicas" not in res_adm)
-    check("pero sin consulta si sale", "Tus IPs publicas" in adm)
+          "Tus IPs públicas" not in res_adm)
+    check("pero sin consulta si sale", "Tus IPs públicas" in adm)
 
     # --- 12) una clave rechazada no se confunde con 'sin red' ---
     tmp2 = tempfile.mkdtemp(); red2 = Red(); ns2 = entorno(tmp2, red2, pan)
     ns2["aidb_set"]("MALA")
     red2.guion.append(http(401))
     _d8, _o8, err8 = ns2["aidb_consultar"]("1.1.1.1")
-    check("una clave rechazada se dice tal cual", "rechazo la clave" in (err8 or ""), err8)
+    check("una clave rechazada se dice tal cual", "rechazó la clave" in (err8 or ""), err8)
 
     print("\n" + ("TODO OK" if not fallos else "%d fallo(s)" % fallos))
     return 1 if fallos else 0

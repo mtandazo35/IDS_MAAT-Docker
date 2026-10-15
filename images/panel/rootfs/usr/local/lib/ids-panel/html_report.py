@@ -1117,7 +1117,7 @@ def hbar(titulo, pares, unidad="alertas", fmt=str, lblw=125, barw=470, card_clas
         aviso = (f' &middot; <b>sin {esc(que)} dominante</b>: los {len(pares)} van empatados '
                  f'en {esc(fmt(mx))} {esc(unidad)} (muestra pequeña)')
     elif mx < piso:
-        aviso = f' &middot; pocos datos todavia (maximo {esc(fmt(mx))} {esc(unidad)})'
+        aviso = f' &middot; pocos datos todavía (máximo {esc(fmt(mx))} {esc(unidad)})'
     else:
         aviso = ""
     return (f'<section class="{card_class}"><h2>{esc(titulo)}{q}</h2>'
@@ -1163,8 +1163,8 @@ def timeline(by_hour):
         if i == 0 or anclada:
             ticks.append(f'<text x="{x+bw/2:.1f}" y="{H-pad+14:.0f}" text-anchor="middle" class="tick">{t0.strftime("%H:%M")}</text>')
     pico_t = datetime.fromtimestamp((lo + vals.index(mxreal)) * BUCKET, TZ_EC).strftime("%H:%M") if mxreal else "-"
-    _tl_tip = (f"Numero de alertas en cada intervalo de {BUCKET_MIN} minutos a lo largo de la ventana. "
-               "La altura y el color suben con la intensidad; pasa el raton por una barra para el conteo exacto.")
+    _tl_tip = (f"Número de alertas en cada intervalo de {BUCKET_MIN} minutos a lo largo de la ventana. "
+               "La altura y el color suben con la intensidad; pasa el ratón por una barra para el conteo exacto.")
     return (f'<section class="card wide"><h2>Ataques por hora y minuto ({COB}){_cardq(_tl_tip)}</h2>'
             f'<div class="tlwrap"><div class="tltip"></div>'
             f'<svg viewBox="0 0 {W} {H}" width="100%" role="img" aria-label="alertas por intervalo" style="cursor:default">'
@@ -1176,7 +1176,7 @@ def timeline(by_hour):
             'p.textContent=t;p.style.left=(e.clientX-r.left)+"px";p.style.top=(e.clientY-r.top)+"px";p.style.opacity=1;}'
             'function tlHide(e){var c=e.currentTarget.closest(".tlwrap");if(c){var p=c.querySelector(".tltip");if(p)p.style.opacity=0;}}'
             '</script>'
-            f'<p class="muted">1 barra cada {BUCKET_MIN} min &middot; pasa el raton por una barra para ver el rango y el numero de peticiones &middot; pico: {mxreal:,} alertas a las {pico_t}</p></section>')
+            f'<p class="muted">1 barra cada {BUCKET_MIN} min &middot; pasa el ratón por una barra para ver el rango y el número de peticiones &middot; pico: {mxreal:,} alertas a las {pico_t}</p></section>')
 
 def dur(a, b):
     if not a or not b or b < a:
@@ -1194,13 +1194,13 @@ gen = datetime.now(TZ_EC).strftime("%Y-%m-%d %H:%M")
 # alertas. Por eso la etiqueta es fija; que aun no haya datos en las primeras horas
 # no cambia el tamano de la ventana.
 if VENTANA_MIN < 60:
-    COB = f"ultimos {VENTANA_MIN} min"
+    COB = f"últimos {VENTANA_MIN} min"
 elif VENTANA_MIN == 60:
-    COB = "ultima hora"
+    COB = "última hora"
 elif VENTANA_MIN % 60 == 0:
-    COB = f"ultimas {VENTANA_MIN // 60} horas"
+    COB = f"últimas {VENTANA_MIN // 60} horas"
 else:
-    COB = f"ultimas {VENTANA_MIN / 60:.1f} horas"
+    COB = f"últimas {VENTANA_MIN / 60:.1f} horas"
 
 def ipnum(s):
     # convierte una IPv4 en entero para ordenar bien (10 antes que 9 no; 9<10 numerico)
@@ -1237,8 +1237,8 @@ for (src, sport, dst, dport, proto, sig), (cnt, first, last) in top_flujos:
 # columnas de la tabla Detalle (clase, titulo); «Nodo» solo en «Todos», como en las filas
 _COLS_DETALLE = ([("", "IP origen")] + ([("", "Nodo")] if MULTI_ROUTER else [])
                  + [("num", "Puerto"), ("", "IP destino (atacada)"), ("num", "Puerto"), ("", "Protocolo"),
-                    ("", "Firma (tipo de ataque)"), ("num", "Veces"), ("", "Primera &rarr; ultima"),
-                    ("", "Duracion")])
+                    ("", "Firma (tipo de ataque)"), ("num", "Veces"), ("", "Primera &rarr; última"),
+                    ("", "Duración")])
 
 def _cabecera_detalle():
     return "".join('<th class="%s" data-col="%d">%s<span class="ar">&#8597;</span></th>'
@@ -1346,13 +1346,13 @@ def _org_celda(dst):
         return f"<td class='org'>-{aidb}</td>"
     if legit:
         return (f"<td class='org'><span class='obadge ok' title='Servicio conocido "
-                f"(CDN/gran empresa): trafico casi siempre legitimo'>{esc(org)}</span>{aidb}</td>")
+                f"(CDN/gran empresa): tráfico casi siempre legítimo'>{esc(org)}</span>{aidb}</td>")
     if org == "sin PTR":
         return ("<td class='org'><span class='obadge none' title='Sin DNS inverso ni operador identificable'>"
                 f"sin PTR</span>{aidb}</td>")
     via = (_ipinfo.get(dst, {}) or {}).get("via", "")
     ttl = ("Operador de red del bloque IP (RDAP); no tiene DNS inverso" if via == "rdap"
-           else "Dominio del dueño segun DNS inverso; no es un servicio grande conocido")
+           else "Dominio del dueño según DNS inverso; no es un servicio grande conocido")
     marca = "&#127760; " if via == "rdap" else ""   # globo: viene del operador de red, no de PTR
     return (f"<td class='org'><span class='obadge unk' title='{ttl}'>{marca}{esc(org)}</span>{aidb}</td>")
 
@@ -1424,7 +1424,7 @@ def _cargar_reputacion():
         pass
     n = len(REP_IPS) + sum(len(v) for v in REP_CIDR.values()) + len(REP_WIDE)
     vig = ", ".join(k for k, s in REP_META.items() if s.get("vigente"))
-    REP_INFO = f"{n:,} IOCs ({vig})" if n else "feeds vacios"
+    REP_INFO = f"{n:,} IOCs ({vig})" if n else "feeds vacíos"
     REP_OK = n > 0
 
 _cargar_reputacion()
@@ -1516,9 +1516,9 @@ def riesgo(src):
         banda, color = "MEDIO", "#e58a00"
     else:
         banda, color = "bajo", "#3a9d5d"
-    desg = (f"Severidad {c_sev}/30 &middot; Destinos unicos {c_dst}/20 &middot; "
-            f"Puertos unicos {c_pt}/15 &middot; Persistencia {int(c_per)}/20 &middot; "
-            f"Correlacion flota {c_cor}/5 &middot; Reputacion {c_rep}/10 [{REP_INFO}]")
+    desg = (f"Severidad {c_sev}/30 &middot; Destinos únicos {c_dst}/20 &middot; "
+            f"Puertos únicos {c_pt}/15 &middot; Persistencia {int(c_per)}/20 &middot; "
+            f"Correlación flota {c_cor}/5 &middot; Reputación {c_rep}/10 [{REP_INFO}]")
     return score, banda, color, desg
 
 
@@ -1528,7 +1528,7 @@ def top_origenes_section(n_src=5, n_sub=8):
     Se arma con by_src (totales reales) + flujos (ya trae sport/dport/proto)."""
     tops = by_src.most_common(n_src)
     if not tops:
-        return ("<!--TOP_INI--><section class=\"card\"><h2>Top 5 IPs origen que mas peticionan</h2>"
+        return ("<!--TOP_INI--><section class=\"card\"><h2>Top 5 IPs origen que más peticionan</h2>"
                 "<p class=\"muted\">Sin ataques en la ventana.</p></section><!--TOP_FIN-->")
     cards = []
     for i, (src, tot) in enumerate(tops, 1):
@@ -1549,7 +1549,7 @@ def top_origenes_section(n_src=5, n_sub=8):
             f"<td class='num'>{c:,}</td></tr>" for (sp, dst, dp, pr), c in sub)
         rsc, rband, rcol, rdes = riesgo(src)
         if src in _MK_ENVIADOS:
-            cuar = ("<span class='qsent' title='Este CPE ya esta en la lista de cuarentena del MikroTik'>"
+            cuar = ("<span class='qsent' title='Este CPE ya está en la lista de cuarentena del MikroTik'>"
                     "&#10003; En cuarentena</span>")
         else:
             # se manda la IDENTIDAD entera (router|IP): el panel la guarda tal cual y asi
@@ -1565,7 +1565,7 @@ def top_origenes_section(n_src=5, n_sub=8):
             f"<span class='tot'>{tot:,} alertas</span>{cuar}"
             f"<span class='meta'>&rarr; {len(dsts):,} IP destino &middot; {len(dports):,} puertos destino</span></div>"
             f"<div class='tablewrap'><table><thead><tr>"
-            f"<th>Puerto origen</th><th>IP destino (a donde)</th><th class='org'>Dueño / organización</th>"
+            f"<th>Puerto origen</th><th>IP destino (a dónde)</th><th class='org'>Dueño / organización</th>"
             f"<th class='num'>Puerto destino</th>"
             f"<th>Protocolo</th><th class='num'>Peticiones</th></tr></thead>"
             f"<tbody>{rows}</tbody></table></div></div>")
@@ -1605,12 +1605,12 @@ def top_origenes_section(n_src=5, n_sub=8):
         "if(t.indexOf('OK')===0){b.outerHTML=\"<span class='qsent' title='Ya en cuarentena'>\\u2713 En cuarentena</span>\";}"
         "else{b.disabled=false;b.innerHTML=o;aviso('No se pudo enviar',t.replace(/^ERR: /,''));}})"
         ".catch(function(e){b.disabled=false;b.innerHTML=o;aviso('No se pudo enviar','Error: '+e);});}</script>"
-        "<section class=\"card\"><h2>Top 5 IPs origen que mas peticionan</h2>"
-        "<p class=\"muted\" style=\"margin:0 0 12px\">Quien ataca mas, hacia que IP destino, desde que puerto origen y hacia que puerto destino. "
+        "<section class=\"card\"><h2>Top 5 IPs origen que más peticionan</h2>"
+        "<p class=\"muted\" style=\"margin:0 0 12px\">Quién ataca más, hacia qué IP destino, desde qué puerto origen y hacia qué puerto destino. "
         "La columna <b>Dueño / organización</b> viene del DNS inverso (PTR) de la IP destino: "
-        "<span style='color:#1a7f37;font-weight:700'>verde</span> = servicio conocido (Facebook, Google, Cloudflare, etc., casi siempre legitimo); "
+        "<span style='color:#1a7f37;font-weight:700'>verde</span> = servicio conocido (Facebook, Google, Cloudflare, etc., casi siempre legítimo); "
         "<span style='color:#a15c12;font-weight:700'>naranja</span> = dominio del dueño pero no es un gran servicio; "
-        "<b>sin PTR</b> = IP sin nombre publico (frecuente en botnets/hosting sucio).</p>"
+        "<b>sin PTR</b> = IP sin nombre público (frecuente en botnets/hosting sucio).</p>"
         f"<div class=\"topwrap\">{''.join(cards)}</div></section>"
         + top_destinos_section() + dominios_section() + entrantes_section() +
         "<!--TOP_FIN-->")
@@ -1634,17 +1634,17 @@ _MAP_NUM2ISO = ("{4:'AF',8:'AL',10:'AQ',12:'DZ',24:'AO',31:'AZ',32:'AR',36:'AU',
     "760:'SY',762:'TJ',764:'TH',768:'TG',780:'TT',784:'AE',788:'TN',792:'TR',795:'TM',800:'UG',"
     "804:'UA',807:'MK',818:'EG',826:'GB',834:'TZ',840:'US',854:'BF',858:'UY',860:'UZ',862:'VE',"
     "887:'YE',894:'ZM'}")
-_MAP_NAMES = ("{AF:'Afganistan',AR:'Argentina',AU:'Australia',AT:'Austria',BD:'Bangladesh',BE:'Belgica',"
-    "BO:'Bolivia',BR:'Brasil',BG:'Bulgaria',CA:'Canada',CL:'Chile',CN:'China',CO:'Colombia',CR:'Costa Rica',"
+_MAP_NAMES = ("{AF:'Afganistán',AR:'Argentina',AU:'Australia',AT:'Austria',BD:'Bangladesh',BE:'Bélgica',"
+    "BO:'Bolivia',BR:'Brasil',BG:'Bulgaria',CA:'Canadá',CL:'Chile',CN:'China',CO:'Colombia',CR:'Costa Rica',"
     "CU:'Cuba',CZ:'Chequia',DK:'Dinamarca',DO:'Rep. Dominicana',EC:'Ecuador',EG:'Egipto',SV:'El Salvador',"
-    "FI:'Finlandia',FR:'Francia',DE:'Alemania',GR:'Grecia',GT:'Guatemala',HN:'Honduras',HU:'Hungria',"
-    "IN:'India',ID:'Indonesia',IR:'Iran',IQ:'Irak',IE:'Irlanda',IL:'Israel',IT:'Italia',JP:'Japon',"
-    "KZ:'Kazajistan',KE:'Kenia',KR:'Corea del Sur',KP:'Corea del Norte',MX:'Mexico',MA:'Marruecos',"
-    "NL:'Paises Bajos',NZ:'Nueva Zelanda',NI:'Nicaragua',NG:'Nigeria',NO:'Noruega',PK:'Pakistan',"
-    "PA:'Panama',PY:'Paraguay',PE:'Peru',PH:'Filipinas',PL:'Polonia',PT:'Portugal',RO:'Rumania',"
-    "RU:'Rusia',SA:'Arabia Saudita',RS:'Serbia',SG:'Singapur',ZA:'Sudafrica',ES:'Espana',SE:'Suecia',"
-    "CH:'Suiza',SY:'Siria',TW:'Taiwan',TH:'Tailandia',TR:'Turquia',UA:'Ucrania',AE:'Emiratos AU',"
-    "GB:'Reino Unido',US:'Estados Unidos',UY:'Uruguay',UZ:'Uzbekistan',VE:'Venezuela',VN:'Vietnam',"
+    "FI:'Finlandia',FR:'Francia',DE:'Alemania',GR:'Grecia',GT:'Guatemala',HN:'Honduras',HU:'Hungría',"
+    "IN:'India',ID:'Indonesia',IR:'Irán',IQ:'Irak',IE:'Irlanda',IL:'Israel',IT:'Italia',JP:'Japón',"
+    "KZ:'Kazajistán',KE:'Kenia',KR:'Corea del Sur',KP:'Corea del Norte',MX:'México',MA:'Marruecos',"
+    "NL:'Países Bajos',NZ:'Nueva Zelanda',NI:'Nicaragua',NG:'Nigeria',NO:'Noruega',PK:'Pakistán',"
+    "PA:'Panamá',PY:'Paraguay',PE:'Perú',PH:'Filipinas',PL:'Polonia',PT:'Portugal',RO:'Rumania',"
+    "RU:'Rusia',SA:'Arabia Saudita',RS:'Serbia',SG:'Singapur',ZA:'Sudáfrica',ES:'España',SE:'Suecia',"
+    "CH:'Suiza',SY:'Siria',TW:'Taiwán',TH:'Tailandia',TR:'Turquía',UA:'Ucrania',AE:'Emiratos AU',"
+    "GB:'Reino Unido',US:'Estados Unidos',UY:'Uruguay',UZ:'Uzbekistán',VE:'Venezuela',VN:'Vietnam',"
     "HK:'Hong Kong',BY:'Bielorrusia',MD:'Moldavia',BZ:'Belice'}")
 
 def _mapa_origen():
@@ -1672,11 +1672,11 @@ def mapa_ataques_section():
             "srcs": [[_etq_cpe(s), n] for s, n in pais_srcs[cc].most_common(4)],
             "nip": len(pais_ips[cc]), "npt": len(pais_ports[cc]), "nsr": len(pais_srcs[cc]),
         }
-    intro = ("Los paises <b>destino</b> de las alertas (a donde va el trafico sospechoso de tus "
+    intro = ("Los países <b>destino</b> de las alertas (a donde va el tráfico sospechoso de tus "
              "CPEs). El color sube con el nº de alertas; los <b>arcos animados</b> muestran el flujo "
-             "desde tu red hacia cada pais. <b>Pasa el mouse</b> por un pais para ver a que IPs y "
-             "puertos se peticiona, y <b>haz clic para acercar</b>. Geolocalizacion <b>offline</b>; "
-             "las IPs privadas o sin pais no cuentan.")
+             "desde tu red hacia cada país. <b>Pasa el mouse</b> por un país para ver a qué IPs y "
+             "puertos se peticiona, y <b>haz clic para acercar</b>. Geolocalización <b>offline</b>; "
+             "las IPs privadas o sin país no cuentan.")
     # Sin paises el mapa se dibuja igual (gris): no hace falta un aviso encima. En un sensor
     # por VPN, que solo ve redes privadas, saldria SIEMPRE y era ruido.
     return (
@@ -1734,7 +1734,7 @@ def mapa_ataques_section():
         ".attmap .mapbar{display:block;height:100%;border-radius:4px;background:#e34948;min-width:3px}"
         ".attmap .mapempty{color:#6b6a66;font-size:13px;background:#faf9f6;border:1px dashed #e0dfda;border-radius:8px;padding:12px 14px;margin-top:8px}"
         "</style>"
-        "<section class=\"card attmap\" style=\"margin-top:16px\"><h2>A donde atacan tus CPEs (destino por pais)</h2>"
+        "<section class=\"card attmap\" style=\"margin-top:16px\"><h2>A dónde atacan tus CPEs (destino por país)</h2>"
         "<p class=\"muted\" style=\"margin:0 0 12px\">" + intro + "</p>" +
         "<div class=mapwrap><div class=mapsvg><svg id=attackmap viewBox=\"0 20 1000 392\" "
         "preserveAspectRatio=\"xMidYMid meet\" role=img aria-label=\"Mapa de destinos\"></svg>"
@@ -1744,7 +1744,7 @@ def mapa_ataques_section():
         "<button type=button id=mzrst class=wide title=\"Volver al mundo entero\">Vista completa</button>"
         "</div><div class=maptip id=maptip></div></div>"
         "<div class=mapdet id=mapdet></div>"
-        "<p class=maphint>Clic en un pais para acercarlo y ver su detalle &middot; arrastra para mover "
+        "<p class=maphint>Clic en un país para acercarlo y ver su detalle &middot; arrastra para mover "
         "&middot; <b>Ctrl + rueda</b> para zoom &middot; <b>Vista completa</b> para volver.</p>"
         "<div class=maptop id=attacktop></div></div>"
         "<script>window.__ATTACK_GEO=" + _json_js(datos) + ";window.__ATTACK_TOTAL=" + str(total) +
@@ -1799,12 +1799,12 @@ def mapa_ataques_section():
         "function grupo(lbl,items,tot){if(!items||!items.length)return '';"
         "var h='<div class=grp><div class=glbl>'+lbl+'</div>';"
         "items.forEach(function(kv){h+='<div class=it><span>'+esc(kv[0])+'</span><b>'+kv[1]+'</b></div>';});"
-        "if(tot>items.length)h+='<div class=mas>+'+(tot-items.length)+' mas</div>';return h+'</div>';}"
+        "if(tot>items.length)h+='<div class=mas>+'+(tot-items.length)+' más</div>';return h+'</div>';}"
         "function dirTxt(iso){var nm=nombre(iso),c=DATA[iso]||0;"
-        "return c?('Direccion <b>saliente</b>: tus CPEs &rarr; '+esc(nm)+' &middot; <b>'+c+'</b> alertas')"
+        "return c?('Dirección <b>saliente</b>: tus CPEs &rarr; '+esc(nm)+' &middot; <b>'+c+'</b> alertas')"
         ":('Sin alertas hacia '+esc(nm)+' en la ventana.');}"
         "function grupos(iso){var d=DET[iso];if(!d)return '';"
-        "return grupo('IPs destino (a donde)',d.ips,d.nip)+grupo('Puertos destino',d.ports,d.npt)"
+        "return grupo('IPs destino (a dónde)',d.ips,d.nip)+grupo('Puertos destino',d.ports,d.npt)"
         "+grupo('CPEs de tu red (de donde)',d.srcs,d.nsr);}"
         "function showTip(iso,e){if(!tip)return;"
         "tip.innerHTML='<h4><span class=cc>'+esc(iso)+'</span>'+esc(nombre(iso))+'</h4>'"
@@ -1906,8 +1906,8 @@ def mapa_ataques_section():
         "<span class=cc>'+esc(iso)+'</span><span class=nm>'+esc(nm)+'</span>"
         "<span class=mapcarril><span class=mapbar style=\"width:'+ancho+'%\"></span></span>"
         "<span class=ct>'+c+'</span><span class=pc>'+pc+'</span></div>';});"
-        "w.innerHTML=html?('<div class=maptophdr>Top paises destino<span class=sub>'+tot+' alertas &middot; '+todos.length+"
-        "(todos.length===1?' pais':' paises')+'</span></div><div class=maptopgrid style=\"--filas:'+Math.ceil(rows.length/2)+'\">'+html+'</div>'):'';}"
+        "w.innerHTML=html?('<div class=maptophdr>Top países destino<span class=sub>'+tot+' alertas &middot; '+todos.length+"
+        "(todos.length===1?' país':' países')+'</span></div><div class=maptopgrid style=\"--filas:'+Math.ceil(rows.length/2)+'\">'+html+'</div>'):'';}"
         "pintarTop();"
         # clic en una fila del top = mismo efecto que clic en el pais (acerca y abre el detalle)
         "if(w)w.addEventListener('click',function(e){var r=e.target.closest?e.target.closest('.maprow'):null;"
@@ -1935,7 +1935,7 @@ def top_destinos_section(n_dst=5, n_sub=8):
     atacan. Sirve para ver blancos comunes (un mismo C2/servidor tocado por varios CPEs)."""
     tops = [(d, c) for d, c in by_dst.most_common() if d and d != "?"][:n_dst]
     if not tops:
-        return ("<section class=\"card\"><h2>Top IPs destino mas atacadas</h2>"
+        return ("<section class=\"card\"><h2>Top IPs destino más atacadas</h2>"
                 "<p class=\"muted\">Sin ataques en la ventana.</p></section>")
     cards = []
     for i, (dst, tot) in enumerate(tops, 1):
@@ -1978,17 +1978,17 @@ def top_destinos_section(n_dst=5, n_sub=8):
             "<b>Resolutores DNS usados para consultar dominios maliciosos</b>"
             "<p class='muted' style='margin:4px 0 8px;font-size:13px'>No son blancos: son "
             "los DNS a los que tus CPEs preguntan por dominios fichados. "
-            "La prueba es el dominio, no el DNS. Las alertas cuentan en el CPE, no aqui. Se gestionan en "
+            "La prueba es el dominio, no el DNS. Las alertas cuentan en el CPE, no aquí. Se gestionan en "
             "<b>Ajustes &rarr; DNS</b>.</p>"
             "<table style='font-size:13px'><thead><tr><th>Resolutor</th>"
             "<th class='num'>Consultas maliciosas</th><th class='num'>CPEs distintos</th>"
             "</tr></thead><tbody>" + filas + "</tbody></table></div>")
     return (
-        "<section class=\"card\" style=\"margin-top:16px\"><h2>Top IPs destino mas atacadas (y quien las ataca)</h2>"
+        "<section class=\"card\" style=\"margin-top:16px\"><h2>Top IPs destino más atacadas (y quién las ataca)</h2>"
         + res_html +
-        "<p class=\"muted\" style=\"margin:0 0 12px\">El espejo del cuadro anterior: los blancos que reciben mas alertas y "
-        "los CPEs de tu red que los atacan. Util para detectar un <b>destino comun</b> (un mismo C2 o servidor tocado por "
-        "varios CPEs a la vez). El chip muestra el dueño/reputacion del destino.</p>"
+        "<p class=\"muted\" style=\"margin:0 0 12px\">El espejo del cuadro anterior: los blancos que reciben más alertas y "
+        "los CPEs de tu red que los atacan. Útil para detectar un <b>destino común</b> (un mismo C2 o servidor tocado por "
+        "varios CPEs a la vez). El chip muestra el dueño/reputación del destino.</p>"
         f"<div class=\"topwrap\">{''.join(cards)}</div></section>")
 
 DOMINIOS_FILE = os.path.join(OUTDIR, "dominios-malos.json")
@@ -2005,7 +2005,7 @@ def dominios_section(n=15, n_ips=4):
         quien = dom_src.get(d, Counter())
         ej = ", ".join("%s (%d)" % (esc(ip_de(k)), c) for k, c in quien.most_common(n_ips))
         if len(quien) > n_ips:
-            ej += " +%d mas" % (len(quien) - n_ips)
+            ej += " +%d más" % (len(quien) - n_ips)
         res = ", ".join(esc(r) for r, _c in dom_res.get(d, Counter()).most_common(3)) or "&mdash;"
         por = dom_por.get(d, "")
         filas += ("<tr><td class='mono' style='word-break:break-all'>%s</td><td>%s</td>"
@@ -2028,12 +2028,12 @@ def dominios_section(n=15, n_ips=4):
     except Exception:
         pass
     return (
-        "<section class=\"card\" style=\"margin-top:16px\"><h2>Dominios maliciosos consultados (y desde que IP de tu red)</h2>"
-        "<p class=\"muted\" style=\"margin:0 0 12px\">Lo que se pregunta al DNS y quien lo pregunta. "
-        "El <b>dominio</b> es la prueba; la columna <b>por que</b> dice si lo ficha un feed "
+        "<section class=\"card\" style=\"margin-top:16px\"><h2>Dominios maliciosos consultados (y desde qué IP de tu red)</h2>"
+        "<p class=\"muted\" style=\"margin:0 0 12px\">Lo que se pregunta al DNS y quién lo pregunta. "
+        "El <b>dominio</b> es la prueba; la columna <b>por qué</b> dice si lo ficha un feed "
         "(URLhaus, ThreatFox) o una firma de Suricata; <b>IPs de tu red</b> son los CPEs que lo "
-        "consultaron (y cuantas veces); el <b>resolutor</b> es solo el canal, no una victima.</p>"
-        "<div class='tablewrap'><table><thead><tr><th>Dominio</th><th>Por que es malicioso</th>"
+        "consultaron (y cuántas veces); el <b>resolutor</b> es solo el canal, no una víctima.</p>"
+        "<div class='tablewrap'><table><thead><tr><th>Dominio</th><th>Por qué es malicioso</th>"
         "<th class='num'>Consultas</th><th class='num'>CPEs</th><th>IPs de tu red (consultas)</th>"
         "<th>Resolutor</th></tr></thead><tbody>" + filas + "</tbody></table></div>"
         + ("<p class='muted' style='margin:8px 0 0;font-size:12px'>Se muestran %d de %s dominios distintos "
@@ -2084,7 +2084,7 @@ def entrantes_section(n_src=8, n_sub=6, max_src=5000, max_det=60):
         if _AIDB_REPORTAR:
             _tf = sub[0][0] if sub else ("", "", "", "")
             _den = (f"<button class='qsend' title='Denunciar esta IP a AbuseIPDB "
-                    f"(accion publica y a tu nombre)' onclick=\"qden(this,'{esc(_ipa)}',"
+                    f"(acción pública y a tu nombre)' onclick=\"qden(this,'{esc(_ipa)}',"
                     f"'{esc((_tf[3] or '')[:90])}','{esc(_tf[1] or '')}','{esc(_tf[2] or '')}',"
                     f"'{e['n']}')\">&#9873; Denunciar</button>")
         cards.append(
@@ -2100,15 +2100,15 @@ def entrantes_section(n_src=8, n_sub=6, max_src=5000, max_det=60):
             f"</tr></thead><tbody>{rows}</tbody></table></div></div>")
     return (
         "<section class=\"card\" style=\"margin-top:16px\"><h2>Ataques entrantes desde internet</h2>"
-        "<p class=\"muted\" style=\"margin:0 0 12px\">Direcciones de <b>internet</b> que estan atacando "
+        "<p class=\"muted\" style=\"margin:0 0 12px\">Direcciones de <b>internet</b> que están atacando "
         "equipos de tu red. "
-        "<b>No son abonados tuyos</b>, asi que no entran al motor de cuarentena: mandarlos a la "
-        "address-list de CPEs no bloquearia nada util. Lo que corresponde es <b>cortarlos en el borde</b> "
-        "(firewall de entrada) o <b>cerrar la exposicion</b> del equipo atacado: si algo tuyo recibe "
+        "<b>No son abonados tuyos</b>, así que no entran al motor de cuarentena: mandarlos a la "
+        "address-list de CPEs no bloquearía nada útil. Lo que corresponde es <b>cortarlos en el borde</b> "
+        "(firewall de entrada) o <b>cerrar la exposición</b> del equipo atacado: si algo tuyo recibe "
         "escaneo constante desde internet, casi siempre es que tiene un puerto publicado que no hacia falta.</p>"
         + ("<script>function qden(b,ip,f,dp,pr,n){"
-           "if(!ask(b,'Denunciar a AbuseIPDB','Se denuncia '+ip+' publicamente y queda a tu "
-           "nombre. No se envia ninguna IP tuya.','Denunciar','danger'))return;"
+           "if(!ask(b,'Denunciar a AbuseIPDB','Se denuncia '+ip+' públicamente y queda a tu "
+           "nombre. No se envía ninguna IP tuya.','Denunciar','danger'))return;"
            "b.disabled=true;var o=b.innerHTML;b.textContent='enviando...';"
            "fetch('/reputacion/denunciar',{method:'POST',credentials:'same-origin',"
            "headers:{'Content-Type':'application/x-www-form-urlencoded'},"
@@ -2248,13 +2248,13 @@ try:
             ev.append(f"{nsids} firmas CnC distintas")
         _dm = [d for d in dst_by_src.get(src, ()) if es_malo_firme(d)]
         if _dm:
-            ev.append(f"destino en lista de reputacion ({len(_dm)})")
+            ev.append(f"destino en lista de reputación ({len(_dm)})")
         if (src in n5_by_src) and (n1h_by_src.get(src, 0) > n5_by_src.get(src, 0)):
             ev.append("actividad sostenida (5 min y 1 h)")
         if src in correlacionados:
-            ev.append("patron compartido con otros CPE (campana)")
+            ev.append("patrón compartido con otros CPE (campaña)")
         if dns_hits.get(src, 0) >= 1:
-            ev.append("consulto dominio malicioso (DNS)")
+            ev.append("consultó dominio malicioso (DNS)")
         return len(ev), ev
 
     def _ultima(clave):
@@ -2307,11 +2307,11 @@ try:
             ev.append(f"{nd} firmas DNS distintas")
         _dm = [d for d in dst_by_src.get(src, ()) if es_malo_firme(d)]
         if _dm:
-            ev.append(f"destino en lista de reputacion ({len(_dm)})")
+            ev.append(f"destino en lista de reputación ({len(_dm)})")
         if src in correlacionados:
-            ev.append("patron compartido con otros CPE (campana)")
+            ev.append("patrón compartido con otros CPE (campaña)")
         if inf_hits.get(src, 0) >= 1:
-            ev.append("tambien alertas CnC")
+            ev.append("también alertas CnC")
         return len(ev), ev
     cand_dns = []
     for src in dns_hits:
@@ -2469,27 +2469,27 @@ td.num{{text-align:right;font-variant-numeric:tabular-nums}}
 <main><!--COB:{COB}-->
   <div class="tiles">
     <div class="tile"><span class="q">?</span><div class="big">{total:,}</div><div class="lab">alertas graves</div>
-      <span class="tip"><b>Total de alertas en {COB}</b>, ya sin el ruido informativo (ET INFO). Es la suma de todas las barras de la linea de tiempo de abajo.</span></div>
+      <span class="tip"><b>Total de alertas en {COB}</b>, ya sin el ruido informativo (ET INFO). Es la suma de todas las barras de la línea de tiempo de abajo.</span></div>
     <div class="tile"><span class="q">?</span><div class="big">{len(by_src):,}</div><div class="lab"><span class="dot" style="background:#e34948"></span>IPs origen (atacantes)</div>
-      <span class="tip"><b>IPs de ORIGEN distintas</b> que dispararon al menos una alerta en {COB}. Ojo: muchas son equipos que solo hicieron una consulta DNS sospechosa, no ataque real. La grafica de abajo muestra solo el top.</span></div>
+      <span class="tip"><b>IPs de ORIGEN distintas</b> que dispararon al menos una alerta en {COB}. Ojo: muchas son equipos que solo hicieron una consulta DNS sospechosa, no ataque real. La gráfica de abajo muestra solo el top.</span></div>
     <div class="tile"><span class="q">?</span><div class="big">{len(by_dst):,}</div><div class="lab"><span class="dot" style="background:#eb6834"></span>IPs destino (objetivos)</div>
-      <span class="tip"><b>IPs de DESTINO distintas</b> hacia donde se dirigio el trafico alertado en {COB} (el objetivo). Suele ser tu propio DNS y unos pocos servidores.</span></div>
-    <div class="tile"><span class="q">?</span><div class="big">{len(ips_vistas):,}{'+' if len(ips_vistas) >= MAX_IPS else ''}</div><div class="lab"><span class="dot" style="background:#2a78d6"></span>IPs unicas vistas (todo el trafico)</div>
-      <span class="tip"><b>Todas las IPs distintas</b> que el MikroTik le envio al sensor en {COB}, no solo las que atacan: cuenta cualquier evento (TLS, HTTP, DNS, SNMP, alertas...), origen y destino, sin duplicar. Es el alcance real de lo que esta sensando.</span></div>
+      <span class="tip"><b>IPs de DESTINO distintas</b> hacia donde se dirigió el tráfico alertado en {COB} (el objetivo). Suele ser tu propio DNS y unos pocos servidores.</span></div>
+    <div class="tile"><span class="q">?</span><div class="big">{len(ips_vistas):,}{'+' if len(ips_vistas) >= MAX_IPS else ''}</div><div class="lab"><span class="dot" style="background:#2a78d6"></span>IPs únicas vistas (todo el tráfico)</div>
+      <span class="tip"><b>Todas las IPs distintas</b> que el MikroTik le envío al sensor en {COB}, no solo las que atacan: cuenta cualquier evento (TLS, HTTP, DNS, SNMP, alertas...), origen y destino, sin duplicar. Es el alcance real de lo que está sensando.</span></div>
     <div class="tile"><span class="q">?</span><div class="big">{len(by_dport):,}</div><div class="lab"><span class="dot" style="background:#eda100"></span>puertos destino distintos</div>
-      <span class="tip"><b>Puertos de destino distintos</b> que aparecieron en las alertas de {COB} (443, 80, 53, 22...). Quien ataca cada puerto esta en la grafica "Atacantes por puerto".</span></div>
+      <span class="tip"><b>Puertos de destino distintos</b> que aparecieron en las alertas de {COB} (443, 80, 53, 22...). Quién ataca cada puerto está en la gráfica "Atacantes por puerto".</span></div>
   </div>
   {timeline(by_hour)}
   {mapa_ataques_section()}
   <div class="grid">
-    {hbar("Atacantes por puerto", src_dport_top, "alertas", que="atacante", lblw=300, barw=300, tip="Pares IP origen -> puerto destino con mas alertas: QUIEN golpea QUE servicio (23 Telnet, 445 SMB, 22 SSH, 443 HTTPS...). Una misma IP sale en varias filas si ataca varios puertos. Solo el top; el total de puertos distintos esta en el recuadro de arriba.")}
-    {hbar("IPs origen (atacantes)", top(by_src, fmt=lambda k: _cols_cpe(k, "")), "alertas", que="IP", lblw=230, barw=365, tip="IPs de ORIGEN que mas alertas dispararon (los equipos/CPE que generan el trafico). Ojo: muchas pueden ser solo consultas DNS sospechosas, no ataque real. Solo el top; el total esta arriba.")}
-    {hbar("IPs destino (objetivos)", dst_top, "alertas", que="IP", lblw=300, barw=300, tip="IPs de DESTINO mas frecuentes: hacia donde va el trafico alertado (el objetivo) y por que puerto (el mas usado; +N = otros puertos). Los resolutores DNS conocidos NO cuentan aqui: una consulta maliciosa es culpa del CPE, no un ataque al DNS; van aparte, mas abajo, como resolutores usados (Ajustes -> DNS).")}
-    {hbar("Firmas mas frecuentes (tipo de ataque)", firmas_top, "alertas", que="firma", lblw=165, barw=430, izq=True, tip="Tipos de ataque (firmas de Suricata) mas frecuentes, agrupados y traducidos al espanol. Indica que clase de amenaza predomina.")}
+    {hbar("Atacantes por puerto", src_dport_top, "alertas", que="atacante", lblw=300, barw=300, tip="Pares IP origen -> puerto destino con más alertas: QUIÉN golpea QUÉ servicio (23 Telnet, 445 SMB, 22 SSH, 443 HTTPS...). Una misma IP sale en varias filas si ataca varios puertos. Solo el top; el total de puertos distintos está en el recuadro de arriba.")}
+    {hbar("IPs origen (atacantes)", top(by_src, fmt=lambda k: _cols_cpe(k, "")), "alertas", que="IP", lblw=230, barw=365, tip="IPs de ORIGEN que más alertas dispararon (los equipos/CPE que generan el tráfico). Ojo: muchas pueden ser solo consultas DNS sospechosas, no ataque real. Solo el top; el total está arriba.")}
+    {hbar("IPs destino (objetivos)", dst_top, "alertas", que="IP", lblw=300, barw=300, tip="IPs de DESTINO más frecuentes: hacia dónde va el tráfico alertado (el objetivo) y por qué puerto (el más usado; +N = otros puertos). Los resolutores DNS conocidos NO cuentan aquí: una consulta maliciosa es culpa del CPE, no un ataque al DNS; van aparte, más abajo, como resolutores usados (Ajustes -> DNS).")}
+    {hbar("Firmas más frecuentes (tipo de ataque)", firmas_top, "alertas", que="firma", lblw=165, barw=430, izq=True, tip="Tipos de ataque (firmas de Suricata) más frecuentes, agrupados y traducidos al español. Indica qué clase de amenaza predomina.")}
   </div>
   {top_sec}
   <section class="card">
-    <h2>Detalle: quien ataca, a donde, por que puerto, cuando y por cuanto tiempo</h2>
+    <h2>Detalle: quién ataca, a dónde, por qué puerto, cuándo y por cuánto tiempo</h2>
     <div class="detbar"><input id="detbuscar" class="detsearch" placeholder="Filtrar por IP, puerto, protocolo, firma..."><span id="detcount" class="muted"></span></div>
     <div class="tablewrap"><table id="detalle">
       <thead><tr>{_cabecera_detalle()}</tr></thead>
@@ -2497,9 +2497,9 @@ td.num{{text-align:right;font-variant-numeric:tabular-nums}}
     </table></div>
     <div class="pager" id="pager">
       <button id="prev" type="button">&larr; Anterior</button>
-      <span id="pgi">Pagina 1</span>
+      <span id="pgi">Página 1</span>
       <button id="next" type="button">Siguiente &rarr;</button>
-      <span class="pgnote muted">{len(filas)} flujos, 20 por pagina &middot; al imprimir salen todos</span>
+      <span class="pgnote muted">{len(filas)} flujos, 20 por página &middot; al imprimir salen todos</span>
     </div>
     <script>
     (function(){{
@@ -2517,7 +2517,7 @@ td.num{{text-align:right;font-variant-numeric:tabular-nums}}
         if(pager) pager.style.display=(small||rows.length===0)?'none':'';
         for(var i=0;i<rows.length;i++) rows[i].style.display=(small||(i>=(p-1)*per&&i<p*per))?'':'none';
         if(pager && !small){{
-          document.getElementById('pgi').textContent='Pagina '+p+' de '+npag();
+          document.getElementById('pgi').textContent='Página '+p+' de '+npag();
           document.getElementById('prev').disabled=(p<=1);
           document.getElementById('next').disabled=(p>=npag());
         }}
@@ -2561,7 +2561,7 @@ td.num{{text-align:right;font-variant-numeric:tabular-nums}}
       filtrar();
     }})();
     </script>
-    <p class="muted">Top {len(filas)} flujos por numero de alertas. Se excluye ruido informativo (ET INFO).</p>
+    <p class="muted">Top {len(filas)} flujos por número de alertas. Se excluye ruido informativo (ET INFO).</p>
   </section>
 {_ASK}</main></body></html>"""
 

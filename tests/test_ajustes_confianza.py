@@ -79,15 +79,15 @@ class Confianza(unittest.TestCase):
         t = self.post(accion="add_trust", ip="127.0.0.1")
         self.assertIn("127.0.0.1 ya entra: la cubre 127.0.0.0/8.", t)
         t = self.post(accion="add_trust", ip="127.0.0.0/8")
-        self.assertIn("127.0.0.0/8 ya esta en la lista.", t)
+        self.assertIn("127.0.0.0/8 ya está en la lista.", t)
         t = self.post(accion="add_trust", ip="203.0.113.10/32")
         self.assertIn("Agregada 203.0.113.10.", t)               # /32 se guarda como IP suelta
         self.assertEqual([e["red"] for e in self.lista()], ["127.0.0.0/8", "203.0.113.10"])
 
     def test_agregar_rechaza_lo_invalido_y_todo_internet(self):
-        self.assertIn("no es una IP ni un rango valido", self.post(accion="add_trust", ip="10.0.0.300"))
+        self.assertIn("no es una IP ni un rango válido", self.post(accion="add_trust", ip="10.0.0.300"))
         self.assertIn("es todo internet", self.post(accion="add_trust", ip="0.0.0.0/0"))
-        self.assertIn("quedarias fuera", self.post(accion="add_trust", ip="192.0.2.0/24"))
+        self.assertIn("quedarías fuera", self.post(accion="add_trust", ip="192.0.2.0/24"))
         self.assertFalse(os.path.exists(self.d.TRUST_FILE) and self.lista())
 
     def test_quitar(self):

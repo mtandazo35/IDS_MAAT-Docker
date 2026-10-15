@@ -78,7 +78,7 @@ def main():
     ok = True
     for src in sorted({k[0] for k in flujos}):
         _sc, _b, _c, desg = ns["riesgo"](src)
-        m = re.search(r"Correlacion flota (\d+)/5", desg)
+        m = re.search(r"Correlación flota (\d+)/5", desg)
         if not m or int(m.group(1)) != cor_lenta(src):
             ok = False; break
     check("riesgo() da la misma correlacion de flota que la version lenta (40 CPEs)", ok, src)

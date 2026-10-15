@@ -105,8 +105,8 @@ def main():
     check("y quien lo mando", "a mano (admin)" in h and h.count(">politica<") == 2, h.count(">politica<"))
     check("con varios routers se dice el nodo", "&middot; p002</span>" in h, "")
     check("el total sigue sumando", "<b>3 CPE enviados</b>" in h, "")
-    check("la tabla dice la accion configurada por clase", "Accion en el router" in h and "Cortar todo" in h
-          and "sin accion" in h, "")
+    check("la tabla dice la accion configurada por clase", "Acción en el router" in h and "Cortar todo" in h
+          and "sin acción" in h, "")
 
     # CONTRATO-F2 §3: mirando un punto, el desplegable solo lista los CPE de ese punto
     ns2["_vis"] = {"p001"}

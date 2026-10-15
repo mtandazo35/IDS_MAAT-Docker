@@ -96,10 +96,10 @@ def main():
     h = ns["dominios_section"](n=1, n_ips=1)
     check("pinta el dominio y por que", "malo.example" in h and "feed: urlhaus" in h, "")
     check("la IP de la red con sus veces, y cuantos mas",
-          "10.0.0.7 (2)" in h and "+2 mas" in h, h[h.find("10.0.0.7") - 40:][:120])
+          "10.0.0.7 (2)" in h and "+2 más" in h, h[h.find("10.0.0.7") - 40:][:120])
     check("el resolutor", "1.1.1.2" in h, "")
     check("con mas dominios de los que ensena, lo dice", "Se muestran 1 de 2 dominios" in h, "")
-    check("el resolutor se presenta como canal, no como victima", "no una victima" in h, "")
+    check("el resolutor se presenta como canal, no como victima", "no una víctima" in h, "")
     j = json.load(open(ns["DOMINIOS_FILE"], encoding="utf-8"))
     check("deja el JSON con el top para el panel",
           j["total_dominios"] == 2 and j["dominios"][0]["dominio"] == "malo.example"

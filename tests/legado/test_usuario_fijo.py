@@ -153,7 +153,7 @@ def main():
     check("  al abrir, se rellena con el usuario de la fila",
           "document.getElementById('eusr').value=_u;" in fuente("perfil_page") or "document.getElementById('eusr').value=_u;" in DASH, "")
     check("ventana Nuevo: avisa que el usuario no se puede cambiar despues",
-          "no se \"\n            \"puede cambiar despues" in DASH or "no se puede cambiar despues" in DASH.replace('"\n            "', ""), "")
+          "no se \"\n            \"puede cambiar despues" in DASH or "no se puede cambiar después" in DASH.replace('"\n            "', ""), "")
 
     USERS2 = [{"user": "admin", "role": "admin", "nombre": "Manuel"}]
     ns2 = {"html": html, "hashlib": hashlib, "re": re, "time": time,

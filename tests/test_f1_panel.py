@@ -183,7 +183,7 @@ class Web(Base):
         nombre acababa dentro de la cadena JS del modal «Eliminar usuario»."""
         st, _c, txt = self.p.pedir("POST", "/perfil", {"accion": "add_user", "nuser": "x');y();//",
                                                        "npass": "clave-larga-1", "nrole": "lectura"})
-        self.assertIn("Usuario invalido", txt)
+        self.assertIn("Usuario inválido", txt)
         self.assertNotIn("x');y();//", json.dumps(self.d.cargar_usuarios()))
         us = self.d.cargar_usuarios()                    # uno heredado con comilla (edicion a mano)
         salt, h = self.d._hash_pw("otra-clave-1")
@@ -192,7 +192,7 @@ class Web(Base):
         st, _c, txt = self.p.pedir("GET", "/ajustes")
         attrs = [html.unescape(a) for a in re.findall(r'onsubmit="([^"]*Eliminar usuario[^"]*)"', txt)]
         js = next(a for a in attrs if "x'y" in a)
-        self.assertIn('"x\'y dejara de poder entrar', js)               # cadena JS entre comillas dobles
+        self.assertIn('"x\'y dejar\\u00e1 de poder entrar', js)               # cadena JS entre comillas dobles
         self.assertNotIn("'x'y", js)
 
     def test_roles_segun_la_precision_del_contrato(self):
@@ -249,7 +249,7 @@ class SinClaveMaestra(unittest.TestCase):
                                    ("/feeds", "authkey", "clave-de-prueba-123")):
             st, _c, txt = self.p.pedir("POST", ruta, {campo: clave})
             self.assertEqual(st, 200, ruta)
-            self.assertIn("No se guardo", txt, ruta)
+            self.assertIn("No se guardó", txt, ruta)
             self.assertIn("clave maestra", txt, ruta)
             self.assertNotIn("guardada (solo", txt, ruta)
         # Ajustes > MikroTik ya no recibe la clave de la API (es de la ficha del punto, 2026-10-14):

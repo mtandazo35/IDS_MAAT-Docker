@@ -278,7 +278,7 @@ def main():
     # ---------- limitar sin limite: no se aplica y se dice ----------
     m["ACCION_P2P"] = "limitar"
     ok6, msg6, plan6 = ns["aplicar_reglas"](router, "p2p", quien="admin")
-    check("limitar sin limite no toca nada y avisa", ok6 is False and "Falta el limite" in msg6 and rt.t[T_MANGLE] == [], msg6)
+    check("limitar sin limite no toca nada y avisa", ok6 is False and "Falta el límite" in msg6 and rt.t[T_MANGLE] == [], msg6)
     m["ACCION_LIMITE_P2P"] = "2M"
     ok7, msg7, _ = ns["aplicar_reglas"](router, "p2p", quien="admin")
     check("con limite, marcas y cola", ok7 and len(rt.t[T_MANGLE]) == 2 and rt.t[T_QUEUE][0]["max-limit"] == "2M", msg7)
@@ -315,7 +315,7 @@ add action=jump chain=prerouting comment="Restringe clientes botnet" jump-target
         ns["reglas_desde_rsc"]("/ip route\nadd dst-address=0.0.0.0/0", "l"); mal = ""
     except ValueError as ex:
         mal = str(ex)
-    check("una tabla que no se maneja es un error con la linea", "linea 1" in mal and "no soportada" in mal, mal)
+    check("una tabla que no se maneja es un error con la linea", "línea 1" in mal and "no soportada" in mal, mal)
     try:
         ns["reglas_desde_rsc"]("add chain=prerouting action=drop", "l"); mal2 = ""
     except ValueError as ex:
@@ -382,7 +382,7 @@ add action=jump chain=prerouting comment="Controla SYN" in-interface-list=!WAN j
         ns["reglas_desde_rsc"]("/ip firewall raw\nadd chain=prerouting action=drop place-before=[find where dynamic=yes]", "l"); m_pb = ""
     except ValueError as ex:
         m_pb = str(ex)
-    check("un place-before que no se sabe resolver es un error con su linea", "linea 2" in m_pb and "place-before" in m_pb, m_pb)
+    check("un place-before que no se sabe resolver es un error con su linea", "línea 2" in m_pb and "place-before" in m_pb, m_pb)
 
     # aplicar el de escaneo en un router CON la regla 'Drop Malware'
     rt3 = RouterFalso()

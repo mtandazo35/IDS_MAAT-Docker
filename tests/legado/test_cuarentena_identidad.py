@@ -256,7 +256,7 @@ def main():
     # IP pelada). §10.1/§3: la IP pelada ya no tiene destino (no hay router por defecto)
     v = llamar(ns1, mk1, "/cuarentena/enviar", {"ajax": "1", "ip": "10.6.4.61", "score": "73"})
     check("con un solo nodo la IP pelada ya no tiene destino: no se envia (§1, §10.1)",
-          "destino no valido" in v.get("texto", "") and mk1.add == []
+          "destino no válido" in v.get("texto", "") and mk1.add == []
           and ns1["cargar_enviados"](ns1["MK_SENT"]) == {}, (v, mk1.add))
     v = llamar(ns1, mk1, "/cuarentena/enviar", {"ajax": "1", "ip": "p001|10.6.4.61", "score": "73"})
     reg1 = ns1["cargar_enviados"](ns1["MK_SENT"])

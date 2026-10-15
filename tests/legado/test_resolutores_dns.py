@@ -181,8 +181,8 @@ def main():
     check("una prueba DNS se dice como consulta maliciosa al DOMINIO, via el resolutor",
           "Consulta DNS maliciosa:" in ficha and "(resolutor conocido)" in ficha, "")
     check("puerto 53 a un resolutor sin dominio no es 'Comunicacion a': es consulta a traves de el",
-          "Consulta DNS a traves de" in ficha and "no es la victima" in ficha, "")
-    check("lo que no es DNS sigue siendo 'Comunicacion a'", "Comunicacion a <span class=mono>" in ficha, "")
+          "Consulta DNS a través de" in ficha and "no es la víctima" in ficha, "")
+    check("lo que no es DNS sigue siendo 'Comunicacion a'", "Comunicación a <span class=mono>" in ficha, "")
 
     # --- Ajustes -> DNS y la ruta ---------------------------------------------------------
     check("hay tarjeta DNS en Ajustes", "DNS &mdash; resolutores conocidos" in DASH, "")

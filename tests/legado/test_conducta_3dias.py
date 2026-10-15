@@ -232,7 +232,7 @@ def main():
     # --- el CSV lleva la categoria ------------------------------------------------
     csv2 = ns["conducta_csv"](r).decode("utf-8").lstrip("\ufeff").split("\n")
     check("el CSV trae la columna Categoria justo despues de la IP",
-          csv2[0].split(";")[:2] == ["IP", "Categoria"], csv2[0])
+          csv2[0].split(";")[:2] == ["IP", "Categoría"], csv2[0])
 
     # --- el grafico de atacantes --------------------------------------------------
     barras = ns["conducta_barras"]([{"ip": "192.168.1.1", "alertas": 100},
@@ -266,12 +266,12 @@ def main():
           [v for _k, v in ag], reverse=True), ag)
 
     check("un puerto conocido se dice en castellano",
-          "navegacion" in ns["nombre_puerto"]("443"), ns["nombre_puerto"]("443"))
+          "navegación" in ns["nombre_puerto"]("443"), ns["nombre_puerto"]("443"))
     check("y sigue mostrando el numero, para el ISP",
           "443" in ns["nombre_puerto"]("443"))
     _desc = lambda p_: ns["nombre_puerto"](p_).split(" (")[0]
     check("el correo saliente se llama igual en sus tres puertos",
-          _desc("25") == _desc("465") == _desc("587") == "envio de correo",
+          _desc("25") == _desc("465") == _desc("587") == "envío de correo",
           [_desc(x) for x in ("25", "465", "587")])
     check("un puerto raro no inventa un nombre",
           ns["nombre_puerto"]("47231") == "puerto 47231", ns["nombre_puerto"]("47231"))
@@ -453,12 +453,12 @@ def main():
     tabla = ns["indicios_html"]({"firmas": [["ET MALWARE Botnet CnC checkin", 9]],
                                  "puertos": [["23", 5]], "destinos_n": 90, "dias": 3})
     check("la tabla dice que indicios se cumplen",
-          "Si" in tabla and "Comunicacion con servidor de control" in tabla, tabla[:300])
+          "Si" in tabla and "Comunicación con servidor de control" in tabla, tabla[:300])
     check("y SOLO esos: sin la lista de los que no se cumplen (el user, 2026-10-12)",
           "&#10007;" not in tabla and ">&#10007; No<" not in tabla
           and "Envio de correo" not in tabla, tabla)
     vacia = ns["indicios_html"]({"firmas": [], "puertos": [], "destinos_n": 0, "dias": 1})
-    check("sin ningun indicio lo dice en una linea", "Ningun indicio concreto" in vacia, vacia)
+    check("sin ningun indicio lo dice en una linea", "Ningún indicio concreto" in vacia, vacia)
     check("y cierra con el nivel de confianza", "Nivel de confianza" in tabla)
 
     # --- paginacion ------------------------------------------------------------------
@@ -629,7 +629,7 @@ def main():
           rep10 == [("p001", 3), ("p002", 1)], rep10)
     csvt = ns["conducta_csv"](tod).decode("utf-8").lstrip("\ufeff").split("\n")
     check("y el CSV de «Todos» lleva la columna Nodo delante de la IP",
-          csvt[0].split(";")[:3] == ["Nodo", "IP", "Categoria"], csvt[0])
+          csvt[0].split(";")[:3] == ["Nodo", "IP", "Categoría"], csvt[0])
     check("con el nombre del punto en cada fila",
           sorted(l.split(";")[0] for l in csvt[1:] if ";192.168.1.10;" in l)
           == ["MikroTik", "Sucursal"], csvt[1:])

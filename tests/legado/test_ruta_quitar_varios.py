@@ -109,7 +109,7 @@ def main():
     intentos = []
     r, estado = correr(["cuar|p001|198.51.100.5"], intentos=intentos)   # esa vive en la lista DNS
     check("no da falso exito por la lista equivocada",
-          msg(r).startswith("0 entrada(s)") and "no esta en esa lista" in msg(r), msg(r))
+          msg(r).startswith("0 entrada(s)") and "no está en esa lista" in msg(r), msg(r))
     check("ni siquiera llama al router", not intentos, intentos)
 
     # HALLAZGO: no pisar lo que otro hilo escribio mientras hablabamos con el router
@@ -131,7 +131,7 @@ def main():
     estado = {"cuar": {"10.6.1.89": {}, "p009|10.6.1.89": {}}, "dns": {}}
     r, estado = correr(["cuar|10.6.1.89", "cuar|p009|10.6.1.89"], estado=estado, intentos=intentos)
     check("sin destino inequivoco: 0 quitadas, 'destino no valido' y no se toca nada",
-          msg(r).startswith("0 entrada(s)") and "destino no valido" in msg(r)
+          msg(r).startswith("0 entrada(s)") and "destino no válido" in msg(r)
           and not intentos and len(estado["cuar"]) == 2, (msg(r), intentos, estado))
 
     print("\n" + ("TODO OK" if not fallos else f"{fallos} fallo(s)"))

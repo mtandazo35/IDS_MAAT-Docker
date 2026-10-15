@@ -38,7 +38,7 @@ class ModalEmpresa(unittest.TestCase):
         h, m = self.modal()
         self.assertIn("<div class='aptbox chico'>", m)
         self.assertIn(".aptmodal .aptbox.chico{max-width:560px}", h)
-        self.assertIn("franja blanca de debajo del menu", m)
+        self.assertIn("franja blanca de debajo del menú", m)
         self.assertNotIn("al lado de las pesta", m)
         self.assertIn("onclick=closem()>Cancelar</button>", m)
         self.assertIn("PNG, JPG, SVG o WebP", m)

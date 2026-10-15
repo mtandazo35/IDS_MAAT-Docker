@@ -102,7 +102,7 @@ class AtacantesPorPuerto(Entorno):
         self.eventos("p001", "eve.json",
                      [alerta("10.0.0.5", "192.0.2.10", dport=23, flow_id=80 + i) for i in range(3)])
         self.ok("60", "--nodo", "p001")
-        t = tarjeta(self.html("p001"), "Firmas mas frecuentes (tipo de ataque)")
+        t = tarjeta(self.html("p001"), "Firmas más frecuentes (tipo de ataque)")
         etiquetas = re.findall(r'<text ([^>]*) class="lbl">', t)
         self.assertTrue(etiquetas, t)
         self.assertTrue(all(e.startswith('x="2" ') and "text-anchor" not in e for e in etiquetas),

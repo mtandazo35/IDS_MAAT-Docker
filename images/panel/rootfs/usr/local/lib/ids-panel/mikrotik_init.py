@@ -151,7 +151,7 @@ def _mk_send(sock, words):
 
 def _mk_rlen(sock):
     c = sock.recv(1)
-    if not c: raise IOError("conexion cerrada")
+    if not c: raise IOError("conexión cerrada")
     c = c[0]
     if c & 0x80 == 0: return c
     if c & 0xC0 == 0x80: return ((c & 0x3F) << 8) + sock.recv(1)[0]
@@ -171,7 +171,7 @@ def _mk_read(sock):
         data = b""
         while len(data) < n:
             chunk = sock.recv(n - len(data))
-            if not chunk: raise IOError("conexion cerrada")
+            if not chunk: raise IOError("conexión cerrada")
             data += chunk
         words.append(data.decode("utf-8", "replace"))
 
@@ -191,7 +191,7 @@ def _mk_reply(sock):
         if tipo == "!done":
             return (err == "", frases, err)
         if tipo == "!fatal":
-            return (False, frases, err or "conexion terminada")
+            return (False, frases, err or "conexión terminada")
 
 # Errores de un socket que se corta o se queda callado a mitad de respuesta.
 _FALLOS_RED = (OSError, IndexError, ValueError)
@@ -211,7 +211,7 @@ def _mk_print(s_, cmd, props=None, consulta=()):
     except _FALLOS_RED as e:
         raise ErrorRouter("sin respuesta del router en %s: %s" % (cmd, e))
     if not ok:
-        raise ErrorRouter("el router rechazo %s: %s" % (cmd, err))
+        raise ErrorRouter("el router rechazó %s: %s" % (cmd, err))
     filas = []
     for f in frases:
         if not (f and f[0] == "!re"):
@@ -298,12 +298,12 @@ def _norm_dir(txt):
 
 def _validar_pid(pid):
     if not nodos.pid_valido(pid):
-        raise DatosInvalidos("punto invalido: %r" % (pid,))
+        raise DatosInvalidos("punto inválido: %r" % (pid,))
     return pid
 
 def _validar_lista(lista):
     if not isinstance(lista, str) or not RE_LISTA.match(lista):
-        raise DatosInvalidos("nombre de address-list invalido: %r" % (lista,))
+        raise DatosInvalidos("nombre de address-list inválido: %r" % (lista,))
     return lista
 
 def _validar(pid, sensor, puerto, redes, lista):
@@ -311,13 +311,13 @@ def _validar(pid, sensor, puerto, redes, lista):
     try:
         ip = ipaddress.ip_address(str(sensor).strip())
     except ValueError:
-        raise DatosInvalidos("IP del sensor invalida: %r" % (sensor,))
+        raise DatosInvalidos("IP del sensor inválida: %r" % (sensor,))
     if ip.version != 4:
-        raise DatosInvalidos("IPv6 queda fuera de esta version: sensor %s" % ip)
+        raise DatosInvalidos("IPv6 queda fuera de esta versión: sensor %s" % ip)
     try:
         puerto = int(puerto)
     except (TypeError, ValueError):
-        raise DatosInvalidos("puerto TZSP invalido: %r" % (puerto,))
+        raise DatosInvalidos("puerto TZSP inválido: %r" % (puerto,))
     if not 1 <= puerto <= 65535:
         raise DatosInvalidos("puerto TZSP fuera de rango: %d" % puerto)
     _validar_lista(lista)
@@ -331,9 +331,9 @@ def _validar(pid, sensor, puerto, redes, lista):
         try:
             net = ipaddress.ip_network(r, strict=False)
         except ValueError:
-            raise DatosInvalidos("red invalida: %r" % r)
+            raise DatosInvalidos("red inválida: %r" % r)
         if net.version != 4:
-            raise DatosInvalidos("IPv6 queda fuera de esta version: %s" % r)
+            raise DatosInvalidos("IPv6 queda fuera de esta versión: %s" % r)
         t = _txt_red(net)
         if t not in norm:
             norm.append(t)
@@ -397,7 +397,7 @@ def _calcular(s, pid, sensor, puerto, redes, lista):
             en_lista.setdefault(_norm_dir(f.get("address", "")), []).append(f)
     for r in redes:
         if r not in en_lista:
-            cambio("anadir %s a la lista %s" % (r, lista), AL + "add",
+            cambio("añadir %s a la lista %s" % (r, lista), AL + "add",
                    ["=list=" + lista, "=address=" + r, "=comment=" + com])
     for f in t["address-list"]:
         dire = _norm_dir(f.get("address", ""))
@@ -410,11 +410,11 @@ def _calcular(s, pid, sensor, puerto, redes, lista):
             cambio("quitar %s de la lista %s (ya no es una red del punto)" % (dire, f.get("list")),
                    AL + "remove", ["=.id=" + f[".id"]])
         elif f.get("list") == lista and dire not in redes:
-            avisos.append("%s esta en la lista %s sin el comentario del punto: se vigila aunque no "
+            avisos.append("%s está en la lista %s sin el comentario del punto: se vigila aunque no "
                           "sea una red del punto, y no se toca" % (dire, lista))
     if not redes and not any(not mio(f, "address-list") for f in t["address-list"]
                              if f.get("list") == lista):
-        avisos.append("la lista %s queda VACIA: no se espejara nada hasta que el punto tenga redes"
+        avisos.append("la lista %s queda VACÍA: no se espejará nada hasta que el punto tenga redes"
                       % lista)
 
     # 2) el espejo: dos mangle, sin duplicar; antes se apagan los espejos viejos al sensor.
@@ -437,7 +437,7 @@ def _calcular(s, pid, sensor, puerto, redes, lista):
               and (f.get("action") == "accept"
                    or (f.get("action") != "sniff-tzsp" and not _si(f.get("passthrough", "true"))))):
             avisos.append("la regla mangle %s (forward, action=%s, passthrough=%s) termina la cadena: "
-                          "lo que case no llegara al espejo" % (f[".id"], f.get("action"),
+                          "lo que case no llegará al espejo" % (f[".id"], f.get("action"),
                                                                f.get("passthrough", "")))
     usadas = []
     pendientes = []
@@ -484,31 +484,31 @@ def _calcular(s, pid, sensor, puerto, redes, lista):
         apagada = _si(f.get("disabled", "false"))
         if f.get("action") != FT:
             if lista in (src, dst) or excl in (src, dst):
-                txt = ("la regla filter %s (action=%s) usa la lista %s: anadir o quitar redes cambiaria "
+                txt = ("la regla filter %s (action=%s) usa la lista %s: añadir o quitar redes cambiaría "
                        "lo que deja pasar" % (f[".id"], f.get("action"), lista))
                 if apagada:
-                    avisos.append(txt + " si se habilita (esta deshabilitada)")
+                    avisos.append(txt + " si se habilita (está deshabilitada)")
                 else:
-                    bloqueos.append(txt + ". Resuelvelo a mano (otra lista) antes de montar el espejo")
+                    bloqueos.append(txt + ". Resuélvelo a mano (otra lista) antes de montar el espejo")
             continue
         ft = {".id": f[".id"], "src-address-list": src, "dst-address-list": dst,
               "disabled": apagada}
         fasttrack.append(ft)
         if apagada:
             ft["accion"], ft["que"] = "no-se-toca", "deshabilitada: no acelera nada"
-            avisos.append("la regla fasttrack %s esta deshabilitada y no se toca: si la habilitas, "
+            avisos.append("la regla fasttrack %s está deshabilitada y no se toca: si la habilitas, "
                           "vuelve a aplicar el espejo" % f[".id"])
             continue
         if src not in ("", excl) or dst not in ("", excl):
             ft["accion"], ft["que"] = "no-se-toca", "ya usa address-lists"
             avisos.append("la regla fasttrack %s ya usa address-lists (src=%r dst=%r): no se modifica; "
-                          "los vigilados que acelere no se espejaran. Resuelvelo a mano"
+                          "los vigilados que acelere no se espejarán. Resuélvelo a mano"
                           % (f[".id"], src, dst))
             continue
         if f.get("connection-bytes"):
             ft["accion"], ft["que"] = "no-se-toca", "ya usa connection-bytes"
             avisos.append("la regla fasttrack %s ya usa connection-bytes=%s: no se modifica; "
-                          "resuelvelo a mano" % (f[".id"], f["connection-bytes"]))
+                          "resuélvelo a mano" % (f[".id"], f["connection-bytes"]))
             continue
         hecha = src == excl and dst == excl
         ft["accion"] = "ya-excluida" if hecha else "excluir"
@@ -535,7 +535,7 @@ def _calcular(s, pid, sensor, puerto, redes, lista):
             args += ["=%s=%s" % (campo, lista), "=connection-bytes=" + CB_ACELERAR, "=comment=" + com]
             if sig:
                 args.append("=place-before=" + sig)
-            cambio("acelerar a los vigilados (%s) pasados 10 KB, detras de %s" % (rol, f[".id"]),
+            cambio("acelerar a los vigilados (%s) pasados 10 KB, detrás de %s" % (rol, f[".id"]),
                    FI + "add", args)
         if not hecha:
             cambio("excluir %s del fasttrack %s (sin esto mangle solo ve el primer paquete)"
@@ -601,7 +601,7 @@ def _exportar(s, pid, res, avance=None):
     nombre = "ids-maat-%s-%s" % (pid, _marca())
     ok, err = _orden(s, "/export", ["=file=" + nombre])
     if not ok:
-        res["fallo"] = "fallo el respaldo /export en el router (%s): no se ha tocado nada" % (err or "?")
+        res["fallo"] = "falló el respaldo /export en el router (%s): no se ha tocado nada" % (err or "?")
         return False
     res["export"] = nombre
     return True
@@ -708,7 +708,7 @@ def aplicar(conexion, plan, respaldo_dir, avance=None):
         res["fallo"] = str(e)
         return res
     if _firma(actual) != _firma(plan):
-        res["fallo"] = ("el router cambio desde la vista previa: no se ha tocado nada. Revisa el "
+        res["fallo"] = ("el router cambió desde la vista previa: no se ha tocado nada. Revisa el "
                         "plan nuevo y vuelve a aplicar")
         res["plan"] = actual
         return res
@@ -729,7 +729,7 @@ def aplicar(conexion, plan, respaldo_dir, avance=None):
     _avisar(avance, "export")
     ok, err = _orden(conexion, "/export", ["=file=" + nombre])
     if not ok:
-        res["fallo"] = "fallo el respaldo /export en el router (%s): no se ha tocado nada" % (err or "?")
+        res["fallo"] = "falló el respaldo /export en el router (%s): no se ha tocado nada" % (err or "?")
         return res
     res["export"] = nombre
     return _correr(conexion, actual["cambios"], res, avance)
@@ -862,15 +862,15 @@ def plan_retirar(conexion, pid, respaldo=None, lista=None):
                     cambio("devolver %s=%s al fasttrack %s" % (campo, antes, f[".id"]), FI + "set",
                            ["=.id=" + f[".id"], "=%s=%s" % (campo, antes)])
                 else:
-                    cambio("quitar %s del fasttrack %s (no tenia)" % (campo, f[".id"]), FI + "unset",
+                    cambio("quitar %s del fasttrack %s (no tenía)" % (campo, f[".id"]), FI + "unset",
                            ["=numbers=" + f[".id"], "=value-name=" + campo])
         elif all(f.get(c, "") == excl for c in campos):
             for campo in campos:
                 cambio("quitar %s=%s del fasttrack %s" % (campo, excl, f[".id"]), FI + "unset",
                        ["=numbers=" + f[".id"], "=value-name=" + campo])
         elif excl in (f.get(c, "") for c in campos):
-            avisos.append("el fasttrack %s tiene %s solo en un campo y no esta en el respaldo "
-                          "(quiza del instalador anterior): no se toca" % (f[".id"], excl))
+            avisos.append("el fasttrack %s tiene %s solo en un campo y no está en el respaldo "
+                          "(quizá del instalador anterior): no se toca" % (f[".id"], excl))
     for ftid in originales:
         if ftid not in ids:
             avisos.append("el fasttrack %s del respaldo ya no existe en el router" % ftid)

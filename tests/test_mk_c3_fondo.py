@@ -297,7 +297,7 @@ class Pausa(Fondo):
         self.assertEqual(self.conexiones[len(antes):], ["p002"])
         with open(d.DIAG_FILE, encoding="utf-8") as f:
             diag = json.load(f)
-        self.assertIn("sin conexion con el MikroTik", diag["p001"]["error"])
+        self.assertIn("sin conexión con el MikroTik", diag["p001"]["error"])
         self.assertIn("checks", diag["p002"])
 
 

@@ -127,7 +127,7 @@ def main():
     ns["_cpes_del_nodo"] = lambda rid: []
     h4 = ns["culpables_lista_html"]("r1", bl(("203.0.113.1", ["SpamCop"])))
     check("si ningun CPE encaja se dice, en vez de dejar el hueco",
-          "ningun CPE" in h4, h4[:200])
+          "ningún CPE" in h4, h4[:200])
     check("y se apunta a donde puede estar", "otro nodo" in h4, h4[:220])
 
     print("\n" + ("TODO OK" if not fallos else "%d fallo(s)" % fallos))

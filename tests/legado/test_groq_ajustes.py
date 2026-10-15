@@ -113,7 +113,7 @@ def main():
     ns = entorno(HTTPError(401))
     est, det, ms = ns["groq_probar"]("mala")
     check("una clave rechazada devuelve False", est is False, (est, det))
-    check("y se dice que la rechazo Groq, no otra cosa", "rechazo la clave" in det, det)
+    check("y se dice que la rechazo Groq, no otra cosa", "rechazó la clave" in det, det)
     check("sin modelos que ofrecer", ms == [], ms)
 
     ns = entorno(HTTPError(403))

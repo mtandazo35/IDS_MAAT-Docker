@@ -132,7 +132,7 @@ def main():
     # situaciones distintas. Aqui SI hay señal que buscar y SI se busco, asi que
     # tiene que decirse eso y no un "no aparece" que no distingue nada.
     check("si ningun CPE del nodo encaja se dice que se busco y no habia nadie",
-          "Se busco entre los CPEs" in vacio, vacio[:200])
+          "Se buscó entre los CPEs" in vacio, vacio[:200])
     check("y el motivo que se da es ese, no otro",
           ns["por_que_sin_culpables"]([SPAM])[0] == "nadie",
           ns["por_que_sin_culpables"]([SPAM]))

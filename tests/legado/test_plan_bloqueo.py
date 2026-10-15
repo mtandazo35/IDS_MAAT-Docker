@@ -234,11 +234,11 @@ def main():
     check("el apartado dice que salir empieza por dejar de abusar",
           "empieza por dejar de abusar" in DASH, "")
     check("y avisa de que la IA opina sobre lo medido, no mide",
-          "Es una opinion sobre lo medido" in DASH, "")
+          "Es una opinión sobre lo medido" in DASH, "")
     check("y de que el corte general es decision de negocio",
           "decision de negocio" in DASH, "")
     check("enlaza con los dias limpios, que es lo que habilita pedir la salida",
-          "los dias limpios empiezan a contar" in DASH, "")
+          "los días limpios empiezan a contar" in DASH, "")
 
     print("\n" + ("TODO OK" if not fallos else "%d fallo(s)" % fallos))
     return 1 if fallos else 0

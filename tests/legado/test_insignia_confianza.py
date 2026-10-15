@@ -89,7 +89,7 @@ def main():
     check("el boton masivo habla de confirmados, no de confianza",
           "Enviar confirmados (" in DASH and "Enviar alta confianza" not in DASH, "")
     check("y al confirmar dice por que son confirmados",
-          "2 o mas pruebas independientes" in DASH, "")
+          "2 o más pruebas independientes" in DASH, "")
 
     # --- la fila tiene que dejar comparar dos candidatos sin hacer scroll -------------
     # La celda del motivo apilaba recuento, firma partida en dos lineas, lista con vinetas
@@ -106,7 +106,7 @@ def main():
     check("ver evidencia es un enlace, no un boton en bloque",
           "class=evlink" in DASH and "evbtn" not in DASH, "")
     check("la columna de alertas aclara que es el total del CPE",
-          "no solo las de esta categoria" in DASH, "")
+          "no solo las de esta categoría" in DASH, "")
 
     print("\n" + ("TODO OK" if not fallos else "%d fallo(s)" % fallos))
     return 1 if fallos else 0

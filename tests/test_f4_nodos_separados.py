@@ -245,7 +245,7 @@ class BajaLimpiaRouter(Base):
         self.revientan = {"10.0.0.7"}
         res = self.d.baja_limpiar_router("p001", "ana")
         self.assertFalse(res["ok"])
-        self.assertIn("fallo hablando con el router", res["mensaje"])
+        self.assertIn("falló hablando con el router", res["mensaje"])
         self.assertIn("p001|10.0.0.7", self.d.cargar_enviados(self.d.MK_SENT_DNS))
         self.assertNotIn(("espejo", "p001"), self.orden)
         self.assertIn("p001", self.d.pids_activos())
@@ -317,7 +317,7 @@ class MarcaDeBaja(Base):
         self.d._PREBAJA["p001"] = (time.time() + 60, None)
         ok, msg = self.d.mk_add(IP, router={"id": "p001"})
         self.assertFalse(ok)
-        self.assertIn("se esta dando de baja", msg)
+        self.assertIn("se está dando de baja", msg)
 
     def test_caduca_y_va_ligada_a_su_operacion(self):
         """Correccion de defecto (auditoria ap2 H1): la marca caduca sola y baja_cancelada solo suelta la
@@ -393,7 +393,7 @@ class BajaFormulario(unittest.TestCase):
         r = self.baja(limpiar_router="1")
         self.assertEqual(r.status, 409)
         self.assertIn("No se dio de baja", r.texto)
-        self.assertIn("el router ya se toco", r.texto)
+        self.assertIn("el router ya se tocó", r.texto)
         self.assertEqual(self.p.orq.ordenes("punto.borrar"), [])
 
     def test_sin_casilla_no_toca_el_router(self):
@@ -484,11 +484,11 @@ class IpsUnicas(Entorno):
         self.tres_cnc("p002")
         self.ok("60", "--todos")
         m = re.search(r'<div class="big">([\d,]+)\+?</div><div class="lab"><span class="dot"[^>]*></span>'
-                      r'IPs unicas vistas', self.html("_todos"))
+                      r'IPs únicas vistas', self.html("_todos"))
         self.assertEqual(m.group(1), "3")
         self.ok("60", "--nodo", "p001")
         m = re.search(r'<div class="big">([\d,]+)\+?</div><div class="lab"><span class="dot"[^>]*></span>'
-                      r'IPs unicas vistas', self.html("p001"))
+                      r'IPs únicas vistas', self.html("p001"))
         self.assertEqual(m.group(1), "2")
 
 
@@ -567,7 +567,7 @@ class UsuarioConMayusculas(unittest.TestCase):
         ana = p.entrar("ana")
         r = p.pedir("POST", "/perfil", {"accion": "add_user", "nuser": "Vicente", "npass": CLAVE,
                                         "nrole": "lectura"}, cookie=ana)
-        self.assertNotIn("Usuario invalido", r.texto)
+        self.assertNotIn("Usuario inválido", r.texto)
         self.assertIn("vicente", [u["user"] for u in p.d.cargar_usuarios()])
         self.assertNotIn("Vicente", [u["user"] for u in p.d.cargar_usuarios()])
         self.assertTrue(p.entrar("Vicente"))

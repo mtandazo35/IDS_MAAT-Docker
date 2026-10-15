@@ -85,11 +85,11 @@ def main():
     vs = V(P(SPAM, "clientes-spam"), "clientes-spam")
     check("spam del ISP: NINGUN error (funciona en su router)", "error" not in niveles(vs), [x["msg"] for x in vs if x["nivel"] == "error"])
     check("  avisa de la regla que mira otra lista (Redes-Privadas)", tiene(vs, "aviso", "usa la lista 'Redes-Privadas'"), vs)
-    check("  avisa de las que no miran ninguna lista: afectan a TODO el trafico", tiene(vs, "aviso", "afecta a TODO el trafico"), "")
+    check("  avisa de las que no miran ninguna lista: afectan a TODO el trafico", tiene(vs, "aviso", "afecta a TODO el tráfico"), "")
     check("  avisa de port= (tambien corta respuestas)", tiene(vs, "aviso", "port= casa el puerto de ORIGEN o de DESTINO"), "")
-    check("  avisa del comentario 'Acepta' en un drop", tiene(vs, "aviso", "el comentario dice que acepta/permite, pero la accion es drop"), "")
+    check("  avisa del comentario 'Acepta' en un drop", tiene(vs, "aviso", "el comentario dice que acepta/permite, pero la acción es drop"), "")
     check("  avisa del jump a una cadena que no esta en el bloque", tiene(vs, "aviso", "salta a 'Correo-ISP'"), "")
-    check("  y dice en que linea", any(x["donde"] == "linea 6" and "port=" in x["msg"] for x in vs), [x["donde"] for x in vs])
+    check("  y dice en que linea", any(x["donde"] == "línea 6" and "port=" in x["msg"] for x in vs), [x["donde"] for x in vs])
 
     # ---------- errores de verdad ----------
     def err(texto, trozo):
@@ -99,8 +99,8 @@ def main():
         ("/ip firewall raw\nadd chain=prerouting action=dst-nat src-address-list=L to-addresses=192.0.2.1", "no existe en /ip firewall raw"),
         ("/ip firewall raw\nadd chain=prerouting action=drop src-address-list=L dst-port=25", "solo vale con protocol"),
         ("/ip firewall raw\nadd chain=prerouting action=drop\nadd chain=prerouting action=drop src-address-list=L protocol=tcp dst-port=25",
-         "nunca se evalua"),
-        ("/ip firewall raw\nadd chain=prerouting action=drop", "corta TODO el trafico del router"),
+         "nunca se evalúa"),
+        ("/ip firewall raw\nadd chain=prerouting action=drop", "corta TODO el tráfico del router"),
         ("/ip firewall nat\nadd chain=srcnat action=dst-nat src-address-list=L to-addresses=192.0.2.1", "va en dstnat"),
         ("/ip firewall raw\nadd chain=prerouting action=jump src-address-list=L", "necesita jump-target"),
         ("/ip firewall raw\nadd chain=prerouting action=jump jump-target=prerouting src-address-list=L", "cadena del sistema"),
@@ -109,7 +109,7 @@ def main():
         ok, v = err(texto, trozo)
         check("error: " + trozo, ok, [x["msg"] for x in v])
     check("una cadena propia a la que no salta nadie es aviso", tiene(V(P("/ip firewall raw\nadd chain=HUERFANA action=drop", "L"), "L"),
-                                                                     "aviso", "no la usa ningun jump"), "")
+                                                                     "aviso", "no la usa ningún jump"), "")
 
     # guardar rechaza los errores del verificador, y guarda con avisos
     ns["REGLAS_DIR"] = os.path.join(td, "reglas_v")
@@ -126,8 +126,8 @@ def main():
     vr = ns["verificar_en_router"](rt, P(SPAM, "clientes-spam"), "clientes-spam")
     check("interface-list que no existe en el router: error", tiene(vr, "error", "no existe la interface-list 'WAN'"), vr)
     check("cadena de jump vacia en el router: aviso", tiene(vr, "aviso", "la cadena 'Correo-ISP' no existe ni en el bloque ni en el router"), vr)
-    check("address-list vacia en el router: aviso ('Correo Permitido')", tiene(vr, "aviso", "'Correo Permitido' esta vacia"), vr)
-    check("la que tiene entradas no avisa (Redes-Privadas)", not tiene(vr, "aviso", "'Redes-Privadas' esta vacia"), "")
+    check("address-list vacia en el router: aviso ('Correo Permitido')", tiene(vr, "aviso", "'Correo Permitido' está vacía"), vr)
+    check("la que tiene entradas no avisa (Redes-Privadas)", not tiene(vr, "aviso", "'Redes-Privadas' está vacía"), "")
 
     # ---------- aplicar: bloqueado con errores; verificado tras aplicar ----------
     router = {"id": "p001"}          # un punto = un router del multi-nodo viejo (CONTRATO-F2 §1)
@@ -135,7 +135,7 @@ def main():
     m["ACCION_DNS"] = "dns-protegido"                                    # usa !WAN: el router no la tiene
     antes = json.dumps(rt.t, sort_keys=True)
     okb, msgb, planb = ns["aplicar_reglas"](router, "dns", quien="admin")
-    check("con un error del verificador, aplicar no toca el router", okb is False and "verificador encontro errores" in msgb
+    check("con un error del verificador, aplicar no toca el router", okb is False and "verificador encontró errores" in msgb
           and json.dumps(rt.t, sort_keys=True) == antes and not os.path.exists(ns["RESPALDOS_MK"]), msgb)
     check("  y la vista previa lo marca como bloqueado", planb.get("bloqueado") is True, "")
     rt.t["/interface/list"].append({".id": "*2", "name": "WAN"})

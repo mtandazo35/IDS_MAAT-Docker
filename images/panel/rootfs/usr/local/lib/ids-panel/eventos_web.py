@@ -76,7 +76,7 @@ CONCURRENCIA = 2                   # busquedas/detalles a la vez (cada una: TOPE
 ESPERA_OCUPADO = 2.0               # segundos que espera una consulta a que quede una plaza libre
 
 TIPOS = (("alert", "Alertas"), ("dns", "DNS"), ("http", "HTTP"), ("tls", "TLS"),
-         ("stats", "Estadisticas"), ("todos", "Todos"))
+         ("stats", "Estadísticas"), ("todos", "Todos"))
 DIRS_IP = (("", "origen o destino"), ("src", "origen"), ("dst", "destino"))
 CAMPOS_FILTRO = ("desde", "hasta", "tipo", "firma", "sev", "ip", "ipdir", "puerto", "pdir", "proto", "por")
 
@@ -142,7 +142,7 @@ class _GzLector:
         e = self.fh.read(TROZO_GZ)
         self.comprimidos += len(e)
         if self.max_comprimidos is not None and self.comprimidos > self.max_comprimidos:
-            raise _GzLimite("mas de %d KB comprimidos" % (self.max_comprimidos // 1024))
+            raise _GzLimite("más de %d KB comprimidos" % (self.max_comprimidos // 1024))
         return e
 
     def _mas(self):
@@ -161,7 +161,7 @@ class _GzLector:
                         continue
                 self.miembros += 1
                 if self.miembros > self.max_miembros:
-                    raise _GzLimite("mas de %d miembros gzip" % self.max_miembros)
+                    raise _GzLimite("más de %d miembros gzip" % self.max_miembros)
                 self.d = zlib.decompressobj(16 + zlib.MAX_WBITS)
             else:
                 e = self.d.unconsumed_tail or self._entrada()
@@ -294,13 +294,13 @@ def _form_us(s, fin):
     """Fecha del formulario en hora local -> µs. `fin`: incluye el minuto/segundo entero."""
     m = _RE_FORM.fullmatch(s)
     if not m:
-        raise FiltroInvalido("fecha no valida: use AAAA-MM-DD HH:MM")
+        raise FiltroInvalido("fecha no válida: use AAAA-MM-DD HH:MM")
     y, mo, d, h, mi = (int(m.group(i)) for i in range(1, 6))
     se = int(m.group(6)) if m.group(6) else 0
     try:
         t = int(datetime(y, mo, d, h, mi, se, tzinfo=_zona()).timestamp())
     except (ValueError, OverflowError):
-        raise FiltroInvalido("fecha no valida: use AAAA-MM-DD HH:MM")
+        raise FiltroInvalido("fecha no válida: use AAAA-MM-DD HH:MM")
     if fin:
         return (t + (1 if m.group(6) else 60)) * 1000000 - 1
     return t * 1000000
@@ -336,7 +336,7 @@ def filtros(consulta, ahora=None):
         raise FiltroInvalido("«desde» es posterior a «hasta»")
     tipo = _q(consulta, "tipo") or "alert"
     if tipo not in dict(TIPOS):
-        raise FiltroInvalido("tipo de evento no valido")
+        raise FiltroInvalido("tipo de evento no válido")
     f["tipo"] = tipo
     firma = _q(consulta, "firma")
     if firma.isdigit() and len(firma) <= 10 and firma.isascii():
@@ -346,31 +346,31 @@ def filtros(consulta, ahora=None):
     sev = _q(consulta, "sev")
     if sev:
         if not (sev.isascii() and sev.isdigit() and 1 <= int(sev) <= 255):
-            raise FiltroInvalido("severidad no valida (1-255)")
+            raise FiltroInvalido("severidad no válida (1-255)")
         f["sev"] = int(sev)
     ip = _q(consulta, "ip")
     if ip:
         try:
             f["ip"] = str(ipaddress.ip_address(ip))
         except ValueError:
-            raise FiltroInvalido("IP no valida")
+            raise FiltroInvalido("IP no válida")
     ipdir = _q(consulta, "ipdir")
     if ipdir not in dict(DIRS_IP):
-        raise FiltroInvalido("sentido de la IP no valido")
+        raise FiltroInvalido("sentido de la IP no válido")
     f["ipdir"] = ipdir
     puerto = _q(consulta, "puerto")
     if puerto:
         if not (puerto.isascii() and puerto.isdigit() and int(puerto) <= 65535):
-            raise FiltroInvalido("puerto no valido (0-65535)")
+            raise FiltroInvalido("puerto no válido (0-65535)")
         f["puerto"] = int(puerto)
     pdir = _q(consulta, "pdir")
     if pdir not in dict(DIRS_IP):
-        raise FiltroInvalido("sentido del puerto no valido")
+        raise FiltroInvalido("sentido del puerto no válido")
     f["pdir"] = pdir
     proto = _q(consulta, "proto")
     if proto:
         if not RE_PROTO.fullmatch(proto):
-            raise FiltroInvalido("protocolo no valido")
+            raise FiltroInvalido("protocolo no válido")
         f["proto"] = proto.upper()
     por = _q(consulta, "por")
     f["por_todos"] = por == "todos"
@@ -381,12 +381,12 @@ def filtros(consulta, ahora=None):
     elif por.isascii() and por.isdigit() and int(por) in TAMANOS:
         f["por"] = int(por)
     else:
-        raise FiltroInvalido("eventos por pagina no validos")
+        raise FiltroInvalido("eventos por página no válidos")
     cur = _q(consulta, "cursor", 64)
     if cur:
         m = RE_CURSOR.fullmatch(cur)
         if not m:
-            raise FiltroInvalido("cursor de pagina no valido")
+            raise FiltroInvalido("cursor de página no válido")
         f["cursor"] = (int(m.group(1)), m.group(2) or "", m.group(3) or "")
     return f
 
@@ -507,7 +507,7 @@ def _abrir(real, st):
         st2 = os.fstat(fd)
         if (not stat.S_ISREG(st2.st_mode)
                 or (st.st_ino and st2.st_ino and (st.st_dev, st.st_ino) != (st2.st_dev, st2.st_ino))):
-            raise OSError("el fichero cambio al abrirlo")
+            raise OSError("el fichero cambió al abrirlo")
         if nb:
             try:
                 import fcntl
@@ -545,9 +545,9 @@ class _Ctx:
 
     def tope(self):
         if self.bytes > TOPE_BYTES:
-            return "%d MB leidos" % (TOPE_BYTES // (1024 * 1024))
+            return "%d MB leídos" % (TOPE_BYTES // (1024 * 1024))
         if time.monotonic() - self.t0 > TOPE_SEGUNDOS:
-            return "%g s de busqueda" % TOPE_SEGUNDOS
+            return "%g s de búsqueda" % TOPE_SEGUNDOS
         return None
 
     def comprobar(self):
@@ -775,7 +775,7 @@ class _Fuente:
                 if leidos > TOPE_GZ:
                     self.agotada = True
                     ctx.omitidos.append((self.pid, self.nombre, self.cota,
-                                         "descomprime mas de %d MB" % (TOPE_GZ // (1024 * 1024))))
+                                         "descomprime más de %d MB" % (TOPE_GZ // (1024 * 1024))))
                     return
                 if ctx.bytes > TOPE_BYTES or (ctx.leidos & 1023) == 0:
                     ctx.comprobar()
@@ -802,7 +802,7 @@ class _Fuente:
             return
         except (OSError, EOFError, zlib.error):
             self.agotada = True
-            ctx.omitidos.append((self.pid, self.nombre, self.cota, "comprimido danado o a medio escribir"))
+            ctx.omitidos.append((self.pid, self.nombre, self.cota, "comprimido dañado o a medio escribir"))
             return
         ctx.incompletas += incompletas
         ctx.sin_fecha += sin_fecha
@@ -1019,15 +1019,15 @@ def validar_ref(consulta, nodo):
     if not nodos.pid_valido(pid) or pid not in nodos.pids():
         raise RefInvalida("punto desconocido")
     if pid not in nodos.nodos_de(nodo):
-        raise RefInvalida("el evento no es del nodo que se esta mirando")
+        raise RefInvalida("el evento no es del nodo que se está mirando")
     if not nombre_valido(nombre):
-        raise RefInvalida("fichero no valido")
+        raise RefInvalida("fichero no válido")
     if not (o.isascii() and o.isdigit() and len(o) <= 15):
-        raise RefInvalida("desplazamiento no valido")
+        raise RefInvalida("desplazamiento no válido")
     if not RE_HUELLA.fullmatch(h) or not RE_FIRMA.fullmatch(s):
         raise RefInvalida("referencia mal formada")
     if not hmac.compare_digest(firmar(pid, nombre, int(o), h), s):
-        raise RefInvalida("firma no valida")
+        raise RefInvalida("firma no válida")
     return pid, nombre, int(o), h
 
 
@@ -1035,7 +1035,7 @@ def _linea_en(pid, nombre, offset, t0):
     """La linea completa que empieza en `offset` del fichero, o None. Nunca sale de DATOS/<pid>."""
     ok = _fichero_seguro(pid, nombre)
     if not ok:
-        raise RefInvalida("fichero no valido")
+        raise RefInvalida("fichero no válido")
     real, st = ok
     with _abrir(real, st) as fh:
         if nombre.endswith(".gz"):
@@ -1055,10 +1055,10 @@ def _linea_en(pid, nombre, offset, t0):
                     falta -= len(trozo)
                     previo = trozo[-1:]
                 if previo != b"\n":
-                    raise RefInvalida("desplazamiento no es un inicio de linea")
+                    raise RefInvalida("desplazamiento no es un inicio de línea")
                 ln = g.readline(MAX_LINEA + 1)
             except _GzLimite as e:
-                raise RefInvalida("comprimido no valido: %s" % e)
+                raise RefInvalida("comprimido no válido: %s" % e)
         else:
             tam = os.fstat(fh.fileno()).st_size
             if offset >= tam:
@@ -1066,11 +1066,11 @@ def _linea_en(pid, nombre, offset, t0):
             if offset > 0:
                 fh.seek(offset - 1)
                 if fh.read(1) != b"\n":
-                    raise RefInvalida("desplazamiento no es un inicio de linea")
+                    raise RefInvalida("desplazamiento no es un inicio de línea")
             fh.seek(offset)
             ln = fh.readline(MAX_LINEA + 1)
     if not ln.endswith(b"\n"):
-        raise RefInvalida("linea incompleta")
+        raise RefInvalida("línea incompleta")
     return ln
 
 
@@ -1100,7 +1100,7 @@ def leer_evento(consulta, nodo):
             continue
         if ln is not None and huella(ln) == h:
             return pid, otro, offset, ln
-    raise RefInvalida("el evento ya no esta en los ficheros del punto (rotado o borrado)")
+    raise RefInvalida("el evento ya no está en los ficheros del punto (rotado o borrado)")
 
 
 # --------------------------------------------------------------------------------------------
@@ -1225,7 +1225,7 @@ def _selector_por(consulta, nodo, f):
                       for k, v in _params_filtro(consulta, nodo, f) if k != "por" and v)
     opciones = [(str(n), str(n)) for n in TAMANOS] + [("todos", "Todos")]
     return ("<form class='porpag' method='get' action='%s'>%s<label>Ver "
-            "<select name='por' onchange='this.form.submit()'>%s</select> por pagina</label>"
+            "<select name='por' onchange='this.form.submit()'>%s</select> por página</label>"
             "<noscript><button type='submit'>Aplicar</button></noscript></form>"
             % (_e(RUTA), ocultos, "".join("<option value='%s'%s>%s</option>" % (
                 _e(v), " selected" if v == actual else "", _e(t)) for v, t in opciones)))
@@ -1245,7 +1245,7 @@ def _formulario(consulta, nodo, f):
         + "<label>Desde<input type='datetime-local' step='1' name='desde' value='%s'></label>" % _e(desde)
         + "<label>Hasta<input type='datetime-local' step='1' name='hasta' value='%s'></label>" % _e(hasta)
         + "<label>Tipo%s</label>" % sel("tipo", TIPOS, _q(consulta, "tipo") or "alert")
-        + "<label>Firma o SID<input name='firma' value='%s' placeholder='texto o numero'></label>" % _e(_q(consulta, "firma"))
+        + "<label>Firma o SID<input name='firma' value='%s' placeholder='texto o número'></label>" % _e(_q(consulta, "firma"))
         + "<label>Severidad%s</label>" % sel("sev", sevs, _q(consulta, "sev"))
         + "<label>IP<input name='ip' value='%s' placeholder='192.0.2.10'></label>" % _e(_q(consulta, "ip"))
         + "<label>IP como%s</label>" % sel("ipdir", DIRS_IP, _q(consulta, "ipdir"))
@@ -1337,8 +1337,8 @@ _CONSULTAS = threading.BoundedSemaphore(CONCURRENCIA)
 
 def _ocupado(titulo, extra=""):
     return ("<main class='evw'>" + _CSS + "<h1>%s</h1>" % _e(titulo) + extra
-            + "<div class='banner err'>El buscador de eventos esta ocupado: hay %d consultas en curso, "
-              "que es el maximo a la vez. Reintenta en unos segundos.</div></main>" % CONCURRENCIA)
+            + "<div class='banner err'>El buscador de eventos está ocupado: hay %d consultas en curso, "
+              "que es el máximo a la vez. Reintenta en unos segundos.</div></main>" % CONCURRENCIA)
 
 
 def _con_plaza(fn, titulo):
@@ -1362,7 +1362,7 @@ def _pagina(consulta, nodo):
     pids_ = nodos.nodos_de(nodo)
     todos = nodos.es_todos(nodo)
     cab = ("<h1>Eventos</h1><p class='sub'>%s · eventos de Suricata (alertas, DNS, HTTP, TLS, "
-           "estadisticas), mas recientes primero.</p>" % (_e(nodos.nombre(nodo)) if todos else _nodo_html(nodo)))
+           "estadísticas), más recientes primero.</p>" % (_e(nodos.nombre(nodo)) if todos else _nodo_html(nodo)))
     try:
         f = filtros(consulta)
     except FiltroInvalido as e:
@@ -1374,19 +1374,19 @@ def _pagina(consulta, nodo):
     if res["motivo"]:
         cf = res["fichero_corte"]
         avisos.append(
-            "Resultado <b>parcial</b>: se alcanzo el tope de %s. Se reviso desde %s hasta %s; "
-            "se paro en el fichero %s de %s. Lo anterior a esa fecha no se reviso."
+            "Resultado <b>parcial</b>: se alcanzó el tope de %s. Se revisó desde %s hasta %s; "
+            "se paro en el fichero %s de %s. Lo anterior a esa fecha no se revisó."
             % (_e(res["motivo"]), _e(_fmt(res["techo_us"])), _e(_fmt(res["hasta_us"])),
                _e(cf[1]), _e(nodos.nombre(cf[0]))))
         if res.get("sin_garantia"):
             avisos.append("El tope no alcanza para cubrir el margen de desorden de %d s de Suricata en esta "
-                          "zona: al continuar puede faltar algun evento escrito fuera de orden."
+                          "zona: al continuar puede faltar algún evento escrito fuera de orden."
                           % (DESORDEN_US // 1000000))
     for pid, nombre, cota, por in res["omitidos"]:
-        avisos.append("Resultado <b>parcial</b>: el fichero %s de %s (eventos hasta %s) no se reviso: %s."
+        avisos.append("Resultado <b>parcial</b>: el fichero %s de %s (eventos hasta %s) no se revisó: %s."
                       % (_e(nombre), _e(nodos.nombre(pid)), _e(_fmt(cota)), _e(por)))
     if res["rechazados"]:
-        avisos.append("Se ignoraron %d fichero(s) no validos (enlace fuera del punto o no regulares): %s."
+        avisos.append("Se ignoraron %d fichero(s) no válidos (enlace fuera del punto o no regulares): %s."
                       % (len(res["rechazados"]), _e(", ".join("%s/%s" % x for x in res["rechazados"][:5]))))
     filas = []
     for x in res["filas"]:
@@ -1404,28 +1404,28 @@ def _pagina(consulta, nodo):
                  "<th>Origen</th><th>Destino</th><th>Proto</th><th></th></tr></thead><tbody>%s</tbody>"
                  "</table></div>" % ("<th>Nodo</th>" if todos else "", "".join(filas)))
     elif res["parcial"]:
-        tabla = ("<div class='banner'>No hay coincidencias en lo que se llego a revisar, pero la busqueda "
-                 "es parcial: puede haber eventos en lo que no se reviso.</div>")
+        tabla = ("<div class='banner'>No hay coincidencias en lo que se llegó a revisar, pero la búsqueda "
+                 "es parcial: puede haber eventos en lo que no se revisó.</div>")
     else:
         tabla = "<div class='banner msg'>Sin coincidencias en la ventana elegida.</div>"
     pag = ["<div class='pager'>"]
     if _q(consulta, "cursor", 64):
-        pag.append("<a href='%s'>&laquo; Mas recientes</a>" % _e(_url(RUTA, base)))
+        pag.append("<a href='%s'>&laquo; Más recientes</a>" % _e(_url(RUTA, base)))
     if res["siguiente"]:
-        txt = "Continuar la busqueda &raquo;" if res["motivo"] and len(res["filas"]) < f["por"] else "Siguientes &raquo;"
+        txt = "Continuar la búsqueda &raquo;" if res["motivo"] and len(res["filas"]) < f["por"] else "Siguientes &raquo;"
         pag.append("<a href='%s'>%s</a>" % (_e(_url(RUTA, base + [("cursor", cursor_txt(res["siguiente"]))])), txt))
     if res["filas"]:
         pag.append("<span class='muted'>%d eventos, del %s al %s</span>"
                    % (len(res["filas"]), _e(_fmt(res["filas"][0]["ts_us"])), _e(_fmt(res["filas"][-1]["ts_us"]))))
     if f["por_todos"] and res["siguiente"] and len(res["filas"]) >= TODOS_MAX:
-        pag.append("<span class='muted'>&middot; «Todos» muestra hasta %s por pagina: hay mas, sigue con "
+        pag.append("<span class='muted'>&middot; «Todos» muestra hasta %s por página: hay más, sigue con "
                    "«Siguientes» o acota las fechas</span>" % "{:,}".format(TODOS_MAX).replace(",", "."))
     pag.append(_selector_por(consulta, nodo, f))
     pag.append("</div>")
-    pie = ("<p class='muted'>%d fichero(s), %.1f MB leidos%s%s.</p>"
+    pie = ("<p class='muted'>%d fichero(s), %.1f MB leídos%s%s.</p>"
            % (res["ficheros"], res["bytes"] / 1048576.0,
-              (", %d linea(s) incompletas o con JSON no valido saltadas" % res["incompletas"]) if res["incompletas"] else "",
-              (", %d linea(s) sin marca de tiempo" % res["sin_fecha"]) if res["sin_fecha"] else ""))
+              (", %d línea(s) incompletas o con JSON no válido saltadas" % res["incompletas"]) if res["incompletas"] else "",
+              (", %d línea(s) sin marca de tiempo" % res["sin_fecha"]) if res["sin_fecha"] else ""))
     return ("<main class='evw'>" + _CSS + cab + _retencion(pids_) + _formulario(consulta, nodo, f)
             + "".join("<div class='banner'>%s</div>" % a for a in avisos)
             + tabla + "".join(pag) + pie + "</main>")
@@ -1440,14 +1440,14 @@ def _detalle(consulta, nodo):
         pid, nombre, offset, ln = leer_evento(consulta, nodo)
     except RefInvalida as e:
         return ("<main class='evw'>" + _CSS + "<h1>Evento</h1>" + enlace
-                + "<div class='banner err'>Referencia de evento no valida: %s.</div></main>" % _e(e))
+                + "<div class='banner err'>Referencia de evento no válida: %s.</div></main>" % _e(e))
     try:
         ev = json.loads(ln.decode("utf-8", "replace"))
         cuerpo = json.dumps(ev, indent=2, ensure_ascii=False)
     except (ValueError, RecursionError):
         ev, cuerpo = None, None
     if cuerpo is None:
-        bloque = "<div class='banner err'>La linea del evento no es JSON valido.</div>"
+        bloque = "<div class='banner err'>La línea del evento no es JSON válido.</div>"
     else:
         bloque = "<div class='card'><pre class='evjson'>%s</pre></div>" % _e(cuerpo)
     ts = ts_us(ev.get("timestamp")) if isinstance(ev, dict) else None

@@ -163,20 +163,20 @@ def main():
                  "cats": {"Escaneo SSH": 100}}
     json.dump({"dias": dias}, open(MET, "w", encoding="utf-8"))
 
-    check("por defecto, la ultima semana (7 dias)", "ataques salientes en 7 dias" in d["historico_page"](), "")
+    check("por defecto, la ultima semana (7 dias)", "ataques salientes en 7 días" in d["historico_page"](), "")
     pag = d["historico_page"](30)
     check("ya no sale 'hoy' en el cuadro del periodo (eran las ultimas horas)", "hoy (parcial)" not in pag, "")
     check("el cuadro grande es el total del periodo elegido, y dice que dias abarca",
-          "ataques salientes en 30 dias" in pag and "del " in pag, "")
+          "ataques salientes en 30 días" in pag and "del " in pag, "")
     check("la media es de los dias CON datos (15 de 30), no de 30",
-          "media diaria (15 dias con datos)" in pag and "solo 15 tienen datos" in pag, "")
+          "media diaria (15 días con datos)" in pag and "solo 15 tienen datos" in pag, "")
     pag7 = d["historico_page"](7)
-    check("y cambia con el periodo", "ataques salientes en 7 dias" in pag7 and "media diaria (7 dias)" in pag7, "")
+    check("y cambia con el periodo", "ataques salientes en 7 días" in pag7 and "media diaria (7 días)" in pag7, "")
     check("la tendencia de 30 dias compara 30 con 30 (no 7 con 7)",
-          "tendencia (30 dias vs los 30 anteriores)" in pag and "7 dias vs" not in pag, "")
-    check("  y sin 60 dias de historia lo dice", "hacen falta 60 dias de datos (hay 15)" in pag, "")
+          "tendencia (30 días vs los 30 anteriores)" in pag and "7 días vs" not in pag, "")
+    check("  y sin 60 dias de historia lo dice", "hacen falta 60 días de datos (hay 15)" in pag, "")
     check("la de 7 dias compara 7 con 7, y SALE (antes solo cargaba 7 y hacian falta 14)",
-          "tendencia (7 dias vs los 7 anteriores)" in pag7 and "frente a los 7 dias anteriores" in pag7, "")
+          "tendencia (7 días vs los 7 anteriores)" in pag7 and "frente a los 7 días anteriores" in pag7, "")
     check("y la tendencia a la baja, en verde", "&darr;" in pag7 and "#3a9d5d" in pag7,
           "flecha=%s" % ("&darr;" in pag7))
     # hoy va a medias: si contara, 7 dias de 500 + hoy 123 parecerian una bajada que no es
@@ -189,13 +189,13 @@ def main():
     json.dump({"dias": dias_planos}, open(MET, "w", encoding="utf-8"))
     pg = d["historico_page"](7)
     check("un dia gris (faltan datos) tampoco: no es una mejora", "&rarr;" in pg and "&darr;" not in pg, "")
-    check("  y el cuadro dice cuantos dias incompletos hay", "1 dia(s) incompleto(s)" in pg, "")
+    check("  y el cuadro dice cuantos dias incompletos hay", "1 día(s) incompleto(s)" in pg, "")
     for i in range(6, 1, -1):
         dias_planos[dia(-i)] = {"sal": 900, "cpes_n": 1, "hueco": True}
     json.dump({"dias": dias_planos}, open(MET, "w", encoding="utf-8"))
     pg2 = d["historico_page"](7)
     check("con casi todo el periodo en gris NO se calcula tendencia (1 dia completo no es una semana)",
-          "pocos dias completos (0 de 7)" in pg2 and "&uarr;" not in pg2 and "&darr;" not in pg2, "")
+          "pocos días completos (0 de 7)" in pg2 and "&uarr;" not in pg2 and "&darr;" not in pg2, "")
     json.dump({"dias": dias}, open(MET, "w", encoding="utf-8"))
     check("se cuentan las cuarentenas del periodo", "puestos en cuarentena" in pag)
     check("se dice por que atacan", "Spam" in pag and "Escaneo SSH" in pag)
@@ -219,13 +219,13 @@ def main():
     with nod.contexto("p002"):
         _otro = d["historico_page"](30)
     check("otro punto sin metricas propias no ensena las de p001",
-          "Todavia no hay historico" in _otro, "")
+          "Todavía no hay histórico" in _otro, "")
 
     vacia = d["historico_page"](30)
     json.dump({"dias": {}}, open(MET, "w", encoding="utf-8"))
     vacia = d["historico_page"](30)
     check("sin historico se explica, no se muestra un cero enganoso",
-          "Todavia no hay historico" in vacia)
+          "Todavía no hay histórico" in vacia)
 
     # un dia con hueco se pinta distinto
     json.dump({"dias": {hoy: {"sal": 10, "hueco": True, "cpes_n": 1}}},

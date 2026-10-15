@@ -359,7 +359,7 @@ def escribir_threshold(reglas=None, quien=None):
             r = {"ok": False, "codigo": "FALLO", "mensaje": str(ex)[:200]}
         if r.get("ok"):
             nuevo[pid] = huella
-            bitacora("THRESHOLD", "punto=%s %d supresion(es) enviadas (%s)" % (
+            bitacora("THRESHOLD", "punto=%s %d supresión(es) enviadas (%s)" % (
                 pid, len(threshold_desde_exclusiones(reglas, pid)), r.get("codigo", "OK")))
         else:
             msg = "%s: %s" % (r.get("codigo", "FALLO"), (r.get("mensaje") or "")[:160])
@@ -386,7 +386,7 @@ def guardar_exclusiones(reglas):
     limpio = [{k: r[k] for k in _keys if k in r} for r in reglas if r.get("motivo") != "(conf)"]
     for r in limpio:
         if r.get("nodo") and not nodos.pid_valido(r["nodo"]):
-            raise ValueError("nodo invalido en una exclusion: %r" % r["nodo"])
+            raise ValueError("nodo inválido en una exclusión: %r" % r["nodo"])
     tmp = "%s.%d.%d.tmp" % (EXCL_FILE, os.getpid(), threading.get_ident())
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(limpio, f, ensure_ascii=False, indent=1)
@@ -643,7 +643,7 @@ def _top_cards_tail():
     todos = nodos.hay_nodo() and nodos.es_todos()
     if not filas:
         return ("<div class='topwrap'><div class='tcard'><p class='muted' style='margin:0;padding:12px'>"
-                "Sin ataques recientes todavia; en cuanto entre trafico apareceran aqui.</p></div></div>", procesados)
+                "Sin ataques recientes todavía; en cuanto entre tráfico aparecerán aquí.</p></div></div>", procesados)
     cards = []
     for i, r in enumerate(filas, 1):
         trs = "".join(
@@ -660,7 +660,7 @@ def _top_cards_tail():
             f"<span class='tot'>{r['total']:,} alertas</span>"
             f"<span class='meta'>&rarr; {r['n_dst']} IP destino &middot; {r['n_dp']} puertos destino</span></div>"
             f"<div class='tablewrap'><table><thead><tr>"
-            f"<th>Puerto origen</th><th>IP destino (a donde)</th>"
+            f"<th>Puerto origen</th><th>IP destino (a dónde)</th>"
             f"<th class='num'>Puerto destino</th><th>Protocolo</th><th class='num'>Peticiones</th>"
             f"</tr></thead><tbody>{trs}</tbody></table></div></div>")
     return "<div class='topwrap'>" + "".join(cards) + "</div>", procesados
@@ -705,8 +705,8 @@ def top_page():
             f"<meta name=viewport content='width=device-width,initial-scale=1'>"
             f"<meta http-equiv=refresh content=60><title>Suricata</title>{css}</head><body>"
             + nav("/top") +
-            f"<main><h1>Top 5 IPs origen que mas peticionan</h1>"
-            f"<p class='subx'>Quien ataca mas, hacia que IP destino, desde que puerto origen y hacia que puerto destino. "
+            f"<main><h1>Top 5 IPs origen que más peticionan</h1>"
+            f"<p class='subx'>Quién ataca más, hacia qué IP destino, desde qué puerto origen y hacia qué puerto destino. "
             f"{nota}</p>{cuerpo}</main>{_JS_DUENOS}</body></html>")
     return body
 
@@ -770,13 +770,13 @@ _JS_DUENOS = (
     "function esc(s){return String(s).replace(/[&<>\"']/g,function(c){return{'&':'&amp;','<':'&lt;',"
     "'>':'&gt;','\"':'&quot;',\"'\":'&#39;'}[c];});}"
     "function insignia(e){if(e&&e.via==='error')return \"<span class='obadge none' title='No se pudo "
-    "consultar ahora (limite o red); se reintenta al volver a abrir'>?</span>\";"
+    "consultar ahora (límite o red); se reintenta al volver a abrir'>?</span>\";"
     "if(!e||e.org==='-'||e.org==='sin PTR')return \"<span class='obadge none' "
     "title='Sin DNS inverso ni operador identificable'>sin PTR</span>\";"
     "if(e.legit)return \"<span class='obadge ok' title='Servicio conocido (CDN/gran empresa): trafico casi "
-    "siempre legitimo'>\"+esc(e.org)+'</span>';"
+    "siempre legítimo'>\"+esc(e.org)+'</span>';"
     "var r=e.via==='rdap';return \"<span class='obadge unk' title='\"+(r?'Operador de red del bloque IP "
-    "(RDAP); no tiene DNS inverso':'Dominio del dueño segun DNS inverso; no es un servicio grande "
+    "(RDAP); no tiene DNS inverso':'Dominio del dueño según DNS inverso; no es un servicio grande "
     "conocido')+\"'>\"+(r?'&#127760; ':'')+esc(e.org)+'</span>';}"
     "var intentos=0;"
     "function pide(){var els=[].slice.call(document.querySelectorAll('[data-dueno]'));if(!els.length)return;"
@@ -1217,7 +1217,7 @@ def confirmar_huella(pid, fp, quien):
     antes ("" si no habia)."""
     fp = normalizar_huella(fp)
     if not RE_HUELLA_SHA256.match(fp):
-        raise ValueError("huella SHA-256 no valida")
+        raise ValueError("huella SHA-256 no válida")
     with _ROUTERS_LOCK:
         if pid not in nodos.pids():
             raise ValueError("el punto %s no existe" % pid)
@@ -1353,7 +1353,7 @@ def _mk_send(sock, words):
 
 def _mk_rlen(sock):
     c = sock.recv(1)
-    if not c: raise IOError("conexion cerrada")
+    if not c: raise IOError("conexión cerrada")
     c = c[0]
     if c & 0x80 == 0: return c
     if c & 0xC0 == 0x80: return ((c & 0x3F) << 8) + sock.recv(1)[0]
@@ -1373,7 +1373,7 @@ def _mk_read(sock):
         data = b""
         while len(data) < n:
             chunk = sock.recv(n - len(data))
-            if not chunk: raise IOError("conexion cerrada")
+            if not chunk: raise IOError("conexión cerrada")
             data += chunk
         words.append(data.decode("utf-8", "replace"))
 
@@ -1393,7 +1393,7 @@ def _mk_reply(sock):
         if tipo == "!done":
             return (err == "", frases, err)
         if tipo == "!fatal":
-            return (False, frases, err or "conexion terminada")
+            return (False, frases, err or "conexión terminada")
 
 _MK_TLS_OK = {}     # (host, port) -> cifrados que funcionaron la ultima vez
 
@@ -1440,7 +1440,7 @@ def _mk_tls_wrap(host, port, timeout, con_certificado=False):
             if host.startswith("unix:"):
                 raw = _mk_abrir_unix(host[len("unix:"):], timeout)
             else:
-                raise IOError("el MikroTik solo se alcanza por el rele de su punto (unix:...)")
+                raise IOError("el MikroTik solo se alcanza por el relé de su punto (unix:...)")
         except Exception as e:
             raise IOError(str(e))
         ctx = _ssl.create_default_context()
@@ -1465,7 +1465,7 @@ def _mk_tls_wrap(host, port, timeout, con_certificado=False):
         _MK_TLS_OK[(host, port)] = ciphers
         return sk
     _MK_TLS_OK.pop((host, port), None)
-    raise IOError("TLS handshake fallo con los %d cifrados probados (%s)%s" % (
+    raise IOError("TLS handshake falló con los %d cifrados probados (%s)%s" % (
         len(fallos), " | ".join(fallos),
         (" — el panel exige el certificado ids-promax en API-SSL: pega en el router el bloque "
          "«Certificado API-SSL» de la ficha del punto") if con_certificado else ""))
@@ -1548,15 +1548,15 @@ def mk_probar(pid):
                 if a.startswith("=name="):
                     nombre = a[len("=name="):]
         s.close()
-        return (True, f"Conexion OK con '{nombre or d.get('ROUTER_NOMBRE') or pid}'.")
+        return (True, f"Conexión OK con '{nombre or d.get('ROUTER_NOMBRE') or pid}'.")
     except Exception as e:
-        return (False, f"No conecto: {e}")
+        return (False, f"No conectó: {e}")
 
 def _router_destino(router):
     """El router de una accion: tiene que venir dado y ser un punto que existe. Sin
     destino inequivoco no se ejecuta nada (antes caia en «el de por defecto»)."""
     if not router or not router.get("id"):
-        raise ValueError("accion sin router de destino: no se ejecuta")
+        raise ValueError("acción sin router de destino: no se ejecuta")
     nodos.exigir_pid(router["id"])
     return router
 
@@ -1566,7 +1566,7 @@ def mk_add(ip, comment="", lista=None, ttl=None, router=None):
     if _p and (_p in _BAJAS or _en_prebaja(_p)):
         # la baja ya limpio (o esta limpiando) su router: lo que entrara ahora quedaria cortado
         # en el router y fuera del registro tras la purga (auditoria ap2 H4)
-        return (False, "el punto %s se esta dando de baja: no se le manda nada" % _p)
+        return (False, "el punto %s se está dando de baja: no se le manda nada" % _p)
     d = cargar_mk_de(_r)
     lst = lista or d.get("LIST", "suricata-cuarentena")
     tt = ttl if ttl is not None else d.get("TTL")
@@ -1596,7 +1596,7 @@ def _mk_add_en(s, ip, lst, tt="", comment=""):
         _mk_send(s, palabras)
         ok_o, frases_o, err_o = _mk_reply(s)
         if any(f and f[0] == "!fatal" for f in frases_o):
-            raise IOError("el router cerro la API: %s" % (err_o or "!fatal"))
+            raise IOError("el router cerró la API: %s" % (err_o or "!fatal"))
         return ok_o, frases_o, err_o or ""
 
     words = ["/ip/firewall/address-list/add", f"=list={lst}", f"=address={ip}"]
@@ -1652,8 +1652,8 @@ def _mk_add_en(s, ip, lst, tt="", comment=""):
         ok_a, _fa, err_a = _orden(nuevas)
         if not ok_a and "already have such entry" not in err_a.lower():
             # se quito para renovarla y el router no la acepto de vuelta: ya NO esta cortada
-            return (False, "se quito %s de %s para renovar su caducidad y el router rechazo "
-                           "volver a anadirla: %s" % (ip, lst, err_a))
+            return (False, "se quitó %s de %s para renovar su caducidad y el router rechazó "
+                           "volver a añadirla: %s" % (ip, lst, err_a))
     return (True, "ya estaba en la lista")
 
 class PuntoEnBaja(Exception):
@@ -1668,7 +1668,7 @@ def mk_sesion(router):
     _r = _router_destino(router)
     _p = (_r or {}).get("id", "")
     if _p and (_p in _BAJAS or _en_prebaja(_p)):
-        raise PuntoEnBaja("el punto %s se esta dando de baja: no se le manda nada" % _p)
+        raise PuntoEnBaja("el punto %s se está dando de baja: no se le manda nada" % _p)
     d = cargar_mk_de(_r)
     s = mk_conectar(d)
     try:
@@ -1701,7 +1701,7 @@ def _mk_quitar_en(s, ip, lst):
         _mk_send(s, consulta)
         ok, frases, err = _mk_reply(s)
         if not ok:
-            raise ValueError("el router rechazo la consulta de %s en %s: %s" % (ip, lst, err or "?"))
+            raise ValueError("el router rechazó la consulta de %s en %s: %s" % (ip, lst, err or "?"))
         return [a[len("=.id="):] for f in frases if f and f[0] == "!re" for a in f if a.startswith("=.id=")]
     try:
         ids = _ids()
@@ -1717,7 +1717,7 @@ def _mk_quitar_en(s, ip, lst):
         try:
             quedan = _ids()
         except ValueError as e:
-            return (False, "no se pudo comprobar que se quito: %s" % e)
+            return (False, "no se pudo comprobar que se quitó: %s" % e)
         if quedan:
             return (False, "%d entrada(s) de %s siguen en %s%s" % (
                 len(quedan), ip, lst, (" (%s)" % errores[0][:120]) if errores else ""))
@@ -1769,8 +1769,8 @@ def _mk_conexion_fallida(pid, ex):
     sys.stderr.write("mikrotik %s: %d fallos de conexion seguidos; tareas de fondo en pausa %d s (%s)\n"
                      % (pid, fallos, espera, err))
     if nueva:
-        bitacora("MK-PAUSA", "%s: %d fallos de conexion seguidos con su MikroTik (%s); las tareas "
-                 "de fondo no lo intentan durante %d min, y despues con espera creciente hasta "
+        bitacora("MK-PAUSA", "%s: %d fallos de conexión seguidos con su MikroTik (%s); las tareas "
+                 "de fondo no lo intentan durante %d min, y después con espera creciente hasta "
                  "que responda (las acciones manuales si lo intentan)"
                  % (pid, fallos, err, max(1, espera // 60)), quien="panel")
 
@@ -1779,7 +1779,7 @@ def _mk_conexion_ok(pid):
     with _MK_PAUSA_LOCK:
         e = _MK_PAUSA.pop(pid, None)
     if e and e.get("desde"):
-        bitacora("MK-PAUSA-FIN", "%s: su MikroTik vuelve a responder tras %d fallo(s) de conexion; "
+        bitacora("MK-PAUSA-FIN", "%s: su MikroTik vuelve a responder tras %d fallo(s) de conexión; "
                  "las tareas de fondo siguen" % (pid, e["fallos"]), quien="panel")
 
 def _mk_tanda(router, trabajo, fondo=True):
@@ -1805,7 +1805,7 @@ def _mk_tanda(router, trabajo, fondo=True):
         if isinstance(ex, OSError):        # TLS, login, timeout, conexion rota: el router no responde
             _mk_conexion_fallida(pid, ex)
         sys.stderr.write("tanda mikrotik %s (%s): %s\n" % (pid, "a medias" if conectado else (
-            "sin login: huella" if isinstance(ex, HuellaNoConfirmada) else "sin conexion"), ex))
+            "sin login: huella" if isinstance(ex, HuellaNoConfirmada) else "sin conexión"), ex))
         return False
     return True
 # =====================================================================================
@@ -1823,7 +1823,7 @@ def _mk_tanda(router, trabajo, fondo=True):
 ACCIONES = {
     "nada":          "Nada (solo la lista)",
     "cortar":        "Cortar todo",
-    "solo-web":      "Solo navegacion (DNS, 80 y 443)",
+    "solo-web":      "Solo navegación (DNS, 80 y 443)",
     "sin-correo":    "Sin correo saliente (25/465/587/2525)",
     "dns-protegido": "DNS protegido (Quad9, sin DoT, tope 50/s)",
     "redirigir-dns": "Redirigir DNS a tu resolutor",
@@ -1963,14 +1963,14 @@ def reglas_desde_rsc(texto, lista=""):
         if l.startswith("/"):
             t = " ".join(l.split())
             if t not in _RSC_TABLA:
-                raise ValueError("linea %d: tabla no soportada: %s (valen: %s)" % (
+                raise ValueError("línea %d: tabla no soportada: %s (valen: %s)" % (
                     ln, t, ", ".join(sorted(_RSC_TABLA))))
             tabla = _RSC_TABLA[t]
             continue
         if not l.startswith("add ") and l != "add":
-            raise ValueError("linea %d: se esperaba 'add ...' o una tabla '/ip firewall ...': %s" % (ln, l[:60]))
+            raise ValueError("línea %d: se esperaba 'add ...' o una tabla '/ip firewall ...': %s" % (ln, l[:60]))
         if tabla is None:
-            raise ValueError("linea %d: falta la tabla antes del primer 'add' (p.ej. /ip firewall raw)" % ln)
+            raise ValueError("línea %d: falta la tabla antes del primer 'add' (p.ej. /ip firewall raw)" % ln)
         props = {}
         for k, v in _RE_KV.findall(l[3:]):
             if v.startswith('"') and v.endswith('"'):
@@ -1991,15 +1991,15 @@ def reglas_desde_rsc(texto, lista=""):
                     if mc:
                         props["_antes_cadena"] = mc.group(1)
                 else:
-                    raise ValueError("linea %d: place-before solo admite 0 o "
+                    raise ValueError("línea %d: place-before solo admite 0 o "
                                      "[find where ... comment=\"...\"]: %s" % (ln, v[:60]))
                 continue
             if v.startswith("[") and v.endswith("]"):
-                raise ValueError("linea %d: %s=%s es una expresion de consola; por la API "
+                raise ValueError("línea %d: %s=%s es una expresión de consola; por la API "
                                  "hay que poner el valor" % (ln, k, v[:40]))
             props[k] = v
         if not [k for k in props if not k.startswith("_")]:
-            raise ValueError("linea %d: 'add' sin propiedades" % ln)
+            raise ValueError("línea %d: 'add' sin propiedades" % ln)
         props["_linea"] = str(ln)
         out.append((tabla, props))
     return out
@@ -2041,7 +2041,7 @@ def verificar_reglas(reglas, lista):
 
     def nota(nivel, p, i, msg):
         out.append({"nivel": nivel, "msg": msg,
-                    "donde": ("linea %s" % p["_linea"]) if p.get("_linea") else ("regla %d" % i)})
+                    "donde": ("línea %s" % p["_linea"]) if p.get("_linea") else ("regla %d" % i)})
 
     con_reglas = {(t, p.get("chain")) for t, p in reglas}
     saltos = {(t, p.get("jump-target")) for t, p in reglas
@@ -2055,7 +2055,7 @@ def verificar_reglas(reglas, lista):
                 nota("error", p, i, "una cola necesita name y parent")
             if p.get("packet-mark") and p["packet-mark"] not in marcas:
                 nota("aviso", p, i, "la cola usa la marca '%s', que ninguna regla del bloque pone: "
-                                    "no limitara nada salvo que la ponga otra regla del router" % p["packet-mark"])
+                                    "no limitará nada salvo que la ponga otra regla del router" % p["packet-mark"])
             continue
         ch = p.get("chain", "")
         ac = p.get("action", "accept")
@@ -2064,7 +2064,7 @@ def verificar_reglas(reglas, lista):
             continue
         base = ch in _CADENAS_BASE.get(t, ())
         if ac not in _ACCIONES_TABLA.get(t, ()):
-            nota("error", p, i, "la accion '%s' no existe en %s" % (ac, _TABLA_RSC.get(t, t)))
+            nota("error", p, i, "la acción '%s' no existe en %s" % (ac, _TABLA_RSC.get(t, t)))
         if ac == "jump":
             tgt = p.get("jump-target", "")
             if not tgt:
@@ -2084,21 +2084,21 @@ def verificar_reglas(reglas, lista):
                 (p.get("protocol") or "").lower() not in _PROTO_CON_PUERTO:
             nota("error", p, i, "un puerto solo vale con protocol=tcp o udp (el router la rechaza)")
         if p.get("port"):
-            nota("aviso", p, i, "port= casa el puerto de ORIGEN o de DESTINO: tambien corta las "
+            nota("aviso", p, i, "port= casa el puerto de ORIGEN o de DESTINO: también corta las "
                                 "respuestas de los servidores. Lo normal es dst-port=")
         if not base and (t, ch) not in saltos:
-            nota("aviso", p, i, "la cadena '%s' no la usa ningun jump del bloque: esta regla no se "
-                                "evalua salvo que el router ya salte ahi" % ch)
+            nota("aviso", p, i, "la cadena '%s' no la usa ningún jump del bloque: esta regla no se "
+                                "evalúa salvo que el router ya salte ahí" % ch)
         # alcance: en una cadena del sistema, la regla tiene que mirar la lista de la clase
         sl = p.get("src-address-list", "")
         acotada = (sl == lista) or (p.get("connection-mark") in marcas_acotadas) \
             or (p.get("packet-mark") in marcas_acotadas)
         if base and not acotada:
             if sl and not sl.startswith("!"):
-                nota("aviso", p, i, "usa la lista '%s', no la de esta categoria ('%s'): afecta a todos "
-                                    "los de esa lista, esten o no en cuarentena" % (sl, lista))
+                nota("aviso", p, i, "usa la lista '%s', no la de esta categoría ('%s'): afecta a todos "
+                                    "los de esa lista, estén o no en cuarentena" % (sl, lista))
             else:
-                nota("aviso", p, i, "no mira la lista de la categoria ('%s'): afecta a TODO el trafico "
+                nota("aviso", p, i, "no mira la lista de la categoría ('%s'): afecta a TODO el tráfico "
                                     "que pasa por el router, no solo a los CPEs en cuarentena" % lista)
         for mk_ in ("new-connection-mark", "new-packet-mark"):
             if p.get(mk_):
@@ -2111,18 +2111,18 @@ def verificar_reglas(reglas, lista):
             pasa = any(w in com for w in ("acepta", "permite", "deja pasar"))
             corta = any(w in com for w in ("bloquea", "descarta", "corta", "rechaza"))
             if ac in ("drop", "reject", "tarpit") and pasa and not corta:
-                nota("aviso", p, i, "el comentario dice que acepta/permite, pero la accion es %s" % ac)
+                nota("aviso", p, i, "el comentario dice que acepta/permite, pero la acción es %s" % ac)
             if ac in ("accept", "return") and corta and not pasa:
-                nota("aviso", p, i, "el comentario dice que bloquea, pero la accion es %s" % ac)
+                nota("aviso", p, i, "el comentario dice que bloquea, pero la acción es %s" % ac)
         # inalcanzable: detras de una regla que corta todo en la misma cadena
         if (t, ch) in cortado:
-            nota("error", p, i, "nunca se evalua: la %s corta todo antes en la cadena '%s'"
+            nota("error", p, i, "nunca se evalúa: la %s corta todo antes en la cadena '%s'"
                                 % (cortado[(t, ch)], ch))
         criterios = [k for k in p if not k.startswith("_") and k not in _NO_CRITERIO]
         if not criterios and ac in _TERMINALES and (t, ch) not in cortado:
-            cortado[(t, ch)] = ("linea %s" % p["_linea"]) if p.get("_linea") else ("regla %d" % i)
+            cortado[(t, ch)] = ("línea %s" % p["_linea"]) if p.get("_linea") else ("regla %d" % i)
             if base and ac in ("drop", "reject", "tarpit"):
-                nota("error", p, i, "%s sin ningun criterio en '%s': corta TODO el trafico del router" % (ac, ch))
+                nota("error", p, i, "%s sin ningún criterio en '%s': corta TODO el tráfico del router" % (ac, ch))
     return out
 
 
@@ -2142,8 +2142,8 @@ def verificar_en_router(s_, reglas, lista):
         for n in ifl:
             if n not in hay and n not in _LISTAS_IF_SISTEMA:
                 out.append({"nivel": "error", "donde": "router",
-                            "msg": "no existe la interface-list '%s' en este router: rechazara la regla "
-                                   "(creala o cambia el nombre en Ajustes)" % n})
+                            "msg": "no existe la interface-list '%s' en este router: rechazará la regla "
+                                   "(créala o cambia el nombre en Ajustes)" % n})
     propias = {(t, p.get("chain")) for t, p in reglas}
     for t, tgt in sorted({(t, p["jump-target"]) for t, p in reglas
                           if p.get("action") == "jump" and p.get("jump-target")} - propias):
@@ -2155,7 +2155,7 @@ def verificar_en_router(s_, reglas, lista):
     for l in otras:
         if not _mk_contar(s_, "/ip/firewall/address-list/print", "?list=" + l):
             out.append({"nivel": "aviso", "donde": "router",
-                        "msg": "la address-list '%s' esta vacia en este router: esa regla no afecta a nadie" % l})
+                        "msg": "la address-list '%s' está vacía en este router: esa regla no afecta a nadie" % l})
     return out
 
 
@@ -2232,7 +2232,7 @@ def _mk_print_estricto(s_, cmd, props):
         raise ErrorLecturaMK("no se pudo leer el router (%s): %s" % (cmd, ex)) from ex
     # un !trap sin =message= deja err vacio y _mk_reply lo daria por bueno: se mira la frase
     if not ok or any(f and f[0] in ("!trap", "!fatal") for f in frases):
-        raise ErrorLecturaMK("no se pudo leer el router: rechazo %s (%s)" % (cmd, err or "sin motivo"))
+        raise ErrorLecturaMK("no se pudo leer el router: rechazó %s (%s)" % (cmd, err or "sin motivo"))
     filas = []
     for f in frases:
         if not (f and f[0] == "!re"):
@@ -2325,7 +2325,7 @@ def _plan_en(s_, cat, accion=None, m=None, verificar=True, leidas=None):
     else:
         deseadas = reglas_de_accion(cat, accion, lista, _params_accion(cat, m))
     if accion == "limitar" and not deseadas:
-        aviso = "Falta el limite (ACCION_LIMITE_%s, p.ej. 2M): sin el no se aplica nada." % cat.upper()
+        aviso = "Falta el límite (ACCION_LIMITE_%s, p.ej. 2M): sin el no se aplica nada." % cat.upper()
     existentes = _reglas_nuestras(s_, cat, deseadas, leidas)
     acciones = _plan(cat, deseadas, existentes)
     ver = []
@@ -2357,7 +2357,7 @@ def _plan_en(s_, cat, accion=None, m=None, verificar=True, leidas=None):
                   for f in filas_t)
         if not hay:
             aviso = ((aviso + " ") if aviso else "") + (
-                "En este router no hay ninguna regla '%s': las que iban delante de ella iran "
+                "En este router no hay ninguna regla '%s': las que iban delante de ella irán "
                 "las primeras de su cadena." % com_ref)
     rsc = [("# %s" % op.upper()) + " " + rsc_de(t, p, c) for op, t, p, c, _i in acciones if op != "igual"]
     return {"accion": accion, "lista": lista, "acciones": acciones, "aviso": aviso, "rsc": rsc,
@@ -2480,7 +2480,7 @@ def aplicar_reglas(router, cat, accion=None, quien="?"):
 def _aplicar_en(s_, router, cat, accion, quien, m):
     plan = _plan_en(s_, cat, accion, m)
     if plan.get("bloqueado"):
-        return (False, "el verificador encontro errores, no se toca el router: " + "; ".join(
+        return (False, "el verificador encontró errores, no se toca el router: " + "; ".join(
             "%s: %s" % (v["donde"], v["msg"]) for v in plan["verificacion"] if v["nivel"] == "error"), plan)
     if plan["aviso"] and not plan["acciones"]:
         return (False, plan["aviso"], plan)
@@ -2541,7 +2541,7 @@ def _aplicar_en(s_, router, cat, accion, quien, m):
             for c, difs in list(p2.get("diferencias", {}).items())[:3]:
                 for k, mandado, leido in difs[:2]:
                     ej.append("%s %s: mandado '%s', el router guarda '%s'" % (c, k, mandado, leido))
-            msg += (". OJO: al releer el router quedan %d diferencia(s)%s. Pasale esto a quien "
+            msg += (". OJO: al releer el router quedan %d diferencia(s)%s. Pásale esto a quien "
                     "mantiene el panel para ajustar la plantilla." % (p2["cambios"], (" (" + "; ".join(ej) + ")") if ej else ""))
             mk_log("REGLAS-DIFIEREN", "-", quien, "router=%s clase=%s %s" % (
                 (router or {}).get("id", ""), cat, "; ".join(ej)[:300]))
@@ -2618,7 +2618,7 @@ class cerrojo_operacion:
 
     def __enter__(self):
         if not self.lk.acquire(timeout=self.espera):
-            raise OperacionEnCurso("ya hay otra operacion '%s' en curso sobre %s: espera a que termine"
+            raise OperacionEnCurso("ya hay otra operación '%s' en curso sobre %s: espera a que termine"
                                    % (self.op, self.pid or "?"))
         return self
 
@@ -2856,7 +2856,7 @@ def reconciliar_cuarentena(pid=None):
                                          for lst, ips in migrar.items()})
             _SIN_CADUCIDAD_HECHO.add(pid)
             if n:
-                bitacora("CUARENTENA-SIN-CADUCIDAD", "%d IP(s) de %s pasan a permanentes: saldran cuando "
+                bitacora("CUARENTENA-SIN-CADUCIDAD", "%d IP(s) de %s pasan a permanentes: saldrán cuando "
                                                      "dejen de atacar" % (n, pid))
     _mk_tanda(r, _quitar)                      # si el router no responde, reintenta el proximo ciclo
     for sent_path in (MK_SENT, MK_SENT_DNS):
@@ -2864,7 +2864,7 @@ def reconciliar_cuarentena(pid=None):
         for sp, k, lst in liberadas:
             if sp == sent_path:
                 suyas.append(k)
-                mk_log("AUTO-LIBERADO", ip_de(k), "auto", f"lista={lst} (dejo de atacar)" + _suf_nodo(k))
+                mk_log("AUTO-LIBERADO", ip_de(k), "auto", f"lista={lst} (dejó de atacar)" + _suf_nodo(k))
         if suyas:
             quitar_enviados(suyas, sent_path)   # relee dentro del cerrojo: no pisa lo de otros hilos
 # Donde puede estar una regla que use una address-list: filter (lo que pega el ISP a mano)
@@ -2898,7 +2898,7 @@ def mk_lista_en_uso(lista, router=None):
             _mk_send(s_, [tabla + "/print", "=.proplist=src-address-list,dst-address-list,disabled"])
             ok, frases, err = _mk_reply(s_)
             if not ok:
-                raise IOError("el router no dejo leer %s: %s" % (tabla, err or "?"))
+                raise IOError("el router no dejó leer %s: %s" % (tabla, err or "?"))
             if _mk_reglas_usan_lista(_mk_re_dicts(frases), lista):
                 return True                    # con una basta: no hace falta leer el resto
         return False
@@ -3044,7 +3044,7 @@ def mk_publicas_detectadas(router=None):
             fallidas.append("%s (%s)" % (cmd, str(ex)[:80] or type(ex).__name__))
             return []
         if not _ok:
-            fallidas.append("%s (%s)" % (cmd, (_err or "el router lo rechazo")[:80]))
+            fallidas.append("%s (%s)" % (cmd, (_err or "el router lo rechazó")[:80]))
             return []
         out = []
         for f in frases:
@@ -3139,7 +3139,7 @@ def mk_publicas_detectadas(router=None):
         "Mientras tanto solo se tomaron los pools de src-nat."
         % (lista_wan or "WAN"))
     if fallidas:
-        aviso = ("Lectura PARCIAL del MikroTik: fallo %s. Lo que falte no quiere decir que "
+        aviso = ("Lectura PARCIAL del MikroTik: falló %s. Lo que falte no quiere decir que "
                  "haya dejado de ser tuyo: no se marca nada como 'ya no detectada'. Revisa "
                  "los permisos del usuario de la API (read) y vuelve a detectar."
                  % "; ".join(fallidas)) + (" " + aviso if aviso else "")
@@ -3300,7 +3300,7 @@ def destino_bloqueable(ip):
     except ValueError:
         return False, "no es una IP"
     if not o.is_global:
-        return False, "no es una IP publica"
+        return False, "no es una IP pública"
     if es_mi_cpe(ip):
         return False, "es de tus redes"
     return True, ""
@@ -3441,7 +3441,7 @@ def blocklist_rsc(lista=BL_LISTA, ttl="1d"):
     hoy = time.strftime("%Y-%m-%d %H:%M")
     filas = blocklist_borde()
     out = ["# Atacantes vistos por el sensor Suricata. Generado %s" % hoy,
-           "# %d direcciones. Se reemplaza la lista entera en cada importacion." % len(filas),
+           "# %d direcciones. Se reemplaza la lista entera en cada importación." % len(filas),
            "/ip firewall address-list",
            ":local viejas [find list=%s]" % lista,
            ":foreach i in=$viejas do={remove $i}"]
@@ -3526,7 +3526,7 @@ def guardar_diagnostico():
             # router en pausa por fallos de conexion: no se gastan aqui otros ~6 s por router
             # que retrasarian a los demas puntos; se dice por que no hay diagnostico
             out[rid] = {"ts": int(time.time()), "error": (
-                "sin conexion con el MikroTik (%d fallos seguidos: %s); se reintenta en %d min"
+                "sin conexión con el MikroTik (%d fallos seguidos: %s); se reintenta en %d min"
                 % (pausa["fallos"], pausa["error"], max(1, pausa["restante"] // 60)))[:240]}
             continue
         try:
@@ -3582,17 +3582,17 @@ def mk_diagnostico(router=None):
             try:
                 _p = _plan_en(s_, _cat, _acc, _m, verificar=False)
             except Exception as ex:
-                _acc_checks.append(("aviso", f"No se pudo comprobar la accion de {_nom}", str(ex)[:120], ""))
+                _acc_checks.append(("aviso", f"No se pudo comprobar la acción de {_nom}", str(ex)[:120], ""))
                 continue
             if _p["aviso"] and not _p["acciones"]:
-                _acc_checks.append(("aviso", f"{_nom}: la accion '{ACCIONES.get(_acc, _acc)}' no se puede aplicar",
+                _acc_checks.append(("aviso", f"{_nom}: la acción '{ACCIONES.get(_acc, _acc)}' no se puede aplicar",
                                     _p["aviso"], "Ajustes -> MikroTik -> " + _nom))
             elif _p["cambios"] == 0:
                 _acc_checks.append(("ok", f"{_nom}: '{ACCIONES.get(_acc, _acc)}' aplicada en el router",
-                                    f"Las reglas del panel para '{_p['lista']}' estan tal como toca.", ""))
+                                    f"Las reglas del panel para '{_p['lista']}' están tal como toca.", ""))
             else:
-                _acc_checks.append(("falta", f"{_nom}: '{ACCIONES.get(_acc, _acc)}' NO esta aplicada ({_p['cambios']} cambio(s))",
-                                    "La accion esta configurada en el panel pero el router no tiene (o tiene distintas) "
+                _acc_checks.append(("falta", f"{_nom}: '{ACCIONES.get(_acc, _acc)}' NO está aplicada ({_p['cambios']} cambio(s))",
+                                    "La acción está configurada en el panel pero el router no tiene (o tiene distintas) "
                                     "las reglas. Sin ellas, meter al CPE en la lista no hace nada.",
                                     "Ajustes -> MikroTik -> " + _nom + " -> Ver / aplicar en el router"))
     finally:
@@ -3611,12 +3611,12 @@ def mk_diagnostico(router=None):
     _activas = [f for f in espejo if f.get("disabled") != "true"
                 and (not _sensor or f.get("sniff-target") == _sensor)]
     if len(_activas) >= 2:
-        out.append(("ok", "El espejo esta activo",
+        out.append(("ok", "El espejo está activo",
                     "%d regla(s) sniff-tzsp hacia el sensor del punto (%s:%s)." % (
                         len(_activas), _sensor or "?", _puerto), ""))
     else:
-        out.append(("falta", "El espejo NO esta enviando (o solo en un sentido)",
-                    "Sin esto el sensor esta ciego y todo lo demas da igual. Hacen falta las dos "
+        out.append(("falta", "El espejo NO está enviando (o solo en un sentido)",
+                    "Sin esto el sensor está ciego y todo lo demás da igual. Hacen falta las dos "
                     "reglas sniff-tzsp (ida y vuelta) hacia %s:%s." % (_sensor or "el sensor del punto", _puerto),
                     "Puntos -> este punto -> Espejo -> Montar espejo (con vista previa y respaldo)"))
 
@@ -3628,7 +3628,7 @@ def mk_diagnostico(router=None):
     #    El arreglo remite a la plantilla del panel (Ajustes -> MikroTik), que ya pone esas
     #    reglas en raw/nat/mangle con su comentario y respaldo: antes se proponia un drop
     #    suelto en filter que duplicaba la plantilla y que el panel no gestiona despues.
-    _por_cat = [(l, "categoria %s" % nom.lower(), nom)
+    _por_cat = [(l, "categoría %s" % nom.lower(), nom)
                 for _c, nom, l, n in listas_en_uso([_pid] if _pid else None) if n]
     for lista, que, clase in ([(d.get("LIST", ""), "cuarentena", ""),
                                (d.get("LIST_GRAD", ""), "cuarentena graduada", "")] + _por_cat):
@@ -3638,7 +3638,7 @@ def mk_diagnostico(router=None):
             out.append(("ok", f"La lista de {que} corta", f"Hay una regla activa usando '{lista}'.", ""))
         else:
             if clase:
-                arreglo = ("Ajustes -> MikroTik -> " + clase + " -> elige la accion -> "
+                arreglo = ("Ajustes -> MikroTik -> " + clase + " -> elige la acción -> "
                            "Ver / aplicar en el router")
             else:
                 # LIST y LIST_GRAD no son de ninguna clase: no tienen plantilla propia, asi
@@ -3660,10 +3660,10 @@ def mk_diagnostico(router=None):
                     "Tus abonados no pueden salir con una IP que no es suya.", ""))
     else:
         out.append(("falta", "Se puede salir con IP falsificada (rp-filter = %s)" % rp,
-                    "Es la base de los ataques de amplificacion y de las quejas que no se "
-                    "pueden rastrear. Ningun IDS lo detecta, porque el trafico parece venir "
-                    "de otro sitio. OJO: con rutas asimetricas o varios proveedores, "
-                    "'strict' tira trafico legitimo; probalo primero con 'loose'.",
+                    "Es la base de los ataques de amplificación y de las quejas que no se "
+                    "pueden rastrear. Ningún IDS lo detecta, porque el tráfico parece venir "
+                    "de otro sitio. OJO: con rutas asimétricas o varios proveedores, "
+                    "'strict' tira tráfico legítimo; probalo primero con 'loose'.",
                     "/ip settings set rp-filter=strict"))
 
     # 4) deteccion de escaneo en el propio router (instantanea, sin esperar al sensor)
@@ -3673,13 +3673,13 @@ def mk_diagnostico(router=None):
     else:
         out.append(("falta", "El router no detecta escaneos",
                     "Suricata los ve, pero tarda: el router puede marcarlos al instante y "
-                    "sin depender del sensor. Las reglas estan mas abajo.", ""))
+                    "sin depender del sensor. Las reglas están más abajo.", ""))
 
     # 5) limite de conexiones: frena botnets sin saber nada de firmas
     if any(f.get("connection-limit") for f in activos):
-        out.append(("ok", "Hay limite de conexiones por abonado", "", ""))
+        out.append(("ok", "Hay límite de conexiones por abonado", "", ""))
     else:
-        out.append(("aviso", "Sin limite de conexiones por abonado",
+        out.append(("aviso", "Sin límite de conexiones por abonado",
                     "Un CPE infectado puede abrir miles de conexiones. Un tope alto no "
                     "molesta a nadie y le corta las piernas a un escaner.",
                     "/ip firewall filter add chain=forward protocol=tcp "
@@ -3694,9 +3694,9 @@ def mk_diagnostico(router=None):
     else:
         out.append(("aviso", "Los cortes van por filter, no por raw",
                     "Con muchas IPs en cuarentena conviene cortar en raw: se descarta antes "
-                    "de crear la conexion y la tabla de conntrack no se llena. Las plantillas "
-                    "del panel ya cortan ahi.",
-                    "Ajustes -> MikroTik -> elige la accion de cada clase -> Ver / aplicar en el router"))
+                    "de crear la conexión y la tabla de conntrack no se llena. Las plantillas "
+                    "del panel ya cortan ahí.",
+                    "Ajustes -> MikroTik -> elige la acción de cada clase -> Ver / aplicar en el router"))
     return out
 
 def mk_list_ips(lista, router=None):
@@ -4375,7 +4375,7 @@ def cargar_resolutores():
     try:
         return open(RESOLUTORES_FILE, encoding="utf-8").read()
     except OSError:
-        return "# Resolutores DNS publicos (de serie). Anade los de tu ISP, uno por linea.\n" + \
+        return "# Resolutores DNS públicos (de serie). Añade los de tu ISP, uno por línea.\n" + \
                "\n".join(RESOLUTORES_DEFECTO) + "\n"
 
 _RESOL_CACHE = {}
@@ -4443,7 +4443,7 @@ def excluir_destino(d):
     try:
         ipaddress.ip_address(d)
     except ValueError:
-        return 0, "IP de destino invalida"
+        return 0, "IP de destino inválida"
     modificar_dest_ok(poner=d)                     # 1) destino a la lista de confiables
     liberados = 0
     cand_dst = {}                                  # destinos por CPE del reporte de CADA punto (respaldo)
@@ -4746,7 +4746,7 @@ def notificar_cuarentena(clave, tipo, lista, quien=""):
     q = urllib.parse.urlencode({"ip": nodos.clave(pid, ip), "nodo": pid})   # la identidad, no la IP sola
     link = f"{base}/cuarentena/ficha?{q}" if base else f"panel -> Cuarentena -> Ver evidencia ({ip})"
     txt = (f"\U0001f6a8 Cuarentena [{_hostname()} / {nodos.nombre(pid)}]: {cliente}\n"
-           f"Accion: enviado a lista '{lista}' ({tipo})" + (f" | confianza {conf}" if conf else "") + "\n"
+           f"Acción: enviado a lista '{lista}' ({tipo})" + (f" | confianza {conf}" if conf else "") + "\n"
            + (f"Evidencia: {ev}\n" if ev else "")
            + (f"Por: {quien}\n" if quien else "")
            + f"Ficha: {link}")
@@ -4807,7 +4807,7 @@ def salud_memcaps(st):
         "sesiones TCP descartadas": ("tcp", "ssn_memcap_drop"),
         "segmentos TCP descartados": ("tcp", "segment_memcap_drop"),
         "reensamblado agotado": ("tcp", "reassembly_memcap_drop"),
-        "defragmentacion agotada": ("defrag", "max_frag_hits"),
+        "defragmentación agotada": ("defrag", "max_frag_hits"),
     }
     out = {}
     for etiqueta, (sec, clave) in cand.items():
@@ -4968,11 +4968,11 @@ def medir_sensor(pid=None):
     except OSError:
         o["eve_edad"] = None
     if not fresco or not p:
-        o["nivel"], o["titulo"] = "warn", "Sin estado reciente del orquestador: no se sabe como esta el punto"
+        o["nivel"], o["titulo"] = "warn", "Sin estado reciente del orquestador: no se sabe cómo está el punto"
     elif not o["suricata"]:
         o["nivel"], o["titulo"] = "down", "Sensor detenido"
     elif o["tzsp_mode"] and not o["tzsp"]:
-        o["nivel"], o["titulo"] = "warn", "Receptor TZSP caido"
+        o["nivel"], o["titulo"] = "warn", "Receptor TZSP caído"
     elif cob and cob.get("ratio_rechazo", 0) >= COBERTURA_RECHAZO:
         # lo mas enganoso de todo: SI hay trafico, pero se esta tirando casi entero
         o["nivel"] = "warn"
@@ -4981,7 +4981,7 @@ def medir_sensor(pid=None):
                           ", ".join(cob["intrusos"][:2]) or "desconocido"))
     elif cob and cob.get("mudos"):
         o["nivel"] = "warn"
-        o["titulo"] = ("Sin espejo de %d nodo(s): %s. Esa parte de la red esta sin vigilar"
+        o["titulo"] = ("Sin espejo de %d nodo(s): %s. Esa parte de la red está sin vigilar"
                        % (len(cob["mudos"]), ", ".join(cob["mudos"][:2])))
     elif cob and cob.get("desperdicio_alto"):
         # No es un fallo del sensor: es el router mandando lo que no hace falta. Y cuando
@@ -4992,27 +4992,27 @@ def medir_sensor(pid=None):
                        "llegar. Pon connection-bytes=0-10000 en el mangle"
                        % round(100 * cob["desperdicio"]))
     elif dt > 0 and not hay_trafico:
-        o["nivel"], o["titulo"] = "warn", "Sin trafico"
+        o["nivel"], o["titulo"] = "warn", "Sin tráfico"
     elif o["memcaps"]:
         # el caso mas enganoso: el kernel no tira nada, lo tira Suricata por quedarse
         # sin memoria, y las alertas que faltan no dejan rastro en ningun sitio
         _k = sorted(o["memcaps"].items(), key=lambda kv: -kv[1])[0]
         o["nivel"] = "warn"
-        o["titulo"] = ("Memoria de Suricata agotada: %s (%s). Se estan perdiendo "
+        o["titulo"] = ("Memoria de Suricata agotada: %s (%s). Se están perdiendo "
                        "detecciones" % (_k[0], "{:,}".format(_k[1]).replace(",", ".")))
     elif o["drops_pct"] > SALUD_DROPS * 100:
         o["nivel"] = "warn"
-        o["titulo"] = "Captura con perdidas: %.2f%% de los paquetes" % o["drops_pct"]
+        o["titulo"] = "Captura con pérdidas: %.2f%% de los paquetes" % o["drops_pct"]
     elif o["eve_edad"] is not None and o["eve_edad"] > SALUD_EVE_MUDO:
         o["nivel"] = "warn"
-        o["titulo"] = ("Sin eventos nuevos desde hace %d min: Suricata esta viva pero "
+        o["titulo"] = ("Sin eventos nuevos desde hace %d min: Suricata está viva pero "
                        "no registra nada" % (o["eve_edad"] // 60))
     elif o["disco_pct"] is not None and o["disco_pct"] >= SALUD_DISCO:
         o["nivel"] = "warn"
         o["titulo"] = ("Disco al %.0f%%: al llenarse se pierden capturas y logs "
                        "sin avisar" % o["disco_pct"])
     elif o["drop_ratio"] and o["drop_ratio"] > 0.02:
-        o["nivel"], o["titulo"] = "warn", "Captura con perdidas"
+        o["nivel"], o["titulo"] = "warn", "Captura con pérdidas"
     elif o["reporte_edad"] is not None and o["reporte_edad"] > 2 * REFRESH_SECS:
         o["nivel"], o["titulo"] = "warn", "Reporte desactualizado"
     else:
@@ -5027,7 +5027,7 @@ def medir_sensor(pid=None):
             o["titulo"] = ("Cobertura incompleta (%s%%): no se puede afirmar que no haya "
                            "amenazas" % _cob)
         else:
-            o["titulo"] = ("Viendo trafico" + _cb
+            o["titulo"] = ("Viendo tráfico" + _cb
                            + (" · sin amenazas" if o["candidatos"] == 0
                               else f" · {o['candidatos']} CPE en riesgo"))
     # avisos proactivos: notificar cuando el estado EMPEORA (ok->warn/down), cuando cambia el
@@ -5056,7 +5056,7 @@ def medir_sensor(pid=None):
         ico = "⛔" if o["nivel"] == "down" else "⚠️"
         det = []
         if o.get("pps") is not None: det.append(f"{o['pps']:,.0f} pkts/s")
-        if o.get("drop_ratio"): det.append(f"perdidas {o['drop_ratio']*100:.1f}%")
+        if o.get("drop_ratio"): det.append(f"pérdidas {o['drop_ratio']*100:.1f}%")
         if o.get("reporte_edad") is not None: det.append(f"reporte hace {o['reporte_edad']//60} min")
         aviso = f"{ico} Suricata [{donde}]: {o['titulo']}" + (" (" + ", ".join(det) + ")" if det else "")
     elif era_mal and not mal and not o.get("esperando_mk"):
@@ -5234,7 +5234,7 @@ def salud_punto(pid):
                                 (cont.get("suricata") or {}).get("estado", "?"), kp, kd,
                                 (" (%.2f%%)" % drops_pct) if drops_pct is not None else ""),
                             kernel_packets=kp, kernel_drops=kd, drops_pct=drops_pct,
-                            alcance="acumulado desde el ultimo arranque del Suricata del punto",
+                            alcance="acumulado desde el último arranque del Suricata del punto",
                             reglas=su.get("reglas_cargadas"))
     # un Suricata caido o enfermo es un fallo aunque falte el MikroTik; vivo y sin paquetes, pendiente
     if pend and (p.get("estado") == "creando" or _vivo(cont, "suricata")):
@@ -5245,7 +5245,7 @@ def salud_punto(pid):
     except OSError:
         eve_edad = None
     et["eventos"] = _etapa(eve_edad is not None and eve_edad < SALUD_EVE_MUDO,
-                           "sin eve.json" if eve_edad is None else "ultimo evento escrito hace %ds" % eve_edad,
+                           "sin eve.json" if eve_edad is None else "último evento escrito hace %ds" % eve_edad,
                            edad_s=eve_edad)
     if pend:
         _pendiente(et["eventos"])
@@ -5259,7 +5259,7 @@ def salud_punto(pid):
         _pendiente(et["datos"])
     captura = {"recorte_bytes": (cob or {}).get("recorte_bytes") or 10000,
                "redes": list(p.get("redes") or []),
-               "alcance": "captura reducida: los primeros 10 KB de cada conexion de los prefijos vigilados"}
+               "alcance": "captura reducida: los primeros 10 KB de cada conexión de los prefijos vigilados"}
     # estado global
     if not fresco or not p:
         estado, motivo = "desconocido", "sin estado reciente del orquestador"
@@ -5280,7 +5280,7 @@ def salud_punto(pid):
     elif not (tz_ok and isinstance(kp, int) and kp > 0):
         estado, motivo = "sin datos", "VPN arriba pero no llega espejo procesado"
     elif all(e["ok"] for e in et.values()):
-        estado, motivo = "operativa", "todas las etapas al dia"
+        estado, motivo = "operativa", "todas las etapas al día"
     else:
         estado = "degradada"
         motivo = ", ".join(nom for k, nom in _ETAPAS if not et[k]["ok"])
@@ -5293,7 +5293,7 @@ POL_ACCIONES = ("nada", "cuarentena", "dns", "notificar")   # valores heredados 
 # Politica por CLASE: para cada clase de abuso, desde que riesgo se actua. El destino es
 # siempre la address-list de esa clase (lista_de_categoria).
 POL_CLASE = (("nada", "Nada (solo mostrar)"),
-             ("notificar", "Solo notificar (bitacora)"),
+             ("notificar", "Solo notificar (bitácora)"),
              ("alto", "Cuarentena si el riesgo es ALTO"),
              ("medio", "Cuarentena si el riesgo es MEDIO o ALTO"),
              ("siempre", "Cuarentena en cuanto aparezca en el Top"))
@@ -5397,7 +5397,7 @@ def aplicar_politicas(pid=None):
         ev = evidencia_reciente(k, cq)
         if not ev["ok"]:
             mk_log("POLITICA-EVIDENCIA-VIEJA", ip_de(k), "politica",
-                   f"clase={cat} riesgo={sc} {ev['detalle']} (no se envia)" + _suf_nodo(k))
+                   f"clase={cat} riesgo={sc} {ev['detalle']} (no se envía)" + _suf_nodo(k))
             continue
         a_enviar.append((k, sc, cat, lst))
     a_quitar = []                      # (registro, clave, lista)
@@ -5440,7 +5440,7 @@ def aplicar_politicas(pid=None):
     for k, sc, cat, lst in enviadas:
         nuevas[k] = {"cuando": int(time.time()), "score": sc, "por": "politica", "manual": False, "pol": True,
                      "router": pid, "categoria": cat, "lista": lst, "motivo": _motivo_bloqueo(k)}
-        try: notificar_cuarentena(k, "politica de clase %s" % cat, lst, quien="politica")
+        try: notificar_cuarentena(k, "política de clase %s" % cat, lst, quien="politica")
         except Exception: pass         # un aviso que falla no puede dejar la alta sin registrar
         mk_log("POLITICA-ENVIADO", ip_de(k), "politica",
                f"lista={lst} clase={cat} riesgo={sc}" + _suf_nodo(k))
@@ -5557,8 +5557,8 @@ def evidencia_reciente(clave, cq=None, ahora=None):
     edad = int(max(0, ahora - ult))
     ok = edad <= lim
     return {"ok": ok, "edad_s": edad, "limite_s": lim,
-            "detalle": ("ultima alerta hace %s" % _dura_txt(edad)) + ("" if ok else
-                       " (mas vieja que %s: la IP puede ser hoy de otro abonado)" % _dura_txt(lim))}
+            "detalle": ("última alerta hace %s" % _dura_txt(edad)) + ("" if ok else
+                       " (más vieja que %s: la IP puede ser hoy de otro abonado)" % _dura_txt(lim))}
 
 def evidencia_sin_confirmar(clave, q):
     """"" si la evidencia de `pid|ip` es reciente o el operador ya confirmo el envio con la
@@ -5578,7 +5578,7 @@ def _dura_txt(s):
         return "%d min" % (s // 60)
     if s < 86400:
         return "%d h" % (s // 3600)
-    return "%d dia(s)" % (s // 86400)
+    return "%d día(s)" % (s // 86400)
 
 # --- barrido rapido de ALTO: envio casi inmediato de infecciones confirmadas ---
 # El ciclo normal (reporte + aplicar_politicas) corre cada REFRESH_SECS (5 min), asi que
@@ -5676,7 +5676,7 @@ def barrido_alto_rapido(pid=None, maxbytes=4_000_000):
                 r["otras"], r["quien"], r["cat"])
     for src in hits:
         if hits[src] >= _FAST_UMBRAL or len(sids[src]) >= 2:
-            motivos[src] = "infeccion confirmada (%d alertas CnC, %d firmas)" % (
+            motivos[src] = "infección confirmada (%d alertas CnC, %d firmas)" % (
                 hits[src], len(sids[src]))
     a_enviar = []                                # (clave, clase, lista)
     for src in motivos:
@@ -5704,7 +5704,7 @@ def barrido_alto_rapido(pid=None, maxbytes=4_000_000):
         nuevas[src] = {"cuando": int(ahora), "score": "", "por": "politica-rapida", "manual": False,
                        "pol": True, "router": pid, "categoria": _cat, "lista": lst,
                        "motivo": _motivo_bloqueo(src)}
-        try: notificar_cuarentena(src, "ALTO (envio inmediato)", lst, quien="politica-rapida")
+        try: notificar_cuarentena(src, "ALTO (envío inmediato)", lst, quien="politica-rapida")
         except Exception: pass
         mk_log("POLITICA-RAPIDA", ip_de(src), "politica",
                f"lista={lst} {motivos.get(src, '')}" + _suf_nodo(src))
@@ -5808,7 +5808,7 @@ ROLES = ("admin", "operador", "lectura")   # operador: gestiona incidentes y cua
 # selector de rol al crear o editar (el user, 2026-10-13: «no se sabe que hace cada uno»).
 ROL_DESC = {
     "admin": "Todo: usuarios, MikroTik, puntos, exclusiones, listas y actualizaciones.",
-    "operador": "La cuarentena: envia y quita CPEs de las listas del MikroTik, excluye destinos y "
+    "operador": "La cuarentena: envía y quita CPEs de las listas del MikroTik, excluye destinos y "
                 "denuncia IPs. No toca usuarios ni ajustes.",
     "lectura": "Ve paneles, eventos y reportes. No cambia nada.",
 }
@@ -6262,14 +6262,14 @@ def feeds_auth_probar(key):
         except Exception:
             st = ""
         if e.code in (401, 403) or st in _ABUSECH_MALA:
-            return False, "abuse.ch rechazo la clave (%s)" % (st or "HTTP %d" % e.code)
+            return False, "abuse.ch rechazó la clave (%s)" % (st or "HTTP %d" % e.code)
         return None, "no se pudo comprobar (HTTP %d)" % e.code
     except (ValueError, AttributeError):
         return None, "respuesta ilegible de abuse.ch"
     except Exception:
         return None, "no se pudo comprobar ahora (sin red?)"
     if st in _ABUSECH_MALA:
-        return False, "abuse.ch rechazo la clave (%s)" % st
+        return False, "abuse.ch rechazó la clave (%s)" % st
     if st in ("ok", "no_result"):
         return True, "valida"
     return None, "respuesta inesperada de abuse.ch (%s)" % (st or "sin estado")
@@ -6318,7 +6318,7 @@ def feeds_tabla():
                   f"<td>{vig}</td><td class=num>{s.get('count', 0):,}</td>"
                   f"<td class=mono>{ult}</td><td class=mono>{exp}</td></tr>")
     if not filas:
-        filas = ("<tr><td colspan=6 class=hint style='padding:12px'>Sin datos de feeds todavia. "
+        filas = ("<tr><td colspan=6 class=hint style='padding:12px'>Sin datos de feeds todavía. "
                  "Pulsa 'Actualizar feeds ahora'.</td></tr>")
     gen = meta.get("generated", 0)
     genT = time.strftime("%d/%m %H:%M", time.localtime(gen)) if gen else "nunca"
@@ -6370,8 +6370,8 @@ AIDB_CATS = {
     4: "Ataque DDoS", 5: "Fuerza bruta FTP", 6: "Ping de la muerte", 7: "Phishing",
     8: "Fraude VoIP", 9: "Proxy abierto o Tor", 10: "Spam web", 11: "Spam de correo",
     12: "Spam en blogs", 13: "IP de VPN", 14: "Escaneo de puertos", 15: "Hackeo",
-    16: "Inyeccion SQL", 17: "Suplantacion de remitente", 18: "Fuerza bruta",
-    19: "Bot web abusivo", 20: "Host comprometido", 21: "Ataque a aplicacion web",
+    16: "Inyección SQL", 17: "Suplantación de remitente", 18: "Fuerza bruta",
+    19: "Bot web abusivo", 20: "Host comprometido", 21: "Ataque a aplicación web",
     22: "SSH", 23: "Dirigido a IoT",
 }
 AIDB_REMEDIO = {
@@ -6380,13 +6380,13 @@ AIDB_REMEDIO = {
     7: "Alojamiento de phishing: revisar hosting/servidor propio en esa IP.",
     9: "Proxy abierto: revisar NAT y puertos redirigidos sin querer.",
     11: "Salida de spam: bloquear 25/tcp saliente salvo tu servidor de correo.",
-    14: "Alguien detras de esa IP escanea internet: casi siempre un equipo infectado.",
-    16: "Aplicacion web expuesta siendo usada para atacar: revisar el servidor.",
+    14: "Alguien detrás de esa IP escanea internet: casi siempre un equipo infectado.",
+    16: "Aplicación web expuesta siendo usada para atacar: revisar el servidor.",
     18: "Fuerza bruta de credenciales: cerrar el acceso remoto o limitarlo por origen.",
     20: "Equipo comprometido: aislarlo y limpiarlo, no solo bloquearlo.",
-    21: "Servicio web expuesto (router, camara, panel) usado para atacar.",
+    21: "Servicio web expuesto (router, cámara, panel) usado para atacar.",
     22: "SSH abierto a internet: cerrarlo desde la WAN o mover/limitar el puerto.",
-    23: "Camara, DVR o IoT expuesto: firmware y credenciales por defecto.",
+    23: "Cámara, DVR o IoT expuesto: firmware y credenciales por defecto.",
 }
 
 def aidb_key():
@@ -6483,7 +6483,7 @@ def aidb_ip_valida(ip):
     except ValueError:
         return False, "no es una IP"
     if not o.is_global:
-        return False, "no es una IP publica"
+        return False, "no es una IP pública"
     return True, ""
 
 def aidb_red_valida(cidr):
@@ -6493,11 +6493,11 @@ def aidb_red_valida(cidr):
     try:
         red = ipaddress.ip_network(cidr.strip(), strict=False)
     except ValueError:
-        return None, "no es una red valida (ej: 200.0.0.0/24)"
+        return None, "no es una red válida (ej: 200.0.0.0/24)"
     if red.version != 4:
         return None, "solo redes IPv4"
     if not red.is_global:
-        return None, "no es una red publica"
+        return None, "no es una red pública"
     if red.prefixlen < AIDB_PREFIJO_MIN:
         return None, f"demasiado grande: como mucho /{AIDB_PREFIJO_MIN}"
     return red, ""
@@ -6527,7 +6527,7 @@ def _aidb_pedir_red(cidr, dias=30):
             return None, ("tu plan de AbuseIPDB no permite una red tan grande "
                           "(el gratuito llega a /24)"), True
         if e.code in (401, 403):
-            return None, "AbuseIPDB rechazo la clave (HTTP %d)" % e.code, True
+            return None, "AbuseIPDB rechazó la clave (HTTP %d)" % e.code, True
         if e.code == 422:
             return None, "AbuseIPDB no acepta esa red", True
         return None, "HTTP %d" % e.code, True
@@ -6603,7 +6603,7 @@ def aidb_lote(texto, refrescar=False):
     if not vistas:
         return res, "No pusiste ninguna IP ni red."
     if sobran:
-        return res, f"Se consultaron {AIDB_MAX_LOTE}; quedan {sobran} sin consultar (repite la operacion)."
+        return res, f"Se consultaron {AIDB_MAX_LOTE}; quedan {sobran} sin consultar (repite la operación)."
     return res, ""
 
 def _aidb_pedir(ip, dias=90):
@@ -6629,7 +6629,7 @@ def _aidb_pedir(ip, dias=90):
                 espera = 0
             return None, "cuota:%d" % (espera or 3600), True
         if e.code in (401, 403):
-            return None, "AbuseIPDB rechazo la clave (HTTP %d)" % e.code, True
+            return None, "AbuseIPDB rechazó la clave (HTTP %d)" % e.code, True
         if e.code == 422:
             return None, "AbuseIPDB no acepta esa IP", True
         return None, "HTTP %d" % e.code, True
@@ -6661,7 +6661,7 @@ def _aidb_resumen(d):
             "ultimo": (d.get("lastReportedAt") or "")[:19],
             "cats": [[c, n] for c, n in orden],
             # ya traducidas: el generador del reporte las pinta sin conocer la taxonomia
-            "cats_nom": [AIDB_CATS.get(c, "categoria %d" % c) for c, _n in orden],
+            "cats_nom": [AIDB_CATS.get(c, "categoría %d" % c) for c, _n in orden],
             "ejemplos": ejemplos, "ts": int(time.time())}
 
 def aidb_consultar(ip, auto=False, refrescar=False, guardar=True):
@@ -6687,7 +6687,7 @@ def aidb_consultar(ip, auto=False, refrescar=False, guardar=True):
         # lo automatico no puede comerse la reserva del operador
         tope = AIDB_CUOTA - (AIDB_RESERVA_MANUAL if auto else 0)
         if int(est.get("gastadas", 0)) >= tope:
-            falta = "sin cuota para lo automatico" if auto else "cuota diaria agotada"
+            falta = "sin cuota para lo automático" if auto else "cuota diaria agotada"
             return (ent, "cache", "") if ent else (None, "", falta)
     d, err, gastada = _aidb_pedir(ip)
     with _AIDB_LOCK:
@@ -6863,7 +6863,7 @@ def _aidb_guardar_denuncias(d):
 def aidb_denunciar(ip, firma="", dport="", proto="", n=0, quien="?"):
     """Denuncia UN atacante entrante. Devuelve (ok, mensaje). Nunca lanza."""
     if not aidb_reportar_activo():
-        return False, "las denuncias estan apagadas (Ajustes -> Reputacion)"
+        return False, "las denuncias están apagadas (Ajustes -> Reputación)"
     if not aidb_configurada():
         return False, "falta la clave de AbuseIPDB"
     ok, porque = aidb_ip_valida(ip)
@@ -6873,14 +6873,14 @@ def aidb_denunciar(ip, firma="", dport="", proto="", n=0, quien="?"):
         # denunciar tu propio rango te mete a VOS en las listas negras
         return False, f"{ip} es de TUS redes: eso se corrige adentro, no se denuncia"
     if nunca_bloquear(ip):
-        return False, f"{ip} esta en la lista 'Nunca bloquear'"
+        return False, f"{ip} está en la lista 'Nunca bloquear'"
     ahora = time.time()
     with _AIDB_LOCK:
         reg = _aidb_denuncias()
         prev = reg.get(ip, {})
         if ahora - prev.get("ts", 0) < AIDB_REDENUNCIA:
             cuando = time.strftime("%d/%m %H:%M", time.localtime(prev.get("ts", 0)))
-            return False, f"{ip} ya se denuncio el {cuando} (se espera 24 h para repetir)"
+            return False, f"{ip} ya se denunció el {cuando} (se espera 24 h para repetir)"
     cats = aidb_cats_de_firma(firma, dport)
     datos = urllib.parse.urlencode({"ip": ip, "categories": ",".join(str(c) for c in cats),
                                     "comment": aidb_comentario(firma, dport, proto, n)})
@@ -6896,9 +6896,9 @@ def aidb_denunciar(ip, firma="", dport="", proto="", n=0, quien="?"):
         if e.code == 429:
             return False, "cuota de denuncias agotada por hoy"
         if e.code in (401, 403):
-            return False, f"AbuseIPDB rechazo la clave (HTTP {e.code})"
+            return False, f"AbuseIPDB rechazó la clave (HTTP {e.code})"
         if e.code == 422:
-            return False, "AbuseIPDB no acepto la denuncia (IP propia o ya denunciada)"
+            return False, "AbuseIPDB no aceptó la denuncia (IP propia o ya denunciada)"
         return False, f"HTTP {e.code}"
     except (urllib.error.URLError, TimeoutError, OSError):
         return False, "sin respuesta de AbuseIPDB"
@@ -7151,9 +7151,9 @@ def _vigilar_publicas(forzar, pares):
         if sc >= PUB_UMBRAL_AVISO and antes < PUB_UMBRAL_AVISO:
             nom = (router_por_id(rid) or {}).get("nombre") or rid
             try:
-                enviar_telegram(f"\u26a0\ufe0f IP publica ensuciada [{_hostname()}]: {ent} "
-                                f"({nom}) esta denunciada ({sc} % de abuso). "
-                                f"Panel -> Consultar IP para ver que abonado lo causa.")
+                enviar_telegram(f"\u26a0\ufe0f IP pública ensuciada [{_hostname()}]: {ent} "
+                                f"({nom}) está denunciada ({sc} % de abuso). "
+                                f"Panel -> Consultar IP para ver qué abonado lo causa.")
             except Exception:
                 pass
             bitacora("PUBLICA-DENUNCIADA", f"{ent} score={sc} nodo={nom}", quien="auto")
@@ -7223,19 +7223,19 @@ def por_que_sin_culpables(cats):
     if not pts and not firmas:
         return ("sin-senal",
                 "Lo que se denuncia no se traduce a nada concreto que buscar dentro de tu "
-                "red, asi que no se ha buscado.")
+                "red, así que no se ha buscado.")
     if ciegas and len(ciegas) == len(ids):
         return ("ciego",
-                "Este tipo de abuso (bot web, ataque a aplicacion web) es trafico HTTP que "
-                "parece normal: casi nunca dispara una regla, asi que el sensor puede no "
-                "verlo aunque este ocurriendo. Que no aparezca aqui no significa que no pase.")
+                "Este tipo de abuso (bot web, ataque a aplicación web) es tráfico HTTP que "
+                "parece normal: casi nunca dispara una regla, así que el sensor puede no "
+                "verlo aunque este ocurriendo. Que no aparezca aquí no significa que no pase.")
     if ciegas:
         return ("mixto",
-                "Se busco y ningun CPE de este nodo esta haciendo eso ahora. Ojo: parte de "
-                "lo denunciado (bot web o ataque web) casi nunca dispara una regla, asi que "
+                "Se buscó y ningún CPE de este nodo está haciendo eso ahora. Ojo: parte de "
+                "lo denunciado (bot web o ataque web) casi nunca dispara una regla, así que "
                 "esa parte el sensor puede no verla.")
     return ("nadie",
-            "Se busco entre los CPEs de este nodo y ninguno esta haciendo eso en la ventana "
+            "Se buscó entre los CPEs de este nodo y ninguno está haciendo eso en la ventana "
             "actual: pudo pasar antes, o salir por otro nodo.")
 
 def _cpes_del_nodo(rid):
@@ -7360,8 +7360,8 @@ ZEN_COD = {
     "127.0.0.6": "XBL: equipo infectado o proxy abierto",
     "127.0.0.7": "XBL: equipo infectado o proxy abierto",
     "127.0.0.9": "DROP: red secuestrada",
-    "127.0.0.10": "PBL: rango dinamico (normal en residencial)",
-    "127.0.0.11": "PBL: rango dinamico (normal en residencial)",
+    "127.0.0.10": "PBL: rango dinámico (normal en residencial)",
+    "127.0.0.11": "PBL: rango dinámico (normal en residencial)",
 }
 _PBL = ("127.0.0.10", "127.0.0.11")
 
@@ -7530,9 +7530,9 @@ def dnsbl_historial_html(bl, esc=None, tope=12):
                      esc(e.get("lista", "")), cuanto))
     return ("<details style='margin-top:8px'><summary style='cursor:pointer;font-size:12.5px;"
             "color:#52514e'>Historial de listas negras (%d movimiento(s))</summary>"
-            "<p class=hint style='margin:6px 0 4px'>Cuando entro cada direccion, en que lista "
-            "y cuanto tardo en salir. Si una IP entra, sale y vuelve a entrar, la causa no se "
-            "limpio: se corto al abonado equivocado o quedo otro emitiendo.</p>"
+            "<p class=hint style='margin:6px 0 4px'>Cuándo entró cada dirección, en qué lista "
+            "y cuánto tardó en salir. Si una IP entra, sale y vuelve a entrar, la causa no se "
+            "limpio: se cortó al abonado equivocado o quedó otro emitiendo.</p>"
             "<table class=ut style='font-size:12.5px'><tbody>%s</tbody></table></details>"
             % (len(evs), filas))
 
@@ -7550,15 +7550,15 @@ def culpables_lista_html(rid, bl, esc=None, tope=8):
     puertos, firmas, motivos, solo_infra = senal_de_listas(bl)
     if solo_infra:
         return ("<div class=hint style='margin-top:6px'>El listado es de <b>red secuestrada "
-                "(DROP)</b>, no de un equipo infectado: va por asignacion y BGP, no por "
-                "ningun abonado. Buscar un CPE aqui es buscar donde no esta.</div>")
+                "(DROP)</b>, no de un equipo infectado: va por asignación y BGP, no por "
+                "ningún abonado. Buscar un CPE aquí es buscar donde no está.</div>")
     if not (puertos or firmas):
         return ""
     culp = culpables_por_senal(rid, puertos, firmas, tope=tope)
     por_que = " y ".join(motivos)
     if not culp:
         return ("<div class=hint style='margin-top:6px'>Te listan por <b>%s</b>, pero "
-                "ningun CPE de este nodo aparece haciendo eso en la ventana actual. "
+                "ningún CPE de este nodo aparece haciendo eso en la ventana actual. "
                 "Puede haber pasado antes de la ventana, o salir por otro nodo.</div>"
                 % esc(por_que))
     lis = ""
@@ -7574,10 +7574,10 @@ def culpables_lista_html(rid, bl, esc=None, tope=8):
                 "<span class=hint>%s</span> %s</li>"
                 % (esc(ip_de(k)), esc(", ".join(mot)), accion))
     return ("<details open style='margin-top:8px'><summary style='cursor:pointer;"
-            "font-size:13px;font-weight:600'>A quien mirar por este listado (%d)</summary>"
+            "font-size:13px;font-weight:600'>A quién mirar por este listado (%d)</summary>"
             "<p class=hint style='margin:6px 0 4px'>Te listan por <b>%s</b>. Estos son los "
-            "CPEs de este nodo que mas encajan con eso, ordenados. Son <b>candidatos</b>: "
-            "con NAT nada une un listado con un abonado concreto, asi que confirma en la "
+            "CPEs de este nodo que más encajan con eso, ordenados. Son <b>candidatos</b>: "
+            "con NAT nada une un listado con un abonado concreto, así que confirma en la "
             "ficha antes de cortar.</p>"
             "<ul style='margin:6px 0 0;padding-left:18px;font-size:13px'>%s</ul></details>"
             % (len(culp), esc(por_que), lis))
@@ -7592,7 +7592,7 @@ function verQueHace(a, ip){
   var fila = a.closest('tr').nextElementSibling;
   if(!fila || !fila.classList.contains('fichafila')) return false;
   var cel = fila.querySelector('.fichacel');
-  if(!fila.hidden){ fila.hidden = true; a.textContent = 'ver que hace'; return false; }
+  if(!fila.hidden){ fila.hidden = true; a.textContent = 'ver qué hace'; return false; }
   fila.hidden = false; a.textContent = 'ocultar';
   if(cel.dataset.cargado === '1') return false;
   cel.innerHTML = '<p class=hint>Consultando...</p>';
@@ -7621,13 +7621,13 @@ def rango_detalle_html(dat, esc=None, scb=None, tope=RANGO_TOPE):
     hosts = int(dat.get("hosts") or 0)
     if not den:
         return ("<div class=hint style='margin-top:6px;color:#1a7f37'>&#10003; Ninguna de "
-                "las %s direcciones de este rango esta denunciada.</div>"
+                "las %s direcciones de este rango está denunciada.</div>"
                 % "{:,}".format(hosts).replace(",", ".") if hosts else "")
     filas = "".join(
         "<tr><td class=mono>%s</td><td class=num>%s</td><td class=num>%s</td>"
         "<td class=mono>%s</td><td>%s</td>"
         "<td><a class=hint href='#' onclick=\"return verQueHace(this,%s)\">"
-        "ver que hace</a></td></tr>"
+        "ver qué hace</a></td></tr>"
         "<tr class=fichafila hidden><td colspan=6 class=fichacel></td></tr>"
         % (esc(str(a[0])), scb(int(a[1]), corto=True),
            "{:,}".format(int(a[2])).replace(",", "."), esc(str(a[3])), esc(str(a[4])),
@@ -7639,17 +7639,17 @@ def rango_detalle_html(dat, esc=None, scb=None, tope=RANGO_TOPE):
              % (tope, "{:,}".format(len(den)).replace(",", "."))) if len(den) > tope else ""
     return ("<div style='margin-top:8px'>"
             "<p class=hint style='margin:0 0 6px'><b>%s</b> de <b>%s</b> direcciones "
-            "denunciadas%s. Cada fila es una IP publica tuya por la que se esta atacando.</p>"
+            "denunciadas%s. Cada fila es una IP pública tuya por la que se está atacando.</p>"
             "<div class=tablewrap><table class=ut style='font-size:12.5px'>"
-            "<thead><tr><th>Direccion</th><th class=num>Abuso</th><th class=num>Denuncias</th>"
-            "<th>Ultima</th><th>Pais</th><th></th></tr></thead>"
+            "<thead><tr><th>Dirección</th><th class=num>Abuso</th><th class=num>Denuncias</th>"
+            "<th>Última</th><th>País</th><th></th></tr></thead>"
             # el JS va FUERA del %: con la concatenacion dentro, "%" liga mas fuerte que
             # "+" y el formateo se aplicaba al script en vez de a la tabla (TypeError en
             # caliente que ni el AST ni pyflakes ven)
             "<tbody>%s</tbody></table></div>%s</div>"
             % ("{:,}".format(len(den)).replace(",", "."),
                "{:,}".format(hosts).replace(",", "."),
-               (", <b style='color:#b52a2a'>%d</b> con 75%% o mas" % peor) if peor else "",
+               (", <b style='color:#b52a2a'>%d</b> con 75%% o más" % peor) if peor else "",
                filas, aviso)) + _RANGO_JS
 
 # Entradas publicas con una revision en marcha, por tipo (listas negras / AbuseIPDB). Dos clics
@@ -7721,7 +7721,7 @@ def _vigilar_dnsbl(pares):
             nom = (router_por_id(rid) or {}).get("nombre") or rid
             try:
                 enviar_telegram(f"\u26d4 Lista negra [{_hostname()}]: {r['n_listadas']} "
-                                f"direccion(es) de {ent} ({nom}) estan en listas de bloqueo. "
+                                f"dirección(es) de {ent} ({nom}) están en listas de bloqueo. "
                                 f"Panel -> Consultar IP.")
             except Exception:
                 pass
@@ -7769,16 +7769,16 @@ DNSBL_SALIDA = {
                          "XBL y CSS caducan solas en cuanto el equipo deja de emitir. "
                          "La SBL si hay que pedirla, desde ese mismo enlace."),
     "bl.spamcop.net": ("sola", "https://www.spamcop.net/bl.shtml",
-                       "Caduca sola poco despues de la ultima denuncia."),
+                       "Caduca sola poco después de la última denuncia."),
     "dnsbl.sorbs.net": ("muerta", "",
-                        "SORBS cerro su servicio en 2024: este chequeo ya no dice nada."),
+                        "SORBS cerró su servicio en 2024: este chequeo ya no dice nada."),
     "b.barracudacentral.org": ("formulario",
                                "https://www.barracudacentral.org/rbl/removal-request",
-                               "Formulario con revision humana."),
+                               "Formulario con revisión humana."),
     "psbl.surriel.com": ("sola", "https://psbl.org/remove",
                          "Caduca sola; el enlace permite adelantarlo una vez limpio."),
     "dnsbl-1.uceprotect.net": ("pago", "https://www.uceprotect.net/en/rblcheck.php",
-                               "El nivel 1 caduca solo tras unos dias sin abuso. "
+                               "El nivel 1 caduca solo tras unos días sin abuso. "
                                "La salida inmediata la cobran."),
 }
 DNSBL_DIAS_LIMPIO = 3     # dias seguidos sin abuso saliente antes de pedir la salida
@@ -7849,25 +7849,25 @@ def dnsbl_salida(bl, limpio):
     listas = dnsbl_listas_afectadas(bl)
     if not int((bl or {}).get("n_listadas", 0)) or not listas:
         return {"estado": "limpio", "listas": [], "limpio": limpio,
-                "titulo": "No estas en ninguna lista de bloqueo",
+                "titulo": "No estás en ninguna lista de bloqueo",
                 "detalle": "No hay nada que pedir."}
     if limpio < DNSBL_DIAS_LIMPIO:
         return {"estado": "espera", "listas": listas, "limpio": limpio,
-                "titulo": "Todavia no conviene pedir la salida",
-                "detalle": ("Lleva %d dia(s) sin abuso saliente y hacen falta %d. "
-                            "Pedirla con el equipo aun emitiendo te vuelve a listar, y "
+                "titulo": "Todavía no conviene pedir la salida",
+                "detalle": ("Lleva %d día(s) sin abuso saliente y hacen falta %d. "
+                            "Pedirla con el equipo aún emitiendo te vuelve a listar, y "
                             "varias listas penalizan la reincidencia: primero se corta "
                             "al abonado, luego se pide." % (limpio, DNSBL_DIAS_LIMPIO))}
     hay_que_pedir = [x for x in listas if x["politica"] in ("formulario", "pago")]
     if not hay_que_pedir:
         return {"estado": "caduca", "listas": listas, "limpio": limpio,
                 "titulo": "Se salen solas: no hay que pedir nada",
-                "detalle": ("Lleva %d dias sin abuso saliente. Todas las listas en las "
+                "detalle": ("Lleva %d días sin abuso saliente. Todas las listas en las "
                             "que estas caducan por su cuenta al parar el abuso; pedirlo "
                             "no lo adelanta." % limpio)}
     return {"estado": "pedir", "listas": listas, "limpio": limpio,
             "titulo": "Se puede pedir la salida",
-            "detalle": ("Lleva %d dias sin abuso saliente. Estas listas no caducan solas: "
+            "detalle": ("Lleva %d días sin abuso saliente. Estas listas no caducan solas: "
                         "hay que pedirlo." % limpio)}
 
 def dnsbl_expediente(entrada, bl, est, tend, acciones=()):
@@ -7916,9 +7916,9 @@ _SAL_POL = {"sola": "caduca sola", "formulario": "hay que pedirla",
 # No es una lista exhaustiva: lo que no este sale como "puerto 1234/tcp" y ya.
 PUERTOS_NOMBRE = {
     "25/tcp": "correo saliente (SMTP)", "465/tcp": "correo saliente (SMTP sobre TLS)",
-    "587/tcp": "correo saliente (envio autenticado)", "22/tcp": "SSH",
+    "587/tcp": "correo saliente (envío autenticado)", "22/tcp": "SSH",
     "23/tcp": "Telnet", "3389/tcp": "escritorio remoto (RDP)",
-    "445/tcp": "comparticion de archivos (SMB)", "1433/tcp": "SQL Server",
+    "445/tcp": "compartición de archivos (SMB)", "1433/tcp": "SQL Server",
     "3306/tcp": "MySQL", "5900/tcp": "VNC", "53/udp": "DNS",
     "123/udp": "NTP", "161/udp": "SNMP", "1900/udp": "SSDP", "19/udp": "chargen",
     "53/tcp": "DNS (por TCP)", "80/tcp": "web (HTTP)", "443/tcp": "web segura (HTTPS)",
@@ -7927,10 +7927,10 @@ PUERTOS_NOMBRE = {
     "2525/tcp": "correo saliente alterno (SMTP)", "110/tcp": "correo entrante (POP3)",
     "143/tcp": "correo entrante (IMAP)", "993/tcp": "correo entrante (IMAP seguro)",
     "995/tcp": "correo entrante (POP3 seguro)", "2323/tcp": "Telnet alterno",
-    "5555/tcp": "depuracion de Android (ADB)", "7547/tcp": "gestion remota de routers (TR-069)",
+    "5555/tcp": "depuración de Android (ADB)", "7547/tcp": "gestión remota de routers (TR-069)",
     "8291/tcp": "Winbox (MikroTik)", "8728/tcp": "API de MikroTik", "21/tcp": "FTP",
     "1194/udp": "OpenVPN", "389/udp": "CLDAP", "11211/udp": "memcached",
-    "5060/udp": "telefonia IP (SIP)", "5060/tcp": "telefonia IP (SIP)",
+    "5060/udp": "telefonía IP (SIP)", "5060/tcp": "telefonía IP (SIP)",
 }
 
 def que_es_puerto(k):
@@ -8061,7 +8061,7 @@ def ia_senal_denuncias(ejemplos, nombres_validos):
         txt = (((resp.get("choices") or [{}])[0].get("message") or {}).get("content") or "").strip()
         d = json.loads(txt)
     except urllib.error.HTTPError as _e:
-        _ia_apuntar(False, "Groq respondio HTTP %s" % getattr(_e, "code", "?"))
+        _ia_apuntar(False, "Groq respondió HTTP %s" % getattr(_e, "code", "?"))
         return None
     except (urllib.error.URLError, TimeoutError, OSError):
         _ia_apuntar(False, "no se pudo llegar a Groq (red o timeout)")
@@ -8070,7 +8070,7 @@ def ia_senal_denuncias(ejemplos, nombres_validos):
         _ia_apuntar(False, "respuesta de Groq ilegible")
         return None
     if not isinstance(d, dict):
-        _ia_apuntar(False, "el modelo no devolvio un objeto")
+        _ia_apuntar(False, "el modelo no devolvió un objeto")
         return None
     # EL FILTRO: puertos que sean puertos, y comportamientos que el sensor reconozca
     puertos, inventados = set(), []
@@ -8094,7 +8094,7 @@ def ia_senal_denuncias(ejemplos, nombres_validos):
            "inventados": sorted(set(inventados)),
            "modelo": modelo, "ts": int(time.time())}
     if not (out["puertos"] or out["cats"] or out["resumen"]):
-        _ia_apuntar(False, "el modelo no saco nada de las denuncias")
+        _ia_apuntar(False, "el modelo no sacó nada de las denuncias")
         return None
     with _IA_LOCK:
         cache = _ia_cache()
@@ -8148,7 +8148,7 @@ def ia_plan_bloqueo(perfil, listas):
             resp = json.load(r)
         txt = (((resp.get("choices") or [{}])[0].get("message") or {}).get("content") or "").strip()
     except urllib.error.HTTPError as _e:
-        _ia_apuntar(False, "Groq respondio HTTP %s" % getattr(_e, "code", "?"))
+        _ia_apuntar(False, "Groq respondió HTTP %s" % getattr(_e, "code", "?"))
         return None
     except (urllib.error.URLError, TimeoutError, OSError):
         _ia_apuntar(False, "no se pudo llegar a Groq (red o timeout)")
@@ -8159,10 +8159,10 @@ def ia_plan_bloqueo(perfil, listas):
     try:
         d = json.loads(txt)
     except ValueError:
-        _ia_apuntar(False, "el modelo no devolvio JSON")
+        _ia_apuntar(False, "el modelo no devolvió JSON")
         return None
     if not isinstance(d, dict):
-        _ia_apuntar(False, "el modelo no devolvio un objeto")
+        _ia_apuntar(False, "el modelo no devolvió un objeto")
         return None
     # EL FILTRO: solo sobreviven los puertos que se midieron, y sin repetir
     orden, vistos = [], set()
@@ -8183,7 +8183,7 @@ def ia_plan_bloqueo(perfil, listas):
                                 - set(validos)),
            "modelo": modelo, "ts": int(time.time())}
     if not out["resumen"]:
-        _ia_apuntar(False, "el modelo contesto sin resumen")
+        _ia_apuntar(False, "el modelo contestó sin resumen")
         return None
     with _IA_LOCK:
         cache = _ia_cache()
@@ -8223,10 +8223,10 @@ def plan_bloqueo_html(bl, limpio, esc=None):
                   % (i, esc(pk), esc(p["que_es"]) if p["que_es"] else "&mdash;", format(p["n"], ","),
                      p["pct"], esc(mot) or "&mdash;"))
 
-    cab = ("<h3 style='margin:16px 0 4px;font-size:14px'>Que bloquear para dejar de "
+    cab = ("<h3 style='margin:16px 0 4px;font-size:14px'>Qué bloquear para dejar de "
            "abusar</h3>"
-           "<p class=hint style='margin:0 0 8px'>Por aqui sale el abuso de los ultimos "
-           "%d dias, medido por el sensor. "
+           "<p class=hint style='margin:0 0 8px'>Por aquí sale el abuso de los últimos "
+           "%d días, medido por el sensor. "
            "<b>Salir de una lista negra empieza por dejar de abusar</b>: "
            "pedir la salida con el abuso en marcha vuelve a listarte, y "
            "algunas listas castigan la reincidencia.</p>" % perfil["dias"])
@@ -8237,10 +8237,10 @@ def plan_bloqueo_html(bl, limpio, esc=None):
               "padding:10px 12px;margin:0 0 10px'>"
               "<b>Lectura de la IA:</b> " + esc(plan["resumen"])
               + "<div class=hint style='margin-top:6px'>Orden sugerido con "
-              + esc(plan.get("modelo", "")) + ". <b>Es una opinion sobre lo medido</b>, no "
-              "una medicion: los puertos y los numeros de la tabla salen del sensor, no "
+              + esc(plan.get("modelo", "")) + ". <b>Es una opinión sobre lo medido</b>, no "
+              "una medición: los puertos y los números de la tabla salen del sensor, no "
               "del modelo."
-              + (" Se descartaron %d puerto(s) que el modelo nombro y no estaban en los "
+              + (" Se descartaron %d puerto(s) que el modelo nombró y no estaban en los "
                  "datos." % len(plan["inventados"]) if plan.get("inventados") else "")
               + "</div></div>")
 
@@ -8251,21 +8251,21 @@ def plan_bloqueo_html(bl, limpio, esc=None):
                "font-weight:600'>Reglas para el MikroTik (los 5 primeros)</summary>"
                "<p class=hint style='margin:6px 0 4px'>Cortan la salida de esos puertos "
                "<b>solo a los abonados ya fichados</b>, no a toda la red: cerrar el correo "
-               "saliente a todo el mundo es una decision de negocio y no se toma desde "
-               "aqui. Para el corte general, quita el <code>src-address-list</code>.</p>"
+               "saliente a todo el mundo es una decisión de negocio y no se toma desde "
+               "aquí. Para el corte general, quita el <code>src-address-list</code>.</p>"
                "<pre style='background:#f8f9fa;border:1px solid #eaecf0;border-radius:6px;"
                "padding:10px;overflow-x:auto;font-size:12px'>" + esc(reglas) + "</pre>"
                "</details>")
 
-    pasos = ("<div class=hint style='margin-top:8px'><b>Y despues:</b> con el abuso "
-             "cortado, los dias limpios empiezan a contar solos (llevas <b>%d</b>) y "
+    pasos = ("<div class=hint style='margin-top:8px'><b>Y después:</b> con el abuso "
+             "cortado, los días limpios empiezan a contar solos (llevas <b>%d</b>) y "
              "arriba aparece cuando se puede pedir la salida de cada lista y con que "
              "pruebas.</div>" % int(limpio or 0))
 
     return (cab + ia
             + "<table class=fichat><thead><tr><th class=num>#</th><th>Puerto</th>"
-              "<th>Que es</th><th class=num>Alertas</th><th class=num>Peso</th>"
-              "<th>Por que cerrarlo</th></tr></thead><tbody>"
+              "<th>Qué es</th><th class=num>Alertas</th><th class=num>Peso</th>"
+              "<th>Por qué cerrarlo</th></tr></thead><tbody>"
             + (filas or "<tr><td colspan=6 class=hint>Sin abuso medido.</td></tr>")
             + "</tbody></table>" + pre + pasos)
 
@@ -8289,7 +8289,7 @@ def _salida_html(entrada, bl, limpio, esc=None):
     if tend["pico"] and tend["pico"] != tend["hoy"]:
         tnd = ("<div class=hint style='margin-top:6px'>Direcciones listadas: "
                f"<b>{tend['pico']}</b> en el peor momento &rarr; <b>{tend['hoy']}</b> hoy"
-               + (f", bajando desde hace {tend['desde_pico']} dia(s)" if tend["desde_pico"] else "")
+               + (f", bajando desde hace {tend['desde_pico']} día(s)" if tend["desde_pico"] else "")
                + ".</div>")
 
     filas = ""
@@ -8307,7 +8307,7 @@ def _salida_html(entrada, bl, limpio, esc=None):
         texto = dnsbl_expediente(entrada, bl, est, tend)
         exp = ("<details style='margin-top:8px'><summary style='cursor:pointer;font-weight:600;"
                f"color:{col}'>Texto para el formulario</summary>"
-               "<p class=hint style='margin:6px 0 4px'>En ingles, que es lo que piden. "
+               "<p class=hint style='margin:6px 0 4px'>En inglés, que es lo que piden. "
                "Lleva lo que esos formularios preguntan y lo que casi nadie puede aportar: "
                "que el abuso ya paro y desde cuando.</p>"
                "<textarea readonly rows=14 onclick='this.select()' "
@@ -8395,9 +8395,9 @@ def groq_probar(key):
             d = json.load(r)
     except urllib.error.HTTPError as e:
         if e.code in (401, 403):
-            return False, "Groq rechazo la clave (HTTP %d)" % e.code, []
+            return False, "Groq rechazó la clave (HTTP %d)" % e.code, []
         if e.code == 429:
-            return True, "valida (ahora mismo esta limitada por cuota)", []
+            return True, "válida (ahora mismo está limitada por cuota)", []
         return None, "no se pudo comprobar (HTTP %d)" % e.code, []
     except (urllib.error.URLError, TimeoutError, OSError):
         return None, "no se pudo comprobar ahora (sin red?)", []
@@ -8405,8 +8405,8 @@ def groq_probar(key):
         return None, "respuesta ilegible de Groq", []
     ms = sorted(str(m.get("id") or "") for m in (d.get("data") or []) if m.get("id"))
     if not ms:
-        return None, "Groq contesto pero no listo ningun modelo", []
-    return True, "valida (%d modelos disponibles)" % len(ms), ms
+        return None, "Groq contestó pero no listó ningún modelo", []
+    return True, "válida (%d modelos disponibles)" % len(ms), ms
 
 IA_CACHE = nodos.ruta("estado", "ia-cache.json")
 IA_ESTADO = nodos.ruta("estado", "ia-estado.json")
@@ -8465,14 +8465,14 @@ def ia_estado_txt():
     gast, quedan = int(d.get("gastadas", 0)), ia_restantes()
     base = "%d consultas hoy, quedan %d de %d" % (gast, quedan, IA_CUOTA)
     if not quedan:
-        return "aviso", base + " — hasta manana no se consulta mas"
+        return "aviso", base + " — hasta mañana no se consulta más"
     ts = int(d.get("ultimo_ts", 0) or 0)
     if not ts:
-        return "aviso", base + " — aun no se ha usado: abre la ficha de un candidato"
+        return "aviso", base + " — aún no se ha usado: abre la ficha de un candidato"
     cuando = time.strftime("%d/%m %H:%M", time.localtime(ts))
     if d.get("ultimo_ok"):
-        return "ok", "funcionando — ultima lectura %s · %s" % (cuando, base)
-    return "malo", "ultimo intento FALLIDO (%s) el %s · %s" % (
+        return "ok", "funcionando — última lectura %s · %s" % (cuando, base)
+    return "malo", "último intento FALLIDO (%s) el %s · %s" % (
         d.get("ultimo_detalle") or "sin detalle", cuando, base)
 
 def ia_datos(c):
@@ -8592,7 +8592,7 @@ def ia_preguntar(c):
             resp = json.load(r)
         txt = ((resp.get("choices") or [{}])[0].get("message") or {}).get("content") or ""
     except urllib.error.HTTPError as _e:
-        _ia_apuntar(False, "Groq respondio HTTP %s" % getattr(_e, "code", "?"))
+        _ia_apuntar(False, "Groq respondió HTTP %s" % getattr(_e, "code", "?"))
         return None
     except (urllib.error.URLError, TimeoutError, OSError):
         _ia_apuntar(False, "no se pudo llegar a Groq (red o timeout)")
@@ -8607,10 +8607,10 @@ def ia_preguntar(c):
     try:
         d = json.loads(txt)
     except ValueError:
-        _ia_apuntar(False, "el modelo no devolvio JSON")
+        _ia_apuntar(False, "el modelo no devolvió JSON")
         return None
     if not isinstance(d, dict):
-        _ia_apuntar(False, "el modelo no devolvio un objeto")
+        _ia_apuntar(False, "el modelo no devolvió un objeto")
         return None
     out = {"veredicto": str(d.get("veredicto", ""))[:40],
            "explicacion": str(d.get("explicacion", ""))[:800],
@@ -8618,7 +8618,7 @@ def ia_preguntar(c):
            "fp": str(d.get("motivo_falso_positivo", ""))[:400],
            "modelo": modelo, "ts": int(time.time())}
     if not out["explicacion"]:
-        _ia_apuntar(False, "el modelo contesto sin explicacion")
+        _ia_apuntar(False, "el modelo contestó sin explicación")
         return None
     with _IA_LOCK:
         cache = _ia_cache()
@@ -8642,9 +8642,9 @@ def aidb_probar(key):
         return True, "valida"
     except urllib.error.HTTPError as e:
         if e.code in (401, 403):
-            return False, f"AbuseIPDB rechazo la clave (HTTP {e.code})"
+            return False, f"AbuseIPDB rechazó la clave (HTTP {e.code})"
         if e.code == 429:
-            return True, "valida (hoy ya no quedan consultas)"
+            return True, "válida (hoy ya no quedan consultas)"
         return None, f"no se pudo comprobar (HTTP {e.code})"
     except (urllib.error.URLError, TimeoutError, OSError):
         return None, "no se pudo comprobar ahora (sin red?)"
@@ -8659,7 +8659,7 @@ def aidb_cats_txt(cats, sep=", "):
             c, n = int(par[0]), int(par[1])
         except (TypeError, ValueError, IndexError):
             continue
-        out.append("%s (%d)" % (AIDB_CATS.get(c, "categoria %d" % c), n))
+        out.append("%s (%d)" % (AIDB_CATS.get(c, "categoría %d" % c), n))
     return sep.join(out)
 
 _USR_LOCK = threading.RLock()
@@ -8803,9 +8803,9 @@ def normalizar_red(val):
     try:
         n = ipaddress.ip_network(val, strict=False)
     except ValueError:
-        raise ValueError("«%s» no es una IP ni un rango valido (ej. 203.0.113.10 o 192.0.2.0/24)." % val[:60])
+        raise ValueError("«%s» no es una IP ni un rango válido (ej. 203.0.113.10 o 192.0.2.0/24)." % val[:60])
     if n.prefixlen == 0:
-        raise ValueError("Ese rango es todo internet: para dejar entrar a cualquiera, deja la lista vacia.")
+        raise ValueError("Ese rango es todo internet: para dejar entrar a cualquiera, deja la lista vacía.")
     return str(n.network_address) if n.prefixlen == n.max_prefixlen else str(n)
 
 
@@ -8979,7 +8979,7 @@ def supervisar_hilos():
             continue
         sys.stderr.write("panel: AVISO: el hilo de fondo '%s' murio; se vuelve a lanzar\n" % nombre)
         try:
-            bitacora("HILO-RELANZADO", "el hilo de fondo '%s' se habia parado y se relanzo" % nombre,
+            bitacora("HILO-RELANZADO", "el hilo de fondo '%s' se había parado y se relanzó" % nombre,
                      quien="panel")
         except Exception:
             pass
@@ -9288,9 +9288,9 @@ try:
 except ImportError:     # sin reportlab el resto del panel sigue: /informe.pdf lo dice
     informe_pdf = None
 
-_NAV_LINKS = [("/", "En vivo"), ("/top", "Top origenes"), ("/detalle", "Detalle"),
+_NAV_LINKS = [("/", "En vivo"), ("/top", "Top orígenes"), ("/detalle", "Detalle"),
               ("/cuarentena", "Cuarentena"), ("/reputacion", "Consultar IP"),
-              ("/historico", "Historico"), ("/conducta", "Reporte"),
+              ("/historico", "Histórico"), ("/conducta", "Reporte"),
               ("/eventos", "Eventos"),
               ("/exclusiones", "Exclusiones"),
               ("/ajustes", "Ajustes")]   # Log y Documentacion viven dentro de Ajustes
@@ -9679,8 +9679,8 @@ _THEME_JS = ("<script>(function(){var t=null;try{t=localStorage.getItem('ids-the
              "window.idsTema=function(){var d=document.documentElement,n=d.getAttribute('data-theme')==='dark'"
              "?'light':'dark';try{localStorage.setItem('ids-theme',n);}catch(e){}d.setAttribute('data-theme',n);};"
              "})();</script>")
-_BURGER_BTN = ('<button type=button class=burger id=burger aria-label="Menu" aria-expanded=false '
-               'aria-controls=navtabs title="Menu" onclick="idsMenu(this)">'
+_BURGER_BTN = ('<button type=button class=burger id=burger aria-label="Menú" aria-expanded=false '
+               'aria-controls=navtabs title="Menú" onclick="idsMenu(this)">'
                '<svg class=ic-bars viewBox="0 0 24 24" width="20" height="20"><path fill="none" stroke="currentColor" '
                'stroke-width="2.2" stroke-linecap="round" d="M4 7h16M4 12h16M4 17h16"/></svg>'
                '<svg class=ic-x viewBox="0 0 24 24" width="20" height="20"><path fill="none" stroke="currentColor" '
@@ -9702,7 +9702,7 @@ def nav(active=""):
             continue   # exclusiones (ajuste de deteccion) y Puntos son solo de admin
         cls = "tab on" if h == active else "tab"
         parts.append(f'<a href="{h}" class="{cls}">{t}</a>')
-    brand = '<span class="brand"><img class="applogo" src="/logo.png" alt="Suricata">Estadisticas Suricata</span>'
+    brand = '<span class="brand"><img class="applogo" src="/logo.png" alt="Suricata">Estadísticas Suricata</span>'
     # la version es la de la imagen (Ajustes la ensena): se actualiza desde el servidor, no aqui
     selector = _selector_nodo(active)
     _ubtn, _upanel = _menu_usuario()
@@ -9935,7 +9935,7 @@ def _espejo_conexion(pid):
     r = router_por_id(pid)
     d = cargar_mk_de(r)
     if not (d.get("USER") and d.get("PASS")):
-        raise ValueError("el punto %s no tiene usuario/clave de la API: configuralos en Puntos -> API" % pid)
+        raise ValueError("el punto %s no tiene usuario/clave de la API: configúralos en Puntos -> API" % pid)
     return pid, r, mk_conectar(d, timeout=15)
 
 def espejo_huella(lineas):
@@ -9967,7 +9967,7 @@ def _espejo_vista(plan, mensaje=""):
     ok, aplicable = True, bool(lineas) and bool(plan.get("cambios"))
     if _espejo_tiene_accept(plan):
         ok, aplicable = False, False
-        mensaje = ("el plan incluye una regla accept y el espejo nunca puede autorizar trafico: "
+        mensaje = ("el plan incluye una regla accept y el espejo nunca puede autorizar tráfico: "
                    "no se aplica. Avisa al soporte")
     elif bloqueos:
         ok, aplicable = False, False
@@ -10006,7 +10006,7 @@ def _espejo_datos(pid):
     p = nodos.punto(pid) or {}
     sensor, puerto = sensor_del_punto(pid)
     if not sensor:
-        raise ValueError("el orquestador aun no publica la IP del sensor de %s" % pid)
+        raise ValueError("el orquestador aún no publica la IP del sensor de %s" % pid)
     return sensor, puerto, list(p.get("redes") or [])
 
 def _avisar_avance(avance, etapa):
@@ -10092,7 +10092,7 @@ def espejo_aplicar(pid, usuario=None, huella=None, avance=None):
                             res = dict(vista, ok=False, mensaje="no se aplica: " + vista["mensaje"])
                         elif vista["huella"] != pedida:
                             res = dict(vista, ok=False, mensaje=(
-                                "el plan cambio desde la vista previa (el router o los prefijos se "
+                                "el plan cambió desde la vista previa (el router o los prefijos se "
                                 "movieron): no se ha tocado nada. Revisa el plan nuevo antes de aplicarlo"))
                         else:
                             os.makedirs(ESPEJO_RESPALDOS, mode=0o700, exist_ok=True)
@@ -10270,8 +10270,8 @@ def baja_limpiar_router(pid, usuario=None, op=None, avance=None):
         n = _pendientes_router(pid)
         if n:
             res["mensaje"] = ("el panel tiene %d IP(s) de este punto en las listas de su router y no hay "
-                              "usuario/clave de la API para quitarlas: configurala en esta ficha (API) o "
-                              "desmarca la casilla y quitalas a mano" % n)
+                              "usuario/clave de la API para quitarlas: configúrala en esta ficha (API) o "
+                              "desmarca la casilla y quítalas a mano" % n)
         else:
             res.update(ok=True, mensaje="sin API configurada: el panel no puso nada en ese router")
         return res
@@ -10298,11 +10298,11 @@ def baja_limpiar_router(pid, usuario=None, op=None, avance=None):
                         except Exception: pass
             except OperacionEnCurso:
                 res["mensaje"] = ("hay una tarea de fondo del punto en marcha; vuelve a intentarlo en un "
-                                  "minuto (no se toco el router)")
+                                  "minuto (no se tocó el router)")
                 return res
             except Exception as ex:
                 res["tocado"] = res["quitadas"] > 0
-                res["mensaje"] = "fallo hablando con el router: %s" % (str(ex)[:200] or type(ex).__name__)
+                res["mensaje"] = "falló hablando con el router: %s" % (str(ex)[:200] or type(ex).__name__)
                 return res
             res["tocado"] = res["quitadas"] > 0
             if res["fallos"]:
@@ -10546,7 +10546,7 @@ def _card_listas(m):
                       for v in ACCIONES_POR_CAT[cat])
         extra = ""
         if cat in ("minado", "p2p"):
-            extra += ("<input type=text name=limite_%s class=acclim value=\"%s\" placeholder='limite: 2M o 2M/2M' "
+            extra += ("<input type=text name=limite_%s class=acclim value=\"%s\" placeholder='límite: 2M o 2M/2M' "
                       "style='display:%s'>" % (cat, esc(m.get("ACCION_LIMITE_" + cat.upper(), "")),
                                                "inline-block" if acc == "limitar" else "none"))
         if cat == "dns":
@@ -10623,7 +10623,7 @@ def _card_listas(m):
         ".then(function(r){return r.text();}).then(fn)"
         ".catch(function(e){_accBox(\"<div><b>Error</b><br><span style='font-size:13px'>\"+_accEsc(String(e))+\"</span></div>\");});}"
         "function reglasPlan(cat){_accBox(\"<div class='mkspin'></div><div><b>Leyendo el router&hellip;</b><br>"
-        "<span style='font-size:13px;color:#52514e'>Se compara lo que hay con lo que toca. No se cambia nada todavia.</span></div>\");"
+        "<span style='font-size:13px;color:#52514e'>Se compara lo que hay con lo que toca. No se cambia nada todavía.</span></div>\");"
         "_accPost('/mikrotik/reglas/plan',cat,function(t){var ok=t.indexOf('OK')===0;"
         "var c=t.replace(/^OK ?/,'').replace(/^ERR: /,'');"
         "if(!ok){_accBox(\"<div style='font-size:30px'>&#9940;</div><div><b>No se pudo leer el plan</b><br><span style='font-size:13px'>\"+_accEsc(c)+\"</span>"
@@ -10660,38 +10660,38 @@ def _card_listas(m):
         "fetch('/mikrotik/reglas/verificar',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:d.toString()})"
         ".then(function(r){return r.text();}).then(function(x){var L=x.replace(/^OK ?/,'').split(String.fromCharCode(10));var cab=L.shift();"
         "var V=L.filter(function(y){return y.charAt(0)==='!';});var bien=!V.some(function(y){return y.indexOf('!E')===0||y.indexOf('!W')===0;});"
-        "_accBox(\"<div style='width:100%'><b>\"+(bien?'&#9989; Sin problemas':'Verificacion de tus reglas')+\" &middot; \"+_accEsc(cat)+\"</b>"
+        "_accBox(\"<div style='width:100%'><b>\"+(bien?'&#9989; Sin problemas':'Verificación de tus reglas')+\" &middot; \"+_accEsc(cat)+\"</b>"
         "<div style='font-size:13px;color:#52514e;margin:4px 0 8px'>\"+_accEsc(cab)+\"</div>\"+_accVer(V)+"
         "\"<div class=actions style='margin-top:10px'><button type=button class=cancelbtn onclick='_accCerrar()'>Cerrar</button></div></div>\");})"
         ".catch(function(e){_accBox(\"<div><b>Error</b><br>\"+_accEsc(String(e))+\"</div>\");});}"
         "</script>")
     return (
         js_acc +
-        "<h3 style='margin:18px 0 2px;font-size:15px'>Listas por tipo de abuso y que hace el router con cada una</h3>"
+        "<h3 style='margin:18px 0 2px;font-size:15px'>Listas por tipo de abuso y qué hace el router con cada una</h3>"
         "<p class=sub2 style='margin:0 0 10px'>Cada CPE va a la address-list de <b>su</b> "
-        "categoria, y debajo eliges <b>la accion</b> que el router aplica a esa lista: una "
-        "plantilla (cortar, solo navegacion, sin correo, redirigir DNS, limitar) o <b>tus "
+        "categoría, y debajo eliges <b>la acción</b> que el router aplica a esa lista: una "
+        "plantilla (cortar, solo navegación, sin correo, redirigir DNS, limitar) o <b>tus "
         "propias reglas</b> pegadas tal cual de RouterOS (usa <code>{LISTA}</code> donde "
-        "vaya la lista; el comentario lo pone el panel). <b>Guarda</b> primero; despues "
-        "<i>Ver / aplicar en el router</i> ensena las lineas exactas que se van a crear, "
+        "vaya la lista; el comentario lo pone el panel). <b>Guarda</b> primero; después "
+        "<i>Ver / aplicar en el router</i> enseña las líneas exactas que se van a crear, "
         "corregir o quitar, y solo se toca el router si confirmas. Antes de cada cambio se "
         "respalda su firewall en los respaldos del panel. Nunca se toca una regla "
         "que no lleve el comentario del panel.</p>"
         + sel_router +
         "<div class=field><label>Interface-list de tus WAN</label>"
-        "<input type=text name=accion_wan_list value=\"%s\" placeholder='vacio = sin esa condicion' style='max-width:260px'>"
-        "<div class=hint>Las plantillas de DNS y escaneo actuan solo sobre lo que entra por "
-        "interfaces que <b>no</b> estan en esta lista (<code>in-interface-list=!WAN</code>). "
+        "<input type=text name=accion_wan_list value=\"%s\" placeholder='vacío = sin esa condición' style='max-width:260px'>"
+        "<div class=hint>Las plantillas de DNS y escaneo actúan solo sobre lo que entra por "
+        "interfaces que <b>no</b> están en esta lista (<code>in-interface-list=!WAN</code>). "
         "Tiene que existir en el router, o la regla se rechaza al aplicar.</div></div>"
         % esc("" if (m.get("ACCION_WAN_LIST", "WAN") or "").lower() == "ninguna" else m.get("ACCION_WAN_LIST", "WAN")) +
         "<div class=grid2>" + filas + "</div>"
         "<div class=field style='margin-top:6px'>"
         "<button type=button class=cancelbtn onclick=\"if(ask(this,'Recargar las listas en el router',"
         "'Se vuelven a cargar en el router las IPs que el panel tiene en cuarentena y que faltan en su lista. "
-        "Las que ya estan se dejan como estan; no se quita nada.','Recargar',''))listasRecargar()\">"
+        "Las que ya están se dejan como están; no se quita nada.','Recargar',''))listasRecargar()\">"
         "&#8635; Recargar las listas en el router</button>"
-        "<div class=hint>Si alguien vacio una lista en el router (o se restauro un respaldo viejo), "
-        "esto vuelve a cargar las IPs que el panel tiene en cuarentena. Las que ya estan se omiten.</div></div>"
+        "<div class=hint>Si alguien vacío una lista en el router (o se restauró un respaldo viejo), "
+        "esto vuelve a cargar las IPs que el panel tiene en cuarentena. Las que ya están se omiten.</div></div>"
         # Sin campos de TTL (2026-10-14): la cuarentena de un abonado no caduca por tiempo, sale
         # cuando deja de atacar. LIST y LIST_DNS tampoco se enseñan: ningun envio nuevo va ahi.
         "<h3 style='margin:18px 0 2px;font-size:15px'>Cuándo sale un abonado de la cuarentena</h3>"
@@ -10714,19 +10714,19 @@ def _card_politicas(m):
                   f"<span class=mono>{esc(lista_de_categoria(cat))}</span></span></label>"
                   f"<select name='pol_{esc(cat)}'>{o}</select></div>")
     auto = m.get("POL_AUTO") == "1"
-    return ("<div class=polbox><h3 class=ch>Politicas por clase de abuso</h3>"
-            "<p class=sub2 style='margin:2px 0 10px'>Que hacer solo con cada CPE del Top segun "
-            "<b>que hace</b>, no solo cuanto puntua: una botnet se corta en cuanto el riesgo "
-            "sube; un torrent puede dar riesgo ALTO sin ser una infeccion, y ahi conviene "
+    return ("<div class=polbox><h3 class=ch>Políticas por clase de abuso</h3>"
+            "<p class=sub2 style='margin:2px 0 10px'>Qué hacer solo con cada CPE del Top según "
+            "<b>qué hace</b>, no solo cuánto puntúa: una botnet se corta en cuanto el riesgo "
+            "sube; un torrent puede dar riesgo ALTO sin ser una infección, y ahí conviene "
             "<i>solo mostrar</i>. Cada clase va a <b>su</b> address-list (las de arriba).</p>"
             "<div class=grid2>" + filas + "</div>"
             "<div class=field><label class=chk>"
             f"<input type=checkbox name=pol_auto value=1 {'checked' if auto else ''}> "
-            "Aplicar politicas automaticamente</label>"
-            "<div class=hint>Activado: el panel envia/saca del MikroTik solo, segun la clase y el "
-            "riesgo de cada CPE, y libera al que deja de calificar. Apagado: las politicas no hacen "
-            "nada (usa los botones a mano). El barrido rapido (~60 s) de infecciones confirmadas "
-            "sigue la politica de <b>Botnet / CnC</b>.</div></div></div>")
+            "Aplicar políticas automáticamente</label>"
+            "<div class=hint>Activado: el panel envía/saca del MikroTik solo, según la clase y el "
+            "riesgo de cada CPE, y libera al que deja de calificar. Apagado: las políticas no hacen "
+            "nada (usa los botones a mano). El barrido rápido (~60 s) de infecciones confirmadas "
+            "sigue la política de <b>Botnet / CnC</b>.</div></div></div>")
 
 def aviso_modal(msg, tipo="ok"):
     """Aviso tras una accion (guardado, error...) como MODAL centrado, no como franja arriba que
@@ -10804,7 +10804,7 @@ def perfil_page(msg="", ok=False, edit_user=None):
             "<div class=grid2>"
             "<div class=field><label>Clave nueva</label>"
             f"<input type=password name=nueva autocomplete=new-password required minlength={CLAVE_MIN}>"
-            f"<div class=hint>Minimo {CLAVE_MIN} caracteres.</div></div>"
+            f"<div class=hint>Mínimo {CLAVE_MIN} caracteres.</div></div>"
             "<div class=field><label>Repetir clave nueva</label>"
             "<input type=password name=nueva2 autocomplete=new-password required></div></div>"
             "<div class=actions><button class=primary type=submit>Actualizar mi clave</button></div>"
@@ -10825,12 +10825,12 @@ def perfil_page(msg="", ok=False, edit_user=None):
         _nom = emp.get("nombre", "")
         card_empresa = (
             "<section class='card emp'><h2>Empresa</h2>"
-            "<p class=sub2>El nombre y el logo salen en la franja blanca de debajo del menu, a la derecha.</p>"
+            "<p class=sub2>El nombre y el logo salen en la franja blanca de debajo del menú, a la derecha.</p>"
             "<form method=post action='/empresa'>"
             "<div class=field><label for=enombre>Nombre de la empresa</label>"
             f"<input id=enombre type=text name=nombre maxlength=60 value=\"{esc(_nom)}\" "
             "placeholder='Ej.: ISP Ejemplo' oninput='empSync()'>"
-            "<div class=hint>Hasta 60 caracteres. Vacio, no se muestra.</div></div>"
+            "<div class=hint>Hasta 60 caracteres. Vacío, no se muestra.</div></div>"
             "<div class=field><label>Logo</label><div class=logobox>"
             "<div class=logoprev>"
             f"<img id=lpreview src=\"{esc(elogo)}\" alt='' onload='window.empSync&&empSync()'{'' if tiene_logo else ' style=display:none'}>"
@@ -10841,12 +10841,12 @@ def perfil_page(msg="", ok=False, edit_user=None):
             "<span class=fbtn>Elegir imagen</span></label>"
             f"<button class=cancelbtn type=button id=lquitar onclick='empQuitar()'{'' if tiene_logo else ' hidden'}>"
             "Quitar logo</button></div>"
-            "<span class=fname id=lfname>ningun archivo elegido</span>"
+            "<span class=fname id=lfname>ningún archivo elegido</span>"
             "<div class=hint>PNG, JPG, SVG o WebP. Se reduce a 160 px; queda mejor horizontal y con fondo "
             "transparente.</div></div></div>"
             "<input type=hidden name=logo id=lavatar></div>"
-            "<div class=vistabar><div class=vt>Asi se vera</div><div class=vb>"
-            f"<span id=vvacia class=vacio{' hidden' if (tiene_logo or _nom) else ''}>Sin nombre ni logo: la franja queda vacia</span>"
+            "<div class=vistabar><div class=vt>Así se verá</div><div class=vb>"
+            f"<span id=vvacia class=vacio{' hidden' if (tiene_logo or _nom) else ''}>Sin nombre ni logo: la franja queda vacía</span>"
             f"<img id=vlogo src=\"{esc(elogo)}\" alt=''{'' if tiene_logo else ' hidden'}>"
             f"<span id=vnom class=vn>{esc(_nom)}</span></div></div>"
             "<div class=mfoot><button class=cancelbtn type=button onclick=closem()>Cancelar</button>"
@@ -10898,15 +10898,15 @@ def perfil_page(msg="", ok=False, edit_user=None):
                         "<input name=groqmodel value='" + esc(act) + "' "
                         "placeholder='nombre del modelo'>"
                         "<div class=hint>No se pudo consultar la lista de modelos ahora "
-                        "mismo; escribelo a mano.</div></div>")
+                        "mismo; escríbelo a mano.</div></div>")
             ops = "".join("<option value='%s'%s>%s</option>"
                           % (esc(m), " selected" if m == act else "", esc(m)) for m in ms)
             return ("<div class=field><label>Modelo</label><select name=groqmodel>"
                     + ("<option value=''>(elige uno)</option>" if not act else "")
                     + ops + "</select>"
                     "<div class=hint>Los que tiene tu cuenta ahora mismo. Groq retira "
-                    "modelos de vez en cuando: si el elegido desaparece, el analisis se "
-                    "apaga solo y aqui se vuelve a elegir.</div></div>")
+                    "modelos de vez en cuando: si el elegido desaparece, el análisis se "
+                    "apaga solo y aquí se vuelve a elegir.</div></div>")
 
         filas, gen, genT = feeds_tabla()
         # Un bloque por servicio: para que sirve, COMO sacar la clave (pasos con boton a la pagina
@@ -10966,7 +10966,7 @@ def perfil_page(msg="", ok=False, edit_user=None):
         b_aidb = _bloque(
             "feed-aidb", "AbuseIPDB", "lista de atacantes y Consultar IP", aidb_configurada(),
             "La lista masiva de atacantes (fuente <code>abuseipdb</code> de la tabla) y la pestaña "
-            "<b>Consultar IP</b>, que dice que ataques se le denuncian a una IP. Gratis: <b>%s</b> consultas "
+            "<b>Consultar IP</b>, que dice qué ataques se le denuncian a una IP. Gratis: <b>%s</b> consultas "
             "al día (3.000 si verificas tu dominio como webmaster)." % format(AIDB_CUOTA, ","),
             [_ir("aidb_registro", "Crea la cuenta") + " (gratis) y confirma el correo.",
              "Abre " + _ir("aidb_cuenta", "tus claves de API") + " (si no has entrado, te pide iniciar "
@@ -11140,13 +11140,13 @@ def perfil_page(msg="", ok=False, edit_user=None):
         card_dns = (
             "<section class=card><h2>DNS &mdash; resolutores conocidos</h2>"
             "<p class=sub2>Un CPE que pregunta por un dominio de malware a uno de estos DNS "
-            "<b>no lo esta atacando</b>: lo esta usando. La prueba contra el CPE es el "
-            "<b>dominio</b>, y asi lo dice su ficha (<i>consulta DNS maliciosa: tal dominio, "
-            "via tal resolutor</i>). Sin esta lista, el DNS aparecia en <b>Top destinos</b> "
-            "como la IP mas atacada de la red. Vienen de serie los publicos (Cloudflare, "
-            "Google, Quad9, OpenDNS); anade los de tu ISP.</p>"
+            "<b>no lo está atacando</b>: lo está usando. La prueba contra el CPE es el "
+            "<b>dominio</b>, y así lo dice su ficha (<i>consulta DNS maliciosa: tal dominio, "
+            "vía tal resolutor</i>). Sin esta lista, el DNS aparecía en <b>Top destinos</b> "
+            "como la IP más atacada de la red. Vienen de serie los públicos (Cloudflare, "
+            "Google, Quad9, OpenDNS); añade los de tu ISP.</p>"
             "<form method=post action='/dns'>"
-            "<div class=field><label>Resolutores DNS (una IP o CIDR por linea) "
+            "<div class=field><label>Resolutores DNS (una IP o CIDR por línea) "
             f"<span style='font-size:12px;color:#6b6a66;font-weight:400'>&middot; {_n_res} en uso</span></label>"
             "<textarea name=resolutores rows=8 style='width:100%;box-sizing:border-box;"
             "font:12px ui-monospace,Consolas,monospace;padding:8px;border:1px solid #d7d6d2;"
@@ -11155,7 +11155,7 @@ def perfil_page(msg="", ok=False, edit_user=None):
             "<div class=hint>Solo cuenta como <b>consulta</b> lo que va al puerto 53 o lleva "
             "firma de DNS: si a uno de estos DNS le pegan por otro puerto, eso <b>si</b> es "
             "un ataque y sigue saliendo como tal. El CPE conserva todas sus alertas; lo "
-            "unico que cambia es que ya no se inventa una victima. Las lineas que no sean "
+            "único que cambia es que ya no se inventa una víctima. Las líneas que no sean "
             "IP o CIDR se descartan al guardar.</div></div>"
             "<div class=actions><button class=primary type=submit>Guardar resolutores</button>"
             "</div></form></section>")
@@ -11203,15 +11203,15 @@ def perfil_page(msg="", ok=False, edit_user=None):
             + _card_listas(m) +
             "<div class=field style='margin-top:6px'><label class=chk>"
             f"<input type=checkbox name=doble value=1 {'checked' if conf_dash_get('DOBLE_SENAL','1') == '1' else ''}> "
-            "Doble senal para confirmar infeccion</label>"
-            "<div class=hint>Exige <b>2 indicios independientes</b> (repeticion, varias firmas, fan-out, volumen) "
-            "o una senal abrumadora antes de marcar un CPE como infectado. Menos falsos positivos.</div></div>"
-            "<div class=field><label>Nunca bloquear (una IP o CIDR por linea; con <code>p001|</code> delante, solo en ese punto)</label>"
+            "Doble señal para confirmar infección</label>"
+            "<div class=hint>Exige <b>2 indicios independientes</b> (repetición, varias firmas, fan-out, volumen) "
+            "o una señal abrumadora antes de marcar un CPE como infectado. Menos falsos positivos.</div></div>"
+            "<div class=field><label>Nunca bloquear (una IP o CIDR por línea; con <code>p001|</code> delante, solo en ese punto)</label>"
             "<textarea name=nunca rows=3 style='width:100%;box-sizing:border-box;font:12px ui-monospace,Consolas,monospace;"
             "padding:8px;border:1px solid #d7d6d2;border-radius:8px' "
             f"placeholder='192.0.2.10&#10;198.51.100.0/24&#10;p001|10.0.0.5'>{esc(cargar_nunca())}</textarea>"
-            "<div class=hint>Estas IPs/redes <b>jamas</b> entran a cuarentena (infra, DNS, clientes criticos), "
-            "ni por politica ni a mano.</div></div>"
+            "<div class=hint>Estas IPs/redes <b>jamás</b> entran a cuarentena (infra, DNS, clientes críticos), "
+            "ni por política ni a mano.</div></div>"
             + _card_politicas(m) +
             "<div class=actions>"
             "<button class=primary type=submit>Guardar</button>"
@@ -11251,10 +11251,10 @@ def perfil_page(msg="", ok=False, edit_user=None):
             est_cls = "on" if activo else "off"; est_txt = "Activo" if activo else "Desactivado"
             if soy:
                 estado = (f"<span class='estado {est_cls} fijo' title='Tu propia cuenta no se desactiva "
-                          f"desde aqui'>{est_txt}</span>")
+                          f"desde aquí'>{est_txt}</span>")
             else:
                 confirma = (f" onsubmit=\"return ask(this,'Desactivar usuario',"
-                            f"{js_attr(uraw + ' no podra entrar hasta que lo vuelvas a activar. Sus sesiones abiertas se cierran.')},"
+                            f"{js_attr(uraw + ' no podrá entrar hasta que lo vuelvas a activar. Sus sesiones abiertas se cierran.')},"
                             f"'Desactivar','danger')\"" if activo else "")
                 estado = ("<form method=post action='/perfil' class=inl" + confirma + ">"
                           f"<input type=hidden name=accion value=toggle_user><input type=hidden name=user value='{un}'>"
@@ -11263,7 +11263,7 @@ def perfil_page(msg="", ok=False, edit_user=None):
             borrar = ("<span class=icph></span>" if soy else
                       "<form method=post action='/perfil' class=inl "
                       f"onsubmit=\"return ask(this,'Eliminar usuario',"
-                      f"{js_attr(uraw + ' dejara de poder entrar al panel. No se borra nada de lo que haya hecho.')},"
+                      f"{js_attr(uraw + ' dejará de poder entrar al panel. No se borra nada de lo que haya hecho.')},"
                       f"'Eliminar','danger')\">"
                       f"<input type=hidden name=accion value=del_user><input type=hidden name=user value='{un}'>"
                       f"<button class='ic danger' title=Eliminar type=submit>{_IC_DEL}</button></form>")
@@ -11286,7 +11286,7 @@ def perfil_page(msg="", ok=False, edit_user=None):
                     f"<div class=hint id={hid}>{esc(ROL_DESC[defecto])}</div>")
 
         def _clave(pid, hid, requerida, ayuda):
-            extra = " required" if requerida else " placeholder='Vacia = no se cambia'"
+            extra = " required" if requerida else " placeholder='Vacía = no se cambia'"
             return (f"<div class=pwrow><input id={pid} type=password name=npass autocomplete=new-password "
                     f"minlength={CLAVE_MIN}{extra}>"
                     f"<button type=button class=pwb onclick=\"verClave('{pid}',this)\">Ver</button>"
@@ -11304,7 +11304,7 @@ def perfil_page(msg="", ok=False, edit_user=None):
                     f"<span class=fname id={pfx}fname>{ayuda}</span></div></div>"
                     f"<input type=hidden name=avatar id={pfx}avatar></div>")
 
-        _usr_ayuda = ("Con el que se entra; no se puede cambiar despues. Letras sin tildes, numeros, punto, "
+        _usr_ayuda = ("Con el que se entra; no se puede cambiar después. Letras sin tildes, números, punto, "
                       "guion y guion bajo, sin espacios.")
         modal_new = (
             "<div id=ovlNew class=ovl hidden onmousedown=\"this._dn=event.target\" onclick=\"if(event.target===this&&this._dn===this){cerrar('ovlNew')}\">"
@@ -11316,14 +11316,14 @@ def perfil_page(msg="", ok=False, edit_user=None):
             "<input id=nnom type=text name=nnombre maxlength=60 autocomplete=off placeholder='Opcional' oninput=\"ufIni('n')\"></div>"
             "<div class=field><label for=nusr>Usuario para entrar</label>"
             "<input id=nusr type=text name=nuser autocomplete=off required maxlength=32 "
-            "pattern='[A-Za-z0-9][A-Za-z0-9._\\-]{0,31}' title='Letras sin tildes, numeros, punto, guion y guion bajo, sin espacios' "
+            "pattern='[A-Za-z0-9][A-Za-z0-9._\\-]{0,31}' title='Letras sin tildes, números, punto, guion y guion bajo, sin espacios' "
             "oninput=\"usrCheck(this);ufIni('n')\"></div></div>"
             f"<div class=hint id=nusrh>{_usr_ayuda}</div>"
             "<div class=grid2><div class=field><label for=ncor>Correo</label>"
             "<input id=ncor type=email name=ncorreo maxlength=80 autocomplete=off placeholder='Opcional'></div>"
             "<div class=field><label for=nrol>Rol</label>" + _rol_select("nrole", "nrol", "nrolh", "lectura") + "</div></div>"
             "<div class=field><label for=npw>Clave</label>"
-            + _clave("npw", "npwh", True, f"Minimo {CLAVE_MIN} caracteres. Con «Generar» se crea una segura y se copia.")
+            + _clave("npw", "npwh", True, f"Mínimo {CLAVE_MIN} caracteres. Con «Generar» se crea una segura y se copia.")
             + "</div>"
             + _foto("n", "Ninguna: se ven sus iniciales.") +
             "</div>"
@@ -11346,7 +11346,7 @@ def perfil_page(msg="", ok=False, edit_user=None):
             "<div class=field><label for=ec>Correo</label><input type=email name=correo id=ec maxlength=80></div></div>"
             "<div class=field><label for=er>Rol</label>" + _rol_select("role", "er", "erolh", "lectura") + "</div>"
             "<div class=field><label for=epw>Clave nueva (opcional)</label>"
-            + _clave("epw", "epwh", False, f"Si la escribes, minimo {CLAVE_MIN} caracteres.")
+            + _clave("epw", "epwh", False, f"Si la escribes, mínimo {CLAVE_MIN} caracteres.")
             + "</div>"
             + _foto("e", "Elige una imagen para cambiarla.") +
             "</div>"
@@ -11393,16 +11393,16 @@ def perfil_page(msg="", ok=False, edit_user=None):
             cuantas = "la IP" if n_conf == 1 else f"las {n_conf} IPs o rangos"
             estado = ("<div class='cestado cerrado'><span class=cdot></span><div><b>Restringido</b>: solo se puede "
                       f"entrar desde {cuantas} de la lista; desde cualquier otra el panel responde "
-                      f"«Acceso restringido». Ademas, {bloqueo_txt}.</div></div>")
+                      f"«Acceso restringido». Además, {bloqueo_txt}.</div></div>")
             crows = []
             for e in det:
                 if n_conf == 1:
                     conf_q = ("'Abrir el panel'," + js_attr(
-                        "Es la ultima IP de la lista: el panel quedara abierto a cualquiera (con bloqueo "
+                        "Es la última IP de la lista: el panel quedará abierto a cualquiera (con bloqueo "
                         "tras " + str(LOGIN_MAX) + " fallos).") + ",'Quitar y abrir','danger'")
                 else:
                     conf_q = ("'Quitar IP de confianza'," + js_attr(
-                        "Desde " + e["red"] + " ya no se podra entrar al panel.") + ",'Quitar','danger'")
+                        "Desde " + e["red"] + " ya no se podrá entrar al panel.") + ",'Quitar','danger'")
                 tuya = " <span class=me>tu IP</span>" if e["red"] == mia else ""
                 nota = esc(e["nota"]) if e["nota"] else "<span class=dash>&mdash;</span>"
                 crows.append(
@@ -11415,17 +11415,17 @@ def perfil_page(msg="", ok=False, edit_user=None):
                     f"</tr></thead><tbody>{''.join(crows)}</tbody></table></div>")
         else:
             estado = ("<div class='cestado abierto'><span class=cdot></span><div><b>Abierto</b>: cualquiera puede "
-                      f"intentar entrar; {bloqueo_txt}. Si agregas IPs aqui, solo esas podran entrar.</div></div>")
+                      f"intentar entrar; {bloqueo_txt}. Si agregas IPs aquí, solo esas podrán entrar.</div></div>")
             ctab = ""
         restringir = ("" if det else
                       " onsubmit=\"return ask(this,'Restringir el acceso'," + js_attr(
-                          "Desde ahora solo las IPs de la lista podran entrar al panel; desde cualquier otra "
-                          "saldra «Acceso restringido». Tu IP (" + myip + ") tiene que quedar incluida.") +
+                          "Desde ahora solo las IPs de la lista podrán entrar al panel; desde cualquier otra "
+                          "saldrá «Acceso restringido». Tu IP (" + myip + ") tiene que quedar incluida.") +
                       ",'Restringir','danger')\"")
         if mia:
             tuip = f"<span class=cok>entra por {esc(mia)}</span>"
         elif det:
-            tuip = "<span class=cno>no esta en la lista</span>"
+            tuip = "<span class=cno>no está en la lista</span>"
         else:
             tuip = ""
         usar = ("" if mia or not myip else
@@ -11445,11 +11445,11 @@ def perfil_page(msg="", ok=False, edit_user=None):
             "<p>Por ejemplo, si te cambia la IP. En el servidor, por SSH y como root:</p>"
             "<pre>ids-orq panel confianza agregar &lt;tu-IP-nueva&gt; --nota Casa\n"
             "ids-orq panel confianza vaciar\nids-orq panel confianza ver</pre>"
-            "<p><b>agregar</b> deja entrar tu IP nueva sin abrir el panel a nadie mas; <b>vaciar</b> lo deja "
+            "<p><b>agregar</b> deja entrar tu IP nueva sin abrir el panel a nadie más; <b>vaciar</b> lo deja "
             "abierto (con bloqueo por fallos) y guarda una copia de la lista. Hace efecto al momento.</p></details>")
         card_acceso = (
             "<section class='card conf'><h2>IPs de confianza</h2>"
-            "<p class=sub2>Desde donde se puede abrir el panel. Quien entro y cuando esta en el apartado "
+            "<p class=sub2>Desde dónde se puede abrir el panel. Quién entró y cuándo está en el apartado "
             "<b>Registro</b>.</p>" + estado + ctab + addc +
             "<h3 class=ch>IPs bloqueadas por fallos</h3>" + blq + rescate +
             "</section>")
@@ -11618,9 +11618,9 @@ def perfil_page(msg="", ok=False, edit_user=None):
               "var n=document.getElementById('enombre'),vn=document.getElementById('vnom'),t=n?n.value.trim():'';"
               "if(vn)vn.textContent=t;var vv=document.getElementById('vvacia');if(vv)vv.hidden=hay||!!t;}"
               "function empArchivo(i){var s=document.getElementById('lfname');"
-              "if(s)s.textContent=(i.files&&i.files[0])?i.files[0].name:'ningun archivo elegido';}"
+              "if(s)s.textContent=(i.files&&i.files[0])?i.files[0].name:'ningún archivo elegido';}"
               "function empQuitar(){quitarimg('l');var s=document.getElementById('lfname');"
-              "if(s)s.textContent='se quitara al guardar';empSync();}"
+              "if(s)s.textContent='se quitará al guardar';empSync();}"
               "function quitarimg(p){var h=document.getElementById(p+'avatar');if(h)h.value='__BORRAR__';"
               "var pv=document.getElementById(p+'preview');if(pv){pv.removeAttribute('src');pv.style.display='none';}"
               "var fi=document.getElementById(p+'file');if(fi)fi.value='';}"
@@ -11635,7 +11635,7 @@ def perfil_page(msg="", ok=False, edit_user=None):
               "var vb=i.parentNode.querySelector('.pwb');if(vb)vb.textContent='Ocultar';"
               "i.focus();i.select();var ok=false;try{ok=document.execCommand('copy');}catch(e){}"
               "var e2=document.getElementById(h);if(e2){e2.classList.remove('mal');e2.textContent=(ok?'Generada y copiada':'Generada')+"
-              "': pasala al usuario por un canal seguro; al guardar ya no se vuelve a ver.';}}"
+              "': pásala al usuario por un canal seguro; al guardar ya no se vuelve a ver.';}}"
               "function usrCheck(i){var h=document.getElementById('nusrh');if(!h)return;"
               "h.classList.toggle('mal',!!i.value&&!i.checkValidity());}"
               "function ufIni(p){var n=document.getElementById(p==='n'?'nnom':'en'),u=document.getElementById(p==='n'?'nusr':'eusr');"
@@ -11649,7 +11649,7 @@ def perfil_page(msg="", ok=False, edit_user=None):
               "function ufArchivo(p,i){var s=document.getElementById(p+'fname');"
               "if(s&&i.files&&i.files[0])s.textContent=i.files[0].name;}"
               "function ufQuitar(p){quitarimg(p);var s=document.getElementById(p+'fname');"
-              "if(s)s.textContent=p==='e'?'Se quitara al guardar.':'Ninguna: se ven sus iniciales.';ufSync(p);}"
+              "if(s)s.textContent=p==='e'?'Se quitará al guardar.':'Ninguna: se ven sus iniciales.';ufSync(p);}"
               "function usarMiIp(b){var i=document.getElementById('cip'),n=document.getElementById('cnota');"
               "if(!i)return;i.value=b.getAttribute('data-ip')||'';"
               "if(n){if(!n.value)n.value=b.getAttribute('data-nota')||'';n.focus();n.select();}}"
@@ -11668,7 +11668,7 @@ def perfil_page(msg="", ok=False, edit_user=None):
               "rolHint(document.getElementById('er'),'erolh');"
               "var p=document.querySelector('#ovlEdit input[name=npass]');if(p){p.value='';p.type='password';"
               "var vb=p.parentNode.querySelector('.pwb');if(vb)vb.textContent='Ver';}"
-              "var ph=document.getElementById('epwh');if(ph){ph.classList.remove('mal');ph.textContent='Si la escribes, minimo " + str(CLAVE_MIN) + " caracteres.';}"
+              "var ph=document.getElementById('epwh');if(ph){ph.classList.remove('mal');ph.textContent='Si la escribes, mínimo " + str(CLAVE_MIN) + " caracteres.';}"
               # la foto actual sale de la fila (no se repite en un data-: pesan hasta 300 KB)
               "var tr=b.closest('tr'),fim=tr&&tr.querySelector('.nmcell img.av'),pv=document.getElementById('epreview');"
               "document.getElementById('eavatar').value='';document.getElementById('efile').value='';"
@@ -11684,11 +11684,11 @@ def perfil_page(msg="", ok=False, edit_user=None):
     # --- hub de accesos: cada apartado abre en su MODAL (Log y Documentacion incluidos) ---
     # tarjetas de acceso (Tailwind compilado, prefijo tw-): icono + nombre + para que sirve
     _TILE_DESC = {"perfil": "Tu cuenta y tu clave", "empresa": "Nombre y logo de la empresa",
-                  "usuarios": "Altas, roles y accesos", "acceso": "Desde donde se puede entrar",
+                  "usuarios": "Altas, roles y accesos", "acceso": "Desde dónde se puede entrar",
                   "mikrotik": "Router, API y address-lists", "puntos": "Cada MikroTik con su VPN y Suricata",
-                  "dns": "Resolucion de nombres", "feeds": "Listas de reputacion y claves",
-                  "update": "Version y actualizaciones",
-                  "registro": "Accesos y cambios: quién, qué y cuándo", "doc": "Guia de uso del panel"}
+                  "dns": "Resolución de nombres", "feeds": "Listas de reputación y claves",
+                  "update": "Versión y actualizaciones",
+                  "registro": "Accesos y cambios: quién, qué y cuándo", "doc": "Guía de uso del panel"}
     _TILE_CLS = ("tw-group tw-flex tw-items-start tw-gap-3.5 tw-rounded-md tw-border tw-border-line "
                  "tw-bg-surface tw-p-4 tw-no-underline tw-shadow-1 tw-transition "
                  "hover:tw--translate-y-0.5 hover:tw-border-brand hover:tw-shadow-2 tw-cursor-pointer")
@@ -11837,8 +11837,8 @@ def exclusiones_page(msg="", ok=False, edit_idx=None):
                      f'<td>{html.escape(pts)}</td><td class="mono">{firma}</td><td>{vig_html}</td>'
                      f'<td>{mot}</td><td>{accion}</td></tr>')
     tabla = ("".join(filas) if filas else
-             '<tr><td colspan=8 class="muted">No hay exclusiones. Todo el trafico se analiza.</td></tr>')
-    titulo_form = "Editar exclusion" if ed else "Agregar exclusion"
+             '<tr><td colspan=8 class="muted">No hay exclusiones. Todo el tráfico se analiza.</td></tr>')
+    titulo_form = "Editar exclusión" if ed else "Agregar exclusión"
     val_ip = html.escape(ed["ip"]) if ed else ""
     val_pts = ", ".join(str(p) for p in ed["puertos"]) if ed else ""
     val_mot = html.escape(ed.get("motivo", "")) if ed else ""
@@ -11846,7 +11846,7 @@ def exclusiones_page(msg="", ok=False, edit_idx=None):
     sel_src = "selected" if ed and ed["tipo"] == "src" else ""
     sel_dst = "selected" if not ed or ed["tipo"] == "dst" else ""
     # vigencia: al editar, si ya venia con hasta se ofrece "mantener"
-    _vig_opts = [("0", "Permanente"), ("24", "24 horas"), ("168", "7 dias"), ("720", "30 dias")]
+    _vig_opts = [("0", "Permanente"), ("24", "24 horas"), ("168", "7 días"), ("720", "30 días")]
     if ed and ed.get("hasta"):
         _rest_h = max(1, int((ed["hasta"] - time.time()) // 3600))
         vig_select = (f'<select name=vigencia><option value=keep selected>Mantener (~{_rest_h} h restantes)</option>'
@@ -11922,7 +11922,7 @@ padding:5px 10px 5px 5px;background:#fafbfc;cursor:pointer;max-width:100%}}
 (tus DNS, tu monitoreo SNMP, etc.). Se aplica al instante.</p>
 {banner}
 <div class=exhead><h2>Exclusiones activas</h2>
-<button type=button class=primary onclick="abrirEx()">+ Agregar exclusion</button></div>
+<button type=button class=primary onclick="abrirEx()">+ Agregar exclusión</button></div>
 <div class=card><table><thead><tr><th>Tipo</th><th>IP</th><th>Nodo</th><th>Puertos</th><th>Firma (SID)</th><th>Vigencia</th><th>Motivo</th><th></th></tr></thead>
 <tbody>{tabla}</tbody></table></div>
 
@@ -11930,33 +11930,33 @@ padding:5px 10px 5px 5px;background:#fafbfc;cursor:pointer;max-width:100%}}
 <div class=exbox>
 <button type=button class=exx onclick=cerrarEx() title=Cerrar>&times;</button>
 <h2>{titulo_form}</h2>
-<p class=sub style="margin:0 0 16px">Una exclusion silencia lo que elijas <b>en el panel y en los
-reportes</b>. Lo mas fino es acotarla a una firma concreta; dejar la IP sola apaga todo lo que
+<p class=sub style="margin:0 0 16px">Una exclusión silencia lo que elijas <b>en el panel y en los
+reportes</b>. Lo más fino es acotarla a una firma concreta; dejar la IP sola apaga todo lo que
 pase por ella.</p>
 <form class=add method=post action="/exclusiones">
 <input type=hidden name=accion value=add>{hid_edit}
-<label>Tipo</label><select name=tipo><option value=dst {sel_dst}>Destino (a donde va)</option><option value=src {sel_src}>Origen (de donde sale)</option></select>
+<label>Tipo</label><select name=tipo><option value=dst {sel_dst}>Destino (a dónde va)</option><option value=src {sel_src}>Origen (de donde sale)</option></select>
 <label>IP</label><input name=ip placeholder="10.0.0.2" value="{val_ip}" required>
 <label>Nodo</label>{sel_nodo}
-<div class=hint>A que punto se aplica. Vacio = todos los nodos (la misma IP privada puede ser de otro abonado en otro nodo).</div>
-<label>Puertos</label><input name=puertos placeholder="53, 161  (vacio = todos)" value="{val_pts}">
-<div class=hint>Para un DNS suele ser 53; para monitoreo SNMP, 161. Deja vacio para ignorar toda la IP.</div>
-<label>Firma (SID)</label><input name=sid placeholder="p.ej. 2027865  (vacio = cualquier firma)" value="{val_sid}">
-<div class=hint>Excluye SOLO esa firma para esta IP (util para un falso positivo puntual de un CPE). Vacio = todas.</div>
+<div class=hint>A qué punto se aplica. Vacío = todos los nodos (la misma IP privada puede ser de otro abonado en otro nodo).</div>
+<label>Puertos</label><input name=puertos placeholder="53, 161  (vacío = todos)" value="{val_pts}">
+<div class=hint>Para un DNS suele ser 53; para monitoreo SNMP, 161. Deja vacío para ignorar toda la IP.</div>
+<label>Firma (SID)</label><input name=sid placeholder="p.ej. 2027865  (vacío = cualquier firma)" value="{val_sid}">
+<div class=hint>Excluye SOLO esa firma para esta IP (útil para un falso positivo puntual de un CPE). Vacío = todas.</div>
 <label>Vigencia</label>{vig_select}
-<div class=hint>Exclusion temporal: se ignora hasta que venza y luego vuelve a analizarse sola. "Permanente" no vence.</div>
+<div class=hint>Exclusión temporal: se ignora hasta que venza y luego vuelve a analizarse sola. "Permanente" no vence.</div>
 <label>Motivo</label><input name=motivo placeholder="Falso positivo / DNS interno / monitoreo SNMP" value="{val_mot}">
 <div style="grid-column:2;display:flex;gap:10px;align-items:center;margin-top:4px">
 <button type=submit class=primary>{btn_txt}</button>
 <a class=cancel href="#" onclick="cerrarEx();return false">Cancelar</a></div>
 </form>
 <p class=sub style="margin:16px 0 0">Ejemplos: tu DNS interno como <b>Destino</b> puerto <b>53</b>; tu servidor de
-monitoreo como <b>Origen</b> puerto <b>161</b>. Asi quitas el ruido sin perder de vista lo demas que hagan esas IPs.</p>
+monitoreo como <b>Origen</b> puerto <b>161</b>. Así quitas el ruido sin perder de vista lo demás que hagan esas IPs.</p>
 </div></div>
 <h2 style="margin-top:30px">Copia de seguridad</h2>
 <div class="card eximp">
 <p class=sub style="margin:0 0 14px">Guarda tus exclusiones en un archivo <code>.json</code> (respaldo o para pasarlas a otro
-sensor) o cargalas desde uno. Al importar, <b>reemplazan</b> todas las exclusiones actuales.</p>
+sensor) o cárgalas desde uno. Al importar, <b>reemplazan</b> todas las exclusiones actuales.</p>
 <div class=eximp-row>
 <a class="ebtn exp" href="/exclusiones/export" download="exclusiones.json">&#8681;&nbsp; Exportar JSON</a>
 <span class=eximp-sep></span>
@@ -11964,7 +11964,7 @@ sensor) o cargalas desde uno. Al importar, <b>reemplazan</b> todas las exclusion
  onsubmit="if(!document.getElementById('impjson').value){{aviso('Falta el archivo','Elige primero el archivo JSON que quieres importar.');return false;}}">
 <input type=hidden name=accion value=import>
 <input type=hidden name=json id=impjson>
-<label class=filepick><span class=filebtn>Elegir archivo</span><span id=fname class=fname>ningun archivo</span>
+<label class=filepick><span class=filebtn>Elegir archivo</span><span id=fname class=fname>ningún archivo</span>
 <input type=file accept="application/json,.json" onchange="leerJSON(this)"></label>
 <button type=submit class="ebtn imp">&#8679;&nbsp; Importar</button>
 </form>
@@ -11982,7 +11982,7 @@ m.classList.remove('on');document.body.style.overflow='';}}
 document.addEventListener('keydown',function(e){{if(e.key==='Escape'||e.key==='Esc')cerrarEx();}});
 if(document.getElementById('exmodal').getAttribute('data-edit')==='1')abrirEx();
 function leerJSON(i){{var f=i.files&&i.files[0];var n=document.getElementById('fname');
-if(!f){{if(n)n.textContent='ningun archivo';return;}}if(n)n.textContent=f.name;
+if(!f){{if(n)n.textContent='ningún archivo';return;}}if(n)n.textContent=f.name;
 var r=new FileReader();r.onload=function(){{document.getElementById('impjson').value=r.result;}};r.readAsText(f);}}</script>
 </main></body></html>"""
     return body
@@ -12025,7 +12025,7 @@ font-size:13px;margin-bottom:8px}}
 <div class="wrap">
 <img class="logo" src="/logo.png" alt="Suricata">
 <div class="box">
-<div class="sub">Panel de deteccion de ataques</div>
+<div class="sub">Panel de detección de ataques</div>
 <form method=post action="/login">
 {err}
 <label>Usuario</label><input name=usuario autocomplete=username autofocus required>
@@ -12086,8 +12086,8 @@ def update_box():
     if UPDATE["running"]:
         h = datetime.fromtimestamp(UPDATE["started"], TZ_EC).strftime("%H:%M:%S")
         estado = (f'<div style="background:#eda100;color:#fff;padding:9px 13px;border-radius:8px;'
-                  f'font-size:13px;margin:0 0 10px">Actualizacion en curso desde las {h}&hellip; '
-                  f'esta pagina se refresca sola; el orquestador valida las reglas y reinicia los '
+                  f'font-size:13px;margin:0 0 10px">Actualización en curso desde las {h}&hellip; '
+                  f'esta página se refresca sola; el orquestador valida las reglas y reinicia los '
                   f'Suricata de uno en uno.</div>')
         boton = ('<button type="button" disabled style="background:#9aa;color:#fff;border:0;'
                  'padding:10px 16px;border-radius:8px;font:600 14px system-ui;cursor:default">'
@@ -12099,8 +12099,8 @@ def update_box():
                       'font-size:13px;margin:0 0 10px">Base de conocimiento actualizada correctamente.</div>')
         elif UPDATE["msg"] == "err":
             estado = ('<div style="background:#e34948;color:#fff;padding:9px 13px;border-radius:8px;'
-                      'font-size:13px;margin:0 0 10px">La actualizacion fallo y se conservan las reglas '
-                      'anteriores. El detalle esta en la Bitacora y en el registro del orquestador '
+                      'font-size:13px;margin:0 0 10px">La actualización falló y se conservan las reglas '
+                      'anteriores. El detalle está en la Bitácora y en el registro del orquestador '
                       '(<code>ids-orq</code> en el servidor).</div>')
         boton = ('<form method="post" action="/update-reglas" style="display:inline">'
                  '<button type="submit" style="background:#2a78d6;color:#fff;border:0;'
@@ -12109,10 +12109,10 @@ def update_box():
     return (
         '<div id="reglas" style="border:1px solid #e7e6e2;border-radius:10px;background:#fff;padding:16px;margin:6px 0 14px;scroll-margin-top:70px">'
         f'{estado}'
-        f'<p style="margin:0 0 4px"><b>Version de reglas en uso:</b> {ult_txt} '
+        f'<p style="margin:0 0 4px"><b>Versión de reglas en uso:</b> {ult_txt} '
         '<span style="color:#52514e">(hora local)</span></p>'
-        '<p style="margin:0 0 12px;color:#52514e;font-size:13px">Es <b>automatica cada dia</b> (la hace el '
-        'orquestador para todos los puntos). Con este boton la fuerzas ahora sin esperar; descarga ET Open, '
+        '<p style="margin:0 0 12px;color:#52514e;font-size:13px">Es <b>automática cada día</b> (la hace el '
+        'orquestador para todos los puntos). Con este botón la fuerzas ahora sin esperar; descarga ET Open, '
         'la valida y, si falla, se quedan las reglas anteriores.</p>'
         f'{boton}</div>')
 
@@ -12125,9 +12125,9 @@ def documentacion_page(embed=False, pagina=""):
 <tr><td><b>En vivo</b></td><td>Vista principal. Arriba, el <b>resumen de las últimas 24h</b>:
 atacantes por puerto (qué IP golpea qué puerto), IPs origen (atacantes), IPs destino (objetivos) y la
 línea de tiempo por intervalos de 30 minutos. Se actualiza sola cada 20 segundos.</td></tr>
-<tr><td><b>Top origenes</b></td><td>Ranking del <b>Top 5 de CPEs que más alertan</b> (quién ataca más),
+<tr><td><b>Top orígenes</b></td><td>Ranking del <b>Top 5 de CPEs que más alertan</b> (quién ataca más),
 con el desglose de cada uno: puerto origen, IP destino, dueño/organización del destino, puerto y
-protocolo. Debajo, el <b>espejo</b>: <b>Top IPs destino mas atacadas</b> (los blancos que reciben más
+protocolo. Debajo, el <b>espejo</b>: <b>Top IPs destino más atacadas</b> (los blancos que reciben más
 alertas) y qué CPEs las atacan &mdash; útil para detectar un destino común (un mismo C2/servidor
 tocado por varios CPEs). Y al final, <b>Ataques entrantes desde internet</b> (ver "Ataques entrantes desde internet").</td></tr>
 <tr><td><b>Detalle</b></td><td>La tabla completa de ataques: quién ataca, a qué IP y puerto,
@@ -12137,7 +12137,7 @@ imprimir a PDF salen todas las filas.</td></tr>
 <b>DNS sospechoso</b>, con su <b>nivel de confianza</b>, la <b>evidencia</b> que lo respalda (botón
 "Ver evidencia") y la <b>salud del sensor</b> arriba. Desde aquí se envían/quitan del MikroTik.
 Se explica en "Cuarentena: enviar CPEs infectados al MikroTik (API v6 y v7)".</td></tr>
-<tr><td><b>Historico</b></td><td>El <b>abuso saliente día a día</b>: ataques, tendencia, CPEs, por qué
+<tr><td><b>Histórico</b></td><td>El <b>abuso saliente día a día</b>: ataques, tendencia, CPEs, por qué
 atacan y por qué puerto, y cuántos se pusieron en cuarentena y se liberaron. Del nodo que se mira (o de
 todos). Se guarda solo el reporte más reciente: no hay instantáneas viejas que abrir.</td></tr>
 <tr><td><b>Reporte</b></td><td>El <b>informe de 3 días: conducta por abonado</b>. Agrupa a los CPEs
@@ -12190,7 +12190,7 @@ que entras; al llegar a cero vuelve a pedir la clave). Si la pantalla es estrech
 <h2>Cada cuánto se actualiza</h2>
 <ul>
 <li><b>Feed de últimos ataques</b> (En vivo, abajo): cada <b>20 segundos</b>.</li>
-<li><b>Resumen (tiles, gráficos y línea de tiempo), Detalle, Top e Historico</b>: se regeneran
+<li><b>Resumen (tiles, gráficos y línea de tiempo), Detalle, Top e Histórico</b>: se regeneran
 en segundo plano cada <b>5 minutos</b>. Por eso los gráficos casi no cambian entre
 recargas y el feed de abajo sí (ese es en vivo).</li>
 <li><b>Salud del sensor</b> (tarjeta en Cuarentena): se mide cada <b>~60 segundos</b>.</li>
@@ -12207,8 +12207,9 @@ nuevas). Se cambia en <b>En vivo</b> con el selector <b>Ventana</b> (solo admini
 cambiarla se regenera cada punto y al final Todos; mientras tanto la página dice
 <b>generando&hellip; N de M</b> con los segundos que lleva y se recarga sola una vez al terminar
 (suele ser menos de un minuto).</li>
-<li><b>Reglas ET</b>: las actualiza el orquestador cada día para todos los puntos. <b>Informe por
-Telegram</b>: 07:30.</li>
+<li><b>Reglas ET</b>: las actualiza el orquestador cada día para todos los puntos (ver
+"De dónde saca Suricata para confirmar (reglas) y cómo se actualiza"). <b>Informe por Telegram</b>: una
+vez al día, ver "Reportes e informe diario".</li>
 <li>Todas las horas del panel están en la <b>hora local</b> configurada en el servidor.</li>
 </ul>
 
@@ -12354,7 +12355,7 @@ que está en marcha en vez de esperar.</li>
 deja: una ventana explica que hay que esperar a que termine (si no, llevarías al MikroTik la lista de redes
 vieja).</li>
 </ul>
-<p>Comprueba que llega mirando la salud por etapas del punto (<b>TZSP recibido</b> y <b>Trafico
+<p>Comprueba que llega mirando la salud por etapas del punto (<b>TZSP recibido</b> y <b>Tráfico
 procesado</b>) o, en el router, <code>/ip firewall mangle print stats where comment~"ids-maat"</code>.</p>
 
 <h3>Prefijos: por qué a veces no se ven datos</h3>
@@ -12385,7 +12386,7 @@ del espejo, y en el MikroTik el espejo apunta a la <b>WAN</b>, no al bridge.</p>
 <li><b>Tu propia pública NO puede ir a la cuarentena.</b> Como HOME_NET son las públicas, el panel
 las trata como si fueran CPEs; mandar tu IP de NAT a la address-list dejaría <b>sin internet a todos
 los abonados que salen por ella</b>. El panel lo <b>impide</b> si esas IPs están declaradas en
-<b>Consultar IP &rarr; Tus IPs publicas</b>. Declararlas ahí no es opcional en este modo.</li>
+<b>Consultar IP &rarr; Tus IPs públicas</b>. Declararlas ahí no es opcional en este modo.</li>
 <li><b>El espejo tiene que salir por el túnel del punto</b>, desde la IP del MikroTik dentro del
 túnel. El receptor de cada punto descarta lo que llega por otro lado, y eso solo se ve en la salud por
 etapas (<b>TZSP recibido</b>): por eso conviene mirarla tras cualquier cambio.</li>
@@ -12399,7 +12400,7 @@ banda.</li>
 <h2>Resolutores DNS: el DNS no es la víctima</h2>
 <p>Cuando un CPE pregunta por un dominio de malware, la alerta lleva como <b>destino</b> la IP del
 DNS al que preguntó (1.1.1.2, 8.8.8.8, el de tu ISP...). Sin más, el panel contaría eso como un
-ataque <i>al DNS</i> y el resolutor subiría a <b>Top destinos mas atacados</b>. No lo es: la prueba
+ataque <i>al DNS</i> y el resolutor subiría a <b>Top destinos más atacados</b>. No lo es: la prueba
 es el <b>dominio</b>, y la culpa, del CPE. En <b>Ajustes &rarr; DNS</b> está la lista de resolutores
 conocidos (en la configuración del panel; de serie los públicos). Para una IP de esa
 lista, lo que va al <b>puerto 53</b> o lleva firma de DNS se cuenta como <b>consulta a través de él</b>:
@@ -12415,7 +12416,7 @@ usuarios en el selector de nodo, y con detalle en <b>Puntos</b>:</p>
 <ul>
 <li><b>VPN conectada</b>: el MikroTik tiene el túnel arriba.</li>
 <li><b>TZSP recibido</b>: llega el espejo al receptor del punto.</li>
-<li><b>Trafico procesado</b>: Suricata cuenta paquetes capturados y sus <b>descartes</b>.</li>
+<li><b>Tráfico procesado</b>: Suricata cuenta paquetes capturados y sus <b>descartes</b>.</li>
 <li><b>Eventos actualizados</b>: el registro de eventos del punto se está escribiendo.</li>
 <li><b>Datos consultables</b>: el panel puede leerlos (reporte, eventos, histórico).</li>
 </ul>
@@ -12445,7 +12446,7 @@ muestra como tal. Lo publican el orquestador (cada 15 s) y el receptor TZSP de c
 <p>En la pestaña <b>En vivo</b>, <b>debajo de la línea de tiempo</b> ("Ataques por hora y minuto"),
 hay un <b>mapa mundial</b> que pinta los <b>países destino</b> de las alertas (a donde va el
 tráfico sospechoso de tus CPEs). El color sube con el nº de alertas y debajo sale el
-<b>Top paises destino</b>: los 10 países con más alertas, por puesto y en dos columnas (1 a 5 y
+<b>Top países destino</b>: los 10 países con más alertas, por puesto y en dos columnas (1 a 5 y
 6 a 10), cada uno con su barra, el número de alertas y qué parte del total son. Clic en una fila
 acerca ese país en el mapa.</p>
 <ul>
@@ -12519,7 +12520,7 @@ borra el otro.</p>
 <p>El <b>CSV</b> usa punto y coma y lleva BOM, que es lo que abre Excel en español sin pedir
 nada. Las firmas que traen <code>;</code> o comillas van entrecomilladas: sin eso se corren
 las columnas y el cliente termina leyendo el dato de otro abonado.</p>
-<p>La pestaña <b>Historico</b> ya no es una lista de archivos: es la <b>tendencia del abuso que sale
+<p>La pestaña <b>Histórico</b> ya no es una lista de archivos: es la <b>tendencia del abuso que sale
 de tu red</b>. Es el dato que hace que las IPs públicas acaben en listas negras, y el único que sirve
 para demostrarle a alguien &mdash;a quien te deslista, o a tu cliente&mdash; que la limpieza
 funciona.</p>
@@ -12683,7 +12684,7 @@ reincidencia. Un cron no sabe si el CPE sigue emitiendo; el panel sí.</li>
 <p>Así que automatiza lo de antes, que es donde está el trabajo. Según el estado verás:</p>
 <table>
 <tr><th>Estado</th><th>Qué significa</th></tr>
-<tr><td><b>Todavia no conviene pedirla</b></td><td>Estás listado y el abuso es reciente. Dice cuántos
+<tr><td><b>Todavía no conviene pedirla</b></td><td>Estás listado y el abuso es reciente. Dice cuántos
 días limpios llevas y cuántos faltan. Primero se corta al abonado.</td></tr>
 <tr><td><b>Se salen solas</b></td><td>Ya llevas los días limpios, pero todas las listas en las que
 estás caducan por su cuenta: no hay que rellenar nada, solo esperar.</td></tr>
@@ -12761,7 +12762,7 @@ con su SID/firma/fecha/flow_id, las <b>coincidencias de reputación</b> con su f
 <b>vigencia</b> (si el feed sigue vigente o caducó), la <b>corroboración</b> independiente y la
 <b>decisión</b>. Si el destino no tiene DNS inverso, se muestra el <b>operador de red</b> del bloque
 (vía RDAP) en vez de "sin PTR". El dueño de cada IP se consulta <b>solo cuando hace falta</b>: al
-abrir <b>Top origenes</b>, la página pide las que faltan (salen como <b>&hellip;</b> unos segundos) y
+abrir <b>Top orígenes</b>, la página pide las que faltan (salen como <b>&hellip;</b> unos segundos) y
 quedan guardadas 7 días. Generar el resumen no consulta nada, así que cambiar la ventana no
 espera por esto.</p>
 <p><b>Quién tenía la IP en el momento del evento:</b> el panel guarda un histórico de asignaciones
@@ -12815,12 +12816,13 @@ Meterle miles de entradas una a una por la API tardaría horas.</li>
 <h2>Reportes e informe diario</h2>
 <ul>
 <li>El reporte gráfico de cada nodo (y el de «Todos») lo genera el panel cada 5 minutos, de un
-nodo en uno; los guardados están en <b>Historico</b>.</li>
+nodo en uno; los guardados están en <b>Histórico</b>.</li>
 <li>Informe de texto por Telegram: se envía cada día a las 07:30 (hora local), con una sección por
 nodo, al chat configurado en <b>Ajustes &rarr; Reputación &rarr; Telegram</b> (ver "Avisos por
 Telegram").</li>
-<li>Las reglas ET las actualiza el orquestador cada día.</li>
 </ul>
+<p>Las reglas ET se actualizan aparte, cada día: ver
+"De dónde saca Suricata para confirmar (reglas) y cómo se actualiza".</p>
 
 <!--CAT:Cuarentena y MikroTik--><h2>Cuarentena: enviar CPEs infectados al MikroTik (API v6 y v7)</h2>
 <p>La pestaña <b>Cuarentena</b> lista los CPE con <b>infección confirmada</b> (por repetición y
@@ -12845,9 +12847,14 @@ maestra del servidor y no se vuelve a mostrar.</p>
 <pre><code>/ip firewall filter add chain=forward src-address-list=suricata-cuarentena action=drop comment="Suricata: CPE en cuarentena"</code></pre>
 <p>Alternativas según tu política: en vez de <code>action=drop</code> puedes redirigir a un portal,
 marcar en <code>mangle</code> para limitar velocidad, o registrar. La <b>address-list</b> por defecto
-es <code>suricata-cuarentena</code> (cámbiala en Ajustes si usas otro nombre). Las entradas entran
-<b>sin caducidad</b> y el panel las <b>saca solo cuando el abonado deja de enviar virus</b>; también
-puedes quitarlas a mano con el botón <b>Quitar</b> de la pestaña.</p>
+es <code>suricata-cuarentena</code> (cámbiala en Ajustes si usas otro nombre).</p>
+<p><b>Sin caducidad.</b> Las IPs de abonados entran sin TTL, se envíen a mano, con <b>Enviar todos</b>
+o por política (ver "Cuarentena automática (políticas por clase de abuso)"), y el panel las <b>saca solo
+cuando el abonado deja de enviar virus</b> (el CPE ya no sale como infectado); también puedes quitarlas a
+mano con el botón <b>Quitar</b> de la pestaña. No es una opción: con un TTL la IP salía a la hora aunque
+el abonado siguiera infectado. Las que estaban con TTL de antes pasan a permanentes en la siguiente
+vuelta. Una IP enviada a mano sin detección sale cuando ya no tiene ninguna alerta como origen; en riesgo
+bajo todavía se queda.</p>
 
 <h3>4) Configurar y probar en el panel</h3>
 <ol>
@@ -12856,7 +12863,7 @@ todos los nodos (nombres de las address-list, acciones, caducidad y políticas) 
 que además resume la conexión de cada nodo.</li>
 <li>Confirma la <b>huella del certificado</b> de la API (ver "Puntos: un MikroTik, su VPN y su Suricata",
 apartado <b>La huella del certificado de la API</b>): hasta entonces el panel no le manda la clave de
-<code>ids-api</code> al router. Después pulsa <b>Probar conexion</b>: si conecta, muestra el nombre
+<code>ids-api</code> al router. Después pulsa <b>Probar conexión</b>: si conecta, muestra el nombre
 (identity) del router. Si un día el router presenta otro certificado, la conexión se rechaza hasta que lo
 revises.</li>
 <li>En <b>Cuarentena</b>, cada CPE infectado confirmado muestra <b>Enviar a cuarentena</b>
@@ -12864,7 +12871,7 @@ revises.</li>
 cuarentena del panel y en el <b>Registro</b>.</li>
 </ol>
 <p>En la tabla <b>Enviados manualmente</b> puedes <b>ordenar por cualquier columna</b>: haz
-clic en la cabecera (CPE, Lista, Por, Enviado, Ultima revision&hellip;) para ordenar de forma
+clic en la cabecera (CPE, Lista, Por, Enviado, Última revisión&hellip;) para ordenar de forma
 <b>ascendente</b>, y otra vez para <b>descendente</b>. Las columnas de fecha ordenan por
 tiempo real, no por texto. El orden que elijas <b>se conserva</b> al pulsar <b>Quitar</b> o
 al recargarse la página, y esta <b>vuelve a la altura donde estabas</b> en vez de saltar
@@ -12891,17 +12898,17 @@ el nodo de la IP (<code>punto|IP</code>), nunca el que tengas elegido en el sele
 <li><b style="color:#1a7f37">Verde &mdash; MikroTik habilitado</b>: marcaste <b>Permitir enviar</b> y la conexión
 (usuario y clave del nodo) está completa. Aparecen los botones <b>Enviar a cuarentena</b> por CPE y
 <b>Enviar todos</b>.</li>
-<li><b style="color:#b52a2a">Rojo &mdash; Falta configurar la conexion</b>: marcaste <b>Permitir enviar</b>
+<li><b style="color:#b52a2a">Rojo &mdash; Falta configurar la conexión</b>: marcaste <b>Permitir enviar</b>
 pero todavía falta el usuario o la clave (o no conecta). Completa la API del punto y pulsa
-<b>Probar conexion</b>. Mientras tanto no se envía nada.</li>
+<b>Probar conexión</b>. Mientras tanto no se envía nada.</li>
 <li><b>Gris &mdash; Modo sugerencia (dry-run)</b>: el permiso está apagado. Solo se listan candidatos;
 el panel no toca el router.</li>
 </ul>
 <p><b>Enviar todos:</b> con el estado en verde, el botón <b>Enviar todos (N)</b> manda de una a la
 address-list todos los CPE de la lista que aún no estén en cuarentena (tope de 50 por acción; si el
 router deja de responder, se detiene y avisa). En «Todos» se reparte <b>por nodo</b> y el resultado
-se da por nodo: un router caído no frena a los demás. Cada IP queda <b>sin caducidad</b> hasta que el
-abonado deja de enviar virus, y se puede sacar antes con <b>Quitar</b>. Toda acción queda en el Registro.</p>
+se da por nodo: un router caído no frena a los demás. Cada IP queda <b>sin caducidad</b> (ver
+<b>Sin caducidad</b>, en el apartado 3). Toda acción queda en el Registro.</p>
 
 <h2>Cuarentena graduada: cortar sin dejar sin internet</h2>
 <p>El corte total tiene un problema práctico: el abonado llama a soporte, soporte lo desbloquea y el
@@ -12918,7 +12925,7 @@ atacando.</p>
 
 <h2>Cuarentena automática (políticas por clase de abuso)</h2>
 <p>Además de enviar a mano, el panel puede actuar solo. En <b>Ajustes &rarr; MikroTik</b>, con
-<b>Aplicar politicas automaticamente</b> activado, defines qué hacer con cada <b>clase</b> de CPE
+<b>Aplicar políticas automáticamente</b> activado, defines qué hacer con cada <b>clase</b> de CPE
 (Botnet/CnC, DNS de malware, Escaneo, Fuerza bruta, Spam, Criptominado, P2P, Otros). La clase
 sale de lo que el CPE hace de verdad (la más grave que casa), y el destino es siempre la
 address-list de <b>esa</b> clase.</p>
@@ -12944,11 +12951,8 @@ banda y los conteos. La columna <b>Motivo</b> lo muestra tal cual, y la columna 
 ligero cada minuto envía <b>ya</b> a los CPEs con <b>infección confirmada</b> (firmas CnC repetidas o
 contacto con un C2 fichado), sin esperar los 5&nbsp;min. Es conservador (solo infección confirmada), respeta allowlist, destinos de confianza y
 exclusiones, con <b>anti-rebote de 60&nbsp;s</b> por CPE. MEDIO/BAJO siguen en el ciclo de 5&nbsp;min.</li>
-<li><b>Sin caducidad:</b> las IPs de abonados entran sin TTL y el panel las libera cuando el CPE deja de
-atacar (ya no sale como infectado). No es una opción: con un TTL la IP salía a la hora aunque el abonado
-siguiera infectado. Las que estaban con TTL de antes pasan a permanentes en la siguiente vuelta. Una IP
-enviada a mano sin detección sale cuando ya no tiene ninguna alerta como origen; en riesgo bajo todavía se
-queda.</li>
+<li><b>Sin caducidad:</b> lo que envían las políticas tampoco lleva TTL; cuándo sale cada IP, ver
+"Cuarentena: enviar CPEs infectados al MikroTik (API v6 y v7)".</li>
 </ul>
 
 <h2>Una lista por categoría de abuso</h2>
@@ -12982,23 +12986,11 @@ nada y no da error</b>: una <code>/queue simple</code> con <code>target=""</code
 tráfico, y una marca de paquete que ninguna cola consume no la usa nadie. P2P y criptominado
 llevan <b>marcas y colas distintas</b>, para poder darles límites distintos y saber cuál consume.
 Las reglas listas para copiar están en <b>MikroTik &rarr; Reglas</b>.</p>
-<p>Tres cosas que hacen que las reglas <b>parezcan</b> no funcionar:</p>
-<ul>
-<li><b>El orden frente a <code>fasttrack-connection</code>.</b> Los <code>drop</code> tienen que ir
-<b>antes</b> de la regla de fasttrack y de los <code>accept</code>: con fasttrack activo una
-conexión ya establecida deja de pasar por <code>filter</code> y el bloqueo no se aplica.</li>
-<li><b>Meter el CPE en la lista no corta lo que ya está abierto.</b> La regla solo mira los paquetes
-que pasan por ella; las conexiones vivas hay que soltarlas a mano con
-<code>/ip firewall connection remove [find src-address~"^192.0.2.25:"]</code>.</li>
-<li><b><code>action=redirect to-ports=53</code> apunta al resolutor del propio router.</b> Si el
-router no resuelve, el cliente se queda <b>sin DNS</b> y parece que le cortaste internet. O
-habilitas <code>/ip dns set allow-remote-requests=yes</code>, o usas
-<code>action=dst-nat to-addresses=&lt;tu resolutor&gt; to-ports=53</code>.</li>
-</ul>
-<p>Los nombres se pueden cambiar en <b>Ajustes &rarr; MikroTik</b> (un campo por lista), por si ya
-tienes tu propia
-nomenclatura. Y al enviar se <b>guarda en qué lista quedó</b>: si mañana cambia su categoría o
-renombras la lista, el panel lo saca de donde está de verdad y no de donde tocaría hoy.</p>
+<p>Por qué una regla puede <b>parecer</b> que no funciona (el orden frente al fasttrack, las conexiones
+que ya estaban abiertas y el <code>redirect</code> al resolutor del propio router): ver "Acciones por
+categoría: lo que el router hace con cada lista".</p>
+<p>Los nombres de estas listas se cambian en <b>Ajustes &rarr; MikroTik</b> y el panel recuerda en qué
+lista quedó cada CPE: ver "Las address-lists: cuál es cuál".</p>
 
 <h2>Acciones por categoría: lo que el router hace con cada lista</h2>
 <p>Meter un CPE en una address-list no hace nada si ninguna regla la usa. En <b>Ajustes &rarr;
@@ -13006,7 +12998,7 @@ MikroTik</b>, bajo cada lista, eliges la <b>acción</b> que el router aplica a e
 <b>pone las reglas por la API</b>:</p>
 <table><tr><th>Acción</th><th>Qué pone</th></tr>
 <tr><td><b>Cortar todo</b></td><td>un <code>drop</code> en <code>raw prerouting</code> por la lista.</td></tr>
-<tr><td><b>Solo navegacion</b></td><td>una cadena propia que deja pasar DNS (53) y 80/443 y corta lo demás,
+<tr><td><b>Solo navegación</b></td><td>una cadena propia que deja pasar DNS (53) y 80/443 y corta lo demás,
 con un <code>jump</code> desde <code>prerouting</code>. Útil con portal cautivo; ojo: una botnet que hable
 por 443 sigue hablando.</td></tr>
 <tr><td><b>Sin correo saliente</b></td><td>corta 25/465/587/2525 (spam) y nada más.</td></tr>
@@ -13065,8 +13057,21 @@ entrada permanente falta en el router, no la olvida, la marca <i>falta en el rou
 lista y sus IPs se quedan.</p>
 <p><b>Por qué en raw prerouting.</b> Se evalúa antes del fasttrack y de conntrack: corta aunque la conexión
 ya esté establecida y sin depender del orden del <code>filter</code>. Las acciones de NAT y de colas van en su
-tabla. Meter un CPE en la lista <b>no</b> cierra lo que ya tiene abierto: para eso
-<code>/ip firewall connection remove [find src-address~"^IP:"]</code>.</p>
+tabla.</p>
+<p>Tres cosas que hacen que las reglas <b>parezcan</b> no funcionar:</p>
+<ul>
+<li><b>El orden frente a <code>fasttrack-connection</code></b> (reglas en <code>filter</code>). Los
+<code>drop</code> tienen que ir <b>antes</b> de la regla de fasttrack y de los <code>accept</code>: con
+fasttrack activo una conexión ya establecida deja de pasar por <code>filter</code> y el bloqueo no se
+aplica.</li>
+<li><b>Meter el CPE en la lista no corta lo que ya está abierto.</b> La regla solo mira los paquetes
+que pasan por ella; las conexiones vivas hay que soltarlas a mano con
+<code>/ip firewall connection remove [find src-address~"^192.0.2.25:"]</code> (con la IP del CPE).</li>
+<li><b><code>action=redirect to-ports=53</code> apunta al resolutor del propio router.</b> Si el
+router no resuelve, el cliente se queda <b>sin DNS</b> y parece que le cortaste internet. O
+habilitas <code>/ip dns set allow-remote-requests=yes</code>, o usas
+<code>action=dst-nat to-addresses=&lt;tu resolutor&gt; to-ports=53</code>.</li>
+</ul>
 <p>El <b>diagnóstico</b> del router (segundo plano) dice por clase si la acción configurada está aplicada o
 cuántos cambios le faltan, además de si alguna lista con CPEs dentro no la usa ninguna regla.</p>
 
@@ -13090,10 +13095,15 @@ las que tus CPEs salen (C2, malware, redes secuestradas)</td><td><b><code>dst-ad
 internet</td><td><code>src-address-list</code> + <code>connection-state=new</code></td><td>1 d</td></tr>
 </table>
 <p>Las tres primeras contienen <b>IPs de tus abonados</b>; las dos últimas, <b>IPs públicas de
-terceros</b> &mdash; y ninguna de esas dos acepta una IP tuya, ni privada ni pública. Cada lista
-tiene su nombre configurable en <b>Ajustes &rarr; MikroTik</b> (las tres de abonados no caducan: un
-abonado sale cuando deja de enviar virus; las de terceros conservan su TTL), y cada una
-lleva su propio registro en el panel, así que quitar algo de una no toca las demás.</p>
+terceros</b> &mdash; y ninguna de esas dos acepta una IP tuya, ni privada ni pública. Las tres de
+abonados no caducan (cuándo sale cada una, ver "Cuarentena: enviar CPEs infectados al MikroTik (API v6 y
+v7)"); las de terceros conservan su TTL.</p>
+<p>Cada una de estas cinco tiene su nombre configurable en <b>Ajustes &rarr; MikroTik</b> y lleva su
+propio registro en el panel, así que quitar algo de una no toca las demás. Las de cada categoría de
+abuso (<code>clientes-botnet</code>, <code>clientes-spam</code>&hellip;, ver "Una lista por categoría de
+abuso") también se renombran ahí, un campo por lista, por si ya tienes tu propia nomenclatura. Al enviar
+se <b>guarda en qué lista quedó</b> cada CPE: si mañana cambia su categoría o renombras la lista, el
+panel lo saca de donde está de verdad y no de donde tocaría hoy.</p>
 <p>El TTL de los destinos es más largo (7 d) a propósito: un servidor de control no deja de serlo en
 una hora, y ahí no hay ningún abonado esperando a que se le devuelva el servicio.</p>
 
@@ -13112,9 +13122,8 @@ corta la salida hacia ella <b>antes</b> de que ningún abonado llegue. Así el e
 siquiera consigue instrucciones, y no hace falta detectarlo primero.</p>
 <p>Al <b>preventivo</b> solo entran los feeds en los que se puede confiar para cortar <b>por
 destino</b>: <b>C2 activo</b> (Feodo) e <b>infraestructura delictiva</b> (Spamhaus DROP), que son
-unos pocos miles de entradas y caben de sobra en cualquier router. <b>No</b> entran las listas de
-"esta IP escaneo a alguien" (CINS, AbuseIPDB): describen a un atacante, pero <b>esa misma IP puede
-alojar una web que un abonado visita</b>, y cortarla por destino lo deja sin servicio.</p>
+unos pocos miles de entradas y caben de sobra en cualquier router. Las listas de "esta IP escaneo a
+alguien" <b>no</b> entran, por lo que se explica en "Los dos frenos", más abajo.</p>
 <p>La importación <b>solo borra lo que puso el feed</b> (por el comentario), así que lo que hayas
 bloqueado a mano desde el panel no se toca. Y nunca entra nada tuyo: ni tus redes privadas ni tus
 públicas declaradas, aunque un feed las fiche.</p>
@@ -13125,9 +13134,11 @@ públicas declaradas, aunque un feed las fiche.</p>
 dejaría a tus abonados sin verse entre sí. También se frena una IP <b>pública que sea tuya</b> (tu
 rango de NAT), que pasa el filtro de "es pública" y aun así no hay que bloquearla.</li>
 <li><b>Solo feeds que se sostienen</b>: C2 activo, IOC de C2, distribución de malware e infra
-delictiva. <b>No</b> se propone lo que viene de listas de "esta IP escaneo a alguien": esas pueden
-alojar además algo legítimo, y bloquearlas deja sin servicio a un abonado que no hizo nada. Si aun
-así las quieres ver, se pueden pedir.</li>
+delictiva (al preventivo, solo C2 activo e infra delictiva). <b>No</b> se propone ni entra al preventivo lo que
+viene de listas de "esta IP escaneo a alguien" (CINS, AbuseIPDB): describen a un atacante, pero <b>esa
+misma IP puede alojar además algo legítimo</b> &mdash;una web que un abonado visita&mdash;, y bloquearla
+por destino deja sin servicio a un abonado que no hizo nada. Si aun así las quieres ver, se pueden
+pedir.</li>
 </ul>
 <p>Lo que marques como <b>destino confiable</b> (falso positivo) desaparece de la lista y no se
 vuelve a proponer. Y sin una regla en el MikroTik que use esa address-list, el panel diría
@@ -13208,14 +13219,12 @@ fila), nunca al que tengas elegido en el selector. En «Todos» las acciones mas
 RouterOS (6.49+ o 7) y perfil (reducido por defecto). Un doble clic no crea dos puntos.</li>
 <li>El servidor crea la VPN y el Suricata del punto; se ve el avance paso a paso, con lo que tarda
 cada uno, sin que la página se recargue.</li>
-<li>Al terminar se muestran <b>una sola vez</b> el usuario y la clave de la VPN y los comandos para el
-MikroTik (v7 y v6) con la clave puesta. Si la pierdes, en la ficha está <b>Regenerar la clave VPN</b>.
-Si el orquestador se reinició antes de entregarla, la página lo dice («La clave no llegó al panel») y
-trae el botón <b>Regenerar la clave VPN</b>: sin clave el MikroTik no puede conectar.</li>
+<li>Al terminar salen, <b>una sola vez</b>, la clave de la VPN y los comandos para el MikroTik; si la
+clave se pierde o no llega, ver "La VPN de cada punto".</li>
 <li>Hasta que pegas los comandos en el router, el punto sale en <b>ámbar</b>, «esperando MikroTik»: es lo
 esperado, no un fallo.</li>
 <li>En la ficha: la clave de la <b>API</b>, <b>La huella coincide: confirmar</b> (tras compararla con la
-del router), <b>Probar conexion</b> y luego <b>Espejo &rarr; Ver el plan &rarr; Aplicar</b>.</li>
+del router), <b>Probar conexión</b> y luego <b>Espejo &rarr; Ver el plan &rarr; Aplicar</b>.</li>
 </ol>
 <h3>Si algo falla</h3>
 <ul>
@@ -13227,7 +13236,7 @@ del punto antes de deshacer. Nunca salen claves en esos logs.</li>
 cualquier otra operación.</li>
 </ul>
 <h3>La ficha del punto</h3>
-<p>Resumen (estado, salud por etapas, espejo, Suricata, alertas de 24 h y <b>retencion efectiva</b>),
+<p>Resumen (estado, salud por etapas, espejo, Suricata, alertas de 24 h y <b>retención efectiva</b>),
 VPN (comandos sin la clave), API (usuario, clave, probar, huella), Espejo (plan, aplicar, pausar,
 retirar), Prefijos, Logs de la VPN y del Suricata, arrancar, parar, reiniciar, desbanear la IP del
 MikroTik y la baja. La huella del certificado del router se lee por el túnel: con el MikroTik sin
@@ -13273,7 +13282,7 @@ MikroTik</b> (solo administradores). Propone la IP desde la que está conectado 
 última conocida; se puede cambiar. Pide confirmación, el resultado sale en una ventana («desbaneada» o
 «no estaba baneada») y queda una línea en el Registro. Quita antes la causa: si no, vuelve a banearse.</p>
 <p>Lo que habla con el router o con la cola del orquestador va <b>en segundo plano</b>: el espejo (ver
-"El espejo del MikroTik"), los prefijos, <b>Probar la conexion</b> de la API y la baja muestran su avance
+"El espejo del MikroTik"), los prefijos, <b>Probar la conexión</b> de la API y la baja muestran su avance
 y su resultado en una <b>ventana</b>, sin recargar la ficha ni poner avisos arriba. Si cierras la pestaña a
 mitad, al volver a la ficha se retoma el avance o se enseña el resultado una sola vez. Las páginas de
 operación (alta, arrancar, reiniciar...) también se actualizan solas sin recargarse; si una termina mal,
@@ -13281,7 +13290,7 @@ el motivo sale en una ventana y los logs siguen debajo.</p>
 <h3>Retención</h3>
 <p>El objetivo es guardar <b>30 días</b> de eventos de cada punto. Se poda por fecha (lo que tiene más
 de 30 días). Si el disco del servidor baja del 15 % libre, se borran antes los rotados más viejos y
-queda registrado: por eso Puntos y Eventos dicen la <b>retencion efectiva</b> (desde qué fecha hay
+queda registrado: por eso Puntos y Eventos dicen la <b>retención efectiva</b> (desde qué fecha hay
 eventos de verdad) y nunca prometen 30 días si hubo borrado anticipado.</p>
 <h3>Baja</h3>
 <p>En la ficha (o en <b>Eliminar</b> de la lista), escribiendo el nombre del punto. La limpieza del
@@ -13325,12 +13334,16 @@ listas no cortan nada.</li>
 puerto y su red de túnel (el sensor es la <code>.1</code> y el MikroTik la <code>.2</code>). Es
 compatible con RouterOS 6.49+ y 7.</p>
 <ul>
-<li>La crea el alta del punto; los comandos para el router salen al terminar (con la clave, una sola vez)
-y en la ficha (sin la clave).</li>
+<li>La crea el alta del punto (ver "Puntos: un MikroTik, su VPN y su Suricata"). Al terminar se muestran
+<b>una sola vez</b> el usuario y la clave de la VPN y los comandos para el MikroTik (v7 y v6) con la clave
+puesta; en la ficha quedan los comandos sin la clave.</li>
 <li><b>La VPN solo trae el espejo y la API del propio router</b>: no enruta tráfico de abonados, no lleva
 a otras redes y un punto no ve a otro.</li>
 <li>Cambiar, regenerar o borrar la VPN de un punto <b>no corta a los demás</b>.</li>
-<li><b>Regenerar la clave</b> (ficha del punto) corta la VPN de ese MikroTik hasta que pongas la nueva:
+<li><b>Regenerar la clave VPN</b> (ficha del punto) es para cuando la pierdes, y para cuando el
+orquestador se reinició antes de entregarla: la página del alta lo dice («La clave no llegó al panel») y
+trae ese mismo botón, porque sin clave el MikroTik no puede conectar. Corta la VPN de ese MikroTik hasta
+que pongas la nueva:
 <code>/interface ovpn-client set [find name=ids-vpn] password=&lt;clave nueva&gt; verify-server-certificate=yes</code>.
 Mientras reintenta con la vieja, el router <b>no queda baneado</b>: solo se frenan sus intentos.</li>
 </ul>
@@ -13502,7 +13515,8 @@ cuota, se conserva la lista anterior en vez de dar la fuente por rota.</p>
 Telegram con el <b>cliente/abonado</b>, la <b>acción</b> (a qué lista), el <b>nivel de confianza</b>, la
 <b>evidencia</b> (top 3) y un enlace a la <b>ficha</b>. Hay dedupe por IP (no re-avisa dentro de 6&nbsp;h)
 y los envíos masivos mandan un solo resumen. El aviso dice el nodo. Por el mismo chat llegan el
-<b>informe diario</b> (07:30) y el aviso de una IP pública que cruza el 25&nbsp;% de abuso.</p>
+<b>informe diario</b> (ver "Reportes e informe diario") y el aviso de una IP pública que cruza el
+25&nbsp;% de abuso.</p>
 <h3>Cómo se configura (4 pasos)</h3>
 <p>En <b>Ajustes &rarr; Reputación &rarr; Telegram</b> (solo administrador), sin tocar el servidor:</p>
 <ol class=doc>
@@ -13936,11 +13950,11 @@ def culpables_ficha_html(ip, cats, esc=None, tope=6, ejemplos=None):
     if lec and lec.get("resumen"):
         _ia_nota = ("<div class=hint style='margin-top:8px'><b>Lectura de las denuncias:</b> "
                     + esc(lec["resumen"])
-                    + (" Se busco ademas por: " + esc(", ".join(
+                    + (" Se buscó además por: " + esc(", ".join(
                         lec["cats"] + ["puerto " + p for p in lec["puertos"]]))
                        if (lec["cats"] or lec["puertos"]) else "")
-                    + " <i>(leido con " + esc(lec.get("modelo", "")) + "; es una lectura del "
-                    "texto, no una medicion)</i></div>")
+                    + " <i>(leído con " + esc(lec.get("modelo", "")) + "; es una lectura del "
+                    "texto, no una medición)</i></div>")
 
     if not culp:
         _motivo, _det = por_que_sin_culpables(ids)
@@ -13959,10 +13973,10 @@ def culpables_ficha_html(ip, cats, esc=None, tope=6, ejemplos=None):
         lis += ("<li style='margin:6px 0'><b class=mono>%s</b> "
                 "<span class=hint>%s</span> %s</li>"
                 % (esc(ip_de(k)), esc(", ".join(mot)), accion))
-    return (_ia_nota + "<div style='margin-top:10px'><b style='font-size:13px'>Quien puede estar "
-            "detras, de tu lado del NAT</b>"
-            "<p class=hint style='margin:4px 0 2px'>CPEs de este nodo que estan haciendo "
-            "ese mismo tipo de abuso, ordenados por cuanto encajan. Son candidatos: "
+    return (_ia_nota + "<div style='margin-top:10px'><b style='font-size:13px'>Quién puede estar "
+            "detrás, de tu lado del NAT</b>"
+            "<p class=hint style='margin:4px 0 2px'>CPEs de este nodo que están haciendo "
+            "ese mismo tipo de abuso, ordenados por cuánto encajan. Son candidatos: "
             "confirma en su ficha antes de cortar.</p>"
             "<ul style='margin:4px 0 0;padding-left:20px;font-size:13px'>%s</ul></div>"
             % lis)
@@ -13980,8 +13994,8 @@ def ficha_ip_html(d, ip="", esc=None, scb=None):
     chips = "".join(
         "<span style='display:inline-block;background:#f1f1ef;border:1px solid #e0dfda;"
         "border-radius:20px;padding:3px 10px;margin:0 6px 6px 0;font-size:12.5px'>"
-        + esc(AIDB_CATS.get(int(c), "categoria %d" % int(c)))
-        + f" <b>{int(n)}</b></span>" for c, n in cats) or "<span class=hint>sin denuncias en 90 dias</span>"
+        + esc(AIDB_CATS.get(int(c), "categoría %d" % int(c)))
+        + f" <b>{int(n)}</b></span>" for c, n in cats) or "<span class=hint>sin denuncias en 90 días</span>"
     # que hacer: solo de las categorias que de verdad aparecen
     arreglos = []
     for c, _n in cats:
@@ -13990,7 +14004,7 @@ def ficha_ip_html(d, ip="", esc=None, scb=None):
             arreglos.append(t)
     arr_html = ""
     if arreglos:
-        arr_html = ("<div style='margin-top:10px'><b style='font-size:13px'>Que suele haber detras</b>"
+        arr_html = ("<div style='margin-top:10px'><b style='font-size:13px'>Qué suele haber detrás</b>"
                     "<ul style='margin:6px 0 0;padding-left:20px;font-size:13px'>"
                     + "".join(f"<li>{esc(t)}</li>" for t in arreglos[:5]) + "</ul></div>")
     ejem = ""
@@ -14005,7 +14019,7 @@ def ficha_ip_html(d, ip="", esc=None, scb=None):
     if d.get("blanca"):
         extra.append("en lista blanca de AbuseIPDB")
     cuando = time.strftime("%d/%m %H:%M", time.localtime(d.get("ts", 0)))
-    proc = f"ultima verificacion: {cuando}"
+    proc = f"última verificación: {cuando}"
     return (
         "<div class=card style='margin:0 0 12px'>"
         f"<div style='display:flex;align-items:center;gap:12px;flex-wrap:wrap'>"
@@ -14020,7 +14034,7 @@ def ficha_ip_html(d, ip="", esc=None, scb=None):
         + "</div>"
         f"<div style='font-size:13px;margin-bottom:8px'><b>{d.get('reportes', 0):,}</b> denuncias de "
         f"<b>{d.get('denunciantes', 0):,}</b> denunciantes distintos"
-        + (f" &middot; ultima {esc(d.get('ultimo'))}" if d.get("ultimo") else "") + "</div>"
+        + (f" &middot; última {esc(d.get('ultimo'))}" if d.get("ultimo") else "") + "</div>"
         + chips + arr_html
     # con los textos de las denuncias: si por categoria no sale nadie, se leen
     + culpables_ficha_html(d.get("ip") or ip, cats, esc, ejemplos=d.get("ejemplos"))
@@ -14046,7 +14060,7 @@ def reputacion_page(res=None, texto="", msg="", ok=False, es_admin=False, volver
         # El resultado de una accion (detectar, agregar, quitar) va en el modal del panel,
         # no en una franja arriba que empuja la pagina. Va como JSON y sin "<": el texto
         # viene de la URL y no puede cerrar el <script>.
-        aviso_js = ("<script>aviso('Tus IPs publicas'," + json.dumps(msg).replace("<", "\\u003c")
+        aviso_js = ("<script>aviso('Tus IPs públicas'," + json.dumps(msg).replace("<", "\\u003c")
                     + ");try{history.replaceState(null,'',location.pathname);}catch(e){}</script>")
     elif msg:
         col = "#1baf7a" if ok else "#e34948"
@@ -14057,7 +14071,7 @@ def reputacion_page(res=None, texto="", msg="", ok=False, es_admin=False, volver
                    "padding:10px 14px;border-radius:8px;margin-bottom:16px;font-size:13px'>"
                    "Falta la <b>clave de AbuseIPDB</b>. Se saca gratis en "
                    "<a href='https://www.abuseipdb.com/account/api' target=_blank rel=noopener>"
-                   "abuseipdb.com</a> y se pega en <b>Ajustes &rarr; Reputacion</b>.</div>")
+                   "abuseipdb.com</a> y se pega en <b>Ajustes &rarr; Reputación</b>.</div>")
 
     def _scb(n, corto=False, verde=True):
         # verde=False cuando hay direcciones con denuncias aunque el peor puntaje sea 0:
@@ -14085,11 +14099,11 @@ def reputacion_page(res=None, texto="", msg="", ok=False, es_admin=False, volver
             den = d.get("denunciadas") or []
             hosts = int(d.get("hosts") or 0)
             cuando = time.strftime("%d/%m %H:%M", time.localtime(d.get("ts", 0)))
-            proc = f"ultima verificacion: {cuando}"
+            proc = f"última verificación: {cuando}"
             if not den:
                 cuerpo = ("<div style='background:#e6f4ea;color:#1a7f37;border:1px solid #b7e0c2;"
                           "border-radius:8px;padding:12px 14px;font-size:13px'>"
-                          "<b>Ninguna direccion de esta red esta denunciada.</b> Si aun asi te "
+                          "<b>Ninguna dirección de esta red está denunciada.</b> Si aun así te "
                           "rebota el correo o te bloquean, el problema no es AbuseIPDB: mira las "
                           "listas de spam (Spamhaus, SORBS, Barracuda).</div>")
             else:
@@ -14100,25 +14114,25 @@ def reputacion_page(res=None, texto="", msg="", ok=False, es_admin=False, volver
                     f"<td class=mono>{esc(str(a[3]))}</td>"
                     f"<td>{esc(str(a[4]))}</td>"
                     f"<td><a href='?ips={esc(str(a[0]))}&amp;volver={esc(d.get('red') or ip)}'>"
-                    "ver que hace</a></td></tr>"
+                    "ver qué hace</a></td></tr>"
                     for a in den[:120])
                 peor = sum(1 for a in den if int(a[1]) >= 75)
                 cuerpo = (
                     f"<p style='font-size:13px;margin:0 0 10px'><b>{len(den):,}</b> de "
-                    f"<b>{hosts:,}</b> direcciones estan denunciadas"
-                    + (f", <b style='color:#b52a2a'>{peor:,}</b> de ellas con 75 % o mas" if peor else "")
-                    + ". Cada fila es una IP publica tuya por la que se esta atacando: "
-                      "pulsa <b>ver que hace</b> para el detalle con categorias.</p>"
-                    "<div class=tablewrap><table><thead><tr><th>Direccion</th>"
-                    "<th class=num>Abuso</th><th class=num>Denuncias</th><th>Ultima</th>"
-                    "<th>Pais</th><th></th></tr></thead><tbody>" + filas + "</tbody></table></div>"
+                    f"<b>{hosts:,}</b> direcciones están denunciadas"
+                    + (f", <b style='color:#b52a2a'>{peor:,}</b> de ellas con 75 % o más" if peor else "")
+                    + ". Cada fila es una IP pública tuya por la que se está atacando: "
+                      "pulsa <b>ver qué hace</b> para el detalle con categorías.</p>"
+                    "<div class=tablewrap><table><thead><tr><th>Dirección</th>"
+                    "<th class=num>Abuso</th><th class=num>Denuncias</th><th>Última</th>"
+                    "<th>País</th><th></th></tr></thead><tbody>" + filas + "</tbody></table></div>"
                     + (f"<p class=hint>Se muestran las 120 peores de {len(den):,}.</p>"
                        if len(den) > 120 else ""))
             tarjetas.append(
                 "<div class=card style='margin:0 0 12px'>"
                 "<div style='display:flex;align-items:center;gap:12px;flex-wrap:wrap'>"
                 f"<b class=mono style='font-size:15px'>{esc(d.get('red') or ip)}</b>"
-                f"<span class=hint>{esc(d.get('desc') or 'red publica')}</span>"
+                f"<span class=hint>{esc(d.get('desc') or 'red pública')}</span>"
                 f"<span class=hint style='margin-left:auto'>{esc(proc)}</span></div>"
                 f"<div style='margin-top:10px'>{cuerpo}</div></div>")
             continue
@@ -14179,18 +14193,18 @@ def reputacion_page(res=None, texto="", msg="", ok=False, es_admin=False, volver
                         + "</li>"
                         for k, c, _pts, mot, yaesta in culp)
                     det += ("<details open style='margin-top:8px'><summary style='cursor:pointer;"
-                            "font-size:13px;font-weight:600'>Quien lo esta causando ("
+                            "font-size:13px;font-weight:600'>Quién lo está causando ("
                             + str(len(culp)) + ")</summary>"
                             "<ul style='margin:6px 0 0;padding-left:18px;font-size:13px'>"
                             + lis + "</ul></details>")
                 elif cats:
-                    det += ("<div class=hint style='margin-top:6px'>Ningun CPE de este nodo "
-                            "coincide ahora mismo con ese tipo de trafico: puede haberse "
+                    det += ("<div class=hint style='margin-top:6px'>Ningún CPE de este nodo "
+                            "coincide ahora mismo con ese tipo de tráfico: puede haberse "
                             "limpiado solo, o el abuso salir por otro nodo.</div>")
                 elif dat.get("tipo") == "red":
                     det += ("<div class=hint style='margin-top:6px'>El listado de una red no "
-                            "trae las categorias: pulsa <b>ver que hace</b> en una direccion "
-                            "concreta para saber por que se le denuncia.</div>")
+                            "trae las categorías: pulsa <b>ver qué hace</b> en una dirección "
+                            "concreta para saber por qué se le denuncia.</div>")
             det += rango_detalle_html(dat, esc, _scb)
             # --- listas negras: esto es lo que de verdad hace que te bloqueen ---
             bl = dnsbl.get(ent) or {}
@@ -14206,30 +14220,30 @@ def reputacion_page(res=None, texto="", msg="", ok=False, es_admin=False, volver
                         for k, v in peores)
                     bl_html = ("<div style='margin-top:8px;background:#fdecec;border:1px solid #f3c4c4;"
                                "border-radius:8px;padding:10px 12px'>"
-                               f"<b style='color:#b52a2a'>En listas de bloqueo: {n_bl} direccion(es)</b>"
+                               f"<b style='color:#b52a2a'>En listas de bloqueo: {n_bl} dirección(es)</b>"
                                " <span class=hint>esto si corta correo y servicios</span>"
                                "<ul style='margin:6px 0 0;padding-left:18px;font-size:12.5px'>"
                                + _li_listas + "</ul></div>")
                 else:
                     bl_html = ("<div class=hint style='margin-top:8px;color:#1a7f37'>"
-                               "&#10003; Ninguna direccion en listas de bloqueo</div>")
+                               "&#10003; Ninguna dirección en listas de bloqueo</div>")
                 if n_pbl:
                     bl_html += ("<div class=hint style='margin-top:4px'>"
                                 f"{n_pbl} en la PBL de Spamhaus, que es <b>lo normal</b> en un rango "
-                                "residencial: dice que por ahi no deberia salir correo directo. "
+                                "residencial: dice que por ahí no debería salir correo directo. "
                                 "Solo importa si tu servidor de correo sale por esa IP.</div>")
                 if bl.get("rechazadas"):
                     bl_html += ("<div class=hint style='margin-top:4px;color:#a15c12'>"
                                 + esc(", ".join(bl["rechazadas"]))
                                 + " no acepta consultas desde el resolutor de este servidor "
-                                  "(pasa con los publicos tipo 8.8.8.8). Usa un resolutor propio "
+                                  "(pasa con los públicos tipo 8.8.8.8). Usa un resolutor propio "
                                   "para que el dato sea fiable.</div>")
                 if bl.get("truncado"):
                     bl_html += (f"<div class=hint style='margin-top:4px'>Se revisaron las primeras "
                                 f"{int(bl.get('n_ips', 0)):,} direcciones de la red.</div>")
             else:
                 bl_html = ("<div class=hint style='margin-top:8px'>Listas de bloqueo: sin revisar "
-                           "todavia (se revisan solas cada 6 h).</div>")
+                           "todavía (se revisan solas cada 6 h).</div>")
 
             den_n = ""; n_den = 0
             if isinstance(dat, dict) and dat.get("tipo") == "red":
@@ -14304,7 +14318,7 @@ def reputacion_page(res=None, texto="", msg="", ok=False, es_admin=False, volver
                      "title='Marca todas, incluidas las que declaraste a mano'>todas</a>"
                      "<button type=submit class=delbtn id='pselb-%s'%s "
                      "onclick=\"return ask(this,'Quitar las marcadas',"
-                     "'Salen de las publicas declaradas de este nodo. El historial de listas "
+                     "'Salen de las públicas declaradas de este nodo. El historial de listas "
                      "negras NO se borra.','Quitar','danger')\">%s</button></form>"
                      % (esc(rid), esc(rid), chips, esc(rid),
                         "" if _mar else " disabled",
@@ -14316,8 +14330,8 @@ def reputacion_page(res=None, texto="", msg="", ok=False, es_admin=False, volver
                if multi else "")
             + editor
             + ("".join(filas) if filas else
-               "<p class=hint style='margin:8px 0 0'>Todavia no declaraste ninguna. "
-               "Ponlas aqui: el sensor no las ve (el espejo es pre-NAT) y sin ellas no se "
+               "<p class=hint style='margin:8px 0 0'>Todavía no declaraste ninguna. "
+               "Ponlas aquí: el sensor no las ve (el espejo es pre-NAT) y sin ellas no se "
                "puede ligar un baneo con el abonado que lo provoca.</p>")
             + "</section>")
     _psel_js = ("<script>"
@@ -14361,9 +14375,9 @@ def reputacion_page(res=None, texto="", msg="", ok=False, es_admin=False, volver
                 ".catch(function(){if(b)b.disabled=false;"
                 "aviso('No se pudo','No se pudo hablar con el panel. Vuelve a intentarlo.');});return false;}"
                 "</script>")
-    pub_html = ("<h2 style='font-size:17px;margin:18px 0 10px'>Tus IPs publicas</h2>"
+    pub_html = ("<h2 style='font-size:17px;margin:18px 0 10px'>Tus IPs públicas</h2>"
                 "<p class=sub2 style='margin:-4px 0 10px'>El sensor no las ve (el espejo es "
-                "pre-NAT): declaralas aqui y el panel vigila su reputacion y sus listas negras.</p>"
+                "pre-NAT): decláralas aquí y el panel vigila su reputación y sus listas negras.</p>"
                 + "".join(bloques) + _psel_js) if bloques else ""
 
     css = BASE_CSS + (
@@ -14440,7 +14454,7 @@ def reputacion_page(res=None, texto="", msg="", ok=False, es_admin=False, volver
     return ("<!doctype html><html lang=es><head><meta charset=utf-8><link rel=icon type=image/png href=/favicon.ico>"
             "<meta name=viewport content='width=device-width,initial-scale=1'><title>Suricata</title>"
             f"<style>{css}</style></head><body>" + nav("/reputacion") +
-            "<main><div class=cab><h1 style='margin:0'>Reputacion de IPs</h1>"
+            "<main><div class=cab><h1 style='margin:0'>Reputación de IPs</h1>"
             # El buscador vive en la cabecera. Antes era una seccion entera con su titulo,
             # su tarjeta y tres lineas de ayuda, justo debajo del bloque que hace lo mismo
             # con TUS publicas: dos sitios para lo mismo y el doble de pagina para nada.
@@ -14448,15 +14462,15 @@ def reputacion_page(res=None, texto="", msg="", ok=False, es_admin=False, volver
             + ("<form method=get action='/reputacion' class=busca>"
                f"<input name=ips size=22 value='{esc(texto)}' autocomplete=off "
                "placeholder='Buscar IP o red (CIDR)' "
-               "title='Una red en CIDR se revisa con una sola peticion; hasta "
-               + str(AIDB_MAX_LOTE) + " separadas por comas. Las privadas nunca se envian'>"
+               "title='Una red en CIDR se revisa con una sola petición; hasta "
+               + str(AIDB_MAX_LOTE) + " separadas por comas. Las privadas nunca se envían'>"
                "<label class=chk title='Ignora la cache y vuelve a preguntar'>"
                "<input type=checkbox name=refrescar> sin cache</label>"
                "<button class=primary type=submit>Buscar</button></form>"
                if es_operador else "")
             + "</div>"
-            "<p class=sub2>Que ataques se le denuncian a una IP publica, en que listas de bloqueo "
-            "esta, y &mdash;si es tuya&mdash; que abonado la esta ensuciando. "
+            "<p class=sub2>Qué ataques se le denuncian a una IP pública, en qué listas de bloqueo "
+            "esta, y &mdash;si es tuya&mdash; que abonado la está ensuciando. "
             f"Hoy quedan <b>{quedan:,}</b> consultas por IP y <b>{quedan_red:,}</b> por red.</p>"
             + banner + atras
             + ("".join(tarjetas) if tarjetas else "")
@@ -14499,8 +14513,8 @@ def tendencia_txt(ult7, prev7, dias_prev, n_dias, periodo=7, dias_act=None):
     # "baja un 4 %", que es comparar un dia contra una semana
     if dias_act is not None and dias_act < minimo:
         return ("<span style='color:#8a8a86'>&mdash;</span>",
-                "hacen falta %d dias de datos (hay %d)" % (2 * periodo, n_dias) if n_dias < 2 * periodo
-                else "este periodo tiene pocos dias completos (%d de %d)" % (dias_act, periodo))
+                "hacen falta %d días de datos (hay %d)" % (2 * periodo, n_dias) if n_dias < 2 * periodo
+                else "este periodo tiene pocos días completos (%d de %d)" % (dias_act, periodo))
     if prev7 > 0 and dias_prev >= minimo:
         var = (ult7 - prev7) / prev7 * 100.0
         col = "#3a9d5d" if var < 0 else ("#e34948" if var > 0 else "#8a8a86")
@@ -14514,10 +14528,10 @@ def tendencia_txt(ult7, prev7, dias_prev, n_dias, periodo=7, dias_act=None):
             # espacio duro: con uno normal el "%" se iba solo a la linea siguiente
             val = "%s %s&nbsp;%%" % (flecha, format(abs(var), ".0f"))
         return ("<span style='color:%s'>%s</span>" % (col, val),
-                "frente a los %d dias anteriores" % periodo)
+                "frente a los %d días anteriores" % periodo)
     return ("<span style='color:#8a8a86'>&mdash;</span>",
             "el periodo anterior casi no tiene datos" if n_dias >= 2 * periodo
-            else "hacen falta %d dias de datos (hay %d)" % (2 * periodo, n_dias))
+            else "hacen falta %d días de datos (hay %d)" % (2 * periodo, n_dias))
 
 def _media(serie, clave="sal"):
     vals = [int((d or {}).get(clave, 0)) for _f, d in serie]
@@ -14544,7 +14558,7 @@ def _grafico(serie, esc):
         cpes = int((d or {}).get("cpes_n", 0))
         t = f"{f}: {v:,} ataques salientes, {cpes:,} CPE distintos"
         if hueco:
-            t += " (faltan datos: el panel estuvo parado mas que la ventana)"
+            t += " (faltan datos: el panel estuvo parado más que la ventana)"
         pct = (100.0 * v / mx) if mx else 0.0
         ddmm = f[8:10] + "/" + f[5:7] if len(f) >= 10 else f
         if n <= 7:
@@ -15130,8 +15144,8 @@ def conducta_csv(rep_):
         return '"' + v.replace('"', '""') + '"' if any(c in v for c in ';"\n\r') else v
     con_nodo = bool(rep_.get("todos"))       # en «Todos», la columna Nodo distingue las IP repetidas
     out = [("Nodo;" if con_nodo else "") +
-           "IP;Categoria;Alertas;Eventos;Dias activos;Destinos distintos;Puertos distintos;"
-           "Primera vez;Ultima vez;Top firmas;Top destinos;Top puertos;Top dominios"]
+           "IP;Categoría;Alertas;Eventos;Días activos;Destinos distintos;Puertos distintos;"
+           "Primera vez;Última vez;Top firmas;Top destinos;Top puertos;Top dominios"]
     for f in rep_.get("filas", []):
         def junta(k):
             return " | ".join("%s (%d)" % (a, b) for a, b in f.get(k, []))
@@ -15148,27 +15162,27 @@ def conducta_csv(rep_):
 # El color es gravedad, no decoracion: rojo = el equipo esta comprometido y ataca a
 # terceros; ambar = abuso que se corrige sin cortar; azul = consumo, no ataque.
 CONDUCTA_GUIA = {
-    "botnet": ("El equipo esta infectado y habla con su centro de mando.",
+    "botnet": ("El equipo está infectado y habla con su centro de mando.",
                "Aislar y avisar al abonado: mientras siga conectado, ataca a terceros "
-               "desde tu IP publica.", "#d03b3b", "Critico"),
-    "escaneo": ("Esta barriendo puertos o buscando equipos vulnerables en internet.",
-                "Cortar. Es lo que mas rapido te mete la publica en las listas negras.",
-                "#d03b3b", "Critico"),
-    "fuerza": ("Esta probando claves contra servicios ajenos (SSH, RDP, VNC).",
+               "desde tu IP pública.", "#d03b3b", "Crítico"),
+    "escaneo": ("Está barriendo puertos o buscando equipos vulnerables en internet.",
+                "Cortar. Es lo que más rápido te mete la pública en las listas negras.",
+                "#d03b3b", "Crítico"),
+    "fuerza": ("Está probando claves contra servicios ajenos (SSH, RDP, VNC).",
                "Cortar. Cada intento fallido suma denuncias contra tu rango.",
-               "#d03b3b", "Critico"),
-    "dns": ("Consulta dominios de malware. Suele ser el primer sintoma, antes de la "
-            "conexion real.", "Redirigir su DNS a tu resolutor, que ya filtra. No hace "
+               "#d03b3b", "Crítico"),
+    "dns": ("Consulta dominios de malware. Suele ser el primer síntoma, antes de la "
+            "conexión real.", "Redirigir su DNS a tu resolutor, que ya filtra. No hace "
             "falta dejarlo sin internet.", "#ec835a", "Grave"),
     "spam": ("Manda correo saliente en volumen.",
              "Cerrarle solo el correo (25/465/587). Sigue navegando y deja de quemarte "
-             "la reputacion.", "#ec835a", "Grave"),
-    "minado": ("Esta minando criptomonedas.",
+             "la reputación.", "#ec835a", "Grave"),
+    "minado": ("Está minando criptomonedas.",
                "Encolar. Es consumo, no un ataque a terceros.", "#fab219", "Vigilar"),
-    "p2p": ("Trafico P2P / BitTorrent.",
-            "Encolar, no cortar. No ensucia tu reputacion, te come el enlace.",
+    "p2p": ("Tráfico P2P / BitTorrent.",
+            "Encolar, no cortar. No ensucia tu reputación, te come el enlace.",
             "#fab219", "Vigilar"),
-    "otros": ("Actividad que no encaja en las categorias anteriores.",
+    "otros": ("Actividad que no encaja en las categorías anteriores.",
               "Revisar a mano antes de decidir.", "#8a9199", "Sin clasificar"),
 }
 
@@ -15483,21 +15497,21 @@ _CD_AZUL_OSC = "#5598e7"    # su paso equivalente sobre fondo oscuro
 # Un numero de puerto no le dice nada a quien no es de redes, y el informe lo lee el
 # abonado, no un ingeniero. Se nombra lo que el puerto SIGNIFICA para el.
 PUERTO_NOMBRE = {
-    "443": "navegacion segura (webs y apps)", "80": "webs sin cifrar",
+    "443": "navegación segura (webs y apps)", "80": "webs sin cifrar",
     "53": "consultas de DNS", "853": "DNS cifrado",
-    "25": "envio de correo", "465": "envio de correo", "587": "envio de correo",
+    "25": "envío de correo", "465": "envío de correo", "587": "envío de correo",
     "110": "descarga de correo", "143": "descarga de correo", "993": "descarga de correo",
     "22": "acceso remoto SSH", "23": "acceso remoto Telnet (inseguro)",
     "3389": "escritorio remoto de Windows", "5900": "escritorio remoto VNC",
     "445": "compartir archivos de Windows", "139": "compartir archivos de Windows",
     "137": "red local de Windows", "138": "red local de Windows",
-    "7547": "gestion remota del router (TR-069)", "1900": "descubrimiento de dispositivos",
+    "7547": "gestión remota del router (TR-069)", "1900": "descubrimiento de dispositivos",
     "123": "sincronizar la hora", "1194": "VPN", "500": "VPN", "4500": "VPN",
     "5060": "llamadas VoIP", "5061": "llamadas VoIP",
     "3478": "videollamadas", "19302": "videollamadas",
     "6881": "descargas P2P", "6882": "descargas P2P", "51413": "descargas P2P",
     "3333": "minado de criptomonedas", "4444": "minado de criptomonedas",
-    "5555": "gestion remota de equipos", "8080": "webs (puerto alternativo)",
+    "5555": "gestión remota de equipos", "8080": "webs (puerto alternativo)",
     "8443": "webs seguras (puerto alternativo)", "9200": "base de datos remota",
 }
 
@@ -15598,43 +15612,43 @@ window.addEventListener('afterprint', cdCerrarAuto);
 # que el panel deberia evitar.
 GLOSARIO = {
     "botnet": ("botnet", "Una botnet es un conjunto de equipos infectados que alguien "
-               "controla a distancia sin que sus duenos lo sepan: computadores, routers, "
-               "camaras, DVR o telefonos. Un equipo dentro de una botnet puede escanear "
-               "internet, buscar aparatos vulnerables, probar contrasenas, participar en "
+               "controla a distancia sin que sus dueños lo sepan: computadores, routers, "
+               "cámaras, DVR o teléfonos. Un equipo dentro de una botnet puede escanear "
+               "internet, buscar aparatos vulnerables, probar contraseñas, participar en "
                "ataques o mandar spam, todo sin que el abonado note nada raro."),
     "c2": ("servidor de control (C2)", "Es el servidor desde el que un atacante da "
-           "ordenes a los equipos que ha infectado. Que un equipo hable con uno de estos "
-           "servidores es la senal mas clara de que esta comprometido: no es el abonado "
+           "órdenes a los equipos que ha infectado. Que un equipo hable con uno de estos "
+           "servidores es la señal más clara de que está comprometido: no es el abonado "
            "quien decide esas conexiones."),
     "escaneo": ("escaneo", "Es probar muchas direcciones de internet, una tras otra, "
-                "para ver cuales responden y con que servicios. Un equipo normal no hace "
+                "para ver cuáles responden y con qué servicios. Un equipo normal no hace "
                 "esto: lo hace un programa buscando aparatos que pueda atacar."),
     "fuerza": ("fuerza bruta", "Es intentar entrar a un servicio ajeno probando "
-               "contrasenas una y otra vez hasta acertar. Cada intento fallido queda "
+               "contraseñas una y otra vez hasta acertar. Cada intento fallido queda "
                "registrado en el equipo atacado y suele terminar en una denuncia."),
     "spam": ("spam", "Correo basura enviado en masa. Cuando sale de tu red, quien "
-             "termina en las listas negras de correo es tu IP publica, no el abonado."),
-    "dns": ("DNS de malware", "El DNS es la guia telefonica de internet: traduce "
+             "termina en las listas negras de correo es tu IP pública, no el abonado."),
+    "dns": ("DNS de malware", "El DNS es la guía telefónica de internet: traduce "
             "nombres a direcciones. Cuando un equipo pregunta muchas veces por nombres "
-            "que solo usan programas maliciosos, suele ser la primera senal de que hay "
+            "que solo usan programas maliciosos, suele ser la primera señal de que hay "
             "algo instalado, antes incluso de que llegue a conectarse."),
     "p2p": ("P2P", "Programas de intercambio de archivos como BitTorrent. No es un "
-            "ataque ni ensucia tu reputacion: consume enlace y abre muchisimas "
+            "ataque ni ensucia tu reputación: consume enlace y abre muchísimas "
             "conexiones a la vez."),
     "minado": ("criptominado", "Software que usa el equipo para generar criptomonedas. "
-               "A veces lo instala el propio dueno y a veces llega con un virus; "
+               "A veces lo instala el propio dueño y a veces llega con un virus; "
                "conviene mirarlo antes de decidir."),
     "telnet": ("Telnet", "Un sistema antiguo para administrar aparatos a distancia, sin "
-               "cifrado. Casi nadie deberia usarlo hoy, pero muchisimas camaras y routers "
+               "cifrado. Casi nadie debería usarlo hoy, pero muchísimas cámaras y routers "
                "lo siguen teniendo abierto, y por eso las botnets lo buscan tanto."),
     "tr069": ("TR-069", "El protocolo con el que un operador administra los routers de "
               "sus clientes. Que alguien lo busque masivamente por internet suele ser un "
               "intento de tomar el control de equipos ajenos."),
-    "reputacion": ("listas de reputacion", "Listas publicas que recopilan direcciones "
-                   "vistas atacando o alojando programas maliciosos. Que tu IP publica "
+    "reputacion": ("listas de reputación", "Listas públicas que recopilan direcciones "
+                   "vistas atacando o alojando programas maliciosos. Que tu IP pública "
                    "aparezca en una es lo que hace que otros servicios te bloqueen."),
     "falso": ("falso positivo", "Una alerta que resulta no ser un problema real. Pasa, y "
-              "por eso el sistema no da nada por confirmado con una sola senal."),
+              "por eso el sistema no da nada por confirmado con una sola señal."),
 }
 
 def glosario_html(clave, esc=None):
@@ -15644,7 +15658,7 @@ def glosario_html(clave, esc=None):
     g = GLOSARIO.get(clave)
     if not g:
         return ""
-    return ("<details class=glos><summary>&iquest;Que significa <b>%s</b>?</summary>"
+    return ("<details class=glos><summary>&iquest;Qué significa <b>%s</b>?</summary>"
             "<p>%s</p></details>" % (esc(g[0]), esc(g[1])))
 
 # --- Indicios: por que decimos lo que decimos ---------------------------------------
@@ -15652,22 +15666,22 @@ def glosario_html(clave, esc=None):
 # debil no puede terminar en "infectado"). Lo que sube la confianza es que varias
 # senales INDEPENDIENTES apunten a lo mismo.
 CPE_INDICIOS = [
-    ("c2", "Comunicacion con servidor de control (C2)",
+    ("c2", "Comunicación con servidor de control (C2)",
      ["Botnet CnC", "Botnet", "Botnet Mirai", "Botnet Katana", "Troyano", "Ransomware"], []),
-    ("malware", "Trafico de programas maliciosos",
+    ("malware", "Tráfico de programas maliciosos",
      ["Trafico de malware"], []),
     ("escaneo", "Escaneo de internet",
      ["Escaneo de puertos", "Escaneo SSH", "Escaneo Telnet", "Escaneo TR-069",
       "Escaneo saliente"], []),
-    ("telnet", "Busqueda de aparatos por Telnet",
+    ("telnet", "Búsqueda de aparatos por Telnet",
      ["Escaneo Telnet"], ["23", "2323"]),
-    ("tr069", "Busqueda de routers por TR-069",
+    ("tr069", "Búsqueda de routers por TR-069",
      ["Escaneo TR-069"], ["7547"]),
-    ("fuerza", "Intentos de contrasena contra terceros",
+    ("fuerza", "Intentos de contraseña contra terceros",
      ["Fuerza bruta", "RDP/VNC"], ["22", "3389", "5900"]),
     ("dns", "Consultas a dominios de malware",
      ["DNS sospechoso"], []),
-    ("spam", "Envio de correo en volumen", ["Spam"], ["25", "465", "587"]),
+    ("spam", "Envío de correo en volumen", ["Spam"], ["25", "465", "587"]),
 ]
 # El texto lo lee gente que no es de redes: "Alta confianza" se entiende al reves (un
 # cliente de confianza es alguien fiable). "Confirmado" no admite esa lectura.
@@ -15692,7 +15706,7 @@ def indicios_cpe(f, dias_persistencia=2, destinos_muchos=40):
     # senales que no vienen de una firma sino del PATRON
     out.append(["destinos", "Muchos destinos distintos",
                 "si" if f.get("destinos_n", 0) >= destinos_muchos else "no"])
-    out.append(["persistencia", "Comportamiento repetido en varios dias",
+    out.append(["persistencia", "Comportamiento repetido en varios días",
                 "si" if f.get("dias", 0) >= dias_persistencia else "no"])
     return out
 
@@ -15718,8 +15732,8 @@ def indicios_html(f, esc=None):
         % (v, esc(e), icono[v], {"si": "Si", "quiza": "Detectado"}[v])
         for _c, e, v in ind if v in icono)
     tabla = ("<table class=indicios><tbody>%s</tbody></table>" % filas if filas else
-             "<p class=vacio>Ningun indicio concreto: solo la repeticion de alertas.</p>")
-    return (tabla + "<p class=conf>Nivel de confianza: <b>%s</b> &mdash; %s senal(es) "
+             "<p class=vacio>Ningún indicio concreto: solo la repetición de alertas.</p>")
+    return (tabla + "<p class=conf>Nivel de confianza: <b>%s</b> &mdash; %s señal(es) "
             "independiente(s) apuntan a lo mismo.</p>" % (esc(texto), ("%g" % n)))
 
 def _cd_doc(cuerpo):
@@ -15894,8 +15908,8 @@ def ruidosas_html(filas, esc=None, tope=8):
            "alto" if r["nivel"] == "alto" else "medio", ("%g" % r["pct"]))
         for r in rs)
     return ("<div class='card bloque'><h3>Firmas que aparecen en demasiados abonados</h3>"
-            "<p class=sub>Una infeccion real no le pasa a la mitad de tus clientes el "
-            "mismo dia. Cuando una firma dispara en tantos, o hay una epidemia o la "
+            "<p class=sub>Una infección real no le pasa a la mitad de tus clientes el "
+            "mismo día. Cuando una firma dispara en tantos, o hay una epidemia o la "
             "regla es demasiado general: en los dos casos hay que mirarla antes de "
             "cortarle a nadie.</p>"
             "<div class=tablewrap><table class=ruid><thead><tr><th>Firma</th>"
@@ -15907,10 +15921,10 @@ def conducta_page(q="", msg="", pag=1, por=None, es_operador=True):
     esc = html.escape
     rep_ = cargar_conducta()
     if not rep_:
-        cuerpo = ("<div class=card><h2>Informe de %d dias</h2>"
-                  "<p class=sub2>Todavia no se ha generado. Se arma solo cada %d horas; "
-                  "<b>Generar ahora</b> lo adelanta. Recorre los logs de los ultimos %d "
-                  "dias, incluidos los rotados, asi que puede tardar unos minutos.</p>"
+        cuerpo = ("<div class=card><h2>Informe de %d días</h2>"
+                  "<p class=sub2>Todavía no se ha generado. Se arma solo cada %d horas; "
+                  "<b>Generar ahora</b> lo adelanta. Recorre los logs de los últimos %d "
+                  "días, incluidos los rotados, así que puede tardar unos minutos.</p>"
                   "%s</div>"
                   % (CONDUCTA_DIAS, CONDUCTA_CADA // 3600, CONDUCTA_DIAS,
                      # lanza trabajo de fondo: es de operador; lectura no ve el boton (B-18)
@@ -15956,7 +15970,7 @@ def conducta_page(q="", msg="", pag=1, por=None, es_operador=True):
                 "<input type=hidden name=q value='%s'>%s"
                 "<label for=cdpor>Ver</label>"
                 "<select id=cdpor name=n onchange='this.form.submit()'>%s</select>"
-                "<span class=pl>por pagina</span></form>" % (esc(q), _nodo_oculto(), _opts))
+                "<span class=pl>por página</span></form>" % (esc(q), _nodo_oculto(), _opts))
     acciones = ("<div class=acciones>"
                 "<form class=busca method=get action='/conducta'>"
                 "<input type=hidden name=n value='%d'>%s"
@@ -15968,9 +15982,9 @@ def conducta_page(q="", msg="", pag=1, por=None, es_operador=True):
                 "</div>" % (por, _nodo_oculto(), esc(q), _nodo_oculto(),
                             "".join("<option value=%d%s>%s</option>" % (
                                 d_, " selected" if d_ == CONDUCTA_DIAS else "",
-                                "1 dia" if d_ == 1 else "%d dias" % d_) for d_ in INFORME_DIAS)))
-    cab = ("<div class=card><h2>Informe de %d dias &mdash; conducta por abonado</h2>"
-           "<p class=per>Del %s al %s &middot; generado hace %d min &middot; %s lineas de log</p>"
+                                "1 día" if d_ == 1 else "%d días" % d_) for d_ in INFORME_DIAS)))
+    cab = ("<div class=card><h2>Informe de %d días &mdash; conducta por abonado</h2>"
+           "<p class=per>Del %s al %s &middot; generado hace %d min &middot; %s líneas de log</p>"
            "<div class=tiles>"
            "<div class=tile><div class=n>%d</div><div class=l>abonados con alertas</div></div>"
            "<div class=tile><div class=n>%d</div><div class=l>alertas en el periodo (sin ruido informativo)</div></div>"
@@ -16005,10 +16019,10 @@ def conducta_page(q="", msg="", pag=1, por=None, es_operador=True):
             doms = _cd_agrupa(f.get("dominios"))
             # Una frase que entienda el abonado, antes de cualquier grafico.
             resumen = ("Este equipo hizo <b>%s</b> cosas que el sistema marca como "
-                       "sospechosas en %d dia(s)." % (
+                       "sospechosas en %d día(s)." % (
                            "{:,}".format(f["alertas"]).replace(",", "."), f["dias"]))
             if acts:
-                resumen += " Lo mas repetido: <b>%s</b>." % esc(acts[0][0].lower())
+                resumen += " Lo más repetido: <b>%s</b>." % esc(acts[0][0].lower())
             tec = ", ".join("%s (%d)" % (esc(str(a)), b) for a, b in (f.get("destinos") or []))
             # Una FILA por abonado (antes una tarjeta de tres lineas, y al imprimir una hoja
             # entera por abonado). Lo que hizo va debajo, plegado, en dos columnas.
@@ -16020,13 +16034,13 @@ def conducta_page(q="", msg="", pag=1, por=None, es_operador=True):
                 "<td class=ver><button type=button class=cdver aria-expanded=false "
                 "onclick='cdVer(this)'>Ver detalle</button></td></tr>"
                 "<tr class=cddet hidden><td colspan=7><p class=resumen>%s</p><div class=cdcuerpo>"
-                "<div><h4>&iquest;Por que lo decimos?</h4>%s</div>"
-                "<div><h4>Que hizo</h4>%s</div>"
+                "<div><h4>&iquest;Por qué lo decimos?</h4>%s</div>"
+                "<div><h4>Qué hizo</h4>%s</div>"
                 "<div><h4>Para que usa internet</h4>%s</div>"
-                "<div><h4>Dominios sospechosos que consulto</h4>%s</div></div>"
-                "<details class=tecnico><summary>Detalle tecnico (para el ISP)</summary>"
+                "<div><h4>Dominios sospechosos que consultó</h4>%s</div></div>"
+                "<details class=tecnico><summary>Detalle técnico (para el ISP)</summary>"
                 "<div class=kv>%d destinos distintos: %s<br>"
-                "Dominios mas consultados (todos): %s</div></details></td></tr>"
+                "Dominios más consultados (todos): %s</div></details></td></tr>"
                 % (esc(f["ip"]),
                    # en «Todos» cada fila es de un nodo: la misma IP en dos nodos son dos filas
                    ("<span class=rnom>%s</span>" % esc(nodos.nombre(f["nodo"]))) if f.get("nodo") else "&mdash;",
@@ -16042,27 +16056,27 @@ def conducta_page(q="", msg="", pag=1, por=None, es_operador=True):
         secciones.append(
             "<div class='card seccion' id='c-%s' style='--acento:%s'>"
             "<h3>%s <span class=nivel>%s</span> <span class=pill>%s</span></h3>"
-            "<p class=qes>%s <span class=qhacer><b>Que hacer:</b> %s</span></p>%s"
+            "<p class=qes>%s <span class=qhacer><b>Qué hacer:</b> %s</span></p>%s"
             "<div class=cdtw><table class=cdt><thead><tr>"
             "<th>Abonado</th><th>Router</th><th class=num>Alertas</th>"
-            "<th class=num>Dias activo</th><th>Ultima vez</th><th>Lo mas repetido</th><th></th>"
+            "<th class=num>Días activo</th><th>Última vez</th><th>Lo más repetido</th><th></th>"
             "</tr></thead><tbody>%s</tbody></table></div></div>"
             % (c, color, esc(nombre_categoria(c)), esc(nivel),
                ("1 abonado" if total_cat == 1 else "%d abonados" % total_cat)
-               + ("" if len(grupo) == total_cat else " &middot; %d en esta pagina" % len(grupo)),
+               + ("" if len(grupo) == total_cat else " &middot; %d en esta página" % len(grupo)),
                esc(que), esc(hacer), glosario_html(c, esc),
                "".join(filas_t)))
 
     if not secciones:
-        secciones = ["<div class=card><p class=sub2>Ningun abonado coincide con el filtro.</p></div>"]
+        secciones = ["<div class=card><p class=sub2>Ningún abonado coincide con el filtro.</p></div>"]
     # Un solo paginador, al final. Arriba quedaba pegado al bloque de firmas ruidosas y
     # partia el resumen de las fichas; para saltar de pagina se llega leyendo hasta abajo.
     pgr = conducta_paginador(pag, paginas, q, total_n, ini_i + 1, ini_i + len(trozo),
                              por, selector)
     barras = conducta_barras(
         sorted(filas, key=lambda f: -f["alertas"]),
-        "Abonados con mas actividad sospechosa",
-        sub="Los %d primeros de los ultimos %d dias. Pasa el raton por una barra para "
+        "Abonados con más actividad sospechosa",
+        sub="Los %d primeros de los últimos %d días. Pasa el ratón por una barra para "
             "ver de que tipo es." % (min(10, len(filas)), dias))
     return _cd_doc("<div class=inf id=informe>" + cab + barras + ruidosas_html(filas, esc)
                    + "".join(secciones) + pgr + "</div>")
@@ -16122,16 +16136,16 @@ def historico_page(dias_n=7):
     # El cuadro grande es el del PERIODO elegido, y la pista dice que dias abarca (no
     # "hoy": con '7 dias' pulsado, ver las ultimas horas desconcertaba).
     kpis = ("<div class=kpis>"
-            + _kpi(f"{total:,}", f"ataques salientes en {dias_n} dias",
+            + _kpi(f"{total:,}", f"ataques salientes en {dias_n} días",
                    (f"del {_ddmm(serie[0][0])} al {_ddmm(hoy_f)}" if serie else "")
-                   + (f" &middot; {n_grises} dia(s) incompleto(s), en gris" if n_grises else ""))
+                   + (f" &middot; {n_grises} día(s) incompleto(s), en gris" if n_grises else ""))
             + _kpi(f"{_media(_con_datos):,.0f}",
-                   f"media diaria ({dias_n} dias)" if len(_con_datos) >= dias_n
-                   else f"media diaria ({len(_con_datos)} dias con datos)",
+                   f"media diaria ({dias_n} días)" if len(_con_datos) >= dias_n
+                   else f"media diaria ({len(_con_datos)} días con datos)",
                    "" if len(_con_datos) >= dias_n
                    else f"de los {dias_n}, solo {len(_con_datos)} tienen datos")
-            + _kpi(var_val, f"tendencia ({dias_n} dias vs los {dias_n} anteriores)", var_hint)
-            + _kpi(f"{cpes_pico:,}", "CPEs distintos atacando", "maximo en el periodo")
+            + _kpi(var_val, f"tendencia ({dias_n} días vs los {dias_n} anteriores)", var_hint)
+            + _kpi(f"{cpes_pico:,}", "CPEs distintos atacando", "máximo en el periodo")
             + _kpi(f"{ruido:,}", "no abusivo", "P2P, chequeos de conectividad: no banean")
             + _kpi(f"{enviados:,}", "puestos en cuarentena", f"liberados: {liberados:,}")
             + "</div>")
@@ -16150,7 +16164,7 @@ def historico_page(dias_n=7):
             f"<td class=num>{v * 100.0 / tot:.0f}&#160;%</td></tr>"
             for k, v in sorted(ac.items(), key=lambda kv: kv[1], reverse=True)[:tope])
         return (f"<section class=card style='flex:1;min-width:280px'><h2 style='font-size:15px;margin:0 0 8px'>{esc(titulo)}</h2>"
-                f"<table><thead><tr><th>{'Categoria' if campo == 'cats' else 'Puerto'}</th>"
+                f"<table><thead><tr><th>{'Categoría' if campo == 'cats' else 'Puerto'}</th>"
                 f"<th class=num>Alertas</th><th class=num>%</th></tr></thead><tbody>{filas}</tbody></table></section>")
 
     # --- Que le falta al router para poder CORTAR ------------------------------------
@@ -16175,10 +16189,10 @@ def historico_page(dias_n=7):
         # pagina esperando 4 llamadas a su API
         _d = diagnostico_de(r.get("id", ""))
         cab = ("<section class=card><h2 style='font-size:15px;margin:0 0 6px'>"
-               + ("Proteccion en " + esc(nom) if multi else "Proteccion en el MikroTik")
+               + ("Protección en " + esc(nom) if multi else "Protección en el MikroTik")
                + "</h2>")
         if not _d:
-            return cab + ("<p class=hint>Todavia sin medir. El panel consulta el router "
+            return cab + ("<p class=hint>Todavía sin medir. El panel consulta el router "
                           "cada 10 minutos en segundo plano.</p></section>")
         if _d.get("error"):
             return cab + ("<p class=hint>No se pudo consultar el router: "
@@ -16197,12 +16211,12 @@ def historico_page(dias_n=7):
             for e, t, det, fix in checks)
         return ("<section class=card>"
                 + "<h2 style='font-size:15px;margin:0 0 4px'>"
-                + ("Proteccion en " + esc(nom) if multi else "Proteccion en el MikroTik")
+                + ("Protección en " + esc(nom) if multi else "Protección en el MikroTik")
                 + "</h2>"
                 + "<p class=sub2 style='margin:0 0 8px'>Suricata <b>no bloquea</b>: con un espejo "
-                  "ve una copia y el paquete ya paso. El que corta es el router. "
+                  "ve una copia y el paquete ya pasó. El que corta es el router. "
                 + (f"<b style='color:#b52a2a'>Le faltan {faltan} cosas.</b>" if faltan
-                   else "<b style='color:#1a7f37'>Esta en condiciones de cortar.</b>")
+                   else "<b style='color:#1a7f37'>Está en condiciones de cortar.</b>")
                 # de cuando es esta foto: sin esto, quien acaba de pegar la regla no puede
                 # distinguir "la regla fallo" de "todavia no lo he vuelto a mirar"
                 + _diag_cuando(_d.get("ts", 0))
@@ -16224,15 +16238,15 @@ def historico_page(dias_n=7):
         bl_html = (
             "<section class='card cardp'><h2 style='font-size:15px;margin:0 0 4px'>"
             "Cortar a los que te atacan desde internet</h2>"
-            f"<p class=sub2 style='margin:0 0 8px'><b>{len(bl):,}</b> IPs de internet estan "
+            f"<p class=sub2 style='margin:0 0 8px'><b>{len(bl):,}</b> IPs de internet están "
             f"atacando tu red"
-            + (f", <b>{con_feed:,}</b> de ellas ademas fichadas en feeds de reputacion" if con_feed else "")
-            + ". Cortarlas no limpia lo que ya esta infectado, pero <b>corta las infecciones "
+            + (f", <b>{con_feed:,}</b> de ellas además fichadas en feeds de reputación" if con_feed else "")
+            + ". Cortarlas no limpia lo que ya está infectado, pero <b>corta las infecciones "
               "nuevas</b>: el atacante de fuera es el que infecta al CPE, y el CPE infectado es "
-              "el que ensucia tus publicas.</p>"
+              "el que ensucia tus públicas.</p>"
             # todas las columnas centradas, como la tabla de Detalle (el user, 2026-10-13): con
             # IP y Pais a la izquierda y los numeros a la derecha la fila no se leia de un vistazo
-            "<div class=tablewrap><table class=tcentro><thead><tr><th>IP</th><th>Pais</th>"
+            "<div class=tablewrap><table class=tcentro><thead><tr><th>IP</th><th>País</th>"
             "<th class=num>Alertas</th><th class=num>Destinos</th><th>Feed</th></tr></thead>"
             f"<tbody>{top}</tbody></table></div>"
             + (f"<p class=hint>Las 10 peores de {len(bl):,}.</p>" if len(bl) > 10 else "")
@@ -16246,13 +16260,13 @@ def historico_page(dias_n=7):
     reglas_html = diag_html + bl_html
 
     sel = "".join(
-        f"<a href='?d={n}{qs_nodo()}' class='{'on' if n == dias_n else ''}'>{n} dias</a>"
+        f"<a href='?d={n}{qs_nodo()}' class='{'on' if n == dias_n else ''}'>{n} días</a>"
         for n in (7, 30, 90, 365))
 
     vacio = ("<div class=banner style='background:#fdf0e6;color:#a15c12;border:1px solid #f2d3ad;"
              "padding:12px 14px;border-radius:8px;margin:0 0 16px;font-size:13px'>"
-             "Todavia no hay historico. Los contadores empiezan a acumularse con la primera "
-             "corrida del generador y la tendencia se vuelve util a partir de los 14 dias.</div>"
+             "Todavía no hay histórico. Los contadores empiezan a acumularse con la primera "
+             "corrida del generador y la tendencia se vuelve útil a partir de los 14 días.</div>"
              if not hay else "")
 
     body = ("<!doctype html><html lang=es><head><meta charset=utf-8><link rel=icon type=image/png href=/favicon.ico>"
@@ -16300,18 +16314,18 @@ def historico_page(dias_n=7):
             ".pager button:disabled{opacity:.4;cursor:default}.pager #hpi{font-weight:600;font-size:13px;color:#52514e}"
             "</style></head><body>"
             "<main><h1>Abuso saliente</h1>"
-            "<p class=sub2 style='margin:0 0 14px'>Cuantos ataques salen de tu red hacia internet, dia a dia. "
-            "Es el numero que hace que las <b>IPs publicas acaben en listas negras</b>, y el unico que sirve "
-            "para demostrar que la limpieza funciona: estos contadores diarios se guardan, no dependen del ultimo reporte.</p>"
+            "<p class=sub2 style='margin:0 0 14px'>Cuántos ataques salen de tu red hacia internet, día a día. "
+            "Es el número que hace que las <b>IPs públicas acaben en listas negras</b>, y el único que sirve "
+            "para demostrar que la limpieza funciona: estos contadores diarios se guardan, no dependen del último reporte.</p>"
             + vacio
             + f"<div class=rango>{sel}</div>"
             + kpis
-            + "<section class=card style='padding:18px 20px'><h2 style='font-size:17px;margin:0 0 4px'>Ataques salientes por dia</h2>"
-            + f"<p class=sub2 style='margin:0 0 8px'>{total:,} en los ultimos {dias_n} dias. "
-              "Las barras grises son dias con datos incompletos: el panel estuvo parado mas "
-              "que la ventana y ese tramo no se conto.</p>"
+            + "<section class=card style='padding:18px 20px'><h2 style='font-size:17px;margin:0 0 4px'>Ataques salientes por día</h2>"
+            + f"<p class=sub2 style='margin:0 0 8px'>{total:,} en los últimos {dias_n} días. "
+              "Las barras grises son días con datos incompletos: el panel estuvo parado más "
+              "que la ventana y ese tramo no se contó.</p>"
             + _grafico(serie, esc) + "</section>"
-            + f"<div class=doscol>{_tabla('cats', 'Por que atacan')}{_tabla('puertos', 'Por que puerto salen')}</div>"
+            + f"<div class=doscol>{_tabla('cats', 'Por qué atacan')}{_tabla('puertos', 'Por qué puerto salen')}</div>"
             + reglas_html
             + "</main></body></html>")
     return wrap(body, refresh=False, active="/historico")
@@ -16336,7 +16350,7 @@ def _salud_html():
            "</style>")
     if not s:
         return css + ("<div class='saludc'><div class='saludh'><span class='sdot gris'></span>"
-                      "<b>Salud del sensor</b><span class='stit'>&mdash; aun sin medicion (vuelve en ~1 min)</span>"
+                      "<b>Salud del sensor</b><span class='stit'>&mdash; aún sin medición (vuelve en ~1 min)</span>"
                       "</div></div>")
     niv = s.get("nivel", "warn")
     dot = {"ok": "verde", "warn": "ambar", "down": "rojo"}.get(niv, "ambar")
@@ -16344,15 +16358,15 @@ def _salud_html():
     chips.append(("Suricata activo" if s.get("suricata") else "Suricata DETENIDO",
                   "" if s.get("suricata") else "bad"))
     if s.get("tzsp_mode"):
-        chips.append(("Receptor TZSP activo" if s.get("tzsp") else "Receptor TZSP CAIDO",
+        chips.append(("Receptor TZSP activo" if s.get("tzsp") else "Receptor TZSP CAÍDO",
                       "" if s.get("tzsp") else "bad"))
     if s.get("ifaces"):
         chips.append(("Captura: " + ", ".join(s["ifaces"]), ""))
     pps = s.get("pps")
     if pps is not None:
-        chips.append((f"Trafico: {pps:,.0f} pkts/s", "" if pps >= 1 else "warn"))
+        chips.append((f"Tráfico: {pps:,.0f} pkts/s", "" if pps >= 1 else "warn"))
     dr = s.get("drop_ratio") or 0
-    chips.append((f"Perdidas: {dr*100:.2f}%", "warn" if dr > 0.02 else ""))
+    chips.append((f"Pérdidas: {dr*100:.2f}%", "warn" if dr > 0.02 else ""))
     ed = s.get("reporte_edad")
     if ed is not None:
         chips.append((f"Reporte: hace {ed//60} min", "warn" if ed > 2 * REFRESH_SECS else ""))
@@ -16419,8 +16433,8 @@ def _ficha_elegir_nodo(ip, claves, embed=False):
         "<li><a href='/cuarentena/ficha?ip=%s%s&nodo=%s'>%s</a> <span class=rowmeta>en %s</span></li>"
         % (_up.quote(k, safe=""), _e, _up.quote(nodos.TODOS, safe=""), esc(ip_de(k)), esc(nodos.nombre(rid_de(k))))
         for k in claves)
-    cuerpo = ("<p class=sub2>La IP <b>" + esc(ip) + "</b> esta en " + str(len(claves))
-              + " nodos y en cada uno es un abonado distinto. Elige cual quieres ver:</p><ul>" + filas + "</ul>")
+    cuerpo = ("<p class=sub2>La IP <b>" + esc(ip) + "</b> está en " + str(len(claves))
+              + " nodos y en cada uno es un abonado distinto. Elige cuál quieres ver:</p><ul>" + filas + "</ul>")
     return ("<!doctype html><html lang=es><head><meta charset=utf-8><link rel=icon type=image/png href=/favicon.ico>"
             "<meta name=viewport content='width=device-width,initial-scale=1'><title>Suricata</title>"
             "<style>" + BASE_CSS + "</style></head><body>" + ("" if embed else nav("/cuarentena"))
@@ -16454,7 +16468,7 @@ def ficha_page(ip, embed=False):
     except Exception:
         data = {}
     c = None; categoria = ""
-    for key, lbl in (("candidatos", "Infeccion CnC"), ("dns_candidatos", "DNS sospechoso")):
+    for key, lbl in (("candidatos", "Infección CnC"), ("dns_candidatos", "DNS sospechoso")):
         for x in data.get(key, []):
             if (clave_cpe(x.get("ip", ""), x.get("router", "")) == ip) if _pid else (x.get("ip") == ip):
                 c = x; categoria = lbl; break
@@ -16496,7 +16510,7 @@ def ficha_page(ip, embed=False):
                                               ("Destinos", "destinos"), ("Puertos", "puertos"))
                if c.get(k) not in (None, "")]
         if _hace(c.get("ultima")):
-            _kp.append(("Ultima alerta", _hace(c.get("ultima"))))
+            _kp.append(("Última alerta", _hace(c.get("ultima"))))
         kpis = ("<div class=fkpis>" + "".join(
             "<div class=fkpi><div class=fkl>%s</div><div class=fkv>%s</div></div>" % (esc(l), esc(str(v)))
             for l, v in _kp) + "</div>") if _kp else ""
@@ -16508,16 +16522,16 @@ def ficha_page(ip, embed=False):
                 # la prueba es el DOMINIO; el resolutor es solo por donde paso la consulta
                 _dom = esc(p.get("rrname") or p.get("dst", ""))
                 act.append("Consulta DNS maliciosa: <span class=mono>" + _dom + "</span>"
-                           + (" <span class=rowmeta>via " + esc(p.get("dst", ""))
+                           + (" <span class=rowmeta>vía " + esc(p.get("dst", ""))
                               + " (resolutor conocido)</span>" if _via and p.get("rrname") else ""))
             elif _via:
                 # puerto 53 a un resolutor de la lista sin dominio capturado: sigue siendo
                 # una consulta DNS del CPE, no una 'comunicacion' con una victima
-                act.append("Consulta DNS a traves de <span class=mono>" + esc(p.get("dst", ""))
-                           + "</span> <span class=rowmeta>(resolutor conocido: no es la victima)</span>")
+                act.append("Consulta DNS a través de <span class=mono>" + esc(p.get("dst", ""))
+                           + "</span> <span class=rowmeta>(resolutor conocido: no es la víctima)</span>")
             else:
                 dst = esc(p.get("dst", "")) + ((":" + esc(str(p.get("dport")))) if p.get("dport") else "")
-                act.append("Comunicacion a <span class=mono>" + dst + "</span>")
+                act.append("Comunicación a <span class=mono>" + dst + "</span>")
         act_html = "<br>".join(dict.fromkeys(act)) or "&mdash;"
         # Alertas, agrupadas por FIRMA. Antes salia una fila por alerta: una firma que
         # dispara ocho veces llenaba la ficha con ocho filas identicas que solo cambiaban
@@ -16534,7 +16548,7 @@ def ficha_page(ip, embed=False):
                 cuando = _fecha(g["ini"] or g["fin"])
             _d = [esc(x) for x in g["dst"][:2]]
             if len(g["dst"]) > 2:
-                _d.append("+%d mas" % (len(g["dst"]) - 2))
+                _d.append("+%d más" % (len(g["dst"]) - 2))
             # el flow_id sigue estando (es con lo que se busca el flujo en Eventos), pero
             # como referencia de la fila y no como una columna de ocho numeros iguales
             _ref = (" title='flow_id %s'" % esc(g["flow"])) if g["flow"] else ""
@@ -16547,7 +16561,7 @@ def ficha_page(ip, embed=False):
         _tope = ("<div class=rowmeta>Se guardan hasta 8 alertas por CPE: las veces son las "
                  "guardadas, no el total.</div>") if len(_pr) >= 8 else ""
         al = (f"<table class=fichat><thead><tr><th>Firma</th><th class=num>Veces</th>"
-              f"<th>Cuando</th><th>Destino</th></tr></thead><tbody>{al}</tbody></table>"
+              f"<th>Cuándo</th><th>Destino</th></tr></thead><tbody>{al}</tbody></table>"
               + _tope) if al else "&mdash; (sin alertas guardadas)"
         # Coincidencia + Vigencia (reputacion)
         # Reputacion del destino: coincidencia y vigencia en UNA tabla (antes eran dos filas que,
@@ -16563,15 +16577,15 @@ def ficha_page(ip, embed=False):
                        + f"</td><td class=mono>{_fecha(r.get('fetched_valid', 0))}</td>"
                        f"<td class=mono>{_fecha(r.get('expira', 0))}</td>"
                        f"<td>{'vigente' if r.get('vigente') else '<b>CADUCADA</b>'}</td></tr>")
-            reputacion = ("<table class=fichat><thead><tr><th>IP/CIDR</th><th>Fuente</th><th>Categoria</th>"
+            reputacion = ("<table class=fichat><thead><tr><th>IP/CIDR</th><th>Fuente</th><th>Categoría</th>"
                           f"<th>Última válida</th><th>Caduca</th><th>Estado</th></tr></thead><tbody>{co}</tbody></table>")
         else:
-            reputacion = "<span class=rowmeta>Ningun destino aparece en las listas de reputacion.</span>"
+            reputacion = "<span class=rowmeta>Ningún destino aparece en las listas de reputación.</span>"
         # Corroboracion
         evs = c.get("evidencias") or []
         corr = ("<ul class=evlist>" + "".join(f"<li>{esc(e)}</li>" for e in evs) + "</ul>"
                 + f"<div class=rowmeta>Confianza: <b>{esc(conf or '-')}</b> ({len(evs)} evidencia(s) independiente(s))</div>") \
-            if evs else "<div class=rowmeta>Sin evidencia independiente (solo repeticion) &rarr; vigilar</div>"
+            if evs else "<div class=rowmeta>Sin evidencia independiente (solo repetición) &rarr; vigilar</div>"
         # Decision
         if en_lista:
             decision = f"<b>En cuarentena</b> desde {_fecha((ent or {}).get('cuando', 0))} (lista del MikroTik)"
@@ -16606,14 +16620,14 @@ def ficha_page(ip, embed=False):
             ia_html = (
                 f"<div><b style='color:{_vcol}'>{esc(_vtxt)}</b></div>"
                 f"<div style='margin-top:4px'>{esc(_ia.get('explicacion', ''))}</div>"
-                + (f"<div class=rowmeta style='margin-top:6px'><b>Por que suele ser falsa "
+                + (f"<div class=rowmeta style='margin-top:6px'><b>Por qué suele ser falsa "
                    f"alarma:</b> {esc(_ia.get('fp'))}</div>" if _ia.get("fp") else "")
                 + (f"<div style='margin-top:6px'><b>Sugerencia:</b> "
                    f"{esc(_ia.get('accion'))}</div>" if _ia.get("accion") else "")
-                + "<div class=rowmeta style='margin-top:8px'>Lectura automatica con "
+                + "<div class=rowmeta style='margin-top:8px'>Lectura automática con "
                 + esc(_ia.get("modelo", "")) + " del "
                 + time.strftime("%d/%m %H:%M", time.localtime(_ia.get("ts", 0)))
-                + ". <b>Es una opinion, no una medicion</b>: la decision y el corte siguen "
+                + ". <b>Es una opinión, no una medición</b>: la decisión y el corte siguen "
                   "siendo tuyos. No se le manda ninguna IP ni dato del abonado.</div>")
         ab = abonado_de(ip_de(ip), _pid)
         # la IP con su nodo («10.0.0.5 · norte (p001)»), nunca la clave interna pid|ip
@@ -16637,19 +16651,19 @@ def ficha_page(ip, embed=False):
                    (_hist.get("mac", "") != (ab.get("mac", "") if ab else ""))
             if _dif:
                 pit = ("<div class=rowmeta style='color:#7a4a12'>&#9888; En el momento del evento (" + _et +
-                       ") esta IP la tenia <b>" + esc(_hist.get("nombre") or "(sin nombre)") + "</b> (" +
+                       ") esta IP la tenía <b>" + esc(_hist.get("nombre") or "(sin nombre)") + "</b> (" +
                        esc(_hist.get("tipo", "")) + ", MAC " + esc(_hist.get("mac", "") or "—") +
-                       ") &mdash; distinta de la asignacion actual</div>")
+                       ") &mdash; distinta de la asignación actual</div>")
             else:
-                pit = "<div class=rowmeta>Misma asignacion en el momento del evento (" + _et + ")</div>"
+                pit = "<div class=rowmeta>Misma asignación en el momento del evento (" + _et + ")</div>"
         if ab:
             cliente = (f"<b>{esc(ab.get('nombre') or '(sin nombre)')}</b> "
                        f"<span class=cfb style='background:#e7f0fb;color:#1c5cab'>{esc(ab.get('tipo', ''))}</span>"
                        f"<div class=rowmeta>IP {_ipn} · MAC {esc(ab.get('mac', '') or '—')}"
                        f"{(' · ' + esc(ab.get('extra', ''))) if ab.get('extra') else ''}"
-                       f" · asignacion actual (snapshot {_snap})</div>")
+                       f" · asignación actual (snapshot {_snap})</div>")
         elif _abinfo.get("mapa") is not None:
-            cliente = f"{_ipn}<div class=rowmeta>sin asignacion PPPoE/DHCP conocida (snapshot {_snap})</div>"
+            cliente = f"{_ipn}<div class=rowmeta>sin asignación PPPoE/DHCP conocida (snapshot {_snap})</div>"
         else:
             cliente = f"{_ipn}<div class=rowmeta>configura el MikroTik en Ajustes para ver el abonado</div>"
         cliente += pit
@@ -16663,8 +16677,8 @@ def ficha_page(ip, embed=False):
             + _row("Cliente", cliente)
             + _row("Actividad", act_html)
             + _row("Alerta", al)
-            + _row("Reputacion del destino", reputacion)
-            + _row("Corroboracion", corr)
+            + _row("Reputación del destino", reputacion)
+            + _row("Corroboración", corr)
             + (_row("Lectura de la IA", ia_html) if ia_html else "")
             + "</table>")
     css = (BASE_CSS +
@@ -16736,8 +16750,8 @@ def _kpis_cuarentena(n_inf, n_dns, n_lista, activo):
             + k("Infectados", n_inf, "candidatos CnC en la ventana", "tw-text-bad" if n_inf else "tw-text-ink")
             + k("DNS sospechoso", n_dns, "consultan dominios de botnet", "tw-text-warn" if n_dns else "tw-text-ink")
             + k("En la lista", n_lista, "enviados al MikroTik", "tw-text-ink")
-            + k("Envio", "Activo" if activo else "Sugerencia",
-                "se envia al address-list" if activo else "dry-run: no se envia nada",
+            + k("Envío", "Activo" if activo else "Sugerencia",
+                "se envía al address-list" if activo else "dry-run: no se envía nada",
                 "tw-text-ok" if activo else "tw-text-warn")
             + "</div>")
 
@@ -16805,8 +16819,8 @@ def cuarentena_page(msg="", es_admin=False):
         mt = mm.get("motivo") or {}
         if not mt:
             return ""
-        tp = {"infeccion": "Infeccion CnC", "dns": "DNS malicioso",
-              "politica": "Politica por riesgo"}.get(mt.get("tipo"), "Bloqueo")
+        tp = {"infeccion": "Infección CnC", "dns": "DNS malicioso",
+              "politica": "Política por riesgo"}.get(mt.get("tipo"), "Bloqueo")
         fw = esc((mt.get("firma") or "")[:70])
         # el desglose ya viene como HTML corto del generador (Severidad x/30 · Destinos...)
         des = mt.get("desglose") or ""
@@ -16825,7 +16839,7 @@ def cuarentena_page(msg="", es_admin=False):
         if ev:
             return "<div class='evps'>" + "".join(f"<span class='evp'>{esc(e)}</span>"
                                                   for e in ev) + "</div>"
-        return "<div class='rowmeta'>sin evidencia independiente (solo repeticion)</div>"
+        return "<div class='rowmeta'>sin evidencia independiente (solo repetición)</div>"
 
     def _seccion(titulo, sub, candidatos, env_map, pref, lista_name, cnt_key, cnt_lbl, fir_key, vacio):
         """Arma una seccion (titulo + tabla + boton 'enviar todos') para una categoria."""
@@ -16859,7 +16873,7 @@ def cuarentena_page(msg="", es_admin=False):
                         f"Lo que le pase a ese CPE depende de la regla que uses con esa "
                         f"lista.','Enviar')\">Enviar</button>"
                         f"<div class=rowmeta>a <span class=mono>{esc(_lst)}</span></div></form>")
-            return "<span class='dry' title='Configura y habilita el MikroTik en Ajustes para activar el envio'>solo sugerencia</span>"
+            return "<span class='dry' title='Configura y habilita el MikroTik en Ajustes para activar el envío'>solo sugerencia</span>"
         filas = "".join(
             f"<tr><td data-label='CPE' class='mono ipx'>{esc(c.get('ip',''))}"
             f"{_cli(c.get('ip',''), c.get('router',''))}</td>"
@@ -16880,7 +16894,7 @@ def cuarentena_page(msg="", es_admin=False):
             f"{_ev_html(c)}</td>"
             f"<td data-label='Destinos' class='num'>{c.get('destinos',0)}</td><td data-label='Puertos' class='num'>{c.get('puertos',0)}</td>"
             f"<td data-label='Alertas' class='num'>{c.get('total_alertas',0):,}</td>"
-            f"<td data-label='Accion' class='cen'>{_acc(c)}</td></tr>" for c in candidatos)
+            f"<td data-label='Acción' class='cen'>{_acc(c)}</td></tr>" for c in candidatos)
         if not filas:
             filas = f"<tr><td colspan=8 class='muted' style='padding:18px;text-align:center'>{vacio}</td></tr>"
         # 'Enviar todos' solo actua sobre los CONFIRMADOS (2+ pruebas independientes)
@@ -16894,12 +16908,12 @@ def cuarentena_page(msg="", es_admin=False):
                    f"<button class='qbtn send' onclick=\"return ask(this,"
                    f"'Enviar los confirmados',"
                    f"'Entran de golpe {len(pend_alta)} CPE con "
-                   f"2 o mas pruebas independientes en la lista {esc(lista_name)}.',"
+                   f"2 o más pruebas independientes en la lista {esc(lista_name)}.',"
                    f"'Enviar {len(pend_alta)}','danger')\">"
                    f"&#9888; Enviar confirmados ({len(pend_alta)})</button></form>")
         return (f"<div class='seccion'><div class='shead'><div><h2>{titulo}</h2>"
                 f"<p class='sub'>{sub} · {len(candidatos)} candidato(s). "
-                f"Cada CPE va a la address-list de <b>su categoria</b>, que sale en su fila."
+                f"Cada CPE va a la address-list de <b>su categoría</b>, que sale en su fila."
                 f"</p></div>{btn}</div>"
                 "<div class='card'><table><thead><tr>"
                 "<th>CPE (IP origen)</th><th>Router</th><th class='cen'>Riesgo / confianza</th><th>Motivo y evidencia</th>"
@@ -16907,7 +16921,7 @@ def cuarentena_page(msg="", es_admin=False):
                 # la columna es el TOTAL del CPE; el motivo cuenta solo las de su
                 # categoria. Ver "380 alertas DNS" al lado de un 382 despista si no se dice.
                 "<th class='num' title='Todas las alertas de este CPE en la ventana, "
-                "no solo las de esta categoria'>Alertas</th><th class='cen'>Accion</th>"
+                "no solo las de esta categoría'>Alertas</th><th class='cen'>Acción</th>"
                 f"</tr></thead><tbody>{filas}</tbody></table></div></div>")
 
     def _sec_listas():
@@ -16946,12 +16960,12 @@ def cuarentena_page(msg="", es_admin=False):
                                  time.strftime("%d/%m %H:%M", time.localtime(e["cuando"])) if e["cuando"] else "&mdash;",
                                  esc(_quien(e))))
                 if len(miembros) > 200:
-                    items += ("<tr><td colspan=4 class=sub2>y %d mas (la pestana Cuarentena los "
+                    items += ("<tr><td colspan=4 class=sub2>y %d más (la pestaña Cuarentena los "
                               "lista todos)</td></tr>" % (len(miembros) - 200))
                 celda = ("<details class=ldet><summary style='cursor:pointer'>%s "
                          "<span class=sub2>&middot; ver las %d IPs</span></summary>"
                          "<table class=ut style='margin:6px 0 2px;font-size:12.5px'><thead><tr>"
-                         "<th>IP</th><th>Abonado</th><th>Desde</th><th>Quien</th></tr></thead>"
+                         "<th>IP</th><th>Abonado</th><th>Desde</th><th>Quién</th></tr></thead>"
                          "<tbody>%s</tbody></table></details>"
                          % (esc(nom), len(miembros), items))
             else:
@@ -16959,31 +16973,31 @@ def cuarentena_page(msg="", es_admin=False):
             _acc = accion_de_clase(cat)
             filas += ("<tr><td>%s</td><td class=mono>%s</td><td>%s</td><td class=num>%s</td></tr>"
                       % (celda, esc(lst), esc(ACCIONES.get(_acc, _acc)) if _acc != "nada"
-                         else "<span class=sub2>sin accion</span>", ("%d" % n) if n else "&mdash;"))
+                         else "<span class=sub2>sin acción</span>", ("%d" % n) if n else "&mdash;"))
         return ("<div class=seccion><div class=shead><div>"
-                "<h2>Las listas del MikroTik, una por categoria</h2>"
-                "<p class=sub>Cada CPE va a la lista de <b>su</b> categoria, porque no "
+                "<h2>Las listas del MikroTik, una por categoría</h2>"
+                "<p class=sub>Cada CPE va a la lista de <b>su</b> categoría, porque no "
                 "todas se tratan igual: una botnet se corta, el P2P se encola y el DNS de "
                 "malware se redirige al resolutor. El nombre de cada lista se puede cambiar "
                 "en <b>Ajustes &rarr; MikroTik</b>. "
                 + ("<b>%d CPE enviados</b> en total." % total if total
-                   else "Todavia no se ha enviado ninguno.")
+                   else "Todavía no se ha enviado ninguno.")
                 + "</p></div></div>"
                 "<style>.ldet summary{list-style:none}.ldet summary::-webkit-details-marker{display:none}"
                 ".ldet summary::before{content:'\\25B8';display:inline-block;width:14px;color:#6b6a66}"
                 ".ldet[open] summary::before{content:'\\25BE'}"
                 ".ldet .ut td,.ldet .ut th{padding:4px 8px;white-space:normal}</style>"
-                "<div class=card><table><thead><tr><th>Categoria</th>"
-                "<th>Address-list</th><th>Accion en el router</th><th class=num>CPEs dentro</th></tr></thead>"
+                "<div class=card><table><thead><tr><th>Categoría</th>"
+                "<th>Address-list</th><th>Acción en el router</th><th class=num>CPEs dentro</th></tr></thead>"
                 "<tbody>" + filas + "</tbody></table></div>"
                 "</div>")
 
     sec_listas = _sec_listas()
 
     sec_inf = _seccion("Infectados (malware/CnC)",
-                       "<b>Confirmado</b> = ≥2 pruebas <b>independientes</b> (firmas distintas, reputacion "
-                       "del destino, persistencia, campana, DNS) → investigar/cuarentena. La insignia dice "
-                       "cuantas: lo que decide no es cuantas alertas hay, sino cuantas cosas DISTINTAS "
+                       "<b>Confirmado</b> = ≥2 pruebas <b>independientes</b> (firmas distintas, reputación "
+                       "del destino, persistencia, campaña, DNS) → investigar/cuarentena. La insignia dice "
+                       "cuántas: lo que decide no es cuántas alertas hay, sino cuántas cosas DISTINTAS "
                        f"apuntan al mismo abonado. <b>Sin confirmar</b> = una sola pista → vigilar. "
                        f"Lista <code>{esc(m.get('LIST',''))}</code>",
                        cand, enviados, "cuarentena", m.get("LIST", ""), "alertas_cnc", "alertas CnC", "firmas_cnc",
@@ -17018,12 +17032,12 @@ def cuarentena_page(msg="", es_admin=False):
             marca = ("<span class='enq'>Bloqueado</span> " if x["enviado"] else "")
             return (f"<tr><td data-label='Destino' class='mono ipx'>{esc(x['ip'])}"
                     + (f" <span class=hint>{esc(x['pais'])}</span>" if x["pais"] else "") + "</td>"
-                    f"<td data-label='Por que'><b>{esc(x['categoria'] or 'fichada')}</b>"
+                    f"<td data-label='Por qué'><b>{esc(x['categoria'] or 'fichada')}</b>"
                     f"<div class=rowmeta>{esc(x['fuente'])}"
                     + (f" &middot; {esc(x['firma'][:60])}" if x["firma"] else "") + "</div></td>"
                     f"<td data-label='CPEs' class='num'>{x['cpes']:,}</td>"
                     f"<td data-label='Alertas' class='num'>{x['alertas']:,}</td>"
-                    f"<td data-label='Accion'>{marca}{acc}</td></tr>")
+                    f"<td data-label='Acción'>{marca}{acc}</td></tr>")
         _filas_dst = "".join(_fila_dst(x) for x in (_pend + _ya))
         # solo hace falta saber SI hay: pedir las 50.000 para un len() era el resto
         # del coste de esta pagina
@@ -17032,21 +17046,21 @@ def cuarentena_page(msg="", es_admin=False):
         # la lista solo. Se descarga del panel (administrador) y se importa con /import.
         sec_dst = (
             "<div class=seccion><div class=shead><div>"
-            "<h2>Destinos de mala reputacion</h2>"
-            "<p class=sub>Infraestructura fichada a la que <b>tus CPEs estan saliendo</b>: "
-            "servidores de control de botnets, distribucion de malware, redes secuestradas. "
-            "Cortar el destino deja al equipo infectado <b>sin ordenes</b>, y vale para todos "
+            "<h2>Destinos de mala reputación</h2>"
+            "<p class=sub>Infraestructura fichada a la que <b>tus CPEs están saliendo</b>: "
+            "servidores de control de botnets, distribución de malware, redes secuestradas. "
+            "Cortar el destino deja al equipo infectado <b>sin órdenes</b>, y vale para todos "
             "los abonados a la vez sin tener que identificar a ninguno. Solo se listan IPs "
-            f"<b>publicas</b>. {len(_pend):,} sin bloquear, {len(_ya):,} ya bloqueadas.</p>"
+            f"<b>públicas</b>. {len(_pend):,} sin bloquear, {len(_ya):,} ya bloqueadas.</p>"
             "</div></div>"
-            "<div class=card><table><thead><tr><th>Destino</th><th>Por que</th>"
-            "<th class=num>CPEs</th><th class=num>Alertas</th><th>Accion</th>"
+            "<div class=card><table><thead><tr><th>Destino</th><th>Por qué</th>"
+            "<th class=num>CPEs</th><th class=num>Alertas</th><th>Acción</th>"
             f"</tr></thead><tbody>{_filas_dst}</tbody></table></div>"
             + ("<div style='background:#eef4fd;border:1px solid #cfe0f6;border-radius:8px;"
                "padding:10px 12px;margin-top:10px;font-size:13px'>"
                f"<b>Bloqueo preventivo: {_n_feed:,} destinos</b> de los feeds de alta confianza "
                "(C2 activo e infraestructura delictiva). Es <b>mejor que lo de arriba</b>: corta "
-               "la salida <b>antes</b> de que ningun abonado llegue, asi el equipo infectado ni "
+               "la salida <b>antes</b> de que ningún abonado llegue, así el equipo infectado ni "
                "siquiera consigue instrucciones. No entran los feeds de \"esta IP escaneo a "
                "alguien\": esa misma IP puede alojar una web que un abonado visita. "
                "Se descarga en <a href='/destinos.rsc'>destinos.rsc</a> (administrador) y se importa "
@@ -17074,7 +17088,7 @@ def cuarentena_page(msg="", es_admin=False):
         # falso justo para los que envio la politica (la fila mostraba Por=politica y
         # Motivo=manual a la vez)
         _por = (mm.get("por") or "").lower()
-        _sin = ("enviado por politica automatica (sin detalle guardado)"
+        _sin = ("enviado por política automática (sin detalle guardado)"
                 if _por.startswith("politica") else
                 "manual / sin motivo registrado" if _por not in ("", "?") else
                 "sin motivo registrado")
@@ -17089,8 +17103,8 @@ def cuarentena_page(msg="", es_admin=False):
                 f"<td data-label='Lista' class='mono'>{esc(lista)}</td>"
                 f"<td data-label='Motivo' class='mot'>{mot}</td><td data-label='Por'>{esc(mm.get('por','?'))}</td>"
                 f"<td data-label='Enviado' class='mono' data-sort='{int(_cuando_ts)}'>{cuando}</td>"
-                f"<td data-label='Ultima revision' class='rowmeta' style='margin:0' data-sort='{int(_rev_ts)}'>{_rev(mm) or '&mdash;'}</td>"
-                f"<td data-label='Accion'>{quitar}</td></tr>")
+                f"<td data-label='Última revisión' class='rowmeta' style='margin:0' data-sort='{int(_rev_ts)}'>{_rev(mm) or '&mdash;'}</td>"
+                f"<td data-label='Acción'>{quitar}</td></tr>")
     # los candidatos se comparan por identidad (nodo|IP): con la IP sola, el 10.0.0.5 de un
     # nodo escondia al enviado a mano del otro
     _ci = {clave_cpe(c.get("ip", ""), c.get("router", "")) for c in cand}
@@ -17107,13 +17121,13 @@ def cuarentena_page(msg="", es_admin=False):
                  ) if es_admin else ""
         modal = ("<div id=mmasivo class=masov onmousedown=\"this._dn=event.target\" onclick=\"if(event.target===this&&this._dn===this){masCerrar()}\">"
                  "<div class=masbox><h3 id=mastit>Quitar de la lista</h3>"
-                 "<p class=massub id=massub>Se sacaran del MikroTik estas IPs. Es <b>reversible</b>: puedes volver "
+                 "<p class=massub id=massub>Se sacarán del MikroTik estas IPs. Es <b>reversible</b>: puedes volver "
                  "a enviarlas cuando quieras.</p>"
                  "<div id=masprog class=masprog><div id=masbar class=masbar></div></div>"
                  "<ul id=maslista class=maslist></ul>"
                  # mientras se quitan: los botones se esconden y se dice que hay que esperar
                  "<div id=masespera class=masespera><span class=masspin></span><span>"
-                 "<b>Espera:</b> se estan quitando del MikroTik, una por una. "
+                 "<b>Espera:</b> se están quitando del MikroTik, una por una. "
                  "No cierres esta ventana.</span></div>"
                  "<form id=fmasivo method=post action='/cuarentena/quitar-varios'>"
                  "<div id=mascampos></div><div class=masacts id=masacts>"
@@ -17121,13 +17135,13 @@ def cuarentena_page(msg="", es_admin=False):
                  "<button type=submit class=massi id=massi>Quitar</button></div></form></div></div>"
                  ) if es_admin else ""
         sec_manual = ("<div class='seccion'><div class='shead'><div><h2>Enviados manualmente</h2>"
-                      "<p class='sub'>IPs que pusiste a mano (p.ej. desde Top origenes) y no son candidatos actuales. "
-                      "Con auto-mantener <b>no</b> se liberan solas: quitalas tu aqui cuando quieras.</p></div></div>"
+                      "<p class='sub'>IPs que pusiste a mano (p.ej. desde Top orígenes) y no son candidatos actuales. "
+                      "Con auto-mantener <b>no</b> se liberan solas: quítalas tú aquí cuando quieras.</p></div></div>"
                       + barra +
                       "<div class='card'><table class='orden'><thead><tr>" + selth +
                       "<th>CPE (IP origen)</th><th>Lista</th>"
-                      "<th>Motivo (por que se bloqueo)</th><th>Por</th><th>Enviado</th>"
-                      "<th>Ultima revision</th><th data-nosort>Accion</th></tr></thead>"
+                      "<th>Motivo (por qué se bloqueó)</th><th>Por</th><th>Enviado</th>"
+                      "<th>Última revisión</th><th data-nosort>Acción</th></tr></thead>"
                       f"<tbody>{manual_rows}</tbody></table></div>" + modal + "</div>")
     else:
         sec_manual = ""
@@ -17139,12 +17153,12 @@ def cuarentena_page(msg="", es_admin=False):
             f"<form method=post action='/cuarentena/quitar-destino' style='display:inline;margin:0'>"
             f"<input type=hidden name=destino value='{esc(dp)}'>"
             f"<button class=destx title='Quitar de confiables'>&times;</button></form></span>"
-            for dp in dests_ok) if dests_ok else "<span class=muted>ninguno todavia</span>")
+            for dp in dests_ok) if dests_ok else "<span class=muted>ninguno todavía</span>")
         sec_fp = ("<div class='seccion'><div class='card' style='padding:14px 16px'>"
                   "<h2 style='font-size:15px;margin:0 0 4px'>Excluir destino (falso positivo)</h2>"
                   "<p class='sub' style='margin:0 0 10px'>Si una IP <b>destino</b> (p.ej. un DNS) dispara falsos "
-                  "positivos en muchos CPEs, marcala como confiable: sus alertas dejan de contar y se "
-                  "<b>liberan automaticamente</b> los CPEs que fueron a la lista por su culpa.</p>"
+                  "positivos en muchos CPEs, márcala como confiable: sus alertas dejan de contar y se "
+                  "<b>liberan automáticamente</b> los CPEs que fueron a la lista por su culpa.</p>"
                   "<form method=post action='/cuarentena/excluir-destino' style='display:flex;gap:8px;flex-wrap:wrap'>"
                   "<input type=text name=destino placeholder='200.63.105.194' "
                   "style='flex:1;min-width:180px;padding:8px 11px;border:1px solid #d7d6d2;border-radius:8px;"
@@ -17162,12 +17176,12 @@ def cuarentena_page(msg="", es_admin=False):
                   f"(infectados &rarr; <code>{esc(m.get('LIST',''))}</code>, DNS &rarr; <code>{esc(m.get('LIST_DNS',''))}</code>) "
                   f"en el MikroTik de cada nodo; el MikroTik decide con tus reglas. Reversible con <b>Quitar</b>.{auto_txt}</div>")
     elif en and not conf_ok:
-        estado = ("<div class='banner err'><b>Falta configurar la conexion.</b> Marcaste <b>Permitir enviar</b>, pero "
-                  "aun falta <b>usuario o clave</b> de la API del MikroTik. Ve a <b>Puntos</b> (ficha &rarr; API), completa los datos "
-                  "y pulsa <b>Probar conexion</b>. Hasta entonces esta pestana no envia nada.</div>")
+        estado = ("<div class='banner err'><b>Falta configurar la conexión.</b> Marcaste <b>Permitir enviar</b>, pero "
+                  "aún falta <b>usuario o clave</b> de la API del MikroTik. Ve a <b>Puntos</b> (ficha &rarr; API), completa los datos "
+                  "y pulsa <b>Probar conexión</b>. Hasta entonces esta pestaña no envía nada.</div>")
     else:
-        estado = ("<div class='banner'><b>Modo sugerencia (dry-run).</b> No se envia nada al MikroTik. "
-                  "Para activar el envio, configura la API y marca <b>Permitir enviar</b> en <b>Puntos</b> (ficha &rarr; API).</div>")
+        estado = ("<div class='banner'><b>Modo sugerencia (dry-run).</b> No se envía nada al MikroTik. "
+                  "Para activar el envío, configura la API y marca <b>Permitir enviar</b> en <b>Puntos</b> (ficha &rarr; API).</div>")
     flash = aviso_modal(msg, "info")
     css = ("<style>" + BASE_CSS +
            # solo lo propio de Cuarentena (lo comun ya viene de BASE_CSS)
@@ -17273,7 +17287,7 @@ def cuarentena_page(msg="", es_admin=False):
             "<meta name=viewport content='width=device-width,initial-scale=1'>"
             "<title>Suricata</title>" + css + "</head><body><main>"
             "<h1>Cuarentena y control de CPEs</h1>"
-            f"<p class='sub'>Ventana {vmin} min · lista de hace {edad}. Dos categorias: <b>infectados</b> (malware/CnC) "
+            f"<p class='sub'>Ventana {vmin} min · lista de hace {edad}. Dos categorías: <b>infectados</b> (malware/CnC) "
             "y <b>DNS sospechoso</b> (consultan dominios de botnet), cada una a su address-list del MikroTik.</p>"
             + _salud_html() + flash + _kpis_cuarentena(len(cand), len(dns_cand), len(enviados) + len(enviados_dns), activo) + estado + sec_fp + sec_inf + sec_dns + sec_dst + sec_manual +
             # al final: se consulta cuando hace falta saber a donde fue algo, no
@@ -17403,11 +17417,11 @@ def _enviar_confirmados(nodo_form, tipo):
     dentro del cerrojo, por punto, nunca con una foto de antes (auditoria A-03)."""
     dns = tipo == "dns"
     if not (nodo_form or "").strip():
-        return 0, "Falta el nodo de la lista: no se envio nada (recarga la pagina)."
+        return 0, "Falta el nodo de la lista: no se envió nada (recarga la página)."
     try:
         vista = nodos.validar_nodo(nodo_form.strip())
     except (nodos.NodoInvalido, nodos.NodoInexistente):
-        return 0, "Nodo no valido: no se envio nada."
+        return 0, "Nodo no válido: no se envió nada."
     try:
         cq = json.load(open(nodos.salida("cuarentena.json", vista), encoding="utf-8")).get(
             "dns_candidatos" if dns else "candidatos", [])
@@ -17490,7 +17504,7 @@ def _enviar_confirmados(nodo_form, tipo):
                         err = str(ex) or ex.__class__.__name__
                         mk_log("ERROR-ENVIO", ip, quien, f"lista={_lst} {err}" + _suf_nodo(clave)); err_n += 1; ult_err = err
                         quedan = 1 + sum(1 for k, _c in lote[i + 1:] if k not in ya)
-                        corte = ("; se corto el envio a este nodo por un fallo de comunicacion con el "
+                        corte = ("; se cortó el envío a este nodo por un fallo de comunicación con el "
                                  "MikroTik: %d sin enviar" % quedan)
                         break
                     if ok:
@@ -17514,10 +17528,10 @@ def _enviar_confirmados(nodo_form, tipo):
                                                  if err_n else "", corte))
     if viejas:
         partes.append("%d omitido(s) por evidencia vieja, la IP puede ser hoy de otro abonado: %s%s" % (
-            len(viejas), ", ".join(viejas[:5]), " y %d mas" % (len(viejas) - 5) if len(viejas) > 5 else ""))
+            len(viejas), ", ".join(viejas[:5]), " y %d más" % (len(viejas) - 5) if len(viejas) > 5 else ""))
     if not partes:
-        return 0, "No habia confirmados pendientes de enviar."
-    return total, "Envio masivo " + "; ".join(partes)
+        return 0, "No había confirmados pendientes de enviar."
+    return total, "Envío masivo " + "; ".join(partes)
 
 def _pagina_error(titulo, texto):
     return ("<!doctype html><html lang=es><head><meta charset=utf-8><title>%s</title>"
@@ -17795,7 +17809,7 @@ class H(BaseHTTPRequestHandler):
         # sin el rol que pide la operacion -> 403 (ocultar el boton no es un control)
         if self._sesion_ok():
             return self._html("<!doctype html><meta charset=utf-8><title>Sin permiso</title>"
-                              "<h1>Sin permiso</h1><p>Tu usuario no tiene el rol que pide esta operacion.</p>"
+                              "<h1>Sin permiso</h1><p>Tu usuario no tiene el rol que pide esta operación.</p>"
                               "<p><a href=/>Volver</a></p>", 403)
         self._redirect("/login")
     def _html(self, s, code=200, cabeceras=None):
@@ -17851,7 +17865,7 @@ class H(BaseHTTPRequestHandler):
                 self.close_connection = True
                 return
             if isinstance(ex, nodos.NodoInvalido):
-                tit, txt, code = "Nodo invalido", "El identificador de nodo no es valido.", 400
+                tit, txt, code = "Nodo inválido", "El identificador de nodo no es válido.", 400
             else:
                 tit, txt, code = "Punto inexistente", "Ese punto no existe (o se dio de baja).", 404
             try:
@@ -17883,8 +17897,8 @@ class H(BaseHTTPRequestHandler):
                     "div{max-width:620px;margin:0 auto}h1{font-size:20px;margin:0 0 10px;color:#b52a2a}"
                     "code{background:#f1f1ef;border:1px solid #e0dfda;border-radius:4px;padding:1px 6px;"
                     "font:13px ui-monospace,Consolas,monospace}p{margin:10px 0}</style></head><body><div>"
-                    "<h1>Esta pagina del panel fallo</h1>"
-                    "<p>La peticion <code>" + html.escape(ruta) + "</code> no se pudo generar. "
+                    "<h1>Esta página del panel falló</h1>"
+                    "<p>La petición <code>" + html.escape(ruta) + "</code> no se pudo generar. "
                     "El resto del panel sigue funcionando.</p>"
                     "<p>El detalle queda en el registro del contenedor:<br>"
                     "<code>docker logs ids-panel</code></p>"
@@ -17921,7 +17935,7 @@ class H(BaseHTTPRequestHandler):
             except Exception:
                 pass
             self.close_connection = True       # el cuerpo no se lee: la conexion no se reutiliza
-            return self._html("<!doctype html><meta charset=utf-8><h1>Peticion rechazada</h1>"
+            return self._html("<!doctype html><meta charset=utf-8><h1>Petición rechazada</h1>"
                               "<p>El formulario no viene de este panel (Origin/Referer de otro sitio).</p>", 403)
         return self._post()
 
@@ -17933,11 +17947,11 @@ class H(BaseHTTPRequestHandler):
             if self._set_ctx() is False:
                 return False
         except nodos.NodoInvalido:
-            self._html(_pagina_error("Nodo no valido", "El identificador de nodo de la direccion no es "
-                                     "valido (se espera p001..p999 o _todos)."), 400)
+            self._html(_pagina_error("Nodo no válido", "El identificador de nodo de la dirección no es "
+                                     "válido (se espera p001..p999 o _todos)."), 400)
             return False
         except nodos.NodoInexistente:
-            self._html(_pagina_error("Punto inexistente", "Ese punto no existe (quiza se dio de baja). "
+            self._html(_pagina_error("Punto inexistente", "Ese punto no existe (quizá se dio de baja). "
                                      "Elige otro nodo en la barra."), 404)
             return False
         return True
@@ -17949,8 +17963,8 @@ class H(BaseHTTPRequestHandler):
                                                       getattr(CTX, "role", None) or "-"))
         except Exception:
             pass
-        return self._html(_pagina_error("Sin permiso", "Tu rol no permite esta accion. Si la necesitas, "
-                                        "pidesela a un administrador."), 403)
+        return self._html(_pagina_error("Sin permiso", "Tu rol no permite esta acción. Si la necesitas, "
+                                        "pídesela a un administrador."), 403)
 
     def _confirmar_evidencia_vieja(self, ruta, q, ip, detalle):
         """Pagina de confirmacion: repite el mismo formulario con confirmar_vieja=1. No se ha
@@ -17962,7 +17976,7 @@ class H(BaseHTTPRequestHandler):
         if nodos.hay_nodo():
             volver += "?nodo=" + urllib.parse.quote(nodos.nodo_actual(), safe="")
         return self._html(
-            "<!doctype html><html lang=es><head><meta charset=utf-8><title>Confirmar el envio</title>"
+            "<!doctype html><html lang=es><head><meta charset=utf-8><title>Confirmar el envío</title>"
             "<style>body{margin:0;padding:40px 24px;font:15px/1.6 system-ui,Segoe UI,sans-serif;"
             "color:#33322f;background:#fcfcfb}div{max-width:620px;margin:0 auto}h1{font-size:20px}"
             "button{font:inherit;padding:8px 16px;border-radius:8px;border:1px solid #b52a2a;background:#b52a2a;"
@@ -18028,10 +18042,10 @@ class H(BaseHTTPRequestHandler):
             # quien queda fuera necesita saber que IP dar al administrador
             return self._html("<!doctype html><meta charset=utf-8><title>Acceso restringido</title>"
                               "<div style='font:15px system-ui;max-width:520px;margin:60px auto;padding:24px;text-align:center'>"
-                              "<h2>Acceso restringido</h2><p style='color:#52514e'>Tu IP no esta en la lista de "
+                              "<h2>Acceso restringido</h2><p style='color:#52514e'>Tu IP no está en la lista de "
                               "IPs de confianza del panel.</p><p style='color:#52514e'>Tu IP: <b style='font-family:"
                               "ui-monospace,Consolas,monospace'>" + html.escape(self._client_ip()) + "</b>. "
-                              "Pidele a un administrador que la agregue en Ajustes &rarr; IPs de confianza.</p>"
+                              "Pídele a un administrador que la agregue en Ajustes &rarr; IPs de confianza.</p>"
                               "</div>", 403)
         if path == "/login":
             if self._auth_ok():
@@ -18058,7 +18072,7 @@ class H(BaseHTTPRequestHandler):
             try:
                 cuerpo = fn(_cq, nodos.nodo_actual())
             except nodos.NodoInvalido:
-                return self._html(_pagina_error("Nodo no valido", "Ese identificador de nodo no es valido."), 400)
+                return self._html(_pagina_error("Nodo no válido", "Ese identificador de nodo no es válido."), 400)
             except nodos.NodoInexistente:
                 return self._html(_pagina_error("Punto inexistente", "Ese punto no existe."), 404)
             # sin autorrecarga: perderia el cursor de la busqueda
@@ -18124,7 +18138,7 @@ class H(BaseHTTPRequestHandler):
                     "<p class='ph-sub'>Panel IDS Suricata &middot; " + html.escape(nodos.nombre(nodos.nodo_actual()))
                     + f" &middot; actualizado {ahora_ec} (hora local)</p></div>{wsel}</header>")
                 resumen = (cabecera + "<main style='padding:8px 28px 24px'><p style='color:#52514e'>El resumen se "
-                           "esta generando en segundo plano; aparecera aqui en unos minutos.</p></main>")
+                           "está generando en segundo plano; aparecerá aquí en unos minutos.</p></main>")
             page = ("<!doctype html><html lang=es><head><meta charset=utf-8><link rel=icon type=image/png href=/favicon.ico>"
                     "<meta name=viewport content='width=device-width,initial-scale=1'>"
                     + ("" if pendiente else f"<meta http-equiv=refresh content={recarga}>")
@@ -18166,7 +18180,7 @@ class H(BaseHTTPRequestHandler):
             head_css, _, detalle = partes_reporte()
             if not detalle.strip():
                 detalle = ("<section class='card' style='margin:16px 28px'><p class='muted'>El detalle se "
-                           "esta generando; aparecera en unos minutos.</p></section>")
+                           "está generando; aparecerá en unos minutos.</p></section>")
             page = (f"<!doctype html><html lang=es><head><meta charset=utf-8><link rel=icon type=image/png href=/favicon.ico>"
                     f"<meta name=viewport content='width=device-width,initial-scale=1'>"
                     # se recarga solo cada 2 min para tomar el reporte nuevo (cada 5 min);
@@ -18314,7 +18328,7 @@ class H(BaseHTTPRequestHandler):
             _qf = _up.parse_qs(self.path.split("?", 1)[1]) if "?" in self.path else {}
             _ip = (_qf.get("ip", [""])[0]).strip()
             if not aidb_ip_valida(_ip):
-                return self._html("<p class=hint>Direccion no valida.</p>")
+                return self._html("<p class=hint>Dirección no válida.</p>")
             _d, _org, _err = aidb_consultar(_ip)
             if not _d:
                 return self._html("<p class=hint>No se pudo consultar: %s</p>"
@@ -18372,7 +18386,7 @@ class H(BaseHTTPRequestHandler):
         # 1 MiB: el formulario mas grande (logo o foto en data:) ronda 600 KB; el login, 16 KiB
         if n < 0 or n > (16 * 1024 if ruta == "/login" else 1024 * 1024):
             self.close_connection = True
-            return self._html(_pagina_error("Peticion demasiado grande", "El formulario pesa mas de lo "
+            return self._html(_pagina_error("Petición demasiado grande", "El formulario pesa más de lo "
                                             "que admite el panel."), 413)
         try:
             body = self.rfile.read(n).decode("utf-8", "replace") if n else ""
@@ -18477,7 +18491,7 @@ class H(BaseHTTPRequestHandler):
             elif not logo:
                 logo = actual.get("logo", "")          # sin logo nuevo: conservar el actual
             elif not logo.startswith("data:image/") or len(logo) > 400_000:
-                return self._html(perfil_page("El logo no es una imagen valida o pesa demasiado.", ok=False))
+                return self._html(perfil_page("El logo no es una imagen válida o pesa demasiado.", ok=False))
             try:
                 guardar_empresa({"nombre": nombre, "logo": logo})
             except OSError as ex:
@@ -18553,7 +18567,7 @@ class H(BaseHTTPRequestHandler):
                     "verificador las rechaza): " + " | ".join(_err_reglas), ok=False))
             if _av_reglas:
                 return self._html(perfil_page(
-                    "Guardado. El verificador avisa en tus reglas (se guardaron igual; revisalas "
+                    "Guardado. El verificador avisa en tus reglas (se guardaron igual; revísalas "
                     "antes de aplicar): " + " | ".join(_av_reglas[:6]), ok=True))
             return self._html(perfil_page("Ajustes de MikroTik guardados.", ok=True))
         if ruta == "/mikrotik/reglas/verificar":
@@ -18576,7 +18590,7 @@ class H(BaseHTTPRequestHandler):
             except ValueError as ex:
                 return _txtv("no parsea\n!E sintaxis: %s" % ex)
             if not reglas:
-                return _txtv("el bloque esta vacio")
+                return _txtv("el bloque está vacío")
             ver = verificar_reglas(reglas, lista)
             rid = (q.get("rid", [""])[0]).strip()
             r = _router_de_pid(rid) if rid else None     # sin nodo: solo la revision estatica
@@ -18591,7 +18605,7 @@ class H(BaseHTTPRequestHandler):
                 except Exception as ex:
                     ver.append({"nivel": "info", "donde": "router", "msg": "no se pudo consultar el router: %s" % ex})
             else:
-                ver.append({"nivel": "info", "donde": "router", "msg": "sin router configurado: solo la revision estatica"})
+                ver.append({"nivel": "info", "donde": "router", "msg": "sin router configurado: solo la revisión estática"})
             ne = sum(1 for v in ver if v["nivel"] == "error"); na = sum(1 for v in ver if v["nivel"] == "aviso")
             cab = "%d regla(s) \u00b7 %d error(es) \u00b7 %d aviso(s)" % (len(reglas), ne, na)
             return _txtv(cab + "\n" + "\n".join(lineas_verificacion(ver)))
@@ -18602,7 +18616,7 @@ class H(BaseHTTPRequestHandler):
             rid = (q.get("rid", [""])[0]).strip()
             r = _router_de_pid(rid)     # el nodo de la operacion, validado; nunca uno por defecto
             if not r or not (r.get("USER") and r.get("PASS")):
-                okr, msg = False, "ese router no tiene la conexion configurada: guarda primero el usuario y la clave de su API"
+                okr, msg = False, "ese router no tiene la conexión configurada: guarda primero el usuario y la clave de su API"
             else:
                 try:
                     okr, msg = recargar_listas(r, quien=getattr(CTX, "user", "?"))
@@ -18622,7 +18636,7 @@ class H(BaseHTTPRequestHandler):
             rid = (q.get("rid", [""])[0]).strip()
             r = _router_de_pid(rid)     # el nodo de la operacion, validado; nunca uno por defecto
             if not r or not (r.get("USER") and r.get("PASS")):
-                res = {"_error": "router sin conexion configurada"}
+                res = {"_error": "router sin conexión configurada"}
             else:
                 try:
                     res = estado_reglas(r)
@@ -18652,19 +18666,19 @@ class H(BaseHTTPRequestHandler):
                 return _txt(False, "clase desconocida")
             r = _router_de_pid(rid)     # el nodo de la operacion, validado; nunca uno por defecto
             if not r or not (r.get("USER") and r.get("PASS")):
-                return _txt(False, "ese router no tiene la conexion configurada: guarda primero el usuario y la clave de su API "
+                return _txt(False, "ese router no tiene la conexión configurada: guarda primero el usuario y la clave de su API "
                                    "(Puntos > ficha del punto > API)")
             quien = getattr(CTX, "user", "?")
             try:
                 if ruta.endswith("/plan"):
                     p = plan_reglas(r, cat)
                     # texto plano: el modal lo escapa, una entidad salia tal cual ("&middot;")
-                    cab = "%d cambio(s) en %s \u00b7 accion: %s \u00b7 lista: %s" % (
+                    cab = "%d cambio(s) en %s \u00b7 acción: %s \u00b7 lista: %s" % (
                         p["cambios"], r.get("nombre") or r.get("HOST", ""), ACCIONES.get(p["accion"], p["accion"]), p["lista"])
                     if p["aviso"]:
                         cab += " \u00b7 " + p["aviso"]
                     if p.get("bloqueado"):
-                        cab += " \u00b7 el verificador encontro errores: no se puede aplicar"
+                        cab += " \u00b7 el verificador encontró errores: no se puede aplicar"
                     _lin = lineas_verificacion(p.get("verificacion", [])) + p["rsc"]
                     return _txt(True, cab + (("\n" + "\n".join(_lin)) if _lin else ""))
                 # una reconciliacion de reglas a la vez por router: con un doble clic las dos
@@ -18685,7 +18699,7 @@ class H(BaseHTTPRequestHandler):
             ak = q.get("authkey", [""])[0]
             if ak.strip() == "BORRAR":
                 feeds_auth_set(""); claves_estado_set("abusech", None); bitacora("CONFIG-FEEDS-AUTHKEY", "borrada")
-                return self._html(perfil_page("Auth-Key borrada. URLhaus/ThreatFox quedaran 'sin-clave'.", ok=True))
+                return self._html(perfil_page("Auth-Key borrada. URLhaus/ThreatFox quedarán 'sin-clave'.", ok=True))
             if not ak.strip():
                 return self._html(perfil_page("Sin cambios en la Auth-Key.", ok=True))
             _otro = clave_de_otro(ak, "abusech")
@@ -18695,17 +18709,17 @@ class H(BaseHTTPRequestHandler):
             estado, det = feeds_auth_probar(ak)      # validar ANTES de guardar (rechaza basura)
             if estado is False:
                 bitacora("CONFIG-FEEDS-AUTHKEY", f"rechazada ({det})")
-                return self._html(perfil_page(f"No se guardo: la Auth-Key no es valida — {det}.", ok=False))
+                return self._html(perfil_page(f"No se guardó: la Auth-Key no es válida — {det}.", ok=False))
             if feeds_auth_set(ak) is False:      # sin clave maestra no se guarda (B-04)
                 bitacora("CONFIG-FEEDS-AUTHKEY", "no guardada (sin clave maestra)")
-                return self._html(perfil_page("No se guardo: falta la clave maestra del panel (/run/secrets/master_key), y una clave nunca se guarda en claro. Revisa el montaje de la clave maestra y vuelve a intentarlo.", ok=False))
+                return self._html(perfil_page("No se guardó: falta la clave maestra del panel (/run/secrets/master_key), y una clave nunca se guarda en claro. Revisa el montaje de la clave maestra y vuelve a intentarlo.", ok=False))
             claves_estado_set("abusech", _estado_de(estado), det)
             actualizar_feeds_async()
             if estado is True:
                 bitacora("CONFIG-FEEDS-AUTHKEY", "validada y guardada")
-                return self._html(perfil_page("Auth-Key VALIDA y guardada (solo en este servidor). Actualizando feeds.", ok=True))
+                return self._html(perfil_page("Auth-Key VÁLIDA y guardada (solo en este servidor). Actualizando feeds.", ok=True))
             bitacora("CONFIG-FEEDS-AUTHKEY", f"guardada sin validar ({det})")
-            return self._html(perfil_page(f"Auth-Key guardada, pero {det}. Se reintentara en la proxima actualizacion.", ok=True))
+            return self._html(perfil_page(f"Auth-Key guardada, pero {det}. Se reintentará en la próxima actualización.", ok=True))
         if ruta == "/reputacion":
             if not self._operador():
                 return self._prohibido()
@@ -18737,7 +18751,7 @@ class H(BaseHTTPRequestHandler):
             aidb_set_reportar(on)
             bitacora("CONFIG-ABUSEIPDB-REPORTAR", "activadas" if on else "desactivadas")
             return self._html(perfil_page(
-                "Denuncias a AbuseIPDB ACTIVADAS: aparecera un boton en cada atacante entrante."
+                "Denuncias a AbuseIPDB ACTIVADAS: aparecerá un botón en cada atacante entrante."
                 if on else "Denuncias a AbuseIPDB desactivadas.", ok=True))
         if ruta == "/publicas":
             if not self._admin():
@@ -18779,7 +18793,7 @@ class H(BaseHTTPRequestHandler):
                                    "msg": ("Agregada: %s. Revisando sus listas negras y su reputación…"
                                            % ", ".join(nuevas)) if nuevas else
                                           "Ya estaba declarada (o la cubre un rango ya declarado)."})
-            return self._redirect(rep_aviso_url("No se agrego: " + mal[0]) if mal
+            return self._redirect(rep_aviso_url("No se agregó: " + mal[0]) if mal
                                   else "/reputacion")
         if ruta == "/publicas/quitar":
             if not self._admin():
@@ -18836,14 +18850,14 @@ class H(BaseHTTPRequestHandler):
             nota_viejas = (
                 (f" {len(viejas)} declarada(s) antes desde el MikroTik ya no son de la WAN: "
                  + ", ".join(viejas[:10]) + (" ..." if len(viejas) > 10 else "")
-                 + ". Te las deje marcadas: quitalas con 'Quitar marcadas'.")
+                 + ". Te las dejé marcadas: quítalas con 'Quitar marcadas'.")
                 if viejas else "")
             marcar = {rid: viejas} if viejas else None
             if not halladas:
                 return self._redirect(rep_aviso_url(
                     (aviso_wan or
-                     "El MikroTik no devolvio ninguna direccion publica. "
-                     "Si el enlace lo termina otro equipo, agregalas a mano.") + nota_viejas,
+                     "El MikroTik no devolvió ninguna dirección pública. "
+                     "Si el enlace lo termina otro equipo, agrégalas a mano.") + nota_viejas,
                     marcar))
             nuevas = [x for x in halladas if x not in actuales]
             _ok, _mal, tap = guardar_publicas_de(rid, "\n".join(actuales + nuevas),
@@ -18858,11 +18872,11 @@ class H(BaseHTTPRequestHandler):
             # "2 publicas nuevas" a secas haria creer que ya esta todo
             return self._redirect(rep_aviso_url(
                 (aviso_wan + " " if aviso_wan else "") +
-                ((f"{len(nuevas)} publica(s) nueva(s) del MikroTik"
+                ((f"{len(nuevas)} pública(s) nueva(s) del MikroTik"
                   + (f"; {len(tap)} descartada(s) por estar dentro de un rango ya declarado "
                      "(una consulta de red las cubre todas)" if tap else ""))
                  if nuevas
-                 else "El MikroTik no tiene ninguna publica que no estuviera ya") + "."
+                 else "El MikroTik no tiene ninguna pública que no estuviera ya") + "."
                 + nota_viejas, marcar))
         if ruta == "/publicas/revisar":
             if not self._admin():           # revisar publicas (DNSBL) es de admin (§10.2, B-18)
@@ -18889,15 +18903,15 @@ class H(BaseHTTPRequestHandler):
             estado, det = aidb_probar(k)          # validar ANTES de guardar (rechaza basura)
             if estado is False:
                 bitacora("CONFIG-ABUSEIPDB", f"rechazada ({det})")
-                return self._html(perfil_page(f"No se guardo: la clave no es valida — {det}.", ok=False))
+                return self._html(perfil_page(f"No se guardó: la clave no es válida — {det}.", ok=False))
             if aidb_set(k) is False:             # sin clave maestra no se guarda (B-04)
                 bitacora("CONFIG-ABUSEIPDB", "no guardada (sin clave maestra)")
-                return self._html(perfil_page("No se guardo: falta la clave maestra del panel (/run/secrets/master_key), y una clave nunca se guarda en claro. Revisa el montaje de la clave maestra y vuelve a intentarlo.", ok=False))
+                return self._html(perfil_page("No se guardó: falta la clave maestra del panel (/run/secrets/master_key), y una clave nunca se guarda en claro. Revisa el montaje de la clave maestra y vuelve a intentarlo.", ok=False))
             claves_estado_set("aidb", _estado_de(estado), det)
             actualizar_feeds_async()
             if estado is True:
                 bitacora("CONFIG-ABUSEIPDB", "validada y guardada")
-                return self._html(perfil_page("Clave de AbuseIPDB VALIDA y guardada (solo en este servidor).", ok=True))
+                return self._html(perfil_page("Clave de AbuseIPDB VÁLIDA y guardada (solo en este servidor).", ok=True))
             bitacora("CONFIG-ABUSEIPDB", f"guardada sin validar ({det})")
             return self._html(perfil_page(f"Clave guardada, pero {det}.", ok=True))
         if ruta == "/dns":
@@ -18907,7 +18921,7 @@ class H(BaseHTTPRequestHandler):
             bitacora("CONFIG-DNS", "%d resolutor(es)" % n)
             return self._html(perfil_page(
                 "Resolutores DNS guardados (%d). Las consultas maliciosas a ellos "
-                "cuentan contra el CPE, no como ataque al DNS; se nota en el proximo reporte." % n,
+                "cuentan contra el CPE, no como ataque al DNS; se nota en el próximo reporte." % n,
                 ok=True))
         if ruta == "/feeds/groq":
             if not self._admin():
@@ -18935,10 +18949,10 @@ class H(BaseHTTPRequestHandler):
             if estado is False:
                 bitacora("CONFIG-GROQ", "rechazada (%s)" % det)
                 return self._html(perfil_page(
-                    "No se guardo: la clave no es valida — %s." % det, ok=False))
+                    "No se guardó: la clave no es válida — %s." % det, ok=False))
             if groq_set(k) is False:             # sin clave maestra no se guarda (B-04)
                 bitacora("CONFIG-GROQ", "no guardada (sin clave maestra)")
-                return self._html(perfil_page("No se guardo: falta la clave maestra del panel (/run/secrets/master_key), y una clave nunca se guarda en claro. Revisa el montaje de la clave maestra y vuelve a intentarlo.", ok=False))
+                return self._html(perfil_page("No se guardó: falta la clave maestra del panel (/run/secrets/master_key), y una clave nunca se guarda en claro. Revisa el montaje de la clave maestra y vuelve a intentarlo.", ok=False))
             # si el modelo elegido ya no existe, no se deja puesto: fallaria en la primera
             # consulta y el error saldria lejos de aqui
             if mod and (not modelos or mod in modelos):
@@ -18949,7 +18963,7 @@ class H(BaseHTTPRequestHandler):
             if estado is True:
                 bitacora("CONFIG-GROQ", "validada y guardada")
                 return self._html(perfil_page(
-                    "Clave de Groq VALIDA y guardada (solo en este servidor). %s"
+                    "Clave de Groq VÁLIDA y guardada (solo en este servidor). %s"
                     % ("Elige el modelo abajo." if not groq_modelo() else
                        "Modelo: " + groq_modelo()), ok=True))
             bitacora("CONFIG-GROQ", "guardada sin validar (%s)" % det)
@@ -18993,14 +19007,14 @@ class H(BaseHTTPRequestHandler):
                 telegram_set(token=tok or None, chat=chat)
             except secretos.SecretoNoDisponible:
                 bitacora("CONFIG-TELEGRAM", "no guardado (sin clave maestra)")
-                return self._html(perfil_page("No se guardo: falta la clave maestra del panel "
+                return self._html(perfil_page("No se guardó: falta la clave maestra del panel "
                                               "(/run/secrets/master_key), y el token nunca se guarda en claro.",
                                               ok=False))
             except OSError as ex:
                 return self._html(perfil_page(f"No se pudo guardar: {ex}", ok=False))
             if tok or chat:
                 claves_estado_set("telegram", "sin_comprobar" if any("no se pudo" in a for a in _avisos_tg)
-                                  else "valida", "; ".join(_avisos_tg) or "token valido")
+                                  else "valida", "; ".join(_avisos_tg) or "token válido")
             bitacora("CONFIG-TELEGRAM", ("token cifrado y guardado; " if tok else "") + "chat=%s" % (chat or "-"))
             return self._html(perfil_page(
                 "Telegram guardado" + (" (token cifrado" + (", bot %s" % _bot if _bot else "") + ")" if tok else "")
@@ -19092,20 +19106,20 @@ class H(BaseHTTPRequestHandler):
             try:
                 ipaddress.ip_address(ip)
             except Exception:
-                return _fin(False, "IP invalida")
+                return _fin(False, "IP inválida")
             if not _destino_ok(clave):
-                return _fin(False, "destino no valido: hace falta el nodo de la IP (nodo|IP) y que ese punto exista")
+                return _fin(False, "destino no válido: hace falta el nodo de la IP (nodo|IP) y que ese punto exista")
             if not es_mi_cpe(ip):
                 # una IP de internet no es un abonado: la cuarentena de CPEs no la frena
                 return _fin(False, f"{ip} no es de tus redes: es un atacante externo, "
                                    f"se corta en el firewall de borde, no en la cuarentena de CPEs")
             if nunca_bloquear(clave):
-                return _fin(False, f"{ip} esta en la lista 'Nunca bloquear' (no se envia)")
+                return _fin(False, f"{ip} está en la lista 'Nunca bloquear' (no se envía)")
             _pub = es_publica_declarada(ip)
             if _pub:
-                return _fin(False, f"{ip} es una de TUS publicas ({_pub}): mandarla a la "
-                                   f"cuarentena dejaria sin internet a todos los abonados "
-                                   f"que salen por ahi")
+                return _fin(False, f"{ip} es una de TUS públicas ({_pub}): mandarla a la "
+                                   f"cuarentena dejaría sin internet a todos los abonados "
+                                   f"que salen por ahí")
             r = _router_de_pid(rid_de(clave)); m = cargar_mk_de(r)
             if not mk_listo(m):
                 return _fin(False, f"Configura y HABILITA el MikroTik "
@@ -19113,7 +19127,7 @@ class H(BaseHTTPRequestHandler):
             _vieja = evidencia_sin_confirmar(clave, q)
             if _vieja:
                 if ajax:
-                    return _fin(False, f"{ip}: {_vieja}. No se envio: confirmalo desde la pestana Cuarentena")
+                    return _fin(False, f"{ip}: {_vieja}. No se envió: confírmalo desde la pestaña Cuarentena")
                 return self._confirmar_evidencia_vieja(ruta, q, ip, _vieja)
             try:   # si la IP no es candidato actual, es un envio MANUAL (no lo libera el auto)
                 cand_ips = {clave_cpe(c.get("ip", ""), c.get("router", ""))
@@ -19141,7 +19155,7 @@ class H(BaseHTTPRequestHandler):
                 mk_log("ENVIADO", ip, getattr(CTX, "user", "?"), f"lista={_lst} sin caducidad"
                        + (" (manual)" if clave not in cand_ips else "") + _suf_nodo(clave))
                 # la lista a la que FUE de verdad (la de su categoria), no la heredada
-                notificar_cuarentena(clave, "Infeccion CnC", _lst, quien=getattr(CTX, "user", "?"))
+                notificar_cuarentena(clave, "Infección CnC", _lst, quien=getattr(CTX, "user", "?"))
                 globals()["FORCE_REGEN"] = True   # regenerar pronto para que el Top muestre 'En cuarentena'
                 nota = " (ya estaba en la lista)" if err else ""
                 return _fin(True, f"{ip} en {_lst} ({nombre_categoria(_cat)}){nota}")
@@ -19204,7 +19218,7 @@ class H(BaseHTTPRequestHandler):
                            getattr(CTX, "user", "?"), f"nodo={pid}")
             msg = "; ".join(["%s: %s" % (nodos.nombre(x), "desbloqueado" if quitar else "bloqueado") for x in hechos]
                             + ["%s: NO (%s)" % (e.split(":", 1)[0], e.split(":", 1)[1].strip()[:80]) for e in errores])
-            msg = (f"{ip}: " + msg) if msg else "No se pudo: ningun MikroTik habilitado"
+            msg = (f"{ip}: " + msg) if msg else "No se pudo: ningún MikroTik habilitado"
             return self._redirect(cuar_aviso_url(msg))
         if ruta == "/cuarentena/graduada":
             # Corte PARCIAL: se le cortan los puertos de abuso y se le deja el resto. El
@@ -19227,24 +19241,24 @@ class H(BaseHTTPRequestHandler):
             try:
                 ipaddress.ip_address(ip)
             except Exception:
-                return _fin_g(False, "IP invalida")
+                return _fin_g(False, "IP inválida")
             if not _destino_ok(clave):
-                return _fin_g(False, "destino no valido: hace falta el nodo de la IP (nodo|IP) y que ese punto exista")
+                return _fin_g(False, "destino no válido: hace falta el nodo de la IP (nodo|IP) y que ese punto exista")
             if not es_mi_cpe(ip):
                 return _fin_g(False, f"{ip} no es de tus redes")
             if nunca_bloquear(clave):
-                return _fin_g(False, f"{ip} esta en la lista 'Nunca bloquear'")
+                return _fin_g(False, f"{ip} está en la lista 'Nunca bloquear'")
             _pub = es_publica_declarada(ip)
             if _pub:
-                return _fin_g(False, f"{ip} es una de TUS publicas ({_pub}): cortarla "
-                                     f"dejaria sin servicio a todos los abonados de ese NAT")
+                return _fin_g(False, f"{ip} es una de TUS públicas ({_pub}): cortarla "
+                                     f"dejaría sin servicio a todos los abonados de ese NAT")
             r = _router_de_pid(rid_de(clave)); m = cargar_mk_de(r)
             if not mk_listo(m):
                 return _fin_g(False, "Configura y HABILITA el MikroTik en Ajustes primero")
             _vieja = evidencia_sin_confirmar(clave, q)
             if _vieja:
                 if ajax_g:
-                    return _fin_g(False, f"{ip}: {_vieja}. No se envio: confirmalo desde la pestana Cuarentena")
+                    return _fin_g(False, f"{ip}: {_vieja}. No se envió: confírmalo desde la pestaña Cuarentena")
                 return self._confirmar_evidencia_vieja(ruta, q, ip, _vieja)
             lst = m.get("LIST_GRAD", "suricata-graduada")
             try:
@@ -19263,8 +19277,8 @@ class H(BaseHTTPRequestHandler):
             aviso = ""
             try:
                 if not mk_lista_en_uso(lst, router=r):
-                    aviso = (f" ATENCION: ninguna regla del firewall usa '{lst}', asi que "
-                             f"ahora mismo no corta nada. Pegalas desde Ajustes -> MikroTik.")
+                    aviso = (f" ATENCIÓN: ninguna regla del firewall usa '{lst}', así que "
+                             f"ahora mismo no corta nada. Pégalas desde Ajustes -> MikroTik.")
             except Exception:
                 pass
             return _fin_g(True, f"{ip} con corte parcial en {lst}{aviso}")
@@ -19276,9 +19290,9 @@ class H(BaseHTTPRequestHandler):
             try:
                 ipaddress.ip_address(ip)
             except Exception:
-                return self._redirect(cuar_aviso_url("IP invalida"))
+                return self._redirect(cuar_aviso_url("IP inválida"))
             if not _destino_ok(clave):
-                return self._redirect(cuar_aviso_url("destino no valido: hace falta el nodo de la IP (nodo|IP) y que ese punto exista"))
+                return self._redirect(cuar_aviso_url("destino no válido: hace falta el nodo de la IP (nodo|IP) y que ese punto exista"))
             # de la lista donde se puso DE VERDAD (auditoria A-05), si el registro la guarda
             lst = ((cargar_enviados(MK_SENT_GRAD).get(clave) or {}).get("lista")
                    or cargar_mk_de(rt).get("LIST_GRAD", "suricata-graduada"))
@@ -19297,7 +19311,7 @@ class H(BaseHTTPRequestHandler):
                 return self._prohibido()
             if not (q.get("nodo", [""])[0] or "").strip():
                 return self._html(_pagina_error("Falta el nodo", "El formulario no dice de que nodo es la "
-                                                "lista: no se envio nada. Recarga la pagina."), 400)
+                                                "lista: no se envió nada. Recarga la página."), 400)
             ok_n, resumen = _enviar_confirmados(q.get("nodo", [""])[0], "cuar")
             if ok_n:
                 enviar_telegram(f"\U0001f6a8 Cuarentena masiva [{_hostname()}]: {ok_n} CPE confirmados (2+ pruebas) "
@@ -19313,9 +19327,9 @@ class H(BaseHTTPRequestHandler):
             try:
                 ipaddress.ip_address(ip)
             except Exception:
-                return self._redirect(cuar_aviso_url("IP invalida"))
+                return self._redirect(cuar_aviso_url("IP inválida"))
             if not _destino_ok(clave):
-                return self._redirect(cuar_aviso_url("destino no valido: hace falta el nodo de la IP (nodo|IP) y que ese punto exista"))
+                return self._redirect(cuar_aviso_url("destino no válido: hace falta el nodo de la IP (nodo|IP) y que ese punto exista"))
             # de la lista donde esta DE VERDAD, no de la que toque hoy por categoria
             _guardada = (cargar_enviados(MK_SENT).get(clave) or {}).get("lista", "")
             try:
@@ -19344,9 +19358,9 @@ class H(BaseHTTPRequestHandler):
             try:
                 ipaddress.ip_address(ip)
             except Exception:
-                return self._json({"ok": False, "ip": ip, "err": "IP invalida"})
+                return self._json({"ok": False, "ip": ip, "err": "IP inválida"})
             if not _destino_ok(clave):
-                return self._json({"ok": False, "ip": ip, "err": "destino no valido"}, 400)
+                return self._json({"ok": False, "ip": ip, "err": "destino no válido"}, 400)
             es_dns = (tipo == "dns")
             reg = MK_SENT_DNS if es_dns else MK_SENT
             rt = _router_de_pid(rid_de(clave))
@@ -19356,7 +19370,7 @@ class H(BaseHTTPRequestHandler):
             _reg = cargar_enviados(reg)
             if clave not in _reg:
                 return self._json({"ok": False, "ip": ip,
-                                   "err": "no esta en esa lista del panel"})
+                                   "err": "no está en esa lista del panel"})
             # de la lista donde esta DE VERDAD (la que se guardo al mandarla: la de su
             # categoria), no la vieja unica: si no, quedaba bloqueado y fuera del panel (A-05)
             _guardada = (_reg.get(clave) or {}).get("lista", "")
@@ -19392,13 +19406,13 @@ class H(BaseHTTPRequestHandler):
                 try:
                     ipaddress.ip_address(ip)
                 except Exception:
-                    errores.append(f"{ip or '?'} (IP invalida)"); continue
+                    errores.append(f"{ip or '?'} (IP inválida)"); continue
                 if not _destino_ok(clave):
-                    errores.append(f"{ip} (destino no valido)"); continue
+                    errores.append(f"{ip} (destino no válido)"); continue
                 reg = MK_SENT_DNS if tipo == "dns" else MK_SENT
                 rt = _router_de_pid(rid_de(clave))
                 if clave not in en_reg[reg]:   # evita el falso exito de "0 entradas quitadas"
-                    errores.append(f"{ip} (no esta en esa lista)"); continue
+                    errores.append(f"{ip} (no está en esa lista)"); continue
                 if rid_de(clave) in caidos:     # su router ya no respondio: no esperar otro timeout
                     errores.append(f"{ip} ({rid_de(clave)} no responde)"); continue
                 # de la lista donde esta DE VERDAD (la guardada al mandarla), no la vieja unica
@@ -19420,7 +19434,7 @@ class H(BaseHTTPRequestHandler):
                     # (500 x 6 s = mas de 45 min con el navegador esperando). Igual que
                     # hace "Enviar todos": se corta SOLO ese punto, los demas siguen (A-19)
                     caidos.append(rid_de(clave))
-                    corte = " Se corto en %s: el MikroTik no responde." % ", ".join(caidos)
+                    corte = " Se cortó en %s: el MikroTik no responde." % ", ".join(caidos)
             # Se sacan del registro releyendo dentro del cerrojo: entre el primer mk_remove
             # y este punto pueden haber pasado minutos, y guardar la foto de antes borraria
             # lo que el hilo de fondo anoto mientras tanto.
@@ -19431,9 +19445,9 @@ class H(BaseHTTPRequestHandler):
             if errores:
                 resumen += f"; {len(errores)} con error: " + ", ".join(errores[:3])
                 if len(errores) > 3:
-                    resumen += f" y {len(errores)-3} mas"
+                    resumen += f" y {len(errores)-3} más"
             if sobran:
-                resumen += f". Quedan {sobran} sin procesar (tope de {TOPE} por peticion): repite la operacion."
+                resumen += f". Quedan {sobran} sin procesar (tope de {TOPE} por petición): repite la operación."
             return self._redirect(cuar_aviso_url(resumen + corte))
         if ruta == "/cuarentena/excluir-destino":
             if not self._operador():
@@ -19456,9 +19470,9 @@ class H(BaseHTTPRequestHandler):
                 clave = (q.get("ip", [""])[0]).strip()
                 ip = ip_de(clave); rt = _router_de_pid(rid_de(clave))
                 try: ipaddress.ip_address(ip)
-                except Exception: return self._redirect(cuar_aviso_url("IP invalida"))
+                except Exception: return self._redirect(cuar_aviso_url("IP inválida"))
                 if not _destino_ok(clave):
-                    return self._redirect(cuar_aviso_url("destino no valido: hace falta el nodo de la IP (nodo|IP) y que ese punto exista"))
+                    return self._redirect(cuar_aviso_url("destino no válido: hace falta el nodo de la IP (nodo|IP) y que ese punto exista"))
                 lst = ((cargar_enviados(MK_SENT_DNS).get(clave) or {}).get("lista")
                        or cargar_mk_de(rt).get("LIST_DNS", lst))     # la guardada al mandarla (A-05)
                 try: ok, err = mk_remove(ip, lista=lst, router=rt)
@@ -19471,17 +19485,17 @@ class H(BaseHTTPRequestHandler):
                 clave = (q.get("ip", [""])[0]).strip()
                 ip = ip_de(clave); score = (q.get("score", [""])[0]).strip()[:8]
                 try: ipaddress.ip_address(ip)
-                except Exception: return self._redirect(cuar_aviso_url("IP invalida"))
+                except Exception: return self._redirect(cuar_aviso_url("IP inválida"))
                 if not es_mi_cpe(ip):
                     return self._redirect(cuar_aviso_url(
                         f"{ip} no es de tus redes: se corta en el borde, no en la cuarentena de CPEs"))
                 if nunca_bloquear(clave):
-                    return self._redirect(cuar_aviso_url(f"{ip} esta en la lista 'Nunca bloquear'"))
+                    return self._redirect(cuar_aviso_url(f"{ip} está en la lista 'Nunca bloquear'"))
                 if not _destino_ok(clave):
-                    return self._redirect(cuar_aviso_url("destino no valido: hace falta el nodo de la IP (nodo|IP) y que ese punto exista"))
+                    return self._redirect(cuar_aviso_url("destino no válido: hace falta el nodo de la IP (nodo|IP) y que ese punto exista"))
                 rt = _router_de_pid(rid_de(clave)); dr = cargar_mk_de(rt)
                 if not mk_listo(dr):
-                    return self._redirect(cuar_aviso_url("Ese MikroTik no esta habilitado para enviar"))
+                    return self._redirect(cuar_aviso_url("Ese MikroTik no está habilitado para enviar"))
                 lst = dr.get("LIST_DNS", lst); ttl = _ttl_efectivo(dr, "TTL_DNS")
                 _vieja = evidencia_sin_confirmar(clave, q)
                 if _vieja:
@@ -19500,7 +19514,7 @@ class H(BaseHTTPRequestHandler):
             # enviar-todos DNS: repartido por nodo, con resultado por nodo
             if not (q.get("nodo", [""])[0] or "").strip():
                 return self._html(_pagina_error("Falta el nodo", "El formulario no dice de que nodo es la "
-                                                "lista: no se envio nada. Recarga la pagina."), 400)
+                                                "lista: no se envió nada. Recarga la página."), 400)
             ok_n, resumen = _enviar_confirmados(q.get("nodo", [""])[0], "dns")
             if ok_n:
                 enviar_telegram(f"\U0001f6a8 DNS sospechoso masivo [{_hostname()}]: {ok_n} CPE confirmados (2+ pruebas) "
@@ -19537,7 +19551,7 @@ class H(BaseHTTPRequestHandler):
         if accion == "mi_foto":
             foto = q.get("avatar", [""])[0]
             if foto and foto != "__BORRAR__" and (not foto.startswith("data:image/") or len(foto) > 300_000):
-                return self._html(perfil_page("La foto no es una imagen valida o pesa demasiado.", ok=False))
+                return self._html(perfil_page("La foto no es una imagen válida o pesa demasiado.", ok=False))
             if not foto:
                 return self._html(perfil_page("Elige una imagen primero.", ok=False))
             us = cargar_usuarios()
@@ -19567,12 +19581,12 @@ class H(BaseHTTPRequestHandler):
             ya = red_cubierta_por(val, [e["red"] for e in det])
             if ya:
                 return self._html(perfil_page(
-                    f"{val} ya esta en la lista." if ya == val else f"{val} ya entra: la cubre {ya}.", ok=False))
+                    f"{val} ya está en la lista." if ya == val else f"{val} ya entra: la cubre {ya}.", ok=False))
             nueva = det + [{"red": val, "nota": nota}]
             # proteccion: no habilitar/ampliar la lista si tu IP actual queda fuera
             if not ip_en_lista(self._client_ip(), [e["red"] for e in nueva]):
                 return self._html(perfil_page(
-                    f"Agrega primero tu IP actual ({self._client_ip()}) o quedarias fuera del panel.", ok=False))
+                    f"Agrega primero tu IP actual ({self._client_ip()}) o quedarías fuera del panel.", ok=False))
             try:
                 guardar_confianza(nueva)
             except OSError as ex:
@@ -19594,7 +19608,7 @@ class H(BaseHTTPRequestHandler):
             except OSError as ex:
                 return self._html(perfil_page(f"No se pudo guardar: {ex}", ok=False))
             bitacora("CONFIANZA-QUITADA", val)
-            extra = " La lista quedo vacia: acceso abierto con bloqueo por fallos." if not nueva else ""
+            extra = " La lista quedó vacía: acceso abierto con bloqueo por fallos." if not nueva else ""
             return self._html(perfil_page(f"IP {val} quitada de confianza.{extra}", ok=True))
         if accion == "add_user":
             # el usuario se guarda en minusculas: «Vicente» es «vicente» (y en el login se admite
@@ -19610,13 +19624,13 @@ class H(BaseHTTPRequestHandler):
             if not RE_USUARIO.match(nu):
                 # el mismo patron que `ids-panel crear-admin`: un nombre con comillas acababa
                 # dentro del JS de los modales (auditoria B-17)
-                return self._html(perfil_page("Usuario invalido: letras sin tildes ni enie, numeros, punto, guion "
-                                              "y guion bajo, sin espacios (max 32, empieza por letra o numero).",
+                return self._html(perfil_page("Usuario inválido: letras sin tildes ni eñe, números, punto, guion "
+                                              "y guion bajo, sin espacios (max 32, empieza por letra o número).",
                                               ok=False))
             if len(npw) < CLAVE_MIN:
                 return self._html(perfil_page(f"La clave del usuario debe tener al menos {CLAVE_MIN} caracteres.", ok=False))
             if foto and (not foto.startswith("data:image/") or len(foto) > 300_000):
-                return self._html(perfil_page("La foto no es una imagen valida o pesa demasiado.", ok=False))
+                return self._html(perfil_page("La foto no es una imagen válida o pesa demasiado.", ok=False))
             us = cargar_usuarios()
             if any(r.get("user") == nu for r in us):
                 return self._html(perfil_page(f"Ya existe un usuario llamado {nu}.", ok=False))
@@ -19637,7 +19651,7 @@ class H(BaseHTTPRequestHandler):
             if not obj:
                 return self._html(perfil_page("Ese usuario no existe.", ok=False))
             if obj.get("role") == "admin" and len(admins) <= 1:
-                return self._html(perfil_page("No puedes borrar el unico administrador.", ok=False))
+                return self._html(perfil_page("No puedes borrar el único administrador.", ok=False))
             if objetivo == yo:
                 return self._html(perfil_page("No puedes eliminar tu propia cuenta: pide a otro administrador "
                                               "que lo haga.", ok=False))
@@ -19656,14 +19670,14 @@ class H(BaseHTTPRequestHandler):
             objetivo = q.get("user", [""])[0]
             nrole = q.get("role", ["lectura"])[0]
             if nrole not in ROLES:
-                return self._html(perfil_page("Rol invalido.", ok=False))
+                return self._html(perfil_page("Rol inválido.", ok=False))
             us = cargar_usuarios()
             admins = [r for r in us if r.get("role") == "admin"]
             obj = next((r for r in us if r.get("user") == objetivo), None)
             if not obj:
                 return self._html(perfil_page("Ese usuario no existe.", ok=False))
             if obj.get("role") == "admin" and nrole != "admin" and len(admins) <= 1:
-                return self._html(perfil_page("No puedes quitar el rol al unico administrador.", ok=False))
+                return self._html(perfil_page("No puedes quitar el rol al único administrador.", ok=False))
             obj["role"] = nrole
             try:
                 guardar_usuarios(us)
@@ -19681,20 +19695,20 @@ class H(BaseHTTPRequestHandler):
             if _otro and _otro != objetivo:
                 return self._html(perfil_page(
                     "El usuario no se puede cambiar (solo su clave, nombre, correo, rol y foto). "
-                    "Si hace falta otro usuario, crealo y elimina este.", ok=False))
+                    "Si hace falta otro usuario, créalo y elimina este.", ok=False))
             nombre = (q.get("nombre", [""])[0]).strip()[:60]
             correo = (q.get("correo", [""])[0]).strip()[:80]
             nrole = q.get("role", ["lectura"])[0]
             npw = q.get("npass", [""])[0]
             if nrole not in ROLES:
-                return self._html(perfil_page("Rol invalido.", ok=False))
+                return self._html(perfil_page("Rol inválido.", ok=False))
             us = cargar_usuarios()
             admins = [r for r in us if r.get("role") == "admin"]
             obj = next((r for r in us if r.get("user") == objetivo), None)
             if not obj:
                 return self._html(perfil_page("Ese usuario no existe.", ok=False))
             if obj.get("role") == "admin" and nrole != "admin" and len(admins) <= 1:
-                return self._html(perfil_page("No puedes quitar el rol al unico administrador.", ok=False))
+                return self._html(perfil_page("No puedes quitar el rol al único administrador.", ok=False))
             foto = q.get("avatar", [""])[0]
             if npw:
                 if len(npw) < CLAVE_MIN:
@@ -19704,7 +19718,7 @@ class H(BaseHTTPRequestHandler):
                 obj["avatar"] = ""
             elif foto:
                 if not foto.startswith("data:image/") or len(foto) > 300_000:
-                    return self._html(perfil_page("La foto no es una imagen valida o pesa demasiado.", ok=False))
+                    return self._html(perfil_page("La foto no es una imagen válida o pesa demasiado.", ok=False))
                 obj["avatar"] = foto
             obj["nombre"] = nombre; obj["correo"] = correo; obj["role"] = nrole
             try:
@@ -19731,7 +19745,7 @@ class H(BaseHTTPRequestHandler):
             act_admins = [r for r in us if r.get("role") == "admin" and r.get("activo", True)]
             va_desactivar = obj.get("activo", True)
             if va_desactivar and obj.get("role") == "admin" and len(act_admins) <= 1:
-                return self._html(perfil_page("No puedes desactivar el unico administrador activo.", ok=False))
+                return self._html(perfil_page("No puedes desactivar el único administrador activo.", ok=False))
             obj["activo"] = not va_desactivar
             try:
                 guardar_usuarios(us)
@@ -19743,7 +19757,7 @@ class H(BaseHTTPRequestHandler):
                     return self._redirect("/login", cookie="sid=; Path=/; Max-Age=0")
             estado = "activado" if obj["activo"] else "desactivado"
             return self._html(perfil_page(f"Usuario '{objetivo}' {estado}.", ok=True))
-        return self._html(perfil_page("Accion no reconocida.", ok=False))
+        return self._html(perfil_page("Acción no reconocida.", ok=False))
 
     def _post_exclusiones(self, q):
         import ipaddress
@@ -19755,7 +19769,7 @@ class H(BaseHTTPRequestHandler):
             try:
                 data = json.loads(q.get("json", [""])[0])
             except Exception:
-                return self._html(exclusiones_page("El archivo no es JSON valido.", ok=False))
+                return self._html(exclusiones_page("El archivo no es JSON válido.", ok=False))
             if not isinstance(data, list):
                 return self._html(exclusiones_page("El JSON debe ser una lista de exclusiones.", ok=False))
             limpio = []
@@ -19798,12 +19812,12 @@ class H(BaseHTTPRequestHandler):
                 todas = cargar_exclusiones(incluir_vencidas=True)
                 objetivo = todas[idx]
                 if objetivo.get("motivo") == "(conf)":
-                    return self._html(exclusiones_page("Esa exclusion esta en el archivo .conf; quitala alli.", ok=False))
+                    return self._html(exclusiones_page("Esa exclusión está en el archivo .conf; quítala allí.", ok=False))
                 propias = [r for r in propias if not (r["ip"] == objetivo["ip"] and r["tipo"] == objetivo["tipo"]
                            and r["puertos"] == objetivo["puertos"] and r.get("sid", "") == objetivo.get("sid", "")
                            and (r.get("nodo") or "") == (objetivo.get("nodo") or ""))]
                 guardar_exclusiones(propias)
-                return self._html(exclusiones_page("Exclusion eliminada.", ok=True))
+                return self._html(exclusiones_page("Exclusión eliminada.", ok=True))
             except Exception:
                 return self._html(exclusiones_page("No se pudo eliminar.", ok=False))
         # agregar
@@ -19821,15 +19835,15 @@ class H(BaseHTTPRequestHandler):
         try:
             ipaddress.ip_address(ip)
         except ValueError:
-            return self._html(exclusiones_page("IP invalida.", ok=False))
+            return self._html(exclusiones_page("IP inválida.", ok=False))
         if sid and not sid.isdigit():
-            return self._html(exclusiones_page("La firma (SID) debe ser un numero (o vacio).", ok=False))
+            return self._html(exclusiones_page("La firma (SID) debe ser un número (o vacío).", ok=False))
         puertos = []
         for p in pts_raw.replace(";", ",").split(","):
             p = p.strip()
             if p:
                 if not p.isdigit() or not (0 < int(p) < 65536):
-                    return self._html(exclusiones_page(f"Puerto invalido: {p}", ok=False))
+                    return self._html(exclusiones_page(f"Puerto inválido: {p}", ok=False))
                 puertos.append(int(p))
         editar = q.get("editar", [""])[0]
         edit_idx = int(editar) if (editar.isdigit() and int(editar) < len(propias)) else None
@@ -19872,7 +19886,7 @@ class H(BaseHTTPRequestHandler):
                 dup, txt = _redundante(r.get("puertos"))
                 if dup:
                     return self._html(exclusiones_page(
-                        f"Esa IP ya esta excluida como {tlabel} en {txt}: {ip}. No se agrego para no duplicar.",
+                        f"Esa IP ya está excluida como {tlabel} en {txt}: {ip}. No se agregó para no duplicar.",
                         ok=False, edit_idx=edit_idx))
         # tambien si ya viene excluida por el archivo .conf (legacy, no editable aqui)
         for r in cargar_exclusiones():
@@ -19882,13 +19896,13 @@ class H(BaseHTTPRequestHandler):
                 dup, txt = _redundante(r.get("puertos"))
                 if dup:
                     return self._html(exclusiones_page(
-                        f"Esa IP ya esta excluida por configuracion (.conf) como {tlabel} en {txt}: {ip}.", ok=False))
+                        f"Esa IP ya está excluida por configuración (.conf) como {tlabel} en {txt}: {ip}.", ok=False))
         if edit_idx is not None:
             propias[edit_idx] = nueva
-            msg_ok = f"Exclusion actualizada: {ip}."
+            msg_ok = f"Exclusión actualizada: {ip}."
         else:
             propias.append(nueva)
-            msg_ok = f"Exclusion agregada: {ip}."
+            msg_ok = f"Exclusión agregada: {ip}."
         try:
             guardar_exclusiones(propias)
         except OSError as ex:

@@ -120,7 +120,7 @@ def main():
     # --- lo que NUNCA se bloquea como destino ---
     ok, porque = ns["destino_bloqueable"]("10.6.1.10")
     check("una IP de abonado no se puede bloquear como destino", not ok, porque)
-    check("y se dice que no es publica", "publica" in porque, porque)
+    check("y se dice que no es publica", "pública" in porque, porque)
     # el caso que de verdad importa: una IP PUBLICA que es TUYA (tu rango de NAT).
     # Pasa el filtro de "es publica" y aun asi hay que frenarla.
     ok2, porque2 = ns["destino_bloqueable"]("190.0.2.7")

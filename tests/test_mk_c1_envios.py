@@ -104,7 +104,7 @@ class RenovarCaducidad(_Base):
         with self._sesion() as (s, _dd):
             ok, msg = self.d._mk_add_en(s, self.ip, "lista-x", "", "nuevo")
         self.assertFalse(ok)
-        self.assertIn("rechazo volver a anadirla", msg)
+        self.assertIn("rechazó volver a añadirla", msg)
         self.assertEqual(self.entradas("p001", "lista-x", self.ip), [])
 
     def test_mk_add_por_fuera_renueva_y_sigue_siendo_exito(self):
@@ -194,7 +194,7 @@ class EnvioMasivo(_Base):
         n, msg = self.d._enviar_confirmados(self.d.nodos.TODOS, "cuar")
         self.assertEqual(n, 2, msg)           # la primera de p001 y la de p002
         self.assertIn("norte: 1 enviado(s), 1 con error (timed out", msg)
-        self.assertIn("se corto el envio a este nodo", msg)
+        self.assertIn("se cortó el envío a este nodo", msg)
         self.assertIn("2 sin enviar", msg)    # la que fallo y la que ya no se intento
         self.assertFalse(self.en_router("p001", IPS1[2]))           # no se siguio con la tercera
         self.assertIn("sur: 1 enviado(s)", msg)

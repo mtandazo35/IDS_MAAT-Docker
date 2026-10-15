@@ -112,7 +112,7 @@ def main():
         w("192.0.2.1", 8729, 3); msg_ip = ""
     except IOError as ex:
         msg_ip = str(ex)
-    check("  un host IP (no unix:) se rechaza sin abrir nada", "rele" in msg_ip and not tcp and not probados,
+    check("  un host IP (no unix:) se rechaza sin abrir nada", "relé" in msg_ip and not tcp and not probados,
           (msg_ip, tcp, probados))
 
     # ningun cifrado vale: el mensaje trae los tres motivos, no solo el ultimo

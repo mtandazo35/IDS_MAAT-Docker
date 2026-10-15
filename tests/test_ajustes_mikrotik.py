@@ -34,7 +34,7 @@ class AjustesMikrotik(unittest.TestCase):
         self.assertEqual(st, 200)
         ini = h.index("MikroTik &mdash; cuarentena")
         card = h[ini:h.index("</section>", ini)]
-        for fuera in ("name=user", "name=pass", "name=enabled", "name=nodo", "mktest", "Probar conexion"):
+        for fuera in ("name=user", "name=pass", "name=enabled", "name=nodo", "mktest", "Probar conexión"):
             self.assertNotIn(fuera, card)
         for pid in ("p001", "p002"):
             self.assertIn("href='/puntos/%s#api'" % pid, card)
