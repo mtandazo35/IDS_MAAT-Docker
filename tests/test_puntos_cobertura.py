@@ -90,6 +90,11 @@ class Cobertura(_Base):
         self.assertEqual(c["pct_fuera"], 30.0)
         self.assertEqual(c["sugeridas"], ["172.16.33.0/24", "100.70.0.0/24"])
         self.assertIn(("10.20.60.0/24", 3), c["fuera"])
+        # en el aviso, la red suelta no sale como «1 %»: va junta con las demás de menos del 1 %
+        h = self.p.pw.cobertura_html(c)
+        self.assertIn("<b>172.16.33.0/24</b> (25 %), <b>100.70.0.0/24</b> (5 %) y 1 red con menos del 1 % "
+                      "cada una. El Suricata", h)
+        self.assertNotIn("10.20.60.0/24", h)
 
     def test_poco_fuera_o_poca_muestra_no_avisa(self):
         """Conservación: 10 % fuera no avisa; menos de COB_MIN_MUESTRA IPs, None."""

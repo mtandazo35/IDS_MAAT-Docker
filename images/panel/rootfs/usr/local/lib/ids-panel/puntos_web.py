@@ -573,11 +573,17 @@ def cobertura_html(cob):
     if not fuera_de_prefijos(cob):
         return ""
     total = cob["muestra"]
-    lista = ", ".join("<b>%s</b> (%d %%)" % (esc(r), max(1, round(100.0 * n / total)))
-                      for r, n in cob["fuera"][:COB_MAX_SUGERIDAS])
-    resto = len(cob["fuera"]) - COB_MAX_SUGERIDAS
-    if resto > 0:
-        lista += " y %d red%s más" % (resto, "" if resto == 1 else "es")
+    # con su % solo las que pesan (las mismas que el boton); las sueltas, juntas: un «1 %»
+    # redondeado hacia arriba hacia parecer importante una red con tres IPs
+    grandes = [(r, 100.0 * n / total) for r, n in cob["fuera"] if 100.0 * n / total >= COB_SUGERIR_PCT]
+    partes = ["<b>%s</b> (%d %%)" % (esc(r), round(pc)) for r, pc in grandes[:COB_MAX_SUGERIDAS]]
+    mas = len(grandes) - COB_MAX_SUGERIDAS
+    if mas > 0:
+        partes.append("%d red%s más" % (mas, "" if mas == 1 else "es"))
+    sueltas = len(cob["fuera"]) - len(grandes)
+    if sueltas:
+        partes.append("%d red%s con menos del 1 %% cada una" % (sueltas, "" if sueltas == 1 else "es"))
+    lista = ", ".join(partes[:-1]) + " y " + partes[-1] if len(partes) > 1 else "".join(partes)
     if cob["dentro"]:
         cabeza = ("El %d %% del tráfico que llega por el espejo es de redes que no están en los prefijos "
                   "de este punto" % round(cob["pct_fuera"]))
