@@ -400,9 +400,14 @@ def _cuenta_alertas(f, ahora, inicio_cortado):
 
 
 def alertas_24h(pid, ahora=None):
-    """(alertas de las ultimas 24 h, completo) leyendo el final del eve.json vivo con tope REAL
-    de bytes (no solo el seek inicial). Un eve.json que no es fichero regular o cuya ruta real
-    sale de datos/<pid> no se abre: (0, True) (B-09)."""
+    """(alertas de las ultimas 24 h, completo). Manda el recuento del orquestador
+    (alertas_24h_orq): con espejo real, 8 MB del eve vivo son pocos minutos y el «0+» que salia no
+    eran 24 h. Sin el (orquestador de antes), el final del eve.json vivo con tope REAL de bytes
+    (no solo el seek inicial). Un eve.json que no es fichero regular o cuya ruta real sale de
+    datos/<pid> no se abre: (0, True) (B-09)."""
+    a = alertas_24h_orq(nodos.punto(pid))
+    if a:
+        return a["n"], a["completo"]
     ahora = ahora or time.time()
     ok = eventos_web._fichero_seguro(pid, "eve.json")
     if not ok:
@@ -429,6 +434,168 @@ def alertas_24h(pid, ahora=None):
         pass
     _ALERTAS[pid] = (marca, (n, completo), ahora)
     return n, completo
+
+
+def alertas_24h_orq(punto):
+    """{"n", "desde", "completo"} que publica el orquestador en estado.json (el contador de
+    alertas del Suricata del punto, en cubos de 5 min), o None si no lo publica (orquestador de
+    antes, o el Suricata aun sin estadisticas)."""
+    a = (punto or {}).get("alertas_24h")
+    if not isinstance(a, dict):
+        return None
+    n = a.get("n")
+    if not isinstance(n, int) or isinstance(n, bool) or n < 0:
+        return None
+    return {"n": n, "desde": _a_epoch(a.get("desde")), "completo": bool(a.get("completo"))}
+
+
+def _desde_txt(t, ahora):
+    """«las 17:05» si es de hoy; «el 14/10 17:05» si no."""
+    lt = time.localtime(t)
+    if time.strftime("%Y-%m-%d", lt) == time.strftime("%Y-%m-%d", time.localtime(ahora)):
+        return time.strftime("las %H:%M", lt)
+    return time.strftime("el %d/%m %H:%M", lt)
+
+
+def alertas_24h_html(pid, ahora=None, punto=None):
+    """(html de la celda «Alertas 24 h», numero). Si el orquestador aun no lleva 24 h contando
+    (punto nuevo, o recien puesto el recuento) se dice desde cuando cuenta; el recuento de reserva
+    (cola del eve) lleva «+» cuando no llega a cubrir las 24 h."""
+    ahora = ahora or time.time()
+    a = alertas_24h_orq(punto if punto is not None else nodos.punto(pid))
+    if a:
+        if a["completo"] or not a["desde"]:
+            return _num(a["n"]), a["n"]
+        return ("%s <span class=hint>desde %s</span>" % (_num(a["n"]), esc(_desde_txt(a["desde"], ahora))),
+                a["n"])
+    n, completo = alertas_24h(pid, ahora)
+    return _num(n) + ("" if completo else "+"), n
+
+
+# Redes del espejo fuera de los prefijos. Suricata solo trata como abonados ($HOME_NET) los
+# prefijos del punto, y casi todas las reglas miran $HOME_NET -> $EXTERNAL_NET o al reves: si el
+# MikroTik espeja otras redes (espejo puesto a mano, prefijos mal copiados), el punto sale sano y
+# con 0 alertas para siempre (lab, p001, 2026-10-15). Se mira una muestra del eve vivo.
+COB_TOPE_BYTES = 4 * 1024 * 1024     # final del eve.json vivo que se mira (miles de eventos)
+COB_MIN_MUESTRA = 200                # IPs privadas minimas para opinar
+COB_AVISO_PCT = 20                   # desde este % de IPs privadas fuera de los prefijos: aviso
+COB_SUGERIR_PCT = 1                  # una /24 se sugiere si pasa de este % de la muestra
+COB_MAX_SUGERIDAS = 8
+COB_CACHE_S = 300
+_COB = {}                            # pid -> (ts, resultado)
+_RE_IP_EVE = re.compile(rb'"(?:src|dest)_ip":"(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})"')
+# Redes de abonado de un ISP: RFC 1918 y CGNAT. No `is_private` de Python, que mete tambien las
+# de documentacion y pruebas (192.0.2/24, 198.18/15, 198.51.100/24, 203.0.113/24...).
+_REDES_ABONADO = tuple(ipaddress.ip_network(r) for r in
+                       ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "100.64.0.0/10"))
+
+
+def _ip_de_abonado(ip):
+    """IPv4Address si `ip` puede ser de un abonado (RFC 1918 o CGNAT), si no None."""
+    try:
+        a = ipaddress.IPv4Address(ip)
+    except ValueError:
+        return None
+    return a if any(a in r for r in _REDES_ABONADO) else None
+
+
+def cobertura_prefijos(pid, punto=None, ahora=None):
+    """Que parte del trafico espejado cae dentro de los prefijos del punto, de una muestra del
+    final del eve.json vivo (src_ip y dest_ip de cada evento: tls, http, alertas...). Cuenta solo
+    IPs de abonado posibles (RFC 1918 o CGNAT) y deja fuera la red del tunel del punto.
+
+    None si no hay eve o la muestra es pequeña; si no, {"muestra", "dentro", "pct_fuera",
+    "fuera": [(red /24, veces)] de mas a menos, "sugeridas": [red /24]} (las /24 de fuera que
+    pasan de COB_SUGERIR_PCT, como mucho COB_MAX_SUGERIDAS). Cache de COB_CACHE_S por punto."""
+    ahora = ahora or time.time()
+    c = _COB.get(pid)
+    if c and 0 <= ahora - c[0] < COB_CACHE_S:
+        return c[1]
+    p = punto if punto is not None else (nodos.punto(pid) or {})
+    redes = []
+    for r in p.get("redes") or []:
+        try:
+            redes.append(ipaddress.ip_network(str(r), strict=False))
+        except ValueError:
+            pass
+    try:
+        tunel = ipaddress.ip_network(str(p.get("tun_net")), strict=False) if p.get("tun_net") else None
+    except ValueError:
+        tunel = None
+    res = None
+    ok = eventos_web._fichero_seguro(pid, "eve.json")
+    if ok:
+        real, st = ok
+        try:
+            with eventos_web._abrir(real, st) as f:
+                if st.st_size > COB_TOPE_BYTES:
+                    f.seek(st.st_size - COB_TOPE_BYTES)
+                    f.readline(MAX_LINEA + 1)          # la primera, cortada
+                bloque = f.read(COB_TOPE_BYTES)
+        except OSError:
+            bloque = b""
+        vistas = {}
+        for m in _RE_IP_EVE.finditer(bloque):
+            ip = m.group(1)
+            vistas[ip] = vistas.get(ip, 0) + 1
+        dentro, fuera, muestra = 0, {}, 0
+        for ip, n in vistas.items():
+            a = _ip_de_abonado(ip.decode("ascii"))
+            if a is None or (tunel is not None and a in tunel):
+                continue
+            muestra += n
+            if any(a in r for r in redes):
+                dentro += n
+            else:
+                red = str(ipaddress.ip_network("%s/24" % a, strict=False))
+                fuera[red] = fuera.get(red, 0) + n
+        if muestra >= COB_MIN_MUESTRA:
+            orden = sorted(fuera.items(), key=lambda kv: (-kv[1], kv[0]))
+            res = {"muestra": muestra, "dentro": dentro,
+                   "pct_fuera": round(100.0 * (muestra - dentro) / muestra, 1), "fuera": orden,
+                   "sugeridas": [r for r, n in orden if 100.0 * n / muestra >= COB_SUGERIR_PCT]
+                   [:COB_MAX_SUGERIDAS]}
+    _COB[pid] = (ahora, res)
+    return res
+
+
+def fuera_de_prefijos(cob):
+    """Texto corto para la salud («62 % del tráfico espejado fuera de los prefijos») si la
+    cobertura pasa del umbral del aviso; "" si no."""
+    if not cob or cob.get("pct_fuera", 0) < COB_AVISO_PCT:
+        return ""
+    return "%d %% del tráfico espejado fuera de los prefijos" % round(cob["pct_fuera"])
+
+
+def cobertura_html(cob):
+    """Aviso de la ficha: que redes llegan por el espejo sin estar en los prefijos, y un boton que
+    las añade al cuadro de Prefijos (no guarda: el admin revisa y pulsa «Guardar prefijos»)."""
+    if not fuera_de_prefijos(cob):
+        return ""
+    total = cob["muestra"]
+    lista = ", ".join("<b>%s</b> (%d %%)" % (esc(r), max(1, round(100.0 * n / total)))
+                      for r, n in cob["fuera"][:COB_MAX_SUGERIDAS])
+    resto = len(cob["fuera"]) - COB_MAX_SUGERIDAS
+    if resto > 0:
+        lista += " y %d red%s más" % (resto, "" if resto == 1 else "es")
+    if cob["dentro"]:
+        cabeza = ("El %d %% del tráfico que llega por el espejo es de redes que no están en los prefijos "
+                  "de este punto" % round(cob["pct_fuera"]))
+    else:
+        cabeza = "Nada del tráfico que llega por el espejo es de los prefijos de este punto"
+    boton = ""
+    if cob["sugeridas"]:
+        boton = ("<div class=acciones><button type=button class=btn data-redes='%s' onclick=\"var t="
+                 "document.querySelector('#prefijos textarea[name=redes]');if(t){var v=t.value.split(/\\s+/)"
+                 ".filter(Boolean);this.dataset.redes.split(' ').forEach(function(x){if(v.indexOf(x)<0)"
+                 "v.push(x)});t.value=v.join('\\n');t.scrollIntoView({behavior:'smooth',block:'center'});"
+                 "t.focus()}return false\">Añadir estas redes a los prefijos</button></div>"
+                 % esc(" ".join(cob["sugeridas"])))
+    return ("<div class='aviso amb'><b>%s</b>: %s. El Suricata solo trata como abonados los prefijos "
+            "(<code>$HOME_NET</code>) y casi todas las reglas miran ese tráfico: los equipos de esas redes "
+            "no dan alertas. Si son redes de tus abonados, añádelas a los prefijos y guárdalos (el "
+            "Suricata del punto se reinicia). <span class=hint>Muestra: %s IPs de los últimos eventos."
+            "</span>%s</div>" % (esc(cabeza), lista, _num(total), boton))
 
 
 def _leer_json_pequeno(ruta, tope):
@@ -860,7 +1027,7 @@ def lista(h, consulta):
         ip_mikrotik(p)               # apunta la IP del MikroTik conectado (la ficha la ofrece al desbanear)
         sal = salud(fn, pid)
         pps, ultimo = espejo_pps(pid)
-        n24, completo = alertas_24h(pid, ahora)
+        celda_24, n24 = alertas_24h_html(pid, ahora, p)
         cont = p.get("contenedores") or {}
         su = p.get("suricata") or {}
         estado = ESTADOS.get(p.get("estado"), p.get("estado") or "-")
@@ -888,14 +1055,14 @@ def lista(h, consulta):
             "<td>%s%s</td>"
             "<td><div class='tw-flex tw-items-center tw-gap-2'>%s<span class='tw-flex tw-gap-1'>%s</span></div>"
             "<div class=hint>%s</div></td>"
-            "<td>%s</td><td>%s</td><td>%s%s</td><td class=num>%s%s</td><td>%s</td><td>%s</td></tr>"
+            "<td>%s</td><td>%s</td><td>%s%s</td><td class=num>%s</td><td>%s</td><td>%s</td></tr>"
             % (esc(pid), esc(p.get("nombre") or pid), esc(pid), esc(estado), avisos,
                salud_chip(sal), puntos_etapas, esc(sal.get("nota") or ""),
                pill_vpn(p),
                ("%.0f paq/s" % pps if pps is not None else "-")
                + (("<div class=hint>hace %s</div>" % _edad(ahora - ultimo)) if ultimo else ""),
                esc(_contenedor(cont.get("suricata"))), descarte,
-               _num(n24), "+" if not completo else "",
+               celda_24,
                retencion_html(retencion(pid, p), ahora), _acciones_fila(p)))
     if not filas:
         filas = ("<tr><td colspan=9 class=hint style='padding:16px'>Todavía no hay puntos. "
@@ -2309,7 +2476,6 @@ def ficha(h, pid, mensaje="", codigo=200, ok=False, extra_espejo=""):
     su = p.get("suricata") or {}
     vc = p.get("vpn_cliente") or {}
     cont = p.get("contenedores") or {}
-    n24, completo = alertas_24h(pid, ahora)
     sit = situacion_vpn(p)
     if sit["clave"] == "conectada":
         mk_txt = "conectado desde %s" % esc(vc.get("ip_real") or "?")
@@ -2339,7 +2505,7 @@ def ficha(h, pid, mensaje="", codigo=200, ok=False, extra_espejo=""):
              + (" &middot; último hace %s" % _edad(ahora - ultimo) if ultimo else "")),
             ("Suricata", esc(_contenedor(cont.get("suricata"))) + " &middot; %s / %s paquetes vistos/descartados"
              % (_num(su.get("kernel_packets")), _num(su.get("kernel_drops")))),
-            ("Alertas 24 h", "<a href='/eventos?nodo=%s'>%s%s</a>" % (esc(pid), _num(n24), "+" if not completo else "")),
+            ("Alertas 24 h", "<a href='/eventos?nodo=%s'>%s</a>" % (esc(pid), alertas_24h_html(pid, ahora, p)[0])),
             ("Retención efectiva", retencion_html(retencion(pid, p), ahora)),
             ("Puerto VPN / red del túnel", esc("%s/tcp · %s" % (p.get("puerto") or "-", p.get("tun_net") or "-"))),
             ("Perfil / RouterOS", esc("%s · %s" % (p.get("perfil") or "-", ros_txt(p.get("ros_version"))))),
@@ -2473,7 +2639,7 @@ def ficha(h, pid, mensaje="", codigo=200, ok=False, extra_espejo=""):
         "<nav class=secnav><a href='#resumen'>Resumen</a><a href='#vpn'>VPN</a><a href='#api'>API</a>"
         "<a href='#espejo'>Espejo</a><a href='#prefijos'>Prefijos</a><a href='/puntos/%s/logs?parte=vpn'>Logs</a>"
         "<a href='#baja'>Baja</a></nav>"
-        "<section class=card id=resumen><h2>Resumen</h2><div class=datos>%s</div>"
+        "<section class=card id=resumen><h2>Resumen</h2><div class=datos>%s</div>%s"
         "<h3 style='font-size:14px'>Salud por etapas</h3>%s</section>"
         "<section class=card><h2>Servicio</h2><div class=acciones>%s</div>%s</section>"
         "<section class=card id=vpn><h2>VPN: comandos para el MikroTik</h2>%s</section>"
@@ -2483,7 +2649,7 @@ def ficha(h, pid, mensaje="", codigo=200, ok=False, extra_espejo=""):
         "<div id=baja>%s</div>%s"
         % (esc(nombre), esc(pid), aviso(mensaje, "ok" if ok else "err"), caja_error,
            "" if p else aviso("El punto aún no aparece en el estado del orquestador (se actualiza cada 15 s).", "info"),
-           esc(pid), datos, salud_etapas_html(sal), serv, desbanear_html(p, pid), vpn_html, api_html, espejo_html,
+           esc(pid), datos, cobertura_html(cobertura_prefijos(pid, p, ahora)), salud_etapas_html(sal), serv, desbanear_html(p, pid), vpn_html, api_html, espejo_html,
            pref_html, baja,
            _retomar_html(d, pid)))
     # lleva la clave de la VPN: ni el navegador ni un proxy la guardan (como la pagina de la operacion)

@@ -5332,11 +5332,15 @@ def salud_punto(pid):
         estado, motivo = "sin datos", "llega el espejo pero el Suricata no publica sus estadísticas"
     elif not (tz_ok and isinstance(kp, int) and kp > 0):
         estado, motivo = "sin datos", "VPN arriba pero no llega espejo procesado"
-    elif all(e["ok"] for e in et.values()):
-        estado, motivo = "operativa", "todas las etapas al día"
     else:
-        estado = "degradada"
-        motivo = ", ".join(nom for k, nom in _ETAPAS if not et[k]["ok"])
+        # con espejo, si buena parte es de redes fuera de los prefijos el punto no es «operativo»
+        # aunque todas las etapas esten bien: sale sano y sin alertas (lab, p001, 2026-10-15)
+        fuera = puntos_web.fuera_de_prefijos(puntos_web.cobertura_prefijos(pid, p, now))
+        malas = [nom for k, nom in _ETAPAS if not et[k]["ok"]]
+        if not malas and not fuera:
+            estado, motivo = "operativa", "todas las etapas al día"
+        else:
+            estado, motivo = "degradada", ", ".join(malas + ([fuera] if fuera else []))
     etapas = [dict(et[k], id=k, nombre=nom) for k, nom in _ETAPAS]
     return {"pid": pid, "nombre": nodos.nombre(pid), "estado": estado, "motivo": motivo,
             "nota": motivo, "etapas": etapas, "etapas_por_id": et, "captura": captura,
@@ -12469,6 +12473,18 @@ de puertos, Telnet/Mirai, fuerza bruta SSH de un CPE) solo disparan si la IP de 
 los <b>prefijos del punto</b> (su <code>HOME_NET</code>).</p>
 <p><b>Síntoma típico:</b> la etapa <b>Espejo TZSP</b> del punto está bien pero el panel se ve casi vacío.
 Casi siempre es que los prefijos no incluyen las redes de tus clientes.</p>
+<p>El panel lo detecta solo: mira una muestra de los últimos eventos del punto y cuenta las IPs de
+abonado (redes privadas <code>10.x</code>, <code>172.16-31.x</code>, <code>192.168.x</code> y CGNAT
+<code>100.64-127.x</code>) que están fuera de sus prefijos. Si son el 20 % o más:</p>
+<ul>
+<li>la ficha del punto lo dice en el <b>Resumen</b> con un aviso ámbar: qué redes <code>/24</code> llegan
+y qué parte del tráfico son;</li>
+<li>la salud del punto pasa a <b>degradada</b> con el motivo «N % del tráfico espejado fuera de los
+prefijos»;</li>
+<li>el botón <b>Añadir estas redes a los prefijos</b> las pone en el cuadro de <b>Prefijos</b> (solo
+las que pesan al menos el 1 %). <b>No guarda nada</b>: revisa la lista, quita lo que no sea de
+abonados (servidores, gestión) y pulsa <b>Guardar prefijos</b>.</li>
+</ul>
 <p>Los prefijos se eligen al dar de alta el punto y se cambian en su ficha (<b>Prefijos</b>): el
 orquestador <b>reinicia el Suricata del punto</b> para que tome los nuevos (mientras dura el reinicio ese
 punto no inspecciona nada) y después hay que <b>volver a aplicar el espejo</b> para
@@ -12543,8 +12559,14 @@ falla. El motivo sale al lado.</li>
 <b>Suricata del punto</b> está parado, reiniciándose en bucle o enfermo, haya conectado o no el MikroTik:
 no se queda en ámbar como si fuera lo normal tras un alta.</li>
 <li><b>operativa</b> (verde), <b>degradada</b>, <b>sin datos</b>, <b>deshabilitada</b> (punto parado) y
-<b>desconocido</b> (sin estado reciente del orquestador).</li>
+<b>desconocido</b> (sin estado reciente del orquestador). <b>Degradada</b> también sale con todas las
+etapas bien si buena parte del espejo es de redes fuera de los prefijos (ver "Prefijos: por qué a
+veces no se ven datos").</li>
 </ul>
+<p><b>Alertas 24 h</b> (en Puntos y en la ficha) las cuenta el orquestador con el contador de alertas
+del Suricata del punto, en tramos de 5 minutos. Mientras aún no lleva 24 horas contando (punto nuevo
+o recién actualizado) dice <b>desde cuándo</b> cuenta. Si el número sale con <b>+</b>, el orquestador
+es de antes de este recuento: es un mínimo, sacado del final del registro de eventos.</p>
 <p>Cuenta la <b>salud</b> de cada contenedor y no solo que esté en marcha: una VPN en marcha pero
 enferma es una VPN caída. Y si el registro de la VPN lleva más de 45 s sin actualizarse, el MikroTik no
 se da por conectado. Una VPN arriba, un contenedor en marcha o cero alertas <b>no</b> son «sano» por sí

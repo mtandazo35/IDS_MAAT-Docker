@@ -101,6 +101,9 @@ MAX_RESPALDOS_FW = 20
 RETENCION_DIAS = 30                  # CONTRATO-F2 §9: objetivo de días de eve.json/dns.json por punto
 DISCO_MIN_LIBRE_PCT = 15             # por debajo, se borran antes de tiempo los rotados más viejos
 INTERVALO_PODA_S = 86400             # poda por fecha: una vez al día (y al arrancar)
+ALERTAS_VENTANA_S = 86400            # alertas_24h de estado.json (§5.10)
+ALERTAS_CUBO_S = 300                 # ... en cubos de 5 min en /srv/ids/estado/alertas.json
+ALERTAS_GUARDAR_S = 60               # alertas.json se reescribe como mucho una vez por minuto
 MAX_THRESHOLD = 256 * 1024
 MAX_LINEAS_THRESHOLD = 5000
 MAX_LINEA_THRESHOLD = 4096           # Suricata lee el threshold.config con líneas de 8191 bytes (A-23)
@@ -1147,7 +1150,17 @@ def _ts_suricata(txt):
 
 
 STATS_VACIO = {"stats_edad_s": None, "reglas_cargadas": None, "reglas_fallidas": None,
-               "kernel_packets": None, "kernel_drops": None}
+               "kernel_packets": None, "kernel_drops": None, "alertas": None}
+
+
+def _contador(v):
+    """Un contador de Suricata como entero no negativo, o None si falta o no es un número."""
+    if isinstance(v, bool) or not isinstance(v, (int, float)):
+        return None
+    try:
+        return int(v) if v >= 0 else None
+    except (ValueError, OverflowError):        # Infinity (json.loads lo admite; NaN ya no pasa)
+        return None
 
 
 def _ultimo_stats(path, tope, t):
@@ -1162,13 +1175,16 @@ def _ultimo_stats(path, tope, t):
         except ValueError:
             continue
         st = ev.get("stats") or {}
-        motores = ((st.get("detect") or {}).get("engines")) or []
+        det = st.get("detect") or {}
+        motores = det.get("engines") or []
         cap = st.get("capture") or {}
         ts = _ts_suricata(ev.get("timestamp"))
         return ts, {"stats_edad_s": max(0, t - ts) if ts else None,
                     "reglas_cargadas": sum(int(m.get("rules_loaded", 0)) for m in motores) if motores else None,
                     "reglas_fallidas": sum(int(m.get("rules_failed", 0)) for m in motores) if motores else None,
-                    "kernel_packets": cap.get("kernel_packets"), "kernel_drops": cap.get("kernel_drops")}
+                    "kernel_packets": cap.get("kernel_packets"), "kernel_drops": cap.get("kernel_drops"),
+                    # acumulado desde que arrancó este Suricata (vuelve a 0 al reiniciarlo): alertas_24h
+                    "alertas": _contador(det.get("alert"))}
     return None
 
 
@@ -1201,6 +1217,40 @@ def leer_stats_punto(datos, t):
     if leido:
         return mejor[1] if mejor else dict(STATS_VACIO)
     return leer_stats_eve(datos / "eve.json", t)
+
+
+def _alertas_entrada(e):
+    """La entrada de un punto de alertas.json normalizada, o None si no tiene la forma esperada
+    (fichero de otra versión o tocado a mano): ese punto vuelve a empezar como la primera vez."""
+    try:
+        ini = e.get("inicio")
+        out = {"inicio": None if ini is None else int(ini), "ult": int(e["ult"]), "ts": int(e["ts"]),
+               "desde": int(e["desde"]),
+               "cubos": {str(int(k)): int(v) for k, v in e["cubos"].items() if int(v) > 0}}
+    except (AttributeError, KeyError, TypeError, ValueError, OverflowError):
+        return None
+    return out if out["ult"] >= 0 else None
+
+
+def _alertas_resumen(e, t):
+    """{"n", "desde", "completo"} de la entrada `e` de alertas.json en el instante `t`."""
+    if e is None:
+        return {"n": None, "desde": None, "completo": False}
+    corte = t - ALERTAS_VENTANA_S
+    return {"n": sum(v for k, v in e["cubos"].items() if int(k) >= corte), "desde": e["desde"],
+            "completo": t - e["desde"] >= ALERTAS_VENTANA_S}
+
+
+def _repartir_alertas(n, desde, hasta):
+    """`n` alertas a partes iguales (enteros, el resto al último) entre los cubos de `desde` a
+    `hasta`, ambos incluidos; sin los cubos que quedan a 0."""
+    cubos = list(range(desde // ALERTAS_CUBO_S * ALERTAS_CUBO_S,
+                       hasta // ALERTAS_CUBO_S * ALERTAS_CUBO_S + 1, ALERTAS_CUBO_S))
+    parte, resto = divmod(n, len(cubos))
+    out = {str(c): parte for c in cubos if parte}
+    if parte + resto:
+        out[str(cubos[-1])] = parte + resto
+    return out
 
 
 def leer_reglas():
@@ -2132,6 +2182,9 @@ class Orquestador:
         self._ultima_poda = 0.0
         self._threshold_fallido = {}     # pid -> {"ts", "mensaje"} hasta el siguiente que vaya bien
         self._sano_desde = {}            # pid en `error` -> desde cuándo (tick) tiene todo healthy
+        self._alertas_cache = None       # alertas.json en memoria (se carga al primer uso, ver _alertas)
+        self._alertas_marca = None       # cuándo (t) se guardó alertas.json por última vez
+        self._alertas_lock = threading.Lock()    # estado.json se arma desde varios hilos
 
     # ---- base de datos -----------------------------------------------------------------------
     def q(self, sql, args=()):
@@ -2537,6 +2590,7 @@ class Orquestador:
         info = docker_inspect(nombres)
         for p in puntos:
             est["puntos"][p["pid"]] = self._estado_punto(p, info, t, libre)
+        self._alertas_podar({p["pid"] for p in puntos}, t)     # alertas.json sin puntos dados de baja
         return est
 
     def _reinicios_1h(self, pid, parte, t):
@@ -2568,6 +2622,13 @@ class Orquestador:
             avisos.append("RETENCION-REDUCIDA")
         if pid in self._threshold_fallido:
             avisos.append("THRESHOLD-FALLIDO")
+        # alertas_24h solo con un stats del Suricata vivo: tras un reinicio, stats.json guarda el
+        # último del anterior hasta el primero del nuevo (minutos, mientras carga reglas) y contarlo
+        # como «instancia nueva» sumaría otra vez todo lo de la vieja
+        inicio = (cont.get("suricata") or {}).get("inicio")
+        cum = su.get("alertas")
+        if inicio is not None and (su.get("stats_edad_s") is None or t - su["stats_edad_s"] < inicio):
+            cum = None
         return {
             "nombre": p["nombre"], "n": p["n"], "puerto": p["puerto"], "tun_net": p["tun_net"],
             "perfil": p["perfil"], "hilos": p["hilos"], "ros_version": p["ros_version"],
@@ -2583,6 +2644,8 @@ class Orquestador:
             "tzsp": tz, "suricata": su, "avisos": avisos,
             # CONTRATO-F2 §9: desde qué fecha hay eventos y si hubo borrado antes de tiempo
             "retencion": retencion,
+            # §5.10: alertas de las últimas 24 h con el contador de Suricata (no la cola del eve)
+            "alertas_24h": self._alertas_24h(pid, cum, inicio, t),
         }
 
     def _avisos_espejo(self, p, tz, su, t):
@@ -2619,6 +2682,103 @@ class Orquestador:
         escribir_atomico(d / "estado.json", json.dumps(est, ensure_ascii=False, indent=1) + "\n",
                          modo=0o640, uid=0, gid=GID_PANEL)
         return est
+
+    # ---- alertas de 24 h (estado.json §5.10) --------------------------------------------------
+    def _alertas(self):
+        """{pid: {"inicio", "ult", "ts", "desde", "cubos": {"<epoch>": n}}} de
+        /srv/ids/estado/alertas.json. Ausente o ilegible = vacío; una entrada con otra forma se
+        descarta (ese punto vuelve a empezar como en su primera muestra)."""
+        if self._alertas_cache is None:
+            try:
+                d = json.loads(ruta("/srv/ids/estado/alertas.json").read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                d = {}
+            self._alertas_cache = {}
+            for pid, e in (d.items() if isinstance(d, dict) else ()):
+                e = _alertas_entrada(e)
+                if e is not None and RE_PID.match(pid):
+                    self._alertas_cache[pid] = e
+        return self._alertas_cache
+
+    def _alertas_guardar(self, t):
+        """alertas.json al disco (0600). Un fallo de E/S se registra y no sale de aquí: estado.json
+        se escribe igual y se reintenta a los ALERTAS_GUARDAR_S."""
+        self._alertas_marca = t
+        try:
+            asegurar_dir(ruta("/srv/ids/estado"), 0o700)
+            escribir_atomico(ruta("/srv/ids/estado/alertas.json"),
+                             json.dumps(self._alertas(), sort_keys=True, separators=(",", ":")) + "\n",
+                             modo=0o600)
+        except OSError as e:
+            log("no se pudo guardar alertas.json: %s" % e)
+
+    def _alertas_24h(self, pid, cum, inicio, t):
+        """Alertas de las últimas 24 h del punto para estado.json: {"n", "desde", "completo"}.
+
+        Salen del contador acumulado del Suricata vivo (`cum` = stats.detect.alert, que vuelve a 0
+        al reiniciarlo; `inicio` = epoch de arranque del contenedor suricata, o None): lo que sube
+        entre dos muestras va al cubo de 5 min de la muestra y `n` suma los cubos con clave dentro
+        de las últimas 24 h. La ventana es aproximada a 5 min: el cubo del borde entra o sale
+        entero y, en la primera muestra, lo acumulado se reparte a partes iguales desde `inicio`.
+        `desde` = desde cuándo se cuenta; `completo` = ya cubre las 24 h enteras (si no, `n` es
+        «al menos»).
+
+        - Primera muestra: si el Suricata arrancó hace menos de 24 h, todo `cum` es de la ventana
+          y se reparte entre sus cubos (`desde` = `inicio`); si no, o sin `inicio`, solo se fija
+          la base (`desde` = `t`, n = 0).
+        - Reinicio (`inicio` distinto, o `cum` menor sin un `inicio` con que comparar): delta =
+          `cum`, lo de la instancia nueva. Con el mismo `inicio` el contador no baja: una muestra
+          menor, o anterior a la última (`t` < `ts`), es una lectura atrasada de otro hilo y se
+          ignora. `inicio` None (docker inspect no lo dio) no cuenta como cambio.
+        - Más de 24 h sin muestras (orquestador parado): no se sabe cuándo fue lo que subió; se
+          descarta, se vacían los cubos y `desde` = `t`.
+        - Sin stats (`cum` None): no se toca nada y se da lo que haya.
+
+        Estado por pid en /srv/ids/estado/alertas.json, guardado como mucho cada
+        ALERTAS_GUARDAR_S (lo que se pierda entre dos guardados lo recupera el siguiente delta)."""
+        t = int(t)
+        with self._alertas_lock:
+            todos = self._alertas()
+            e = todos.get(pid)
+            if cum is None:
+                return _alertas_resumen(e, t)
+            if e is None:
+                e = {"inicio": inicio, "ult": cum, "ts": t, "desde": t, "cubos": {}}
+                if inicio is not None and 0 <= t - inicio < ALERTAS_VENTANA_S:
+                    e["desde"], e["cubos"] = inicio, _repartir_alertas(cum, inicio, t)
+                todos[pid] = e
+            else:
+                conocido = inicio is not None and e["inicio"] is not None
+                if t < e["ts"] or (conocido and inicio == e["inicio"] and cum < e["ult"]):
+                    return _alertas_resumen(e, t)              # lectura atrasada: no cuenta
+                if (conocido and inicio != e["inicio"]) or cum < e["ult"]:
+                    delta = cum                                # Suricata reiniciado
+                else:
+                    delta = cum - e["ult"]
+                if t - e["ts"] > ALERTAS_VENTANA_S:
+                    e["cubos"], e["desde"] = {}, t             # más de un día sin muestras
+                elif delta:
+                    cubo = str(t // ALERTAS_CUBO_S * ALERTAS_CUBO_S)
+                    e["cubos"][cubo] = e["cubos"].get(cubo, 0) + delta
+                e["ult"], e["ts"] = cum, t
+                if inicio is not None:
+                    e["inicio"] = inicio
+            limite = t - ALERTAS_VENTANA_S - ALERTAS_CUBO_S
+            for k in [k for k in e["cubos"] if int(k) < limite]:
+                del e["cubos"][k]
+            if self._alertas_marca is None or not 0 <= t - self._alertas_marca < ALERTAS_GUARDAR_S:
+                self._alertas_guardar(t)
+            return _alertas_resumen(e, t)
+
+    def _alertas_podar(self, vigentes, t):
+        """Quita de alertas.json los puntos que ya no existen (baja) y lo guarda si cambió."""
+        with self._alertas_lock:
+            todos = self._alertas()
+            fuera = [pid for pid in todos if pid not in vigentes]
+            for pid in fuera:
+                del todos[pid]
+            if fuera:
+                self._alertas_guardar(t)
 
     # ---- retención de eventos (CONTRATO-F2 §9) ------------------------------------------------
     def _retencion(self):

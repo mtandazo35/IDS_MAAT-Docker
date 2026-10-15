@@ -17,6 +17,7 @@ Anexo de [ARQUITECTURA.md](ARQUITECTURA.md). Este anexo cubre:
 | `eve.json` / `dns.json` por instancia | eventos crudos | fuente de verdad del crudo; solo se agrega lo que el panel consulta |
 | Ficheros de intercambio | `threshold.config` por punto, exportaciones, respaldos `.rsc` de los routers | los consumen procesos que no leen SQLite |
 | `orq.db` (host) | asignaciones, digests, cola de órdenes, `op_id` | estado propio del orquestador ([ORQUESTADOR.md](ORQUESTADOR.md)) |
+| `alertas.json` (host, `/srv/ids/estado/`, 0600) | por punto: el último contador de alertas de Suricata (`detect.alert`) y las alertas de las últimas 24 h en cubos de 5 min | de él sale `alertas_24h` de `estado.json`; se reescribe como mucho cada minuto y, si se pierde, el recuento vuelve a empezar |
 
 Ubicación:
 
@@ -233,7 +234,7 @@ información de un punto viejo nunca se mezcle con la de uno nuevo. El flujo est
 | `eventos.db` | `alerta`, `resumen_hora`, `detalle_dia`, `espejo_hora` e `ingesta` del punto, seguido de un vacuum incremental |
 | `bitacora.db` | la cadena entera del punto |
 | `/srv/ids/panel/` | `reportes/<pid>/` y `respaldos/<pid>/` (los `.rsc` de su router) |
-| Orquestador (host) | `/srv/ids/puntos/<pid>/`, `/srv/ids/datos/<pid>/` (eve y dns, también los rotados), `/srv/ids/run/<pid>/` y `/srv/ids/ctl/<pid>/`; la clave y el certificado de servidor; el usuario VPN; las filas de `orq.db` del punto, salvo el enfriamiento de `N` (solo el número y una fecha) |
+| Orquestador (host) | `/srv/ids/puntos/<pid>/`, `/srv/ids/datos/<pid>/` (eve y dns, también los rotados), `/srv/ids/run/<pid>/` y `/srv/ids/ctl/<pid>/`; la clave y el certificado de servidor; el usuario VPN; las filas de `orq.db` del punto, salvo el enfriamiento de `N` (solo el número y una fecha); su entrada de `alertas.json` |
 
 **Lo único que queda:**
 

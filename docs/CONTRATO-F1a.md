@@ -819,10 +819,11 @@ Cada 15 s, atómico. Esquema v1 (decidido en el contrato):
       "vpn_cliente": {"conectado": true, "desde": 1760085000, "ip_real": "203.0.113.45", "usuario": "vpn3a9f2c"},
       "tzsp": {"edad_s": 12, "rx": 1200, "tx": 1180, "rechazados": 20},
       "suricata": {"stats_edad_s": 14, "reglas_cargadas": 18234, "reglas_fallidas": 0,
-                   "kernel_packets": 98765, "kernel_drops": 0},
+                   "kernel_packets": 98765, "kernel_drops": 0, "alertas": 5120},
       "avisos": [],
       "retencion": {"objetivo_dias": 30, "desde": 1757500000, "dias": 30.1,
-                    "anticipado": false, "ultimo_anticipado": null}
+                    "anticipado": false, "ultimo_anticipado": null},
+      "alertas_24h": {"n": 5120, "desde": 1760080010, "completo": false}
     }
   }
 }
@@ -841,6 +842,17 @@ Cada 15 s, atómico. Esquema v1 (decidido en el contrato):
   hubo poda por disco en los últimos 30 días (entonces no se promete el objetivo) y
   `ultimo_anticipado` su epoch (o `null`). Los rotados `.gz` conservan como mtime el de su
   última escritura (su último evento).
+- `suricata.alertas` = `detect.alert` del mismo `stats`: alertas desde que arrancó ese Suricata
+  (vuelve a 0 al reiniciarlo); `null` si no viene.
+- `alertas_24h`: alertas de las últimas 24 h que cuenta el orquestador con ese contador (la cola
+  del eve vivo, con espejo real, son pocos minutos). Lo que sube entre dos muestras va a un cubo
+  de 5 min de `/srv/ids/estado/alertas.json` y `n` suma los cubos de las 24 h (ventana aproximada
+  a 5 min).
+  `desde` = desde cuándo se cuenta: el arranque del Suricata si en la primera muestra llevaba
+  menos de 24 h (todo su contador cae dentro), si no la primera muestra (y otra vez tras más de
+  un día sin muestras); `completo` = ya cubre las 24 h enteras (si no, `n` es «al menos»). Solo
+  cuenta un `stats` del Suricata vivo (no anterior a `contenedores.suricata.inicio`); mientras no
+  haya ninguno, `n` y `desde` son `null`.
 
 ### 5.11 Orquestador: socket, órdenes y supervisión (C)
 
