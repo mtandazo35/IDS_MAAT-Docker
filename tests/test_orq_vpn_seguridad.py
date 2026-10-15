@@ -2,8 +2,9 @@
 
 - VPN-01: el script del MikroTik lleva la CA del VPS (nunca una clave) y verify-server-certificate=yes
   en v6 y v7; el certificado de servidor lleva NOMBRE_DNS y «Regenerar» renueva los de antes.
-- VPN-02: con las reglas del script, por ids-vpn solo entra la API desde el sensor (se simula el
-  `place-before=0` de RouterOS y se evalúan paquetes), y la limpieza del espejo no las toca.
+- VPN-02: con las reglas del script, por ids-vpn solo entra la API desde el sensor (se simulan el
+  `add` al final, la negación `!` y el `move` por comentario de RouterOS y se evalúan paquetes), en
+  cualquier orden entre ellas, y la limpieza del espejo no las toca.
 - VPN-03: server.conf con plazas para conexiones a medio negociar y hand-window corto.
 - VPN-05: Suricata sin NET_ADMIN.
 - VPN-13: el estado toma la sesión autenticada más reciente, no una conexión a medio negociar.
@@ -44,34 +45,58 @@ def props(orden):
     return dict(m.groups() for m in re.finditer(r'([a-z-]+)=("[^"]*"|\S+)', orden))
 
 
+_MOVER = re.compile(r'^:do \{/ip firewall filter move \[/ip firewall filter find comment=("[^"]*")\] '
+                    r'destination=\[:pick \[/ip firewall filter find dynamic=no\] 0\]\} on-error=\{\}$')
+
+
 def aplicar_filter(previas, cmds):
-    """Lo que hace RouterOS con `/ip firewall filter add`: al final, o delante de la 0 con
-    place-before=0 (las reglas se numeran en una sola lista para todas las cadenas)."""
+    """Lo que hace RouterOS con el bloque: `/ip firewall filter add` al final (una sola lista para
+    todas las cadenas) y el `move` de las del comentario delante de la primera regla no dinámica.
+    Si esa regla es una de las que se mueven, RouterOS da error y el on-error lo deja como está."""
     reglas = list(previas)
     for c in cmds:
-        if not c.startswith("/ip firewall filter add "):
+        m = _MOVER.match(c)
+        if m:
+            fijas = [r for r in reglas if r.get("dynamic") != "yes"]
+            if not fijas or fijas[0].get("comment") == m.group(1):
+                continue
+            destino = fijas[0]
+            mover = [r for r in reglas if r.get("comment") == m.group(1)]
+            resto = [r for r in reglas if r.get("comment") != m.group(1)]
+            i = resto.index(destino)
+            reglas = resto[:i] + mover + resto[i:]
             continue
+        if not c.startswith("/ip firewall filter "):
+            continue
+        if not c.startswith("/ip firewall filter add "):
+            raise AssertionError("orden de filter que el simulador no conoce: %s" % c)
         p = props(c)
-        p.pop("place-before", None)
-        if "place-before=0" in c:
-            reglas.insert(0, p)
-        else:
-            reglas.append(p)
+        if "place-before" in p:
+            raise AssertionError("place-before en un script pegado no apunta a nada fijo: %s" % c)
+        reglas.append(p)
     return reglas
 
 
+def _casa(valor, dato):
+    """`valor` de la regla (con `!` = negado) contra el dato del paquete."""
+    if valor.startswith("!"):
+        return str(dato) != valor[1:]
+    return str(dato) == valor
+
+
 def veredicto(reglas, chain, in_iface, src, proto="tcp", dport=None):
-    """La primera regla que casa decide (accept/drop); si ninguna, la política (accept)."""
+    """La primera regla que casa decide (accept/drop); si ninguna, la política (accept). Las
+    dinámicas (fasttrack) no deciden aquí."""
     for r in reglas:
-        if r.get("chain") != chain:
+        if r.get("chain") != chain or r.get("dynamic") == "yes":
             continue
-        if "in-interface" in r and r["in-interface"] != in_iface:
+        if "in-interface" in r and not _casa(r["in-interface"], in_iface):
             continue
-        if "src-address" in r and r["src-address"] != src:
+        if "src-address" in r and not _casa(r["src-address"], src):
             continue
-        if "protocol" in r and r["protocol"] != proto:
+        if "protocol" in r and not _casa(r["protocol"], proto):
             continue
-        if "dst-port" in r and str(r["dst-port"]) != str(dport):
+        if "dst-port" in r and (proto != "tcp" or not _casa(r["dst-port"], dport)):
             continue
         return r["action"]
     return "accept"
@@ -190,27 +215,52 @@ class Aislamiento(unittest.TestCase):
                                          ca_pem="-----BEGIN CERTIFICATE-----\nQUJD\n-----END CERTIFICATE-----")
         return {t: ordenes(bloque(txt, t)) for t in ("RouterOS v7", "RouterOS v6")}
 
+    def comprobar_aislada(self, reglas, api):
+        sensor, otro = "100.64.3.1", "100.64.3.9"
+        self.assertEqual(veredicto(reglas, "input", "ids-vpn", sensor, dport=api), "accept")
+        for puerto in (22, 8291, 80, 8728 if api == 8729 else 8729):
+            self.assertEqual(veredicto(reglas, "input", "ids-vpn", sensor, dport=puerto), "drop", puerto)
+        self.assertEqual(veredicto(reglas, "input", "ids-vpn", sensor, "icmp"), "drop")
+        self.assertEqual(veredicto(reglas, "input", "ids-vpn", sensor, "udp"), "drop")
+        self.assertEqual(veredicto(reglas, "input", "ids-vpn", otro, dport=api), "drop")
+        # nada se enruta desde el túnel hacia las redes del ISP
+        self.assertEqual(veredicto(reglas, "forward", "ids-vpn", sensor, dport=443), "drop")
+
     def test_solo_entra_la_api_desde_el_sensor(self):
-        # el router ya tenía reglas propias: aceptar lo establecido y todo lo de la LAN
-        previas = [{"chain": "input", "action": "accept", "in-interface": "bridge-lan"},
+        # el router ya tenía reglas propias (aceptar todo lo de la LAN y todo forward), con la
+        # dinámica del fasttrack delante, que el move se salta
+        previas = [{"chain": "forward", "action": "passthrough", "dynamic": "yes"},
+                   {"chain": "input", "action": "accept", "in-interface": "bridge-lan"},
+                   {"chain": "input", "action": "accept"},
                    {"chain": "forward", "action": "accept"}]
         for api in (8729, 8728):
             for titulo, cmds in self.bloques(api_puerto=api).items():
                 with self.subTest(api=api, bloque=titulo):
                     reglas = aplicar_filter(previas, cmds)
-                    sensor, otro = "100.64.3.1", "100.64.3.9"
-                    self.assertEqual(veredicto(reglas, "input", "ids-vpn", sensor, dport=api), "accept")
-                    for puerto in (22, 8291, 80, 8728 if api == 8729 else 8729):
-                        self.assertEqual(veredicto(reglas, "input", "ids-vpn", sensor, dport=puerto), "drop", puerto)
-                    self.assertEqual(veredicto(reglas, "input", "ids-vpn", sensor, "icmp"), "drop")
-                    self.assertEqual(veredicto(reglas, "input", "ids-vpn", otro, dport=api), "drop")
-                    # nada se enruta desde el túnel hacia las redes del ISP
-                    self.assertEqual(veredicto(reglas, "forward", "ids-vpn", sensor, dport=443), "drop")
+                    self.comprobar_aislada(reglas, api)
                     # lo que no viene por ids-vpn sigue con las reglas del router
                     self.assertEqual(veredicto(reglas, "input", "bridge-lan", "192.0.2.7", dport=22), "accept")
                     self.assertEqual(veredicto(reglas, "forward", "ether1", "192.0.2.7", dport=443), "accept")
-                    nuevas = [r for r in reglas if r.get("comment") == '"IDS ids-maat:p003"']
-                    self.assertEqual(len(nuevas), 3)
+                    nuevas = [i for i, r in enumerate(reglas) if r.get("comment") == '"IDS ids-maat:p003"']
+                    self.assertEqual(nuevas, [1, 2, 3, 4, 5])          # tras la dinámica, antes de las del router
+                    self.assertEqual(reglas[0], previas[0])
+
+    def test_con_la_lista_vacia_tambien(self):
+        for titulo, cmds in self.bloques().items():
+            with self.subTest(bloque=titulo):
+                reglas = aplicar_filter([], cmds)
+                self.assertEqual(len(reglas), 5)
+                self.comprobar_aislada(reglas, 8729)
+
+    def test_el_orden_entre_ellas_da_igual(self):
+        """Lo que arreglan las reglas negadas: tres place-before=0 en un script pegado dejaban el
+        accept debajo del drop de input. Ahora ningún orden de las cinco abre ni cierra de más."""
+        import itertools
+        cmds = self.bloques()["RouterOS v7"]
+        add = [c for c in cmds if c.startswith("/ip firewall filter add ")]
+        self.assertEqual(len(add), 5)
+        for orden in itertools.permutations(add):
+            self.comprobar_aislada(aplicar_filter([], list(orden)), 8729)
 
     def test_las_reglas_van_despues_de_crear_la_interfaz(self):
         for titulo, cmds in self.bloques().items():

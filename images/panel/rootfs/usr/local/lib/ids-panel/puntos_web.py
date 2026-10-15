@@ -1446,8 +1446,8 @@ def _cuerpo_fin(d, vm):
             cuerpo += aviso("En el router ya existe la VPN: pon la clave nueva con /interface ovpn-client set "
                             "[find name=ids-vpn] password=<la clave de arriba> verify-server-certificate=yes."
                             + (" El servidor renovó además su certificado: antes, pega en el router las líneas "
-                               "de la CA del VPS del bloque de abajo (y, si no las tiene, las dos reglas drop de "
-                               "ids-vpn)." if renovado else ""), "amb" if renovado else "info")
+                               "de la CA del VPS del bloque de abajo (y, si no las tiene, las reglas de "
+                               "/ip firewall filter que aíslan ids-vpn)." if renovado else ""), "amb" if renovado else "info")
         cuerpo += ("<h2>Comandos para el MikroTik</h2><p class=hint>Ya llevan la clave de la VPN. "
                    "<code>&lt;CLAVE-API&gt;</code> es la clave que elijas para el usuario de la API del router; "
                    "después ponla en la ficha del punto (API).</p>")

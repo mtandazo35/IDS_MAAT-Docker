@@ -14,8 +14,9 @@ import _ayuda_orq as A  # noqa: E402
 CA_PRUEBA = "-----BEGIN CERTIFICATE-----\nMIIBszCCAVmgAwIBAgIU\nAbC+/9==\n-----END CERTIFICATE-----\n"
 
 # Cambiado a propósito (auditoría VPN-01 y VPN-02): la CA del VPS entra en el router y el
-# ovpn-client verifica al servidor; ids-vpn queda aislada (drop en forward e input) y el accept de
-# la API queda encima de los dos.
+# ovpn-client verifica al servidor; ids-vpn queda aislada (drop en forward e input). Los drop de
+# input van negados para que el orden respecto al accept de la API no importe, y sin place-before=0
+# (que en un script pegado no apunta a nada fijo): la última línea las sube por comentario.
 _CA_P003 = r"""# CA del VPS (pública): con ella el MikroTik verifica al servidor (verify-server-certificate)
 /file print file=ids-maat-ca-p003
 :delay 2s
@@ -26,14 +27,21 @@ _CA_P003 = r"""# CA del VPS (pública): con ella el MikroTik verifica al servido
 """
 _COMUN_P003 = r"""/user group add name=ids-api policy=read,write,api
 /user add name=ids-api group=ids-api address=100.64.3.1/32 password=<CLAVE-API>
-# ids-vpn aislada: solo la API desde el sensor. Con /ip firewall filter vacía, quita
-# place-before=0 de la PRIMERA de estas tres.
-/ip firewall filter add chain=forward in-interface=ids-vpn action=drop place-before=0 \
+# ids-vpn aislada: por ella solo entra la API desde el sensor (el orden de estas cinco da igual).
+# Router configurado antes: quita primero las reglas viejas del alta con
+#   /ip firewall filter remove [find comment="IDS ids-maat:p003"]
+/ip firewall filter add chain=input in-interface=ids-vpn src-address=!100.64.3.1 action=drop \
     comment="IDS ids-maat:p003"
-/ip firewall filter add chain=input in-interface=ids-vpn action=drop place-before=0 \
+/ip firewall filter add chain=input in-interface=ids-vpn protocol=!tcp action=drop \
+    comment="IDS ids-maat:p003"
+/ip firewall filter add chain=input in-interface=ids-vpn protocol=tcp dst-port=!8729 action=drop \
     comment="IDS ids-maat:p003"
 /ip firewall filter add chain=input in-interface=ids-vpn src-address=100.64.3.1 protocol=tcp \
-    dst-port=8729 action=accept place-before=0 comment="IDS ids-maat:p003"
+    dst-port=8729 action=accept comment="IDS ids-maat:p003"
+/ip firewall filter add chain=forward in-interface=ids-vpn action=drop \
+    comment="IDS ids-maat:p003"
+# arriba del todo (con la lista vacía no hay nada que mover y no pasa nada):
+:do {/ip firewall filter move [/ip firewall filter find comment="IDS ids-maat:p003"] destination=[:pick [/ip firewall filter find dynamic=no] 0]} on-error={}
 """
 V7_CONTRATO = r"""# ids-maat p003 (norte) · N=3 · puerto 1196 · túnel 100.64.3.0/24 · declarado RouterOS v7
 # El bloque v6 solo conecta tras: ids-orq punto ajustar p003 --ros 6

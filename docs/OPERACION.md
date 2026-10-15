@@ -64,14 +64,21 @@ add name=ids-promax common-name=ids-promax \
 /ip route add dst-address=100.64.3.0/24 blackhole distance=250 comment="IDS ids-maat:p003"
 /user group add name=ids-api policy=read,write,api
 /user add name=ids-api group=ids-api address=100.64.3.1/32 password=<CLAVE-API>
-# ids-vpn aislada: solo la API desde el sensor. Con /ip firewall filter vacía, quita
-# place-before=0 de la PRIMERA de estas tres.
-/ip firewall filter add chain=forward in-interface=ids-vpn action=drop place-before=0 \
+# ids-vpn aislada: por ella solo entra la API desde el sensor (el orden de estas cinco da igual).
+# Router configurado antes: quita primero las reglas viejas del alta con
+#   /ip firewall filter remove [find comment="IDS ids-maat:p003"]
+/ip firewall filter add chain=input in-interface=ids-vpn src-address=!100.64.3.1 action=drop \
     comment="IDS ids-maat:p003"
-/ip firewall filter add chain=input in-interface=ids-vpn action=drop place-before=0 \
+/ip firewall filter add chain=input in-interface=ids-vpn protocol=!tcp action=drop \
+    comment="IDS ids-maat:p003"
+/ip firewall filter add chain=input in-interface=ids-vpn protocol=tcp dst-port=!8729 action=drop \
     comment="IDS ids-maat:p003"
 /ip firewall filter add chain=input in-interface=ids-vpn src-address=100.64.3.1 protocol=tcp \
-    dst-port=8729 action=accept place-before=0 comment="IDS ids-maat:p003"
+    dst-port=8729 action=accept comment="IDS ids-maat:p003"
+/ip firewall filter add chain=forward in-interface=ids-vpn action=drop \
+    comment="IDS ids-maat:p003"
+# arriba del todo (con la lista vacía no hay nada que mover y no pasa nada):
+:do {/ip firewall filter move [/ip firewall filter find comment="IDS ids-maat:p003"] destination=[:pick [/ip firewall filter find dynamic=no] 0]} on-error={}
 ```
 
 - Si el servidor del punto no tiene GCM habilitado, se usa `cipher=aes256-cbc`.
@@ -88,7 +95,7 @@ add name=ids-promax common-name=ids-promax \
 /ip route add dst-address=100.64.3.0/24 type=blackhole distance=250 comment="IDS ids-maat:p003"
 /user group add name=ids-api policy=read,write,api
 /user add name=ids-api group=ids-api address=100.64.3.1/32 password=<CLAVE-API>
-# (las mismas 3 reglas de /ip firewall filter que en v7)
+# (las mismas 5 reglas de /ip firewall filter y el move que en v7)
 ```
 
 v6 solo admite TCP, así que no lleva `protocol=`, y no tiene `use-peer-dns`. Si el handshake TLS
@@ -132,12 +139,16 @@ con la clave VPN y haría de «sensor» para el router.
   sensor comprometido (o un impostor) no llega ni a Winbox/SSH del core ni a las redes del ISP. El
   espejo no se ve afectado: `sniff-tzsp` lo genera el propio router (sale por `output`), y el sensor
   no envía nada más al router (su netns solo deja salir la API, [RED-Y-FIREWALL.md](RED-Y-FIREWALL.md)
-  §8). Cada `place-before=0` deja la regla arriba del todo: por eso van primero los dos `drop` y al
-  final el `accept`, que queda encima.
-- **Si `/ip firewall filter` está vacía**, `place-before=0` falla: hay que quitar ese parámetro de
-  la **primera** de las tres reglas (las otras dos ya encuentran una regla delante de la que ponerse).
-- **Routers ya desplegados:** basta con pegar las dos reglas `drop` y, después, volver a poner el
-  `accept` encima (`/ip firewall filter move [find comment="IDS ids-maat:p003" action=accept] 0`).
+  §8).
+- **El orden entre las cinco da igual.** Los `drop` de `input` van negados (lo que no viene del
+  sensor, lo que no es TCP, lo que no va al puerto de la API), así que ninguno tapa al `accept`. No se
+  usa `place-before=0`: en RouterOS los números son los del último `print` de la sesión, y en un
+  script pegado tres `place-before=0` seguidos dejaban el `accept` debajo del `drop` de `input` (el
+  panel se quedaba sin API). La última línea sube las cinco, por su comentario, por encima de la
+  primera regla no dinámica (la dinámica del fasttrack se salta); con la lista vacía no hay nada que
+  mover y el `on-error` lo deja pasar.
+- **Routers ya desplegados** (con las tres reglas de antes): quitar las del alta con
+  `/ip firewall filter remove [find comment="IDS ids-maat:p003"]` y pegar las cinco y el `move`.
 - **El blackhole va siempre como /24** ([RED-Y-FIREWALL.md](RED-Y-FIREWALL.md) §3.1).
 - **Puerto 8728 en claro.** Solo como excepción por punto, con aviso permanente. Hay que cambiar
   `dst-port` y el servicio `api` en consecuencia.

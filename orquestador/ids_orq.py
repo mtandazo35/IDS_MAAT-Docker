@@ -777,21 +777,32 @@ def comandos_mikrotik(p, nombre_dns, clave=None, ca_pem=None, aviso_cert=None):
     api = p["api_puerto"]
     sensor = p["sensor"]
     ca = lineas_ca_mikrotik(pid, ca_pem if ca_pem is not None else leer_ca_pem())
-    # VPN-02: por ids-vpn solo entra la API desde el sensor. Cada place-before=0 deja la regla
-    # arriba del todo, así que van primero los drop y el accept al final: queda accept (input),
-    # drop (input), drop (forward) y, debajo, las reglas del router.
+    # VPN-02: por ids-vpn solo entra la API desde el sensor. NO se usa place-before=0: en RouterOS
+    # los números son los del último `print` de la sesión (sin print, «no such item»), así que tres
+    # place-before=0 seguidos dejaban el accept DEBAJO del drop de input y el panel sin API. Ahora
+    # los drop están negados y no se pisan con el accept: el orden entre ellas da igual. Se añaden
+    # al final y la última línea las sube todas por encima de la primera regla no dinámica (la
+    # dinámica de fasttrack se salta), buscando por comentario, sin números.
     comun = (
         "/user group add name=ids-api policy=read,write,api\n"
-        "/user add name=ids-api group=ids-api address=%s/32 password=<CLAVE-API>\n"
-        "# ids-vpn aislada: solo la API desde el sensor. Con /ip firewall filter vacía, quita\n"
-        "# place-before=0 de la PRIMERA de estas tres.\n"
-        "/ip firewall filter add chain=forward in-interface=ids-vpn action=drop place-before=0 \\\n"
-        "    comment=\"IDS ids-maat:%s\"\n"
-        "/ip firewall filter add chain=input in-interface=ids-vpn action=drop place-before=0 \\\n"
-        "    comment=\"IDS ids-maat:%s\"\n"
-        "/ip firewall filter add chain=input in-interface=ids-vpn src-address=%s protocol=tcp \\\n"
-        "    dst-port=%s action=accept place-before=0 comment=\"IDS ids-maat:%s\"\n"
-        % (sensor, pid, pid, sensor, api, pid))
+        "/user add name=ids-api group=ids-api address=%(s)s/32 password=<CLAVE-API>\n"
+        "# ids-vpn aislada: por ella solo entra la API desde el sensor (el orden de estas cinco da igual).\n"
+        "# Router configurado antes: quita primero las reglas viejas del alta con\n"
+        "#   /ip firewall filter remove [find comment=\"IDS ids-maat:%(p)s\"]\n"
+        "/ip firewall filter add chain=input in-interface=ids-vpn src-address=!%(s)s action=drop \\\n"
+        "    comment=\"IDS ids-maat:%(p)s\"\n"
+        "/ip firewall filter add chain=input in-interface=ids-vpn protocol=!tcp action=drop \\\n"
+        "    comment=\"IDS ids-maat:%(p)s\"\n"
+        "/ip firewall filter add chain=input in-interface=ids-vpn protocol=tcp dst-port=!%(a)s action=drop \\\n"
+        "    comment=\"IDS ids-maat:%(p)s\"\n"
+        "/ip firewall filter add chain=input in-interface=ids-vpn src-address=%(s)s protocol=tcp \\\n"
+        "    dst-port=%(a)s action=accept comment=\"IDS ids-maat:%(p)s\"\n"
+        "/ip firewall filter add chain=forward in-interface=ids-vpn action=drop \\\n"
+        "    comment=\"IDS ids-maat:%(p)s\"\n"
+        "# arriba del todo (con la lista vacía no hay nada que mover y no pasa nada):\n"
+        ":do {/ip firewall filter move [/ip firewall filter find comment=\"IDS ids-maat:%(p)s\"] "
+        "destination=[:pick [/ip firewall filter find dynamic=no] 0]} on-error={}\n"
+        % {"s": sensor, "p": pid, "a": api})
     cabecera_aviso = "".join("# AVISO: %s\n" % x for x in (aviso_cert or "").splitlines() if x.strip())
     return (
         "# ids-maat %s (%s) · N=%s · puerto %s · túnel %s · declarado RouterOS v%d\n"
