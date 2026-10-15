@@ -61,7 +61,7 @@ services:
     depends_on: { vpn: { condition: service_healthy, restart: true } }
     restart: unless-stopped
     cap_drop: [ALL]
-    cap_add: [NET_RAW, NET_ADMIN]
+    cap_add: [NET_RAW]
     security_opt: ["no-new-privileges:true"]
     read_only: true
     tmpfs: ["/tmp:size=64m", "/run:size=8m"]
@@ -94,8 +94,8 @@ networks:
 | `vpn` | `NET_ADMIN` | `tun0`, veth, nft de su netns, ethtool, `SO_RCVBUFFORCE` |
 | `vpn` | `NET_RAW` | `tzsp-decap` inyecta con `AF_PACKET` |
 | `vpn` | `/dev/net/tun` | OpenVPN |
-| `suricata` | `NET_RAW` | socket af-packet |
-| `suricata` | `NET_ADMIN` | promisc y offloads. **Se prueba sin ella en el canario**: si captura igual, se quita |
+| `suricata` | `NET_RAW` | socket af-packet (y el promisc por `PACKET_ADD_MEMBERSHIP`, que no pide más) |
+| `suricata` | — (sin `NET_ADMIN`) | **Quitada** (auditoría VPN-05): Suricata analiza el tráfico hostil de los abonados y, con `NET_ADMIN`, un RCE podía borrar `inet ids_punto`/`netdev ids_mon` o reconfigurar `tun0`. No la necesita: `ids-mon` ya está en promisc y sin offloads (`init-veth` del `vpn`) y la plantilla lleva `capture.disable-offloading: false`. La e2e del CI (Docker real) comprueba que la alerta llega; en el canario, que `capture.kernel_packets` sigue subiendo |
 
 - **Sin `privileged` y sin `userns-remap`.** Con `userns-remap`, `NET_ADMIN` no vale sobre el netns
   que crea dockerd, y fallan `tun0`, el veth y nft.
@@ -230,25 +230,36 @@ de espejo ya recortado.
 ### 7.1 PKI
 
 - **CA común por VPS** en `/srv/ids/pki` del host (0700). Nunca se monta en un contenedor.
-- **Certificado de servidor por punto** (`server-<pid>`, RSA 2048 por compatibilidad con v6).
+- **Certificado de servidor por punto**: `OU=server-<pid>`, `CN=<NOMBRE_DNS>` y
+  `subjectAltName=DNS:<NOMBRE_DNS>` (`IP:` si el nombre es una IP), EKU `serverAuth`, RSA 2048 por
+  compatibilidad con v6. Con un `NOMBRE_DNS` de más de 64 caracteres el CN es `server-<pid>` y vale
+  el SAN.
 - En el `vpn` se montan solo `ca.crt`, su certificado y su clave, y `dh.pem`.
 - **Sin CRL.** Con `verify-client-cert none` no hay certificados de cliente que revocar. En la baja
   se borran la clave y el certificado del servidor.
-- **v7:** se recomienda `verify-server-certificate=yes`, con el `ca.crt` de la empresa importado en
-  el router. Basta con una CA por empresa.
-- La seguridad del punto la da su **usuario y clave**.
+- **El MikroTik verifica al servidor** (v6 y v7): el script del alta importa la CA del VPS (pública;
+  una por VPS) y pone `verify-server-certificate=yes`. RouterOS exige la cadena hasta esa CA y el
+  `connect-to` en el CN o el SAN ([OPERACION.md](OPERACION.md) §1.4).
+- **Puntos anteriores a ese cambio:** su certificado solo llevaba `CN=server-<pid>`.
+  `punto.vpn.regenerar` lo detecta (`openssl x509 -ext subjectAltName`), lo renueva y reinicia
+  OpenVPN; hasta entonces el script lo avisa en la cabecera.
+- La seguridad del punto la da su **usuario y clave**, y la del router frente a un impostor, la
+  verificación del servidor.
 
 ### 7.2 `server.conf` (lo esencial)
 
 ```
 port 1194
-proto tcp-server
+proto tcp4-server
 dev tun0
 topology subnet
 server 100.64.3.0 255.255.255.0
+max-clients 16
+hand-window 20
 tls-version-min 1.2
-# v6: data-ciphers AES-256-CBC        / data-ciphers-fallback AES-256-CBC
-# v7: data-ciphers AES-256-GCM:AES-256-CBC / data-ciphers-fallback AES-256-GCM (cliente cipher=aes256-gcm)
+data-ciphers AES-256-GCM:AES-256-CBC
+# v6: data-ciphers-fallback AES-256-CBC (cliente cipher=aes256)
+# v7: data-ciphers-fallback AES-256-GCM (cliente cipher=aes256-gcm)
 auth SHA1
 verify-client-cert none
 username-as-common-name
@@ -266,6 +277,17 @@ management /run/ids-ctl/ovpn-mgmt.sock unix
 
 - **ccd:** `ccd/<usuario>` contiene solo `ifconfig-push 100.64.N.2 255.255.255.0`. Con
   `ccd-exclusive`, nadie entra sin ese fichero.
+- **`proto tcp4-server`:** el `vpn` no usa IPv6. `data-ciphers` es el mismo en v6 y v7; solo cambia
+  el `data-ciphers-fallback` según la versión declarada del punto.
+- **`max-clients 16` y `hand-window 20` (auditoría VPN-03).** OpenVPN cuenta en `max-clients` las
+  conexiones TCP que aún no se han autenticado, que no llegan a `ovpn-auth` ni a fail2ban: con 2
+  plazas, dos `nc` colgados de un desconocido dejaban fuera al MikroTik. Ahora quien no termina el
+  TLS y la autenticación en 20 s pierde su plaza (antes, 60 s por defecto) y, con el freno del host
+  (10 conexiones nuevas/min por IP), una IP sostiene unas 3 a la vez: hace falta más de media
+  docena de IP para llenar las 16. **Sin `duplicate-cn`**, sigue habiendo un solo túnel útil: la
+  sesión nueva del usuario echa a la vieja (las 2 plazas de antes eran para eso). 20 s deja margen a
+  un 6.49 lento en el handshake RSA 2048. Prueba de laboratorio pendiente: 3 `nc <vps> <puerto>`
+  colgados, cortar la VPN del router y ver que reconecta.
 - **No se usan** `iroute`, `push` de rutas, compresión, `tls-crypt` ni `tls-auth`. RouterOS no
   soporta los dos últimos.
 - **`persist-tun`** mantiene `tun0` entre renegociaciones, pero **no sobrevive a la muerte del
@@ -281,13 +303,18 @@ management /run/ids-ctl/ovpn-mgmt.sock unix
 
 ### 7.3 Usuarios sin cuentas del sistema
 
-- `/etc/ids/vpn/usuarios` (ro, 0640) contiene `usuario:scrypt$N$r$p$sal$hash`.
+- `/etc/ids/vpn/usuarios` (ro, 0600 `root:root`) contiene `usuario:scrypt$N$r$p$sal$hash`. Con
+  `cap_drop: ALL` el root del contenedor no tiene `DAC_OVERRIDE`: solo cuentan los bits del dueño.
 - `ovpn-auth` está escrito con la stdlib y hace esto:
-  1. Valida el formato del usuario.
-  2. **Comprueba el freno por `untrusted_ip` ANTES de calcular scrypt.** Si la IP está frenada,
-     rechaza al momento, sin dormir, para no regalar CPU a quien hace fuerza bruta.
-  3. Calcula scrypt y compara con `hmac.compare_digest`.
-  4. Registra `ovpn-auth: rechazado <ip>` para fail2ban.
+  1. Valida el formato del usuario y de la clave (`motivo=formato`).
+  2. **Comprueba el freno ANTES de calcular scrypt**, sin dormir: por `untrusted_ip`, 5 rechazos en
+     600 s (`motivo=freno`); global, 30 scrypt en 60 s (`motivo=freno-global`), que no frena a la
+     última IP que entró con la clave buena durante 24 h (una avalancha ajena no le tira el túnel al
+     MikroTik en la renegociación, auditoría VPN-08).
+  3. Busca el usuario (`motivo=usuario`), calcula scrypt y compara con `hmac.compare_digest`
+     (`motivo=clave`).
+  4. Escribe una línea `<ip>:<puerto> ovpn-auth: rechazado usuario=<u|-> motivo=<m>` (o `aceptado`).
+     fail2ban solo cuenta `formato` y `usuario` ([RED-Y-FIREWALL.md](RED-Y-FIREWALL.md) §9).
 - **La clave en claro se muestra una sola vez.** El orquestador guarda solo el hash.
 - Más frenos en el host: el `meter` de conexiones nuevas y la jaula `ids-vpn`
   ([RED-Y-FIREWALL.md](RED-Y-FIREWALL.md) §7 y §9).

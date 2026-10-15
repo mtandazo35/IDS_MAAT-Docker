@@ -56,7 +56,8 @@ services:
     restart: unless-stopped
     labels: { ids-maat.punto: "@@PID@@", ids-maat.parte: "suricata", ids-maat.version: "@@VERSION@@" }
     cap_drop: [ALL]
-    cap_add: [NET_RAW, NET_ADMIN]
+    # solo NET_RAW (VPN-05): af-packet no necesita más; promisc y offloads de ids-mon los pone el vpn
+    cap_add: [NET_RAW]
     security_opt: ["no-new-privileges:true"]
     read_only: true
     tmpfs: ["/tmp:size=64m", "/run:size=8m"]

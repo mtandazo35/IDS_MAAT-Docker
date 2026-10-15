@@ -16,11 +16,17 @@ Orden (cada paso que rechaza lo hace sin calcular scrypt, salvo el 5):
   3. freno, ANTES de scrypt y sin dormir:
      por IP: >= 5 rechazos en 600 s               -> motivo=freno
      global: >= 30 scrypt en 60 s                 -> motivo=freno-global
+             (no frena a la última IP que entró con la clave buena, durante 24 h: una
+             avalancha ajena no le tira el túnel al MikroTik en la renegociación, VPN-08)
   4. el usuario existe en /etc/ids/vpn/usuarios    -> motivo=usuario
   5. scrypt + hmac.compare_digest                  -> motivo=clave
-  6. registra en el estado del freno: cada scrypt calculado y cada rechazo de los pasos
+  6. registra en el estado del freno: cada scrypt calculado, cada rechazo de los pasos
      2, 4 y 5 (los rechazos por freno no se cuentan: así la IP sale del freno 600 s después
-     de su último intento de verdad).
+     de su último intento de verdad) y la IP del último aceptado.
+
+fail2ban (host/fail2ban/filter.d/ids-vpn.conf) solo cuenta motivo=formato y motivo=usuario:
+lo que manda un escáner. motivo=clave es el dueño del usuario con la clave vieja (p. ej. tras
+regenerarla), que ya frena el paso 3; banearlo cortaba todos los puertos de su IP (VPN-04).
 
 Solo stdlib. Importable en Windows: `fcntl` se importa dentro de la función (sin él, p. ej.
 en las pruebas de Windows, el freno funciona igual pero sin cerrojo entre procesos).
@@ -45,6 +51,7 @@ FRENO_IP_VENTANA = 600     # ... en estos segundos
 FRENO_GLOBAL_MAX = 30      # scrypt calculados en total ...
 FRENO_GLOBAL_VENTANA = 60  # ... en estos segundos
 FRENO_IPS_MAX = 4096       # tope de IPs recordadas (acota el tamaño del estado)
+FRENO_OK_VIGENCIA = 86400  # la IP del último aceptado no pasa por el freno global durante 24 h
 
 RE_USUARIO = re.compile(r"vpn[0-9a-f]{6}")
 RE_CLAVE = re.compile(r"[\x20-\x7e]{1,128}")          # 1-128 caracteres ASCII imprimibles
@@ -169,11 +176,14 @@ def leer_estado():
         glob = est.get("scrypt", [])
         if not isinstance(rech, dict) or not isinstance(glob, list):
             raise ValueError
+        ok = est.get("ok")
+        ok = ({"ip": str(ok["ip"]), "ts": float(ok["ts"])}
+              if isinstance(ok, dict) and isinstance(ok.get("ip"), str) else None)
         return {"rechazos": {str(k): [float(t) for t in v] for k, v in rech.items()
                              if isinstance(v, list)},
-                "scrypt": [float(t) for t in glob]}
-    except (OSError, ValueError, TypeError):
-        return {"rechazos": {}, "scrypt": []}
+                "scrypt": [float(t) for t in glob], "ok": ok}
+    except (OSError, ValueError, TypeError, KeyError):
+        return {"rechazos": {}, "scrypt": [], "ok": None}
 
 
 def podar(est, t):
@@ -187,7 +197,17 @@ def podar(est, t):
         orden = sorted(vivos, key=lambda k: vivos[k][-1], reverse=True)[:FRENO_IPS_MAX]
         vivos = {k: vivos[k] for k in orden}
     est["rechazos"] = vivos
+    ok = est.get("ok")
+    if ok and t - ok["ts"] >= FRENO_OK_VIGENCIA:
+        est["ok"] = None
     return est
+
+
+def ip_de_confianza(est, ip, t):
+    """¿Es `ip` la del último aceptado, hace menos de FRENO_OK_VIGENCIA? (el `-` de una IP
+    inválida nunca lo es)."""
+    ok = est.get("ok")
+    return bool(ok) and ip != "-" and ok["ip"] == ip and t - ok["ts"] < FRENO_OK_VIGENCIA
 
 
 def guardar_estado(est):
@@ -196,6 +216,20 @@ def guardar_estado(est):
     with os.fdopen(fd, "w", encoding="utf-8") as fh:
         json.dump(est, fh, separators=(",", ":"))
     os.replace(tmp, FRENO_JSON)
+
+
+def registrar_aceptado(ip, t):
+    """Guarda la IP del último aceptado (la del MikroTik legítimo)."""
+    if ip == "-":
+        return
+    try:
+        with cerrojo():
+            est = leer_estado()
+            est["ok"] = {"ip": ip, "ts": t}
+            guardar_estado(podar(est, t))
+    except OSError as e:
+        print(f"ovpn-auth: aviso: no se pudo registrar el aceptado en el freno: {e.strerror}",
+              file=sys.stderr)
 
 
 def registrar_rechazo(ip, t):
@@ -230,7 +264,7 @@ def autenticar(ruta_credenciales, env):
             est = podar(leer_estado(), t)
             if len(est["rechazos"].get(ip, [])) >= FRENO_IP_MAX:
                 return False, linea(pref, False, "-", "freno")
-            if len(est["scrypt"]) >= FRENO_GLOBAL_MAX:
+            if len(est["scrypt"]) >= FRENO_GLOBAL_MAX and not ip_de_confianza(est, ip, t):
                 return False, linea(pref, False, "-", "freno-global")
             params = buscar_usuario(usuario)
             if params is not None:
@@ -251,6 +285,7 @@ def autenticar(ruta_credenciales, env):
     if not clave_correcta(clave, params):
         registrar_rechazo(ip, ahora())
         return False, linea(pref, False, usuario, "clave")
+    registrar_aceptado(ip, ahora())
     return True, linea(pref, True, usuario)
 
 

@@ -68,7 +68,8 @@ services:
     restart: unless-stopped
     labels: { ids-maat.punto: "p003", ids-maat.parte: "suricata", ids-maat.version: "0.1.0" }
     cap_drop: [ALL]
-    cap_add: [NET_RAW, NET_ADMIN]
+    # solo NET_RAW (VPN-05): af-packet no necesita más; promisc y offloads de ids-mon los pone el vpn
+    cap_add: [NET_RAW]
     security_opt: ["no-new-privileges:true"]
     read_only: true
     tmpfs: ["/tmp:size=64m", "/run:size=8m"]
@@ -105,7 +106,11 @@ proto tcp4-server
 dev tun0
 topology subnet
 server 100.64.3.0 255.255.255.0
-max-clients 2
+# max-clients: plazas para conexiones a medio negociar (cualquiera puede abrir el puerto); sin
+# duplicate-cn sigue habiendo un solo túnel útil: la sesión nueva del usuario echa a la vieja.
+# hand-window: quien no termina el TLS y la autenticación en 20 s pierde su plaza (VPN-03).
+max-clients 16
+hand-window 20
 tls-server
 tls-version-min 1.2
 ca /etc/ids/vpn/ca.crt

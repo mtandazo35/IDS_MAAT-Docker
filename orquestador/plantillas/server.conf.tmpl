@@ -4,7 +4,11 @@ proto tcp4-server
 dev tun0
 topology subnet
 server @@TUN_RED@@ 255.255.255.0
-max-clients 2
+# max-clients: plazas para conexiones a medio negociar (cualquiera puede abrir el puerto); sin
+# duplicate-cn sigue habiendo un solo túnel útil: la sesión nueva del usuario echa a la vieja.
+# hand-window: quien no termina el TLS y la autenticación en 20 s pierde su plaza (VPN-03).
+max-clients 16
+hand-window 20
 tls-server
 tls-version-min 1.2
 @@LINEA_TLS_CIPHER@@

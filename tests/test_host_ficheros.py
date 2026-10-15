@@ -66,6 +66,20 @@ class Ficheros(unittest.TestCase):
         self.assertEqual(ssh["passwordauthentication"], "no")
         self.assertEqual(ssh["kbdinteractiveauthentication"], "no")
 
+    def test_journald(self):
+        """VPN-15: todos los contenedores escriben en journald por docker.service y comparten su
+        límite de ritmo: tiene que caber una avalancha contra la VPN sin perder las líneas que lee
+        fail2ban, y el tamaño queda acotado."""
+        import configparser
+        cp = configparser.RawConfigParser(strict=True)
+        cp.optionxform = str
+        cp.read_string((H / "journald" / "90-ids.conf").read_text(encoding="utf-8"))
+        j = cp["Journal"]
+        self.assertEqual(j["RateLimitIntervalSec"], "30s")
+        self.assertGreaterEqual(int(j["RateLimitBurst"]), 50000)      # Debian: 10000
+        self.assertRegex(j["SystemMaxUse"], r"^[0-9]+[MG]$")
+        self.assertEqual(set(cp.sections()), {"Journal"})
+
 
 @unittest.skipUnless(sys.platform.startswith("linux") and shutil.which("logrotate"), "sin logrotate")
 class LogrotateReal(unittest.TestCase):

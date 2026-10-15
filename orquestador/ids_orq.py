@@ -136,6 +136,10 @@ ORDENES_COLA = {"punto.crear", "punto.borrar", "punto.arrancar", "punto.parar",
 ORDENES_LECTURA = {"punto.estado", "punto.logs", "punto.comandos", "punto.api.huella",
                    "punto.medir", "logs.reabrir", "sistema.estado", "sistema.capacidad",
                    "op.estado"}
+# Cambian algo pero no esperan a la cola (un alta de minutos no debe retrasar un desbaneo): se
+# ejecutan al recibirlas y quedan en orq.jsonl con quién las pidió. En el panel, solo para admin.
+ORDENES_INMEDIATAS = {"vpn.desbanear"}
+JAULA_VPN = "ids-vpn"
 ORDENES_RESERVADAS = {"acceso.aplicar", "acceso.confirmar",
                       "sistema.buscar_actualizacion", "sistema.actualizar", "sistema.revertir",
                       "sistema.respaldar", "bitacora.anclar"}
@@ -719,9 +723,52 @@ add name=ids-promax common-name=ids-promax \\
 """
 
 
-def comandos_mikrotik(p, nombre_dns, clave=None):
+# La CA del VPS va en el script del MikroTik (VPN-01): es pública. Solo pasa lo que cabe en una
+# cadena RouterOS sin escapar nada (base64, «-», espacios y saltos de línea): ni comillas, ni «$»,
+# ni «\», ni «[», ni «?» (que la terminal toma por la ayuda). `/file set contents=` admite como
+# mucho 4095 bytes en v6; una CA RSA 2048 en PEM ocupa unos 1,2 KB.
+RE_CA_PEM = re.compile(r"^[A-Za-z0-9+/= \n-]+\Z")
+CA_PEM_MAX = 4000
+
+
+def leer_ca_pem(path=None):
+    """El ca.crt del VPS (/srv/ids/pki/ca.crt) listo para el script del MikroTik. Nunca una clave:
+    un PEM con «PRIVATE» se rechaza aunque esté en ese fichero."""
+    path = ruta("/srv/ids/pki/ca.crt") if path is None else Path(path)
+    try:
+        txt = Path(path).read_text(encoding="ascii").replace("\r", "").strip()
+    except (OSError, UnicodeError) as e:
+        raise ErrorOrden("FALLO", "no se puede leer la CA del VPS (%s): %s" % (path, e))
+    if not txt or "PRIVATE" in txt or not RE_CA_PEM.match(txt) or len(txt) > CA_PEM_MAX:
+        raise ErrorOrden("FALLO", "la CA del VPS (%s) no es un certificado PEM utilizable en RouterOS" % path)
+    return txt
+
+
+def lineas_ca_mikrotik(pid, ca_pem):
+    """Líneas RouterOS que llevan la CA del VPS al router (6.49 y v7, el mismo método en los dos):
+    `/file print file=X` crea X.txt, `/file set contents=` le pone el PEM (con \\n de RouterOS),
+    `/certificate import` lo importa como `X.txt_0` y el fichero se borra. El nombre lleva el
+    prefijo `ids-maat-ca-<pid>`: la baja lo quita con `/certificate remove [find name~"^ids-maat-ca-<pid>"]`
+    (los certificados no llevan comentario)."""
+    nombre = "ids-maat-ca-%s" % pid
+    fichero = nombre + ".txt"
+    cuerpo = ca_pem.replace("\r", "").strip().replace("\n", "\\n")
+    return (
+        "# CA del VPS (pública): con ella el MikroTik verifica al servidor (verify-server-certificate)\n"
+        "/file print file=%s\n"
+        ":delay 2s\n"
+        "/file set [find name=\"%s\"] contents=\"%s\\n\"\n"
+        "/certificate import file-name=%s passphrase=\"\"\n"
+        "/certificate set [find name~\"^%s\"] trusted=yes\n"
+        "/file remove [find name=\"%s\"]\n"
+        % (nombre, fichero, cuerpo, fichero, nombre, fichero))
+
+
+def comandos_mikrotik(p, nombre_dns, clave=None, ca_pem=None, aviso_cert=None):
     """Bloque de `ids-orq punto ovpn-client` (§5.12). p: pid, nombre, n, puerto, tun_net, sensor,
-    ros_version, api_puerto. Sin clave se imprime <CLAVE-VPN>."""
+    ros_version, api_puerto. Sin clave se imprime <CLAVE-VPN>. `ca_pem`: el ca.crt del VPS (si no
+    se da, se lee de /srv/ids/pki). `aviso_cert`: texto que va en la cabecera (p. ej. que el
+    certificado del servidor de ese punto todavía no lleva el nombre del VPS)."""
     pid = p["pid"]
     ros = int(p["ros_version"])
     pw = clave if clave else "<CLAVE-VPN>"
@@ -729,36 +776,53 @@ def comandos_mikrotik(p, nombre_dns, clave=None):
     cifrado_v7 = "aes256-cbc" if ros == 6 else "aes256-gcm"
     api = p["api_puerto"]
     sensor = p["sensor"]
+    ca = lineas_ca_mikrotik(pid, ca_pem if ca_pem is not None else leer_ca_pem())
+    # VPN-02: por ids-vpn solo entra la API desde el sensor. Cada place-before=0 deja la regla
+    # arriba del todo, así que van primero los drop y el accept al final: queda accept (input),
+    # drop (input), drop (forward) y, debajo, las reglas del router.
     comun = (
         "/user group add name=ids-api policy=read,write,api\n"
         "/user add name=ids-api group=ids-api address=%s/32 password=<CLAVE-API>\n"
+        "# ids-vpn aislada: solo la API desde el sensor. Con /ip firewall filter vacía, quita\n"
+        "# place-before=0 de la PRIMERA de estas tres.\n"
+        "/ip firewall filter add chain=forward in-interface=ids-vpn action=drop place-before=0 \\\n"
+        "    comment=\"IDS ids-maat:%s\"\n"
+        "/ip firewall filter add chain=input in-interface=ids-vpn action=drop place-before=0 \\\n"
+        "    comment=\"IDS ids-maat:%s\"\n"
         "/ip firewall filter add chain=input in-interface=ids-vpn src-address=%s protocol=tcp \\\n"
         "    dst-port=%s action=accept place-before=0 comment=\"IDS ids-maat:%s\"\n"
-        % (sensor, sensor, api, pid))
+        % (sensor, pid, pid, sensor, api, pid))
+    cabecera_aviso = "".join("# AVISO: %s\n" % x for x in (aviso_cert or "").splitlines() if x.strip())
     return (
         "# ids-maat %s (%s) · N=%s · puerto %s · túnel %s · declarado RouterOS v%d\n"
         "# El bloque v%d solo conecta tras: ids-orq punto ajustar %s --ros %d\n"
+        "%s"
         "#\n"
         "%s"
         "#\n"
         "# --- RouterOS v7 ---\n"
+        "%s"
         "/interface ovpn-client add name=ids-vpn connect-to=%s port=%s protocol=tcp mode=ip \\\n"
-        "    user=%s password=%s cipher=%s auth=sha1 \\\n"
+        "    user=%s password=%s cipher=%s auth=sha1 verify-server-certificate=yes \\\n"
         "    add-default-route=no use-peer-dns=no disabled=no\n"
         "/ip route add dst-address=%s blackhole distance=250 comment=\"IDS ids-maat:%s\"\n"
         "%s"
         "#\n"
         "# --- RouterOS v6 (6.49 o superior) ---\n"
+        "%s"
         "/interface ovpn-client add name=ids-vpn connect-to=%s port=%s mode=ip \\\n"
-        "    user=%s password=%s cipher=aes256 auth=sha1 \\\n"
+        "    user=%s password=%s cipher=aes256 auth=sha1 verify-server-certificate=yes \\\n"
         "    add-default-route=no disabled=no\n"
         "/ip route add dst-address=%s type=blackhole distance=250 comment=\"IDS ids-maat:%s\"\n"
         "%s"
         % (pid, p["nombre"], p["n"], p["puerto"], p["tun_net"], ros,
            otro, pid, otro,
+           cabecera_aviso,
            CERT_IDS_PROMAX,
+           ca,
            nombre_dns, p["puerto"], p["usuario"], pw, cifrado_v7,
            p["tun_net"], pid, comun,
+           ca,
            nombre_dns, p["puerto"], p["usuario"], pw,
            p["tun_net"], pid, comun))
 
@@ -1015,11 +1079,18 @@ def leer_status_openvpn(path, t=None):
     t = time.time() if t is None else t
     if t - st.st_mtime > STATUS_OVPN_VIEJO_S:
         return dict(vacio, viejo=True)
+    # Con max-clients > 1 puede haber varias líneas: conexiones a medio negociar (Common Name
+    # UNDEF: cualquiera que abra el puerto) y, un rato, la sesión vieja del MikroTik junto a la
+    # nueva. Solo cuenta un usuario del IDS ya autenticado, y de ellos la sesión más reciente.
+    mejor = None
     for linea in txt.splitlines():
         if not linea.startswith("CLIENT_LIST,"):
             continue
         c = linea.split(",")
         if len(c) < 10:
+            continue
+        usuario = c[9] if c[9] and c[9] != "UNDEF" else c[1]
+        if not RE_USUARIO.match(usuario or ""):
             continue
         real = c[2]
         ip = real.rsplit(":", 1)[0] if ":" in real else real
@@ -1027,9 +1098,9 @@ def leer_status_openvpn(path, t=None):
             desde = int(c[8])
         except ValueError:
             desde = None
-        usuario = c[9] if c[9] and c[9] != "UNDEF" else c[1]
-        return {"conectado": True, "desde": desde, "ip_real": ip, "usuario": usuario, "viejo": False}
-    return vacio
+        if mejor is None or (desde or 0) > (mejor["desde"] or 0):
+            mejor = {"conectado": True, "desde": desde, "ip_real": ip, "usuario": usuario, "viejo": False}
+    return mejor or vacio
 
 
 def leer_tzsp(path, t):
@@ -1439,12 +1510,61 @@ def asegurar_ca(nombre_dns):
     return pki
 
 
+# VPN-01: con verify-server-certificate=yes, RouterOS valida la cadena hasta una CA de confianza
+# y comprueba que `connect-to` (el NOMBRE_DNS) está en el CN o en el SAN del certificado del
+# servidor (help.mikrotik.com, OpenVPN). Por eso el certificado de cada punto lleva el nombre del
+# VPS en los dos; el pid queda en el OU.
 EXT_SERVIDOR = """basicConstraints=CA:FALSE
 keyUsage=critical,digitalSignature,keyEncipherment
 extendedKeyUsage=serverAuth
 subjectKeyIdentifier=hash
 authorityKeyIdentifier=keyid,issuer
+subjectAltName=@@SAN@@
 """
+# El mismo nombre que acepta install.sh (--nombre): etiquetas DNS de 1-63, con al menos un punto
+RE_NOMBRE_DNS = re.compile(r"^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?"
+                           r"(\.[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?)+\Z")
+
+
+def san_servidor(nombre_dns):
+    """El subjectAltName del certificado de servidor: `IP:` si NOMBRE_DNS es una IP, si no `DNS:`."""
+    try:
+        return "IP:%s" % ipaddress.ip_address(nombre_dns)
+    except ValueError:
+        pass
+    if not RE_NOMBRE_DNS.match(nombre_dns or "") or len(nombre_dns) > 253:
+        raise ErrorOrden("FALLO", "ids.conf: NOMBRE_DNS no es un nombre DNS válido")
+    return "DNS:%s" % nombre_dns
+
+
+def sujeto_servidor(pid, nombre_dns):
+    """CN = el nombre del VPS (lo que el MikroTik pone en connect-to). Un CN admite 64 caracteres:
+    con un nombre más largo el CN es server-<pid> y vale el SAN."""
+    cn = nombre_dns if len(nombre_dns) <= 64 else "server-%s" % pid
+    return "/OU=server-%s/CN=%s" % (pid, cn)
+
+
+def cert_lleva_nombre(crt, nombre_dns):
+    """¿El certificado de servidor `crt` lleva NOMBRE_DNS en el SAN? (los de antes de VPN-01 solo
+    llevaban CN=server-<pid>, y un MikroTik con verify-server-certificate=yes no los acepta)."""
+    if not Path(crt).exists():
+        return False
+    r = ejecutar(["openssl", "x509", "-in", str(crt), "-noout", "-ext", "subjectAltName"], timeout=30)
+    if r.rc != 0:
+        return False
+    try:
+        objetivo = san_servidor(nombre_dns)
+    except ErrorOrden:
+        return False
+    tipo, valor = objetivo.split(":", 1)
+    etiqueta = "IP Address" if tipo == "IP" else "DNS"
+    return re.search(r"(^|[\s,])%s:%s(\s|,|$)" % (re.escape(etiqueta), re.escape(valor)), r.out,
+                     re.I | re.M) is not None
+
+
+AVISO_CERT_VIEJO = ("el certificado del servidor de este punto es anterior a la verificación del servidor y\n"
+                    "el MikroTik lo rechazará con verify-server-certificate=yes: «Regenerar la clave VPN»\n"
+                    "(ids-orq punto vpn-regenerar <pid>) lo renueva; hasta entonces no pegues este bloque.")
 
 
 def cert_servidor(pid, nombre_dns):
@@ -1452,10 +1572,12 @@ def cert_servidor(pid, nombre_dns):
     srv = pki / "servidores"
     key, crt, csr, ext = (srv / ("%s.key" % pid), srv / ("%s.crt" % pid), srv / ("%s.csr" % pid),
                           srv / ("%s.ext" % pid))
+    san = san_servidor(nombre_dns)
     try:
-        ext.write_text(EXT_SERVIDOR, encoding="utf-8")
+        ext.write_text(EXT_SERVIDOR.replace("@@SAN@@", san), encoding="utf-8")
         ejecutar_ok(["openssl", "req", "-new", "-newkey", "rsa:2048", "-nodes", "-sha256",
-                     "-keyout", str(key), "-subj", "/CN=server-%s" % pid, "-out", str(csr)], timeout=120)
+                     "-keyout", str(key), "-subj", sujeto_servidor(pid, nombre_dns), "-out", str(csr)],
+                    timeout=120)
         ejecutar_ok(["openssl", "x509", "-req", "-in", str(csr), "-CA", str(pki / "ca.crt"),
                      "-CAkey", str(pki / "ca.key"), "-set_serial", "0x" + secrets.token_hex(16),
                      "-days", "3650", "-sha256", "-extfile", str(ext), "-out", str(crt)], timeout=120)
@@ -1626,6 +1748,35 @@ def _ipv4(v, nombre):
         raise _inv("%s no es una IPv4" % nombre)
 
 
+def _ip_desbanear(v):
+    """Una IP (v4 o v6) en forma canónica para `fail2ban-client set ids-vpn unbanip`. Nada de
+    rangos: fail2ban banea IP sueltas."""
+    if not isinstance(v, str) or len(v) > 45:
+        raise _inv("ip debe ser una dirección IP")
+    try:
+        ip = ipaddress.ip_address(v.strip())
+    except ValueError:
+        raise _inv("ip: %r no es una dirección IP" % v[:45])
+    return str(ip)
+
+
+def desbanear_vpn(ip):
+    """Quita el ban de la jaula ids-vpn (fail2ban banea en todos los puertos de esa IP, VPN-04).
+    Devuelve (desbaneada: bool, texto). fail2ban responde «1» si la quitó y «0» (o un error
+    «is not banned», según versión) si no estaba baneada; cualquier otro fallo es FALLO."""
+    r = ejecutar(["fail2ban-client", "set", JAULA_VPN, "unbanip", ip], timeout=30)
+    salida = (r.out or "").strip()
+    detalle = (r.err or r.out or "").strip()
+    if r.rc == 0 and salida.splitlines()[-1:] == ["0"]:
+        return False, "%s no estaba baneada en %s" % (ip, JAULA_VPN)
+    if r.rc == 0:
+        return True, "%s desbaneada de %s" % (ip, JAULA_VPN)
+    if "not banned" in detalle.lower():
+        return False, "%s no estaba baneada en %s" % (ip, JAULA_VPN)
+    ultima = detalle.splitlines()[-1] if detalle else ""
+    raise ErrorOrden("FALLO", "fail2ban-client salió con %s: %s" % (r.rc, ultima[:200]))
+
+
 def validar_redes(redes, cfg):
     if not isinstance(redes, list) or not redes:
         raise _inv("redes_abonados debe ser una lista no vacía")
@@ -1741,6 +1892,9 @@ def validar_params(orden, params, cfg_fn):
     if orden == "logs.reabrir":
         _solo(params, {"pid"})
         return {"pid": _pid(params["pid"])} if params.get("pid") else {}
+    if orden == "vpn.desbanear":
+        _solo(params, {"ip"}, ("ip",))
+        return {"ip": _ip_desbanear(params["ip"])}
     if orden in ("sistema.reconciliar", "sistema.estado", "sistema.capacidad"):
         _solo(params, set())
         return {}
@@ -1929,12 +2083,14 @@ class Orquestador:
         quien = re.sub(r"[^\w:.@-]", "_", quien)[:64] or "desconocido"
         if orden in ORDENES_RESERVADAS:
             return resp("INVALIDO", "no disponible en F1a")
-        if orden not in ORDENES_COLA and orden not in ORDENES_LECTURA:
+        if orden not in ORDENES_COLA and orden not in ORDENES_LECTURA and orden not in ORDENES_INMEDIATAS:
             return resp("INVALIDO", "orden desconocida")
         try:
             params = validar_params(orden, pet.get("params"), config)
         except ErrorOrden as e:
             return resp(e.codigo, e.mensaje, e.datos)
+        if orden in ORDENES_INMEDIATAS:
+            return self.inmediata(op_id, orden, params, quien, resp)
         if orden == "punto.crear" and params.get("pid") and uid != 0:
             # el pid explícito es solo de la CLI root (reconstruir): desde el panel agotaría la
             # secuencia con p999 (A-22)
@@ -1969,6 +2125,24 @@ class Orquestador:
         except Exception as e:  # noqa: BLE001 - una lectura nunca tumba el servicio
             log("fallo en %s: %r" % (orden, e))
             return resp("FALLO", str(e))
+
+    def inmediata(self, op_id, orden, params, quien, resp):
+        """Una orden de ORDENES_INMEDIATAS: se ejecuta ya y deja su línea en orq.jsonl (como las de
+        la cola: quién, el sha256 de los parámetros y nunca los parámetros en claro)."""
+        codigo, mensaje, datos = "OK", "ok", {}
+        try:
+            if orden == "vpn.desbanear":
+                hecho, mensaje = desbanear_vpn(params["ip"])
+                datos = {"ip": params["ip"], "desbaneada": hecho, "jaula": JAULA_VPN}
+            else:
+                raise ErrorOrden("INVALIDO", "orden desconocida")
+        except ErrorOrden as e:
+            codigo, mensaje, datos = e.codigo, e.mensaje, e.datos
+        self._diario_linea({"ts": ahora(), "op_id": op_id, "quien": quien, "orden": orden, "pid": None,
+                            "params_sha256": sha256_txt(canon({"orden": orden, "params": params})),
+                            "pasos": [], "codigo": codigo,
+                            "mensaje": "ok" if codigo == "OK" else "%s en «%s»" % (codigo, orden)})
+        return resp(codigo, mensaje, datos)
 
     def encolar(self, op_id, orden, params, quien):
         sha = sha256_txt(canon({"orden": orden, "params": params}))
@@ -2133,7 +2307,7 @@ class Orquestador:
             if p is None:
                 raise ErrorOrden("NO_EXISTE", "no existe %s" % params["pid"])
         if orden == "punto.comandos":
-            return {"comandos": comandos_mikrotik(p, config().nombre_dns)}
+            return {"comandos": self.comandos(p, config().nombre_dns)}
         if orden == "punto.logs":
             return self.logs(p, params["parte"], params["lineas"])
         if orden == "punto.api.huella":
@@ -2828,18 +3002,35 @@ class Orquestador:
         usados = [p["perfil"] for p in self.puntos()] + list(perfiles_extra)
         return max([PERFILES[x]["mem_limit"] for x in usados] or [PERFILES[PERFIL_DEFECTO]["mem_limit"]])
 
+    def instalar_cert(self, pid, nombre_dns):
+        """Certificado de servidor nuevo del punto (con NOMBRE_DNS en CN y SAN) y copia al
+        directorio que monta su `vpn` (ca.crt, server.crt, server.key, dh.pem)."""
+        key, crt = cert_servidor(pid, nombre_dns)
+        vpn = ruta("/srv/ids/puntos/%s/vpn" % pid)
+        pki = ruta("/srv/ids/pki")
+        for origen, destino, modo in ((pki / "ca.crt", "ca.crt", 0o644), (crt, "server.crt", 0o644),
+                                      (key, "server.key", 0o600), (pki / "dh.pem", "dh.pem", 0o644)):
+            escribir_atomico(vpn / destino, Path(origen).read_bytes(), modo=modo)
+
+    def comandos(self, p, nombre_dns, clave=None):
+        """comandos_mikrotik con la CA del VPS y, si el certificado que usa el `vpn` del punto aún
+        no lleva NOMBRE_DNS (puntos de antes de VPN-01), el aviso de regenerar en la cabecera."""
+        crt = ruta("/srv/ids/puntos/%s/vpn/server.crt" % p["pid"])
+        aviso = None if cert_lleva_nombre(crt, nombre_dns) else AVISO_CERT_VIEJO.replace("<pid>", p["pid"])
+        return comandos_mikrotik(p, nombre_dns, clave, ca_pem=leer_ca_pem(), aviso_cert=aviso)
+
     def _datos_punto(self, p, clave=None, ya=False):
         cfg = config()
         d = {"pid": p["pid"], "n": p["n"], "puerto": p["puerto"], "tun_net": p["tun_net"],
              "usuario": p["usuario"], "nombre": p["nombre"], "perfil": p["perfil"],
              "hilos": p["hilos"], "cpuset": p.get("cpuset_suricata"),
              "mem_limit": "%dm" % PERFILES[p["perfil"]]["mem_limit"],
-             "comandos": comandos_mikrotik(p, cfg.nombre_dns)}
+             "comandos": self.comandos(p, cfg.nombre_dns)}
         if ya:
             d["ya_entregada"] = True
         sec = None
         if clave:
-            sec = {"clave": clave, "comandos": comandos_mikrotik(p, cfg.nombre_dns, clave)}
+            sec = {"clave": clave, "comandos": self.comandos(p, cfg.nombre_dns, clave)}
         return d, sec
 
     # ---- órdenes que encolan ------------------------------------------------------------------
@@ -2914,12 +3105,7 @@ class Orquestador:
         with ctx.paso("directorios"):
             self.crear_dirs(pid)
         with ctx.paso("certificado"):
-            key, crt = cert_servidor(pid, cfg.nombre_dns)
-            vpn = ruta("/srv/ids/puntos/%s/vpn" % pid)
-            pki = ruta("/srv/ids/pki")
-            for origen, destino, modo in ((pki / "ca.crt", "ca.crt", 0o644), (crt, "server.crt", 0o644),
-                                          (key, "server.key", 0o600), (pki / "dh.pem", "dh.pem", 0o644)):
-                escribir_atomico(vpn / destino, Path(origen).read_bytes(), modo=modo)
+            self.instalar_cert(pid, cfg.nombre_dns)
         with ctx.paso("usuario VPN"):
             usuario = nuevo_usuario()
             clave = nueva_clave()
@@ -3166,15 +3352,23 @@ class Orquestador:
             recreado.append("suricata")
         datos = {"recreado": recreado}
         if cambia_vpn:
-            datos["comandos"] = comandos_mikrotik(self.punto(pid), cfg.nombre_dns)
+            datos["comandos"] = self.comandos(self.punto(pid), cfg.nombre_dns)
         ctx.mensaje = "ajustado: " + (", ".join(recreado) or "solo configuración")
         return datos
 
     def o_regenerar(self, ctx, prm):
+        """Clave VPN nueva. Si el certificado de servidor del punto es de antes de VPN-01 (sin
+        NOMBRE_DNS), se renueva también y se reinicia OpenVPN para que lo cargue: el script nuevo
+        lleva verify-server-certificate=yes y el MikroTik rechazaría el viejo."""
         p = self._p_o_noexiste(prm["pid"])
         pid = p["pid"]
+        cfg = config()
         clave = nueva_clave()
-        ctx.total = 2
+        renovar = not cert_lleva_nombre(ruta("/srv/ids/puntos/%s/vpn/server.crt" % pid), cfg.nombre_dns)
+        ctx.total = 3 if renovar else 2
+        if renovar:
+            with ctx.paso("certificado"):
+                self.instalar_cert(pid, cfg.nombre_dns)
         with ctx.paso("usuarios"):
             usuario = p["usuario"] or nuevo_usuario()
             self.escribir_usuarios(p, usuario, clave)
@@ -3182,13 +3376,30 @@ class Orquestador:
             if not ccd.exists():
                 escribir_atomico(ccd, render_ccd(p["mk"]), modo=0o644)
             self.x("UPDATE punto SET usuario=?, actualizado=? WHERE pid=?", (usuario, ahora(), pid))
-        with ctx.paso("desconectar sesión"):
-            try:
-                ctx.registrar(openvpn_kill(pid, usuario))
-            except Exception as e:  # noqa: BLE001 - sin sesión o sin socket: no es un fallo
-                ctx.registrar("management: %s" % e)
+        if renovar:
+            # reiniciar OpenVPN corta también la sesión (lo que hace el `kill` de abajo); un punto
+            # parado carga el certificado nuevo al arrancar
+            with ctx.paso("reiniciar openvpn"):
+                if p["deseado"] == "activo":
+                    try:
+                        ejecutar_ok(["docker", "exec", nombres_contenedores(pid)["vpn"], "/command/s6-svc",
+                                     "-r", "/run/service/openvpn"], timeout=60)
+                        ctx.registrar("certificado renovado: openvpn reiniciado")
+                    except ErrorOrden as e:
+                        # la clave nueva ya está escrita: no se pierde por esto (se entrega igual)
+                        ctx.registrar("no se pudo reiniciar openvpn: %s" % e.mensaje)
+                        ctx.aviso = ("certificado renovado, pero OpenVPN no se reinició: "
+                                     "ids-orq punto reiniciar %s --parte vpn" % pid)
+                else:
+                    ctx.registrar("certificado renovado: el punto está parado, se carga al arrancar")
+        else:
+            with ctx.paso("desconectar sesión"):
+                try:
+                    ctx.registrar(openvpn_kill(pid, usuario))
+                except Exception as e:  # noqa: BLE001 - sin sesión o sin socket: no es un fallo
+                    ctx.registrar("management: %s" % e)
         p = self.punto(pid)
-        ctx.mensaje = "credencial regenerada"
+        ctx.mensaje = "credencial regenerada" + (" y certificado del servidor renovado" if renovar else "")
         return self._datos_punto(p, clave=clave)
 
     def o_threshold(self, ctx, prm):
@@ -3664,6 +3875,11 @@ def construir_parser():
     ra.add_argument("--sin-descarga", action="store_true")
     rl = sub.add_parser("reabrir-logs", parents=[comun])
     rl.add_argument("pid", nargs="?")
+    vp = sub.add_parser("vpn", help="la VPN de los puntos en el host (fail2ban)")
+    vps = vp.add_subparsers(dest="sub", required=True)
+    vd = vps.add_parser("desbanear", parents=[comun],
+                        help="quita el ban de la jaula ids-vpn a una IP (p. ej. el MikroTik tras regenerar)")
+    vd.add_argument("ip")
     sub.add_parser("reconciliar", parents=[comun])
     sub.add_parser("estado", parents=[comun])
     op = sub.add_parser("op", parents=[comun])
@@ -3730,6 +3946,8 @@ def orden_desde_args(a):
         return "reglas.actualizar", ({"sin_descarga": True} if a.sin_descarga else {})
     if a.cmd == "reabrir-logs":
         return "logs.reabrir", ({"pid": a.pid} if a.pid else {})
+    if a.cmd == "vpn" and a.sub == "desbanear":
+        return "vpn.desbanear", {"ip": a.ip}
     if a.cmd == "reconciliar":
         return "sistema.reconciliar", {}
     if a.cmd == "estado":
@@ -3827,6 +4045,11 @@ class Cliente:
                 self.p(linea)
         elif orden == "punto.api.huella":
             self.p(datos["sha256"])
+        elif orden == "vpn.desbanear":
+            self.p("OK %s" % mensaje)
+            if datos.get("desbaneada"):
+                self.p("  Si esa IP sigue mandando un usuario que no existe aquí (p. ej. un router de un "
+                       "punto dado de baja), vuelve a banearse.")
         elif orden == "op.estado":
             for paso in datos.get("pasos", []):
                 self.p(_linea_paso(paso, (datos.get("avance") or "?/?").split("/")[1]))

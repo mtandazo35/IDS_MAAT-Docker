@@ -164,8 +164,13 @@ Reglas para todas las fases:
   - con `PasswordAuthentication yes`, `acceso.aplicar` se niega;
   - 5 fallos de SSH bloquean la IP, **también si viene de una red de gestión**; la IP fija del
     dueño que está en `ignoreip` no se bloquea;
-  - 5 `AUTH_FAILED` de OpenVPN bloquean la IP en el hook `forward`, y el túnel de otro punto sigue
-    arriba;
+  - 5 intentos con un usuario VPN que no existe (`ovpn-auth: rechazado … motivo=usuario`) bloquean
+    la IP en el hook `forward`, y el túnel de otro punto sigue arriba; un MikroTik con la clave vieja
+    (`motivo=clave`, tras regenerarla) **no** se bloquea y entra solo en ≤ 10 min tras poner la
+    nueva; `ids-orq vpn desbanear <ip>` quita un ban;
+  - 3 `nc <vps> <puerto>` colgados no impiden que el MikroTik reconecte tras cortarle la VPN
+    (`max-clients 16`, `hand-window 20`; en el log del `vpn` no aparece «would exceed maximum
+    number of clients»);
   - más de 10 conexiones nuevas por minuto a un puerto VPN se descartan;
   - una conexión directa al puerto del panel desde una IP que no es del proxy se descarta en el
     firewall del host;
@@ -235,12 +240,13 @@ El canario es un VPS de pruebas con 2 puntos que **repiten la misma LAN** (dos C
 | 3 | Tiempo sin captura al reiniciar cada perfil | confirmar los 30–90 s del reinicio en serie |
 | 4 | `capture.kernel_packets` con `netdev ingress drop` cargado | validar el descarte |
 | 5 | `kernel_drops` y `decoder.invalid` con `snaplen 32768` y tráfico real | validar el snaplen |
-| 6 | Si `suricata` captura sin `NET_ADMIN` | quitar la capacidad |
+| 6 | Que `suricata` captura sin `NET_ADMIN` (ya quitada en el código, auditoría VPN-05; la e2e del CI lo prueba con Docker real): `capture.kernel_packets` sube y no hay avisos de promisc ni de offload | si no captura, volver a ponerla y anotar por qué |
 | 7 | Desperdicio y Mbps reales por punto con el recorte | ancho de banda del VPS |
 | 8 | CPU del router con los vigilados acelerados solo a partir de 10 KB | coste en el MikroTik |
 | 9 | **RouterOS 6.49** (el más antiguo de la flota y la versión mínima): TLS moderno; si falla, `SECLEVEL=0` y luego `legacy` | decisión d de ARQUITECTURA §10 |
 | 10 | `connect-to` por nombre DNS y el certificado `ids-promax` en 6.49 (tiempo del `sign`, flags K/T) | nombre DNS por empresa y alta de la API-SSL |
-| 11 | v7 con `cipher=aes256-gcm` y `verify-server-certificate=yes` | perfil v7 recomendado |
+| 11 | v7 con `cipher=aes256-gcm` y `verify-server-certificate=yes`; **6.49** pegando el bloque tal cual: `/file print file=` + `/file set contents=` (línea de ~1,3 KB) + `/certificate import` dejan `ids-maat-ca-<pid>.txt_0` con flag T, y el túnel conecta con la verificación activa; con un `connect-to` que no está en el certificado, no conecta | el script v6/v7 de [OPERACION.md](OPERACION.md) §1.4 |
+| 11b | Aislamiento de `ids-vpn` en 6.49 y v7: tras pegar las 3 reglas, el `accept` queda encima de los dos `drop`; la API del panel sigue entrando (el `accept` cuenta en `/ip firewall filter print stats`); el espejo sigue llegando; y, en el VPS de laboratorio, con la tabla `inet ids_punto` relajada a mano, un `nc 100.64.N.2 22` desde el netns del `vpn` no conecta (lo cuenta el `drop` de `input`) | [OPERACION.md](OPERACION.md) §1.5 |
 | 12 | Sintaxis del blackhole en v7 y, con el túnel caído, ningún TZSP por la WAN | ruta de seguridad |
 | 13 | `fail2ban-regex` de `ids-vpn` sobre fallos reales | jaula OpenVPN |
 | 14 | El encierro systemd del orquestador no rompe docker, nft ni `systemd-run` | `ReadWritePaths` |

@@ -155,7 +155,8 @@ socat UNIX-LISTEN:/run/ids/api.sock,fork,unlink-early,mode=660,max-children=4 \
   autofirmado `ids-promax` del router (formato del dueño, válido en 6.49 y v7; comandos en
   [OPERACION.md](OPERACION.md) §1.1). **Huella SHA-256 fijada en la primera conexión del alta
   (TOFU):** el panel la muestra para compararla con `/certificate print detail` y, desde entonces,
-  rechaza cualquier otro certificado. Cambiarla es una acción explícita del admin en la ficha del
+  rechaza cualquier otro certificado (hoy la fija sola en esa primera conexión; la confirmación
+  antes de mandar la clave está pendiente, auditoría VPN-06). Cambiarla es una acción explícita del admin en la ficha del
   punto, con bitácora. Se descartan las dos alternativas:
   - la 8728 en claro;
   - la API-SSL con ADH (sin certificado).
@@ -172,11 +173,19 @@ socat UNIX-LISTEN:/run/ids/api.sock,fork,unlink-early,mode=660,max-children=4 \
   `AF_UNIX` y aplica el mismo `wrap_socket`, con la huella fijada.
 - **Del lado del router**, el origen es `100.64.N.1`:
   - usuario API exclusivo del IDS, con `address=100.64.N.1/32`;
-  - regla de entrada en `chain=input` desde `ids-vpn`;
+  - regla de entrada en `chain=input` desde `ids-vpn` **solo** para `100.64.N.1` al puerto de la
+    API, y debajo dos `drop`: el resto de `input` y todo `forward` desde `ids-vpn`
+    ([OPERACION.md](OPERACION.md) §1.5). El router no depende de que el sensor se porte bien;
   - **no se toca `/ip service … address=`**, porque esa lista es del servicio entero y puede
     usarla otro sistema de la empresa, como la facturación.
+- **El router verifica al servidor:** importa la CA del VPS y conecta con
+  `verify-server-certificate=yes` ([OPERACION.md](OPERACION.md) §1.4). Un impostor del servidor
+  OpenVPN no recibe la clave VPN ni hace de `100.64.N.1`.
 - **Defensa en profundidad:** la tabla del netns solo deja salir hacia `100.64.N.2` y el puerto de
-  la API, aunque alguien cambiara el relé.
+  la API, aunque alguien cambiara el relé. Esa tabla frena el forwarding IP, pero no a un root con
+  `CAP_NET_RAW` dentro del netns (un socket `AF_PACKET` no pasa por los hooks `inet`): por eso el
+  aislamiento de verdad son los `drop` del router, y Suricata ya no tiene `NET_ADMIN`
+  ([INSTANCIA.md](INSTANCIA.md) §2.1).
 - **Alternativas descartadas:**
   - el panel conectado a todas las redes con rutas, que lo deja a un salto de cada túnel;
   - un SOCKS genérico, que es un pivote;
@@ -191,7 +200,8 @@ socat UNIX-LISTEN:/run/ids/api.sock,fork,unlink-early,mode=660,max-children=4 \
 - Ninguna LAN de abonados entra en una tabla de rutas del VPS. Por eso dos puntos con
   `10.0.0.0/24` no chocan en la red; solo podrían mezclarse en los datos, y eso lo resuelve
   [DATOS.md](DATOS.md) §3.
-- Un contenedor comprometido no sirve de puente hacia la red de un cliente.
+- Un contenedor comprometido no sirve de puente hacia la red de un cliente: el VPS no enruta, y el
+  router descarta en `forward` todo lo que entra por `ids-vpn` (§4).
 
 ## 6. Red de túneles y CGNAT
 
@@ -345,12 +355,25 @@ banaction    = nftables[type=allports, chain_hook=forward]
 ```
 
 ```ini
-# /etc/fail2ban/filter.d/ids-vpn.conf (validar con fail2ban-regex en el canario)
+# /etc/fail2ban/filter.d/ids-vpn.conf (install.sh lo comprueba con fail2ban-regex)
+[DEFAULT]
+__ids_pref = (?:(?:\S+ )?ids-vpn(?:\[\d+\])?: )?
+
 [Definition]
-failregex = ^<HOST>:\d+ .*AUTH_FAILED
-            ^<HOST>:\d+ .*TLS Error: TLS handshake failed
-            ^<HOST>:\d+ .*ovpn-auth: rechazado
+failregex = ^%(__ids_pref)s<HOST>:\d+ ovpn-auth: rechazado usuario=\S+ motivo=(?:formato|usuario)(?:\s|$)
+ignoreregex =
 ```
+
+- **Una línea por intento.** `TLS Auth Error` y `TLS Error: TLS handshake failed` son el mismo
+  intento (contarlas baneaba al 3.er fallo) y no cuentan.
+- **Solo lo de quien no conoce el usuario** (`motivo=formato` o `motivo=usuario`). El usuario VPN no
+  es público: está en el router y en el panel. `motivo=clave` es el dueño con la clave vieja (tras
+  «Regenerar la clave VPN»), y `motivo=freno`/`freno-global` lo que sigue; banearlos cortaba todos los
+  puertos de la IP del MikroTik, hasta 1 semana. A ese caso lo frena `ovpn-auth` (5 intentos por IP
+  cada 600 s, 30 scrypt por minuto en total) y la fuerza bruta contra un usuario conocido queda
+  igual de acotada frente a 62²⁴ claves.
+- `__ids_pref` admite el prefijo `<_HOSTNAME> <SYSLOG_IDENTIFIER>[<_PID>]: ` que antepone el backend
+  systemd, sin desanclar la regex.
 
 **SSH:**
 
@@ -367,8 +390,15 @@ se bloquea. Solo se exceptúan 1 o 2 IP fijas del dueño, para no perder el acce
 - El DNAT conserva la IP de origen, así que la jaula banea en el hook `forward`, en su propia tabla
   `f2b-table`, con prioridad anterior a la de Docker.
 - Con `allports` no importa que el DNAT haya cambiado el puerto.
-- Si un MikroTik sigue reintentando con una clave vieja, se bloquea su IP. Es lo esperado: la ficha
-  del punto lo muestra.
+- Un MikroTik que sigue reintentando con una clave vieja **no** se banea (ver el filtro); sí un router
+  que llama con un usuario que ya no existe (p. ej. el de un punto dado de baja). Desbanear:
+  `ids-orq vpn desbanear <ip>` ([OPERACION.md](OPERACION.md) §5).
+- **journald:** todos los contenedores escriben por `docker.service` y comparten su límite de ritmo.
+  `/etc/systemd/journald.conf.d/90-ids.conf` (de `host/journald/`) lo sube a 50 000 mensajes cada
+  30 s, para que una avalancha no tire las líneas que lee fail2ban, y fija el tamaño en 2 GB.
+- **Conexiones a medio negociar** (cualquiera puede abrir el puerto): no llegan a `ovpn-auth` ni a
+  fail2ban. Las acotan `hand-window 20` y `max-clients 16` del `server.conf`
+  ([INSTANCIA.md](INSTANCIA.md) §7.2) junto al freno de conexiones nuevas del §7 (10/min por IP).
 
 **Panel:** fail2ban no lo cubre, porque todas sus conexiones llegan desde la IP del proxy y banearla
 cortaría a todo el mundo. El panel tiene su propio freno de login por **IP real del cliente**,

@@ -142,6 +142,7 @@ class SistemaFalso:
         self.claves_panel = []    # claves que «imprimió» el ids-panel simulado
         self.forzar_parte = {}    # parte -> {"estado", "salud"} al crearla o arrancarla
         self.imagenes_faltan = set()   # referencias que `docker image inspect` no encuentra
+        self.baneadas = set()          # IPs baneadas en la jaula ids-vpn (fail2ban-client simulado)
 
     def __call__(self, args, entrada=None, timeout=600):
         mod = sys.modules[self.mod_name]
@@ -378,10 +379,35 @@ class SistemaFalso:
         if self.openssl_real:
             p = subprocess.run(a, capture_output=True, text=True)
             return p.returncode, p.stdout, p.stderr
+        if "-ext" in a and "-in" in a:
+            # `x509 -in crt -noout -ext subjectAltName`: el SAN que dejó aquí el `-extfile` del firmado
+            try:
+                txt = Path(a[a.index("-in") + 1]).read_text(encoding="utf-8")
+            except OSError:
+                return 1, "", "Could not open file\n"
+            m = re.search(r"^subjectAltName=(.+)$", txt, re.M)
+            if not m:
+                return 0, "", ""
+            return 0, "X509v3 Subject Alternative Name: \n    %s\n" % m.group(1).replace("IP:", "IP Address:"), ""
         for opcion in ("-keyout", "-out"):
             if opcion in a:
                 Path(a[a.index(opcion) + 1]).write_text("-----BEGIN FALSO-----\n%s\n" % opcion, encoding="utf-8")
+        if "-extfile" in a and "-out" in a:
+            # el certificado «firmado» lleva las extensiones pedidas (para `-ext subjectAltName`)
+            ext = Path(a[a.index("-extfile") + 1]).read_text(encoding="utf-8")
+            with open(a[a.index("-out") + 1], "a", encoding="utf-8") as fh:
+                fh.write(ext)
         return 0, "", ""
+
+    def _fail2ban_client(self, a):
+        """`fail2ban-client set ids-vpn unbanip <ip>`: «1» si estaba en `baneadas`, «0» si no."""
+        if a[1:4] != ["set", "ids-vpn", "unbanip"] or len(a) != 5:
+            return 255, "", "orden de fail2ban-client no simulada: %s\n" % " ".join(a)
+        ip = a[4]
+        if ip in self.baneadas:
+            self.baneadas.discard(ip)
+            return 0, "1\n", ""
+        return 0, "0\n", ""
 
 
 def preparar(tun_base="100.64", ncpu=4, meminfo=None, openssl_real=False, dev=False):

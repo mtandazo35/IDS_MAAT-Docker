@@ -1,6 +1,7 @@
 """fail2ban: el filtro ids-vpn casa con las líneas de §5.13 — tal cual y con el prefijo que añade el
-backend systemd — solo en «ovpn-auth: rechazado» (una por intento fallido; «TLS Auth Error» es el
-mismo intento y no cuenta), y la jaula SSH ve las líneas de sshd-session (Debian 13).
+backend systemd — solo en «ovpn-auth: rechazado» con motivo=formato o motivo=usuario (una por
+intento fallido de quien no conoce el usuario; «TLS Auth Error» es el mismo intento y no cuenta, y
+la clave vieja del dueño tampoco: VPN-04), y la jaula SSH ve las líneas de sshd-session (Debian 13).
 
 Sin fail2ban se emula su sustitución de <HOST> (la misma regex que usa fail2ban); con fail2ban
 instalado (CI de Linux) se ejecuta además `fail2ban-regex` de verdad."""
@@ -60,30 +61,71 @@ class FiltroIdsVpn(unittest.TestCase):
         self.r = regex_filtro()
         self.lineas = (FIX / "ids-vpn.log").read_text(encoding="utf-8").splitlines()
 
-    def test_lineas_del_contrato(self):
-        self.assertEqual(len(self.lineas), 6)
-        resultados = [casa(self.r, x) for x in self.lineas]
-        self.assertEqual(resultados, [None, None, "203.0.113.45", "203.0.113.45", None, None])
+    # De las 8 líneas del contrato (§5.13) solo banean la 5.ª (formato) y la 6.ª (usuario desconocido)
+    ESPERADO = [None, None, None, None, "203.0.113.45", "203.0.113.45", None, None]
 
-    def test_freno_global_no_banea_a_quien_lo_encuentra(self):
-        # el freno global salta por la carga de todos: un MikroTik legitimo que reintenta no es culpable
-        linea = "203.0.113.45:51234 ovpn-auth: rechazado usuario=- motivo=freno-global"
-        self.assertIsNone(casa(self.r, linea))
-        self.assertIsNone(casa(self.r, "ids ids-vpn[812]: " + linea))
-        # el freno POR IP si cuenta (esa IP es la que insiste)
-        self.assertEqual(casa(self.r, "203.0.113.45:51234 ovpn-auth: rechazado usuario=- motivo=freno"),
-                         "203.0.113.45")
+    def test_lineas_del_contrato(self):
+        self.assertEqual(len(self.lineas), 8)
+        resultados = [casa(self.r, x) for x in self.lineas]
+        self.assertEqual(resultados, self.ESPERADO)
+
+    def test_clave_y_frenos_no_banean_al_duenio_del_usuario(self):
+        # VPN-04: tras «Regenerar la clave VPN» el MikroTik reintenta con la vieja (motivo=clave y,
+        # tras 5, motivo=freno): no se banea su IP (cortaba todos los puertos). El freno global
+        # salta por la carga de todos.
+        for motivo in ("usuario=vpn3a9f2c motivo=clave", "usuario=- motivo=freno", "usuario=- motivo=freno-global"):
+            linea = "203.0.113.45:51234 ovpn-auth: rechazado " + motivo
+            self.assertIsNone(casa(self.r, linea), linea)
+            self.assertIsNone(casa(self.r, "ids ids-vpn[812]: " + linea), linea)
+        # lo de un escáner (no conoce el usuario) sí
+        for motivo in ("usuario=- motivo=formato", "usuario=vpn000000 motivo=usuario"):
+            linea = "203.0.113.45:51234 ovpn-auth: rechazado " + motivo
+            self.assertEqual(casa(self.r, "ids ids-vpn[812]: " + linea), "203.0.113.45", linea)
+        # ni un motivo que solo empieza igual
+        self.assertIsNone(casa(self.r, "203.0.113.45:51234 ovpn-auth: rechazado usuario=- motivo=formatox"))
 
     def test_con_prefijo_del_backend_systemd(self):
         # formatJournalEntry: "<_HOSTNAME> <SYSLOG_IDENTIFIER>[<pid>]: <MESSAGE>"
         for prefijo in ("ids ids-vpn[812]: ", "ids-vpn[812]: ", "ids-vpn: "):
             resultados = [casa(self.r, prefijo + x) for x in self.lineas]
-            self.assertEqual(resultados, [None, None, "203.0.113.45", "203.0.113.45", None, None], prefijo)
+            self.assertEqual(resultados, self.ESPERADO, prefijo)
+
+    def test_router_con_la_clave_vieja_nunca_se_banea(self):
+        """Las líneas de verdad de ovpn-auth: un MikroTik que reintenta 60 veces en 10 min con la
+        clave vieja no suma ni un fallo; un escáner con usuarios inventados se banea al 5.º."""
+        sys.path.insert(0, str(REPO / "tests"))
+        import _ayuda_vpn as ay
+        auth = ay.cargar(ay.BIN / "ovpn-auth", "ids_vpn_ovpn_auth_f2b")
+        d = Path(tempfile.mkdtemp(prefix="f2b-auth-"))
+        try:
+            auth.RUTA_USUARIOS = str(d / "usuarios")
+            auth.DIR_FRENO = str(d / "freno")
+            auth.FRENO_LOCK = str(d / "freno" / "freno.lock")
+            auth.FRENO_JSON = str(d / "freno" / "freno.json")
+            Path(auth.RUTA_USUARIOS).write_text("vpn3a9f2c:scrypt$2$1$1$%s$%s\n" % ("00" * 16, "00" * 32),
+                                                encoding="utf-8")
+            t = [1760090000.0]
+            auth.ahora = lambda: t[0]
+            cred = d / "cred"
+
+            def fallos(usuario, veces, ip):
+                n = 0
+                for _ in range(veces):
+                    cred.write_text("%s\nclave-vieja-123\n" % usuario, encoding="utf-8")
+                    _, linea = auth.autenticar(str(cred), {"untrusted_ip": ip, "untrusted_port": "51234"})
+                    n += casa(self.r, "ids ids-vpn[812]: " + linea) is not None
+                    t[0] += 10
+                return n
+
+            self.assertEqual(fallos("vpn3a9f2c", 60, "203.0.113.45"), 0)
+            self.assertEqual(fallos("vpn00beef", 5, "198.51.100.9"), 5)
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
 
     def test_un_intento_fallido_cuenta_una_vez(self):
-        # Lo que OpenVPN + ovpn-auth escriben por cada clave mala: con maxretry = 5 el ban llega al
-        # 5.º intento, no al 3.º (antes casaban también «TLS Auth Error» y «TLS Error»).
-        intento = ["203.0.113.45:51234 ovpn-auth: rechazado usuario=vpn3a9f2c motivo=clave",
+        # Lo que OpenVPN + ovpn-auth escriben por cada intento de un escáner: con maxretry = 5 el ban
+        # llega al 5.º intento, no al 3.º (antes casaban también «TLS Auth Error» y «TLS Error»).
+        intento = ["203.0.113.45:51234 ovpn-auth: rechazado usuario=vpn000000 motivo=usuario",
                    "203.0.113.45:51234 TLS Auth Error: Auth Username/Password verification failed for peer",
                    "203.0.113.45:51234 TLS Error: TLS handshake failed"]
         maxretry = int(Jaula.leer_jaula()["DEFAULT"]["maxretry"])
@@ -148,7 +190,7 @@ class Fail2banReal(unittest.TestCase):
         self.assertIsNotNone(m, r.stdout + r.stderr)
         return int(m.group(1))
 
-    def test_ids_vpn_dos_de_seis(self):
+    def test_ids_vpn_dos_de_ocho(self):
         self.assertEqual(self.contar(FIX / "ids-vpn.log", F2B / "filter.d" / "ids-vpn.conf", ["-d", "{NONE}"]), 2)
 
     def test_ids_vpn_con_prefijo_journal(self):

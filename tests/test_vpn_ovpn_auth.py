@@ -1,4 +1,5 @@
 """ovpn-auth: hash de §4.5, freno ANTES de scrypt (§5.6) y líneas de log de §5.13."""
+import configparser
 import contextlib
 import hashlib
 import io
@@ -19,10 +20,22 @@ CLAVE = "Kq3ZtV9xLm2PwR7sYb4NcD8e"      # 24 de [A-Za-z0-9], como las que genera
 IP = "203.0.113.45"
 PUERTO = "51234"
 
-# Filtro de fail2ban (host/fail2ban/filter.d/ids-vpn.conf), con <HOST> como lo expande fail2ban para
-# IPv4. Solo «ovpn-auth: rechazado»: «TLS Auth Error» es el mismo intento y no cuenta otra vez.
-FAILREGEX = [r"^<HOST>:\d+ ovpn-auth: rechazado"]
+# Filtro de fail2ban (host/fail2ban/filter.d/ids-vpn.conf), leído del fichero real, con <HOST> como
+# lo expande fail2ban para IPv4. Solo «ovpn-auth: rechazado» con motivo=formato o motivo=usuario:
+# «TLS Auth Error» es el mismo intento y la clave vieja del dueño no banea (VPN-04).
 HOST = r"(?P<host>\d{1,3}(?:\.\d{1,3}){3})"
+
+
+def _failregex():
+    cp = configparser.RawConfigParser(strict=False)
+    cp.optionxform = str
+    cp.read_string((ay.RAIZ / "host" / "fail2ban" / "filter.d" / "ids-vpn.conf").read_text(encoding="utf-8"))
+    d = dict(cp.items("Definition"))
+    return [re.sub(r"%\((\w+)\)s", lambda m: d[m.group(1)], x.strip())
+            for x in d["failregex"].splitlines() if x.strip()]
+
+
+FAILREGEX = _failregex()
 
 
 def casa_fail2ban(linea):
@@ -233,6 +246,41 @@ class Freno(Base):
         self.assertEqual(self.intento(ip="198.51.100.9")[0], 0)
         self.assertEqual(self.llamadas, 31)
 
+    def test_freno_global_deja_pasar_al_ultimo_aceptado(self):
+        # VPN-08: el MikroTik entró desde IP; luego una avalancha desde 30 IPs llena el freno global.
+        # En su renegociación (cada hora) no lo frena; a otra IP nueva, sí.
+        self.assertEqual(self.intento()[0], 0)
+        self.t += 3600
+        for i in range(30):
+            self.intento(ip=f"192.0.2.{i + 1}", clave="mala")
+        rc, l = self.intento()
+        self.assertEqual(rc, 0, l)
+        rc, l = self.intento(ip="198.51.100.9")
+        self.assertTrue(l.endswith("motivo=freno-global"), l)
+        # el freno POR IP le sigue valiendo (5 claves malas)
+        for _ in range(5):
+            self.intento(clave="mala")
+        self.assertTrue(self.intento()[1].endswith("motivo=freno"))
+
+    def test_la_confianza_caduca_a_las_24_h(self):
+        self.assertEqual(self.intento()[0], 0)
+        self.t += 86400
+        for i in range(30):
+            self.intento(ip=f"192.0.2.{i + 1}", clave="mala")
+        self.assertTrue(self.intento()[1].endswith("motivo=freno-global"))
+        # y una IP inválida («-») nunca es de confianza
+        est = self.mod.leer_estado()
+        est["ok"] = {"ip": "-", "ts": self.t}
+        self.assertFalse(self.mod.ip_de_confianza(est, "-", self.t))
+
+    def test_estado_viejo_sin_ok_se_lee(self):
+        # un freno.json escrito por la versión anterior (sin "ok") sigue valiendo
+        os.makedirs(self.mod.DIR_FRENO, exist_ok=True)
+        Path(self.mod.FRENO_JSON).write_text('{"rechazos": {}, "scrypt": []}', encoding="utf-8")
+        self.assertEqual(self.mod.leer_estado()["ok"], None)
+        self.assertEqual(self.intento()[0], 0)
+        self.assertEqual(self.mod.leer_estado()["ok"]["ip"], IP)
+
     def test_freno_va_antes_que_el_usuario(self):
         for _ in range(5):
             self.intento(clave="mala")
@@ -272,20 +320,22 @@ class Log(Base):
         self.assertEqual(ok, "203.0.113.45:51234 ovpn-auth: aceptado usuario=vpn3a9f2c")
         self.assertEqual(clave, "203.0.113.45:51234 ovpn-auth: rechazado usuario=vpn3a9f2c motivo=clave")
         self.assertEqual(formato, "203.0.113.45:51234 ovpn-auth: rechazado usuario=- motivo=formato")
+        self.assertEqual(usuario, "203.0.113.45:51234 ovpn-auth: rechazado usuario=vpn000000 motivo=usuario")
         self.assertEqual(freno, "203.0.113.45:51234 ovpn-auth: rechazado usuario=- motivo=freno")
-        for l in (clave, formato, usuario, freno):
+        # banea lo de quien no conoce el usuario; la clave vieja del dueño y el freno, no (VPN-04)
+        for l in (formato, usuario):
             self.assertEqual(casa_fail2ban(l), IP, l)
-        self.assertIsNone(casa_fail2ban(ok))
+        for l in (ok, clave, freno):
+            self.assertIsNone(casa_fail2ban(l), l)
         # las mismas líneas que el contrato fija en §5.13 (fixture copiado de allí)
         fixture = (ay.FIXTURES / "ids-vpn.log").read_text(encoding="utf-8").splitlines()
-        self.assertIn(clave, fixture)
-        self.assertIn(freno, fixture)
-        self.assertIn(ok, fixture)
+        for l in (ok, clave, formato, usuario, freno):
+            self.assertIn(l, fixture)
 
-    def test_fixture_del_contrato_solo_casan_los_rechazos(self):
+    def test_fixture_del_contrato_solo_casan_formato_y_usuario(self):
         fixture = (ay.FIXTURES / "ids-vpn.log").read_text(encoding="utf-8").splitlines()
         self.assertEqual([casa_fail2ban(l) is not None for l in fixture],
-                         [False, False, True, True, False, False])
+                         [False, False, False, False, True, True, False, False])
 
 
 if __name__ == "__main__":

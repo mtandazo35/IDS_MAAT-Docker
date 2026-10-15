@@ -140,6 +140,9 @@ auth-user-pass /c/up
 auth SHA1
 data-ciphers AES-256-GCM:AES-256-CBC
 remote-cert-tls server
+# como el MikroTik con verify-server-certificate=yes (VPN-01): cadena hasta la CA del VPS y el
+# NOMBRE_DNS en el certificado del servidor del punto
+verify-x509-name ids.empresa.example name
 verb 3
 EOF
   docker rm -f ids-e2e-cliente >/dev/null 2>&1

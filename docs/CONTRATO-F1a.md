@@ -82,6 +82,10 @@ Reglas del contrato:
 | 20 | §0.1: `punto.threshold` fuera de F1a (reservada) | **F2:** orden de cola `punto.threshold {pid, contenido}` (§5.11) | CONTRATO-F2 §6: las exclusiones del panel llegan a Suricata |
 | 21 | §2.1: `master.key` `root:root 0400`; el panel sin clave maestra | **F2:** `root:10500 0440`, montada en el panel en `/run/secrets/master_key:ro` (`IDS_MASTER_KEY`); `ids-orq panel aplicar` se niega si no existe (Docker crearía un directorio) | CONTRATO-F2 §10.3: el panel corre como 10500 sin capacidades y descifra sus secretos con ella |
 | 22 | §5.11: reserva del panel 1024 MiB | **F2:** `RESERVA_PANEL_MB = 1536` (compose `mem_limit` y admisión) | CONTRATO-F2 §6: el dashboard heredado y el generador por nodo (`RLIMIT_AS` 1 GiB, de uno en uno) |
+| 23 | §3 (fila 16 de §0.2): fail2ban cuenta todos los `ovpn-auth: rechazado` salvo `freno-global`; §5.13: 6 líneas | solo `motivo=formato` y `motivo=usuario`; §5.13 con 8 líneas (añade una de cada), casan la 5.ª y la 6.ª; orden inmediata `vpn.desbanear {ip}` (`ids-orq vpn desbanear <ip>`); el freno global de `ovpn-auth` no frena a la última IP aceptada durante 24 h | auditoría VPN-04/VPN-08 (2026-10-14): tras «Regenerar la clave VPN» el MikroTik reintentaba con la vieja y acababa baneado en todos los puertos hasta 1 semana |
+| 24 | §4.4: `max-clients 2`, sin `hand-window` (60 s) | `max-clients 16` y `hand-window 20`, sin `duplicate-cn` | auditoría VPN-03: las conexiones sin autenticar ocupan plaza y no llegan a fail2ban; 2 `nc` colgados dejaban fuera al MikroTik |
+| 25 | §3: certificado de servidor `CN=server-<pid>`; §5.12: el script sin CA ni verificación del servidor | `OU=server-<pid>`, `CN=<NOMBRE_DNS>`, `subjectAltName=DNS:<NOMBRE_DNS>`; el script importa la CA del VPS (`ids-maat-ca-<pid>`) y pone `verify-server-certificate=yes` en v6 y v7; añade `drop` de `input` y `forward` desde `ids-vpn` debajo del `accept` de la API; `punto.vpn.regenerar` renueva un certificado sin el nombre | auditoría VPN-01/VPN-02: el router no verificaba al servidor y no aislaba `ids-vpn`; RouterOS compara `connect-to` con el CN o el SAN |
+| 26 | §4.3: `suricata` con `cap_add: [NET_RAW, NET_ADMIN]` | `cap_add: [NET_RAW]` | auditoría VPN-05: af-packet no necesita `NET_ADMIN` (promisc y offloads los pone el `vpn`, `disable-offloading: false`) |
 
 ---
 
@@ -233,7 +237,7 @@ IDS_MAAT-Docker/
 | `cluster-id` | `100 + N` | `103` | `suricata.yaml` |
 | Usuario VPN | `vpn` + 6 hex aleatorios, `^vpn[0-9a-f]{6}$` (decidido en el contrato) | `vpn3a9f2c` | `usuarios`, `ccd/` |
 | Clave VPN | 24 caracteres de `[A-Za-z0-9]` con `secrets` (decidido en el contrato) | — | se muestra una vez |
-| Certificado de servidor | CN `server-<pid>`, RSA 2048, SHA-256, 3650 días, EKU `serverAuth` | `server-p003` | `pki/servidores/` |
+| Certificado de servidor | `OU=server-<pid>`, `CN=<NOMBRE_DNS>`, SAN `DNS:<NOMBRE_DNS>`, RSA 2048, SHA-256, 3650 días, EKU `serverAuth` (§0.2 fila 25) | `OU=server-p003, CN=ids.empresa.example` | `pki/servidores/` |
 | Tag journald | `ids-vpn`, **igual en todos los puntos** | `ids-vpn` | `CONTAINER_TAG` |
 | Etiquetas Docker | `ids-maat.punto=<pid>`, `ids-maat.parte=vpn\|suricata`, `ids-maat.version=<versión>` (decidido en el contrato) | `ids-maat.punto=p003` | compose `labels` |
 | Comentario RouterOS | `IDS ids-maat:<pid>` | `IDS ids-maat:p003` | comandos impresos |
@@ -350,7 +354,7 @@ services:
     restart: unless-stopped
     labels: { ids-maat.punto: "p003", ids-maat.parte: "suricata", ids-maat.version: "0.1.0" }
     cap_drop: [ALL]
-    cap_add: [NET_RAW, NET_ADMIN]
+    cap_add: [NET_RAW]                    # §0.2 fila 26
     security_opt: ["no-new-privileges:true"]
     read_only: true
     tmpfs: ["/tmp:size=64m", "/run:size=8m"]
@@ -400,7 +404,8 @@ proto tcp-server
 dev tun0
 topology subnet
 server 100.64.3.0 255.255.255.0
-max-clients 2
+max-clients 16
+hand-window 20
 tls-server
 tls-version-min 1.2
 ca /etc/ids/vpn/ca.crt
@@ -999,11 +1004,15 @@ Líneas que **A** garantiza en journald con `CONTAINER_TAG=ids-vpn` y que **C** 
 203.0.113.45:51234 TLS Error: TLS handshake failed
 203.0.113.45:51234 ovpn-auth: rechazado usuario=vpn3a9f2c motivo=clave
 203.0.113.45:51234 ovpn-auth: rechazado usuario=- motivo=freno
+203.0.113.45:51234 ovpn-auth: rechazado usuario=- motivo=formato
+203.0.113.45:51234 ovpn-auth: rechazado usuario=vpn000000 motivo=usuario
 203.0.113.45:51234 ovpn-auth: aceptado usuario=vpn3a9f2c
 tzsp-decap: rx=10 tx=10 descartados=0 muy_grandes=0 rechazados_origen=0 ultimo_origen=100.64.3.2
 ```
 
-**Sustituido (§0.2 fila 16):** casan solo la 3.a y la 4.a. Filtro original de C (historico):
+**Sustituido (§0.2 filas 16 y 23):** casan solo la 5.a y la 6.a (`motivo=formato` y `motivo=usuario`:
+quien no conoce el usuario). `install.sh` comprueba con `fail2ban-regex` que casan 2 de las 8.
+Filtro original de C (historico):
 
 ```ini
 [Definition]

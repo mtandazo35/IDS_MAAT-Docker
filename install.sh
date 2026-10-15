@@ -334,7 +334,7 @@ respaldo() {
   # el estado del orquestador (orq.db), la PKI y los puntos (auditoría B-05). La clave maestra NO
   # entra: con ella y el tar se descifrarían los secretos; se respalda aparte (OPERACION §3, B-06).
   for p in etc/ssh/sshd_config etc/ssh/sshd_config.d etc/docker srv/ids/fw etc/fail2ban etc/ids-maat \
-           srv/ids/panel srv/ids/estado srv/ids/pki srv/ids/puntos; do
+           etc/systemd/journald.conf.d srv/ids/panel srv/ids/estado srv/ids/pki srv/ids/puntos; do
     [ -e "${R}/$p" ] && rel+=("$p")
   done
   if [ ${#rel[@]} -gt 0 ]; then
@@ -438,6 +438,11 @@ modulos_sysctl_hora() {
   for m in tun veth nft_ct; do modprobe "$m" 2>/dev/null || aviso "no se pudo cargar el módulo $m"; done
   install -m 0644 "$HOST_DIR/host/sysctl/90-ids.conf" "${R}/etc/sysctl.d/90-ids.conf"
   sysctl -q -p "${R}/etc/sysctl.d/90-ids.conf" >/dev/null || aviso "sysctl 90-ids.conf no se aplicó"
+  # journald: ritmo y tamaño (VPN-15). Lo lee al reiniciar; si no se puede, en el próximo arranque.
+  install -d -m 0755 "${R}/etc/systemd/journald.conf.d"
+  install -m 0644 "$HOST_DIR/host/journald/90-ids.conf" "${R}/etc/systemd/journald.conf.d/90-ids.conf"
+  systemctl restart systemd-journald >/dev/null 2>&1 \
+    || aviso "systemd-journald no se reinició: journald.conf.d/90-ids.conf vale desde el próximo arranque"
   systemctl enable --now systemd-timesyncd >/dev/null 2>&1 || aviso "systemd-timesyncd no arrancó"
 }
 
@@ -712,12 +717,15 @@ ssh_endurecer() {
   log "sshd: PasswordAuthentication no"
 }
 
-lineas_ids_vpn() {   # CONTRATO-F1a §5.13. Solo casan las 2 de «ovpn-auth: rechazado» (una por intento)
+lineas_ids_vpn() {   # CONTRATO-F1a §5.13. Solo casan las 2 de «ovpn-auth: rechazado» con motivo=formato
+                     # o motivo=usuario (un escáner); clave y freno no banean al dueño del usuario (VPN-04)
   cat <<'EOF'
 203.0.113.45:51234 TLS Auth Error: Auth Username/Password verification failed for peer
 203.0.113.45:51234 TLS Error: TLS handshake failed
 203.0.113.45:51234 ovpn-auth: rechazado usuario=vpn3a9f2c motivo=clave
 203.0.113.45:51234 ovpn-auth: rechazado usuario=- motivo=freno
+203.0.113.45:51234 ovpn-auth: rechazado usuario=- motivo=formato
+203.0.113.45:51234 ovpn-auth: rechazado usuario=vpn000000 motivo=usuario
 203.0.113.45:51234 ovpn-auth: aceptado usuario=vpn3a9f2c
 tzsp-decap: rx=10 tx=10 descartados=0 muy_grandes=0 rechazados_origen=0 ultimo_origen=100.64.3.2
 EOF
@@ -743,7 +751,7 @@ fail2ban_jaulas() {
   lineas_ids_vpn > "$tmp"
   n=$(casan "$tmp" "$f2b/filter.d/ids-vpn.conf")
   rm -f "$tmp"
-  [ "$n" = 2 ] || fallar "el filtro ids-vpn casa con ${n:-0} de las líneas del contrato (se esperaban 2: ovpn-auth rechazado)"
+  [ "$n" = 2 ] || fallar "el filtro ids-vpn casa con ${n:-0} de las líneas del contrato (se esperaban 2: ovpn-auth rechazado con motivo=formato/usuario)"
   systemctl enable fail2ban >/dev/null 2>&1
   systemctl restart fail2ban
   for _ in $(seq 1 15); do

@@ -454,7 +454,7 @@ p_fail2ban() {
   HOST_DIR="$CHECKOUT" DUENO=203.0.113.20
   fail2ban-regex() {
     echo "fail2ban-regex $*" >> "$LLAMADAS"
-    printf 'Results\n=======\nLines: 6 lines, 0 ignored, %s matched, 4 missed\n[processed in 0.00 sec]\n' "${COINCIDEN:-2}"
+    printf 'Results\n=======\nLines: 8 lines, 0 ignored, %s matched, 6 missed\n[processed in 0.00 sec]\n' "${COINCIDEN:-2}"
   }
   fail2ban-client() { return 0; }
   [ "$(casan /dev/null x)" = 2 ] || return 1
@@ -475,6 +475,24 @@ p_fail2ban() {
 
 p_lineas_contrato() {
   diff <(lineas_ids_vpn) "$CHECKOUT/tests/fixtures/orq/ids-vpn.log"
+}
+
+p_journald() {   # VPN-15: el drop-in de journald se instala y journald se reinicia para leerlo
+  HOST_DIR="$CHECKOUT"
+  modprobe() { echo "modprobe $*" >> "$LLAMADAS"; }
+  sysctl() { echo "sysctl $*" >> "$LLAMADAS"; }
+  modulos_sysctl_hora >/dev/null 2>&1 || return 1
+  cmp -s "$CHECKOUT/host/journald/90-ids.conf" "$IDS_RAIZ/etc/systemd/journald.conf.d/90-ids.conf" || return 2
+  grep -qx "systemctl restart systemd-journald" "$LLAMADAS" || return 3
+  # si journald no se reinicia, solo avisa (vale desde el próximo arranque): no tumba la instalación
+  systemctl() { echo "systemctl $*" >> "$LLAMADAS"; [ "$*" != "restart systemd-journald" ]; }
+  modulos_sysctl_hora >"$T/journald.out" 2>&1 || return 4
+  grep -q "próximo arranque" "$T/journald.out" || return 5
+  # y entra en el respaldo de la instalación
+  TS=20261010T081600Z
+  respaldo >/dev/null 2>&1 || return 6
+  tar -tzf "$IDS_RAIZ/root/backups/ids-maat-install-$TS.tar.gz" | grep -qx "etc/systemd/journald.conf.d/90-ids.conf" || return 7
+  return 0
 }
 
 p_daemon_json() {
@@ -750,6 +768,7 @@ esperar 0 "acceso SSH: IP desconocida falla sin opciones" en_instalador p_acceso
 esperar 1 "ufw instalado: no sigue"                       en_instalador p_paquetes_rechaza_ufw
 esperar 0 "fail2ban: jaulas y 2 coincidencias"            en_instalador p_fail2ban
 esperar 0 "líneas de §5.13 = fixture de C"                en_instalador p_lineas_contrato
+esperar 0 "journald: límites instalados y respaldados"    en_instalador p_journald
 if [ -n "$PY" ]; then
   esperar 0 "daemon.json: fusión y comprobaciones"        en_instalador p_daemon_json
   esperar 0 "imagenes.json de laboratorio (con panel)"    en_instalador p_imagenes_lab

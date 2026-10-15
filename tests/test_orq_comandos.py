@@ -10,6 +10,31 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import _ayuda_orq as A  # noqa: E402
 
+# La CA del VPS de las pruebas (texto con la forma de un PEM; la de verdad la prueba test_orq_pki)
+CA_PRUEBA = "-----BEGIN CERTIFICATE-----\nMIIBszCCAVmgAwIBAgIU\nAbC+/9==\n-----END CERTIFICATE-----\n"
+
+# Cambiado a propósito (auditoría VPN-01 y VPN-02): la CA del VPS entra en el router y el
+# ovpn-client verifica al servidor; ids-vpn queda aislada (drop en forward e input) y el accept de
+# la API queda encima de los dos.
+_CA_P003 = r"""# CA del VPS (pública): con ella el MikroTik verifica al servidor (verify-server-certificate)
+/file print file=ids-maat-ca-p003
+:delay 2s
+/file set [find name="ids-maat-ca-p003.txt"] contents="-----BEGIN CERTIFICATE-----\nMIIBszCCAVmgAwIBAgIU\nAbC+/9==\n-----END CERTIFICATE-----\n"
+/certificate import file-name=ids-maat-ca-p003.txt passphrase=""
+/certificate set [find name~"^ids-maat-ca-p003"] trusted=yes
+/file remove [find name="ids-maat-ca-p003.txt"]
+"""
+_COMUN_P003 = r"""/user group add name=ids-api policy=read,write,api
+/user add name=ids-api group=ids-api address=100.64.3.1/32 password=<CLAVE-API>
+# ids-vpn aislada: solo la API desde el sensor. Con /ip firewall filter vacía, quita
+# place-before=0 de la PRIMERA de estas tres.
+/ip firewall filter add chain=forward in-interface=ids-vpn action=drop place-before=0 \
+    comment="IDS ids-maat:p003"
+/ip firewall filter add chain=input in-interface=ids-vpn action=drop place-before=0 \
+    comment="IDS ids-maat:p003"
+/ip firewall filter add chain=input in-interface=ids-vpn src-address=100.64.3.1 protocol=tcp \
+    dst-port=8729 action=accept place-before=0 comment="IDS ids-maat:p003"
+"""
 V7_CONTRATO = r"""# ids-maat p003 (norte) · N=3 · puerto 1196 · túnel 100.64.3.0/24 · declarado RouterOS v7
 # El bloque v6 solo conecta tras: ids-orq punto ajustar p003 --ros 6
 #
@@ -23,25 +48,17 @@ add name=ids-promax common-name=ids-promax \
 /ip service set api-ssl certificate=ids-promax
 #
 # --- RouterOS v7 ---
-/interface ovpn-client add name=ids-vpn connect-to=ids.empresa.example port=1196 protocol=tcp mode=ip \
-    user=vpn3a9f2c password=<CLAVE-VPN> cipher=aes256-gcm auth=sha1 \
+""" + _CA_P003 + r"""/interface ovpn-client add name=ids-vpn connect-to=ids.empresa.example port=1196 protocol=tcp mode=ip \
+    user=vpn3a9f2c password=<CLAVE-VPN> cipher=aes256-gcm auth=sha1 verify-server-certificate=yes \
     add-default-route=no use-peer-dns=no disabled=no
 /ip route add dst-address=100.64.3.0/24 blackhole distance=250 comment="IDS ids-maat:p003"
-/user group add name=ids-api policy=read,write,api
-/user add name=ids-api group=ids-api address=100.64.3.1/32 password=<CLAVE-API>
-/ip firewall filter add chain=input in-interface=ids-vpn src-address=100.64.3.1 protocol=tcp \
-    dst-port=8729 action=accept place-before=0 comment="IDS ids-maat:p003"
-#
+""" + _COMUN_P003 + r"""#
 # --- RouterOS v6 (6.49 o superior) ---
-/interface ovpn-client add name=ids-vpn connect-to=ids.empresa.example port=1196 mode=ip \
-    user=vpn3a9f2c password=<CLAVE-VPN> cipher=aes256 auth=sha1 \
+""" + _CA_P003 + r"""/interface ovpn-client add name=ids-vpn connect-to=ids.empresa.example port=1196 mode=ip \
+    user=vpn3a9f2c password=<CLAVE-VPN> cipher=aes256 auth=sha1 verify-server-certificate=yes \
     add-default-route=no disabled=no
 /ip route add dst-address=100.64.3.0/24 type=blackhole distance=250 comment="IDS ids-maat:p003"
-/user group add name=ids-api policy=read,write,api
-/user add name=ids-api group=ids-api address=100.64.3.1/32 password=<CLAVE-API>
-/ip firewall filter add chain=input in-interface=ids-vpn src-address=100.64.3.1 protocol=tcp \
-    dst-port=8729 action=accept place-before=0 comment="IDS ids-maat:p003"
-"""
+""" + _COMUN_P003
 
 
 def punto3(mod, **extra):
@@ -49,6 +66,10 @@ def punto3(mod, **extra):
     p.update(mod.derivar(3, "100.64"))
     p.update(extra)
     return p
+
+
+def comandos(mod, p, clave=None, **extra):
+    return mod.comandos_mikrotik(p, "ids.empresa.example", clave, ca_pem=CA_PRUEBA, **extra)
 
 
 def ovpn(b):
@@ -67,17 +88,17 @@ class OvpnClient(unittest.TestCase):
         self.mod = A.cargar_orq()
 
     def test_v7_exacto(self):
-        self.assertEqual(self.mod.comandos_mikrotik(punto3(self.mod), "ids.empresa.example"), V7_CONTRATO)
+        self.assertEqual(comandos(self.mod, punto3(self.mod)), V7_CONTRATO)
 
     def test_v6_declarado(self):
-        txt = self.mod.comandos_mikrotik(punto3(self.mod, ros_version=6), "ids.empresa.example")
+        txt = comandos(self.mod, punto3(self.mod, ros_version=6))
         self.assertIn("· declarado RouterOS v6\n# El bloque v7 solo conecta tras: ids-orq punto ajustar p003 --ros 7\n",
                       txt)
         self.assertIn("cipher=aes256-cbc auth=sha1", bloque(txt, "RouterOS v7"))
 
     def test_reglas_routeros(self):
         for ros in (6, 7):
-            txt = self.mod.comandos_mikrotik(punto3(self.mod, ros_version=ros), "ids.empresa.example", clave="X" * 24)
+            txt = comandos(self.mod, punto3(self.mod, ros_version=ros), clave="X" * 24)
             v6 = ovpn(bloque(txt, "RouterOS v6"))
             v7 = ovpn(bloque(txt, "RouterOS v7"))
             # v6: sin protocol=, sin use-peer-dns, cifrado aes256, blackhole type=
@@ -98,7 +119,7 @@ class OvpnClient(unittest.TestCase):
             self.assertNotIn("<CLAVE-VPN>", txt)
 
     def test_api_8728(self):
-        txt = self.mod.comandos_mikrotik(punto3(self.mod, api_puerto=8728), "ids.empresa.example")
+        txt = comandos(self.mod, punto3(self.mod, api_puerto=8728))
         self.assertEqual(len(re.findall(r"dst-port=8728 ", txt)), 2)
 
 

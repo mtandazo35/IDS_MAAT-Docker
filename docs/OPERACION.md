@@ -39,7 +39,9 @@ add name=ids-promax common-name=ids-promax \
 - Si el servicio está deshabilitado: `/ip service enable api-ssl`.
 - **Huella fijada (TOFU).** En la primera conexión del alta, el panel muestra la huella SHA-256
   del certificado. Se compara con la que da `/certificate print detail where name=ids-promax` y, al
-  confirmar, queda fijada. Desde entonces el panel rechaza cualquier otro certificado. Si se
+  confirmar, queda fijada. **Hoy el panel la fija sola en esa primera conexión, sin preguntar**: la
+  confirmación antes de mandar la clave de `ids-api` está pendiente (auditoría VPN-06). Desde
+  entonces el panel rechaza cualquier otro certificado. Si se
   regenera `ids-promax`, hay que volver a fijar la huella desde la ficha del punto (admin, queda en
   la bitácora).
 - **En una baja no se borra:** el certificado puede usarlo otro servicio del router.
@@ -47,35 +49,44 @@ add name=ids-promax common-name=ids-promax \
 ### 1.2 RouterOS v7
 
 ```
+# CA del VPS (pública): con ella el MikroTik verifica al servidor (verify-server-certificate)
+/file print file=ids-maat-ca-p003
+:delay 2s
+/file set [find name="ids-maat-ca-p003.txt"] contents="-----BEGIN CERTIFICATE-----\nMIID…\n-----END CERTIFICATE-----\n"
+/certificate import file-name=ids-maat-ca-p003.txt passphrase=""
+/certificate set [find name~"^ids-maat-ca-p003"] trusted=yes
+/file remove [find name="ids-maat-ca-p003.txt"]
 /interface ovpn-client add name=ids-vpn connect-to=ids.empresa.example port=1196 protocol=tcp mode=ip \
-    user=vpn3a9f2c password=<CLAVE-VPN> cipher=aes256-gcm auth=sha1 \
+    user=vpn3a9f2c password=<CLAVE-VPN> cipher=aes256-gcm auth=sha1 verify-server-certificate=yes \
     add-default-route=no use-peer-dns=no disabled=no
 /ip route add dst-address=100.64.3.0/24 blackhole distance=250 comment="IDS ids-maat:p003"
 /user group add name=ids-api policy=read,write,api
 /user add name=ids-api group=ids-api address=100.64.3.1/32 password=<CLAVE-API>
+# ids-vpn aislada: solo la API desde el sensor. Con /ip firewall filter vacía, quita
+# place-before=0 de la PRIMERA de estas tres.
+/ip firewall filter add chain=forward in-interface=ids-vpn action=drop place-before=0 \
+    comment="IDS ids-maat:p003"
+/ip firewall filter add chain=input in-interface=ids-vpn action=drop place-before=0 \
+    comment="IDS ids-maat:p003"
 /ip firewall filter add chain=input in-interface=ids-vpn src-address=100.64.3.1 protocol=tcp \
     dst-port=8729 action=accept place-before=0 comment="IDS ids-maat:p003"
 ```
 
 - Si el servidor del punto no tiene GCM habilitado, se usa `cipher=aes256-cbc`.
-- **Recomendado en v7:** importar la CA de la empresa y verificar el servidor:
-
-  ```
-  /certificate import file-name=ids-ca.crt
-  /interface ovpn-client set ids-vpn verify-server-certificate=yes
-  ```
+- El contenido de `/file set` es el `ca.crt` del VPS (`/srv/ids/pki/ca.crt`) con cada salto de línea
+  escrito como `\n`. El panel y `ids-orq punto ovpn-client <pid>` lo dan ya puesto.
 
 ### 1.3 RouterOS v6 (6.49 o superior)
 
 ```
+# (las mismas 7 líneas de la CA del VPS que en v7)
 /interface ovpn-client add name=ids-vpn connect-to=ids.empresa.example port=1196 mode=ip \
-    user=vpn3a9f2c password=<CLAVE-VPN> cipher=aes256 auth=sha1 \
+    user=vpn3a9f2c password=<CLAVE-VPN> cipher=aes256 auth=sha1 verify-server-certificate=yes \
     add-default-route=no disabled=no
 /ip route add dst-address=100.64.3.0/24 type=blackhole distance=250 comment="IDS ids-maat:p003"
 /user group add name=ids-api policy=read,write,api
 /user add name=ids-api group=ids-api address=100.64.3.1/32 password=<CLAVE-API>
-/ip firewall filter add chain=input in-interface=ids-vpn src-address=100.64.3.1 protocol=tcp \
-    dst-port=8729 action=accept place-before=0 comment="IDS ids-maat:p003"
+# (las mismas 3 reglas de /ip firewall filter que en v7)
 ```
 
 v6 solo admite TCP, así que no lleva `protocol=`, y no tiene `use-peer-dns`. Si el handshake TLS
@@ -84,12 +95,47 @@ falla en 6.49, se activa la «compatibilidad v6» del punto desde su ficha
 
 En los dos bloques, el certificado de la API-SSL es el de §1.1.
 
-### 1.4 Notas
+### 1.4 El MikroTik verifica al servidor
+
+El script lleva la CA del VPS y `verify-server-certificate=yes` en los dos bloques, sin paso manual.
+Sin eso, quien suplantara `ids.empresa.example` (DNS envenenado o alguien en el camino) se quedaría
+con la clave VPN y haría de «sensor» para el router.
+
+- **Qué comprueba RouterOS:** que la cadena llega a una CA de confianza del router (la que importa el
+  script) y que el `connect-to` está en el CN o en el SAN del certificado del servidor
+  ([help.mikrotik.com, OpenVPN](https://help.mikrotik.com/docs/spaces/ROS/pages/2031655/OpenVPN)).
+  El certificado de cada punto lleva `CN=<NOMBRE_DNS>` y `subjectAltName=DNS:<NOMBRE_DNS>` (o `IP:` si
+  el nombre es una IP) e EKU `serverAuth`.
+- **La CA es una por VPS y es pública.** Nunca va una clave privada en el script. El certificado
+  importado se llama `ids-maat-ca-<pid>.txt_0` (6.49 no admite `name=` en `/certificate import`) y se
+  quita en la baja por ese prefijo (§2.1).
+- **Puntos dados de alta antes de este cambio:** su certificado de servidor solo lleva
+  `CN=server-<pid>` y el MikroTik lo rechazaría con la verificación. El script lo avisa en la
+  cabecera (`# AVISO: …`). El orden es:
+  1. «Regenerar la clave VPN» en la ficha del punto (o `ids-orq punto vpn-regenerar <pid>`): renueva
+     el certificado del servidor y reinicia OpenVPN.
+  2. Pegar en el router las 7 líneas de la CA, poner la clave nueva y activar la verificación:
+     `/interface ovpn-client set [find name=ids-vpn] password=<CLAVE-VPN> verify-server-certificate=yes`.
+- **Por confirmar en el canario de 6.49:** que `/file print file=` + `/file set contents=` + `/certificate
+  import` funcionan pegados en la terminal (la línea de la CA mide ~1,3 KB) y que 6.49 acepta el
+  certificado con la verificación activa. `verify-server-certificate` ya existe en 6.45 y en v7.
+
+### 1.5 Notas
 
 - **La lista de `/ip service api-ssl address=` no se toca.** Si ya tiene direcciones y no incluye
   `100.64.3.1`, el paso API del asistente lo detecta y muestra el comando para **añadirla**
   conservando las demás. Lo aplica el operador.
-- **Si la cadena `input` está vacía**, `place-before=0` falla: hay que quitar ese parámetro.
+- **`ids-vpn` queda aislada en el router.** Por el túnel solo entra la API desde el sensor
+  (`100.64.3.1` → `8729`); el resto de `input` y todo `forward` desde `ids-vpn` se descartan. Así, un
+  sensor comprometido (o un impostor) no llega ni a Winbox/SSH del core ni a las redes del ISP. El
+  espejo no se ve afectado: `sniff-tzsp` lo genera el propio router (sale por `output`), y el sensor
+  no envía nada más al router (su netns solo deja salir la API, [RED-Y-FIREWALL.md](RED-Y-FIREWALL.md)
+  §8). Cada `place-before=0` deja la regla arriba del todo: por eso van primero los dos `drop` y al
+  final el `accept`, que queda encima.
+- **Si `/ip firewall filter` está vacía**, `place-before=0` falla: hay que quitar ese parámetro de
+  la **primera** de las tres reglas (las otras dos ya encuentran una regla delante de la que ponerse).
+- **Routers ya desplegados:** basta con pegar las dos reglas `drop` y, después, volver a poner el
+  `accept` encima (`/ip firewall filter move [find comment="IDS ids-maat:p003" action=accept] 0`).
 - **El blackhole va siempre como /24** ([RED-Y-FIREWALL.md](RED-Y-FIREWALL.md) §3.1).
 - **Puerto 8728 en claro.** Solo como excepción por punto, con aviso permanente. Hay que cambiar
   `dst-port` y el servicio `api` en consecuencia.
@@ -112,7 +158,8 @@ Es equivalente a:
 ```
 
 **Comentario propio del espejo: `IDS ids-maat:<pid>:espejo`.** Lo del alta (§1.2/§1.3: la regla
-`chain=input` que acepta la API-SSL desde el sensor y el blackhole del túnel) lleva
+`chain=input` que acepta la API-SSL desde el sensor, los dos `drop` que aíslan `ids-vpn` y el
+blackhole del túnel) lleva
 `IDS ids-maat:<pid>` y **el espejo no lo toca nunca**: ni al aplicar, ni al pausar, ni al retirar.
 Sin esa regla, en un router con la cadena `input` en `drop`, el panel se quedaría sin API en ese
 punto. Un espejo montado por una versión anterior (con el comentario del alta) se reconoce solo
@@ -174,7 +221,13 @@ expresiones: borra solo lo que lleva exactamente su comentario.
 /interface ovpn-client remove [find name=ids-vpn]
 /user remove [find name=ids-api]
 /user group remove [find name=ids-api]
+# la CA del VPS que importó el alta (los certificados no llevan comentario: se buscan por nombre)
+/certificate remove [find name~"^ids-maat-ca-p003"]
+/file remove [find name~"^ids-maat-ca-p003"]
 ```
+
+Las dos reglas `drop` de `ids-vpn` llevan el comentario del alta, así que la línea de `filter`
+también las quita.
 
 ## 3. Respaldos y recuperación
 
@@ -302,25 +355,37 @@ rsync -a --chmod=F600 'root@ids.empresa.example:/root/backups/ids-maat-install-*
 | Tarea | Cómo |
 |---|---|
 | Ver las jaulas de fail2ban | `fail2ban-client status sshd` y `fail2ban-client status ids-vpn` |
-| Desbanear una IP | `fail2ban-client set ids-vpn unbanip 203.0.113.45` (OpenVPN) o `fail2ban-client set sshd unbanip 203.0.113.45` (SSH); ver abajo |
+| Desbanear una IP | `ids-orq vpn desbanear 203.0.113.45` (OpenVPN; queda en `orq.jsonl`) o `fail2ban-client set sshd unbanip 203.0.113.45` (SSH); ver abajo |
 | Estado de los puntos | `ids-orq punto estado '*'` o `cat /srv/ids/run/estado.json` |
 | Rotar la clave maestra | todavía no existe (no hay `kid`; [DATOS.md](DATOS.md) §6): cambiarla exige volver a guardar cada secreto |
 | Cambiar la IP del VPS | restaurar o mover y cambiar el registro DNS `ids.empresa.example`; los MikroTik no se tocan |
 | Actualizar el orquestador | `/root/ids-maat/actualizar-orquestador.sh <version>` |
 
 **Cuándo banea `ids-vpn` y cómo desbanear.** La jaula cuenta solo las líneas
-`<ip>:<puerto> ovpn-auth: rechazado …`, una por intento fallido (clave mala, usuario desconocido,
-formato, freno o freno global). La línea `TLS Auth Error` que OpenVPN escribe por el mismo intento
-no cuenta. Con `maxretry = 5` y `findtime = 10m`, una IP queda baneada al 5.º intento fallido en
-10 minutos, durante 1 h la primera vez y más en las siguientes (`bantime.increment`, hasta 1 semana).
-El ban se aplica en el hook `forward`, así que corta todos los puertos de esa IP hacia los
-contenedores.
+`<ip>:<puerto> ovpn-auth: rechazado … motivo=formato` y `… motivo=usuario`, una por intento fallido de
+quien **no conoce el usuario** (un escáner: el usuario VPN no es público, solo está en el router y en
+el panel). No cuentan:
 
-Si un MikroTik legítimo queda baneado (por ejemplo, tras regenerar la credencial sin actualizarla en el
-router):
+- `motivo=clave`: el dueño del usuario con una clave vieja o mal tecleada, por ejemplo el MikroTik
+  que sigue reintentando tras «Regenerar la clave VPN». Lo frena `ovpn-auth` (5 intentos por IP cada
+  600 s, sin calcular scrypt mientras dura) y entra solo en ≤ 10 min tras poner la clave buena.
+- `motivo=freno` (lo que sigue a esos 5 intentos) y `motivo=freno-global` (salta por la carga de
+  todos; tampoco frena a la última IP que entró con la clave buena, durante 24 h).
+- La línea `TLS Auth Error` que OpenVPN escribe por el mismo intento.
+
+Con `maxretry = 5` y `findtime = 10m`, una IP queda baneada al 5.º intento fallido en 10 minutos,
+durante 1 h la primera vez y más en las siguientes (`bantime.increment`, hasta 1 semana). El ban se
+aplica en el hook `forward`, así que corta todos los puertos de esa IP hacia los contenedores (también
+otros puntos detrás de esa misma IP).
+
+Si una IP legítima queda baneada (p. ej. un router de un punto dado de baja que sigue llamando con su
+usuario viejo, detrás de la misma IP pública que otro punto):
 
 1. Ver qué IP está baneada: `fail2ban-client status ids-vpn`.
-2. Corregir la credencial en el MikroTik. Si no, vuelve a banearse.
-3. Desbanear: `fail2ban-client set ids-vpn unbanip <ip>`.
+2. Quitar la causa (en ese ejemplo, `/interface ovpn-client remove [find name=ids-vpn]` en el router
+   viejo). Si no, vuelve a banearse.
+3. Desbanear: `ids-orq vpn desbanear <ip>`. Hace `fail2ban-client set ids-vpn unbanip <ip>` solo con
+   una IP validada y deja la orden en `orq.jsonl` (quién la pidió, sin la IP en claro). El panel la
+   ofrecerá en la ficha del punto, solo para administradores.
 4. Si la IP es fija y del dueño, puede ir en `--dueno-ip` (es el `ignoreip` de fail2ban). Las redes
    de gestión nunca van en `ignoreip`.
