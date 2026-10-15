@@ -47,7 +47,10 @@ PIEZAS = ("PUBLICAS_CONF", "PUB_HIST", "PUB_HIST_DIAS", "PUB_UMBRAL_AVISO", "_PU
           "senal_de_categorias", "_cpes_del_nodo", "culpables_de", "es_publica_declarada",
           "DNSBL", "DNSBL_HIST", "DNSBL_MAX_IPS", "DNSBL_HILOS", "DNSBL_DIAS",
           "ZEN_COD", "_PBL", "_invertida", "dnsbl_una", "dnsbl_revisar",
-          "_dnsbl_hist", "vigilar_dnsbl",
+          "_dnsbl_hist", "vigilar_dnsbl", "_vigilar_dnsbl",
+          # guarda de «revisando» y revision de solo la nueva (apartado B, 2026-10-14)
+          "_REVISANDO", "_REVISANDO_LOCK", "_revisar_tomar", "_revisar_soltar",
+          "publicas_revisando", "_pares_publicas", "_vigilar_publicas",
           "DNSBL_EVENTOS_MAX", "dnsbl_cambios",
           "culpables_por_senal", "DNSBL_SENAL", "_DNSBL_SIN_CULPABLE", "senal_de_listas")
 

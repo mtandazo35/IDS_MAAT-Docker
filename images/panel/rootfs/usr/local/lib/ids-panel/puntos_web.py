@@ -17,9 +17,14 @@ Rutas (h = manejador H del dashboard; consulta/form = dict con un valor por camp
   GET  /puntos                         lista con salud por etapas y retencion efectiva
   GET  /puntos/nuevo   POST /puntos/nuevo   alta -> punto.crear -> 303 /operaciones/<op_id>
   GET  /operaciones/<op_id>             avance; al terminar, usuario y clave VPN UNA sola vez
+  GET  /operaciones/<op_id>?json=1      el mismo avance en JSON (la pagina y la ficha lo consultan
+                                        sin recargar; al terminar trae el cuerpo del resultado)
   GET  /puntos/<pid>                    ficha (Resumen, VPN, API, Espejo, Prefijos, Logs, Baja)
   GET  /puntos/<pid>/logs?parte=vpn|suricata
+  GET  /puntos/<pid>/huella             huella del certificado API del router (JSON, cache 10 min)
   POST /puntos/<pid>/{borrar,regenerar,arrancar,parar,reiniciar,ajustar,api,espejo}
+       con ajax=1: espejo y baja devuelven {trabajo} (un hilo del panel habla con el router),
+       ajustar {op_id} y api {ok, mensaje}; sin ajax, la pagina de siempre.
 """
 
 import hashlib
@@ -80,7 +85,11 @@ ETAPAS = (("vpn", "VPN conectada"), ("tzsp", "TZSP recibido"), ("suricata", "Tra
 ORDENES = {"punto.crear": "Crear punto", "punto.borrar": "Borrar punto",
            "punto.vpn.regenerar": "Regenerar la clave de la VPN", "punto.arrancar": "Arrancar el punto",
            "punto.parar": "Parar el punto", "punto.reiniciar": "Reiniciar el punto",
-           "punto.ajustar": "Cambiar los prefijos del punto"}
+           "punto.ajustar": "Cambiar los prefijos del punto",
+           # trabajos que hace el propio panel contra el router (no van al orquestador)
+           "panel.espejo.plan": "Vista previa del espejo", "panel.espejo.aplicar": "Aplicar el espejo",
+           "panel.espejo.pausar": "Pausar el espejo", "panel.espejo.retirar": "Retirar el espejo",
+           "panel.baja": "Dar de baja el punto"}
 ACCIONES_COLA = {"arrancar": "punto.arrancar", "parar": "punto.parar", "reiniciar": "punto.reiniciar"}
 
 _OPS = {}
@@ -131,9 +140,10 @@ def _ip(d):
     return getattr(d.CTX, "ip", "") or ""
 
 
-def _bit(d, accion, pid="", objetivo="", resultado="", extra=""):
+def _bit(d, accion, pid="", objetivo="", resultado="", extra="", quien=None, ip=None):
     """Una linea de bitacora: usuario (lo pone bitacora), punto, objetivo, operacion y resultado.
-    Nunca claves."""
+    Nunca claves. Un trabajo del panel corre en su propio hilo, sin el contexto de la peticion:
+    pasa `quien` e `ip` de quien lo pidio."""
     det = "punto=%s" % (pid or "-")
     if objetivo:
         det += " objetivo=%s" % objetivo
@@ -142,7 +152,10 @@ def _bit(d, accion, pid="", objetivo="", resultado="", extra=""):
     if extra:
         det += " " + extra
     try:
-        d.bitacora(accion, det[:400])
+        if quien is None and ip is None:
+            d.bitacora(accion, det[:400])
+        else:
+            d.bitacora(accion, det[:400], quien=quien, ip=ip)
     except Exception:
         pass
 
@@ -392,7 +405,10 @@ def alertas_24h(pid, ahora=None):
     real, st = ok
     marca = (st.st_mtime_ns, st.st_size, st.st_ino)
     c = _ALERTAS.get(pid)
-    if c and c[0] == marca and ahora - c[2] < 60:
+    # el eve.json vivo cambia a cada segundo: con la marca exacta la cache casi nunca valia y cada
+    # carga de la lista o la ficha releia hasta 8 MB por punto. Un recuento de hace menos de 60 s
+    # vale aunque el fichero haya crecido (P4).
+    if c and 0 <= ahora - c[2] < 60:
         return c[1]
     n, completo = 0, True
     try:
@@ -597,6 +613,12 @@ _CSS = (
     ".vpill.amb{background:#fff7ed;color:#8a5a00}.vpill.amb i{background:#d4a000}"
     ".vpill.gris{background:#f1f1ef;color:#5f5e5a}.vpill.gris i{background:#9a9a95}"
     "details.plogs{margin:10px 0}details.plogs summary{cursor:pointer;font-weight:600;font-size:13px}"
+    # avance sin recargar (trabajos del panel y operaciones del orquestador) y su modal
+    ".pjspin{width:26px;height:26px;border:3px solid #e7e6e2;border-top-color:#2a78d6;border-radius:50%;"
+    "animation:pjgira .9s linear infinite;margin:6px 0}@keyframes pjgira{to{transform:rotate(360deg)}}"
+    ".pjest{font-size:13.5px;margin:6px 0}.pjpasos{font-size:13px;margin:8px 0;padding-left:20px}"
+    ".pjcaja{border:1px solid #cfe0f6;background:#f6f9fe;border-radius:9px;padding:10px 13px;margin:10px 0}"
+    "#pjov .pbajabox{max-width:820px;max-height:88vh;overflow:auto}"
 )
 
 _JS = ("<script>function pcopiar(id,b){var e=document.getElementById(id);if(!e)return;"
@@ -607,6 +629,82 @@ _JS = ("<script>function pcopiar(id,b){var e=document.getElementById(id);if(!e)r
        "else{aviso('No se pudo copiar','Selecciona el texto y copialo a mano.');}}"
        "function pnombre(i){var f=i.form,b=f.querySelector('button[type=submit]');"
        "if(b)b.disabled=(i.value!==f.getAttribute('data-nombre'));}</script>")
+
+# Lo que tarda (hablar con el MikroTik, la cola del orquestador) va por debajo y se ve sin recargar
+# (el user, 2026-10-14: «el agregar nuevas IPs no debe demorar tanto»). La peticion (fetch, ajax=1)
+# devuelve enseguida el id del trabajo o de la operacion; GET /operaciones/<id>?json=1 dice el avance
+# por etapas (cada 2 s; 5 s si tarda o pasa del minuto: el orquestador admite 240 peticiones/min) y,
+# al terminar, el resultado se ve en un MODAL (nunca un aviso arriba que recargue la pagina).
+_MODAL_TRABAJO = (
+    "<div id=pjov class=pbajaov data-id=''><div class=pbajabox role=dialog aria-modal=true "
+    "aria-labelledby=pjtit><h3 id=pjtit></h3><div id=pjcuerpo></div><div class=acciones id=pjacc></div>"
+    "</div></div>")
+
+_JS_TRABAJOS = """<script>
+function pjEsc(t){return String(t==null?'':t).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');}
+var PJSEG="<button type=button class='btn sec' onclick='pjCerrar()'>Seguir en segundo plano</button>";
+function pjAbrir(tit,cuerpo,botones,id,siAbierto){var o=document.getElementById('pjov');if(!o)return;
+ if(siAbierto&&(o.style.display!=='flex'||o.getAttribute('data-id')!==(id||'')))return;
+ o.setAttribute('data-id',id||'');document.getElementById('pjtit').textContent=tit||'';
+ document.getElementById('pjcuerpo').innerHTML=cuerpo||'';
+ document.getElementById('pjacc').innerHTML=botones||"<button type=button class='btn sec' onclick='pjCerrar()'>Cerrar</button>";
+ o.style.display='flex';}
+function pjCerrar(){var o=document.getElementById('pjov');if(o){o.style.display='none';o.setAttribute('data-id','');}}
+function pjEspera(t){return "<div class=pjspin></div><p class=pjest>"+pjEsc(t)+"</p>";}
+function pjPasos(j){var h='';(j.pasos||[]).forEach(function(p){var e=p.estado==='ok'?'hecho':(p.estado==='fallo'?'falló':(p.estado||''));
+ h+='<li>'+pjEsc(p.nombre)+' <span class=hint>'+pjEsc(e)+(p.dur_s!=null?' · '+pjEsc(String(p.dur_s).replace('.',','))+' s':'')+(p.detalle?' — '+pjEsc(p.detalle):'')+'</span></li>';});
+ return h?'<ol class=pjpasos>'+h+'</ol>':'';}
+function pjProgreso(j){var t=j.delante?('En cola: '+j.delante+' operación(es) delante.'):(j.etapa?('Paso actual: '+j.etapa+((j.avance&&String(j.etapa).indexOf(j.avance)<0)?' ('+j.avance+')':'')):'Esperando…');
+ return (j.aviso?"<p class=pwarn>"+pjEsc(j.aviso)+"</p>":'')+"<p class=pjest>"+pjEsc(t)+"</p>"+(j.porcentaje!=null?"<progress max=100 value='"+(+j.porcentaje||0)+"'></progress>":"<progress></progress>")+pjPasos(j);}
+function pjSeguir(id,pinta,fin){var t0=Date.now();function mira(){var t=Date.now();
+ fetch('/operaciones/'+id+'?json=1',{credentials:'same-origin',cache:'no-store'})
+ .then(function(r){if(r.status===404)throw 'nf';if(!r.ok)throw r.status;return r.json();})
+ .then(function(j){if(j.terminada){fin(j);return;}pinta(j);setTimeout(mira,((Date.now()-t>1500)||(Date.now()-t0>60000))?5000:2000);})
+ .catch(function(e){if(e==='nf'){fin({terminada:true,ok:false,mensaje:'Esa operación ya no existe o no la pediste tú.'});return;}
+  pinta({etapa:'sin respuesta del panel; se reintenta en 5 s'});setTimeout(mira,5000);});}mira();}
+function pjPost(f,extra,ok,mal){var d=new URLSearchParams(new FormData(f));d.set('ajax','1');for(var k in extra){d.set(k,extra[k]);}
+ fetch(f.getAttribute('action'),{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:d.toString()})
+ .then(function(r){return r.json();})
+ .then(function(j){if(j.token&&f.elements.op)f.elements.op.value=j.token;ok(j);})
+ .catch(function(){mal('No se pudo hablar con el panel. Vuelve a intentarlo.');});}
+var PJTIT={'panel.espejo.plan':'Vista previa del espejo','panel.espejo.aplicar':'Aplicar el espejo','panel.espejo.pausar':'Pausar el espejo','panel.espejo.retirar':'Retirar el espejo','panel.baja':'Dar de baja el punto'};
+function pjTrabajo(id,orden,nota){var tit=PJTIT[orden]||'Operación',n=nota?"<p class=hint>"+pjEsc(nota)+"</p>":'';
+ pjAbrir(tit,n+pjEspera('Empezando…'),PJSEG,id);
+ pjSeguir(id,function(j){pjAbrir(j.titulo||tit,n+pjProgreso(j),PJSEG,id,1);},
+  function(j){if(j.siguiente&&j.ok){location.href=j.siguiente;return;}pjAbrir(j.titulo_fin||j.titulo||tit,j.html||("<p>"+pjEsc(j.mensaje)+"</p>"),'',id);});}
+function pesp(f){var acc=(f.elements.accion&&f.elements.accion.value)||'plan',tit=PJTIT['panel.espejo.'+acc]||'Espejo';
+ pjAbrir(tit,pjEspera('Hablando con el MikroTik…'),' ','');
+ pjPost(f,{},function(j){if(j.trabajo){pjTrabajo(j.trabajo,j.orden||('panel.espejo.'+acc),j.nota);return;}
+   pjAbrir(j.titulo||'No se pudo',"<p>"+pjEsc(j.error||j.mensaje||'Sin respuesta')+"</p>");},
+  function(m){pjAbrir('No se pudo','<p>'+pjEsc(m)+'</p>');});return false;}
+function pjPlan(){var f=document.getElementById('pespplan');if(f){pesp(f);}else{pjCerrar();}}
+function pjOrq(id,orden){var c=(orden==='punto.ajustar')?document.getElementById('pprog'):null;
+ if(c){c.style.display='block';c.innerHTML='<b>Cambiando los prefijos</b>'+pjEspera('Preguntando al orquestador…');}
+ else{pjAbrir('Operación en curso',pjEspera('Preguntando al orquestador…'),PJSEG,id);}
+ pjSeguir(id,function(j){if(c){c.innerHTML='<b>'+pjEsc(j.titulo||'Operación')+'</b>'+pjProgreso(j);}else{pjAbrir(j.titulo||'Operación',pjProgreso(j),PJSEG,id,1);}},
+  function(j){if(c){c.innerHTML='<b>'+pjEsc(j.titulo||'Operación')+(j.ok?' · terminó bien':' · terminó mal')+'</b>'+pjPasos(j);}
+   if(orden==='punto.ajustar'&&j.ok){pjAbrir('Prefijos aplicados en el Suricata',"<p>"+pjEsc(j.mensaje||'')+"</p><p>Falta llevarlos al MikroTik: la address-list <code>ids-vigilados</code> del espejo se cambia desde su vista previa, como siempre.</p>","<button type=button class=btn onclick='pjPlan()'>Llevarlos al MikroTik</button> <button type=button class='btn sec' onclick='pjCerrar()'>Cerrar</button>",id);return;}
+   pjAbrir(j.titulo_fin||j.titulo||'Operación',j.html||("<p>"+pjEsc(j.mensaje)+"</p>"),'',id);});}
+function ppref(f){var c=document.getElementById('pprog');if(c){c.style.display='block';c.innerHTML='<b>Cambiando los prefijos</b>'+pjEspera('Encolando el cambio…');}
+ pjPost(f,{},function(j){if(j.op_id){pjOrq(j.op_id,'punto.ajustar');return;}if(c)c.style.display='none';aviso('No se cambiaron los prefijos',j.error||'Sin respuesta del panel.');},
+  function(m){if(c)c.style.display='none';aviso('No se pudo',m);});return false;}
+function papiProbar(b){var f=b.form;pjAbrir('Probar la conexión',pjEspera('Probando la API del MikroTik por el túnel (hasta 35 s si el router no responde)…'),' ','');
+ pjPost(f,{accion:'probar'},function(j){pjAbrir(j.ok?'Conexión correcta':'La conexión falló','<p>'+pjEsc(j.mensaje||j.error||'')+'</p>');},
+  function(m){pjAbrir('No se pudo','<p>'+pjEsc(m)+'</p>');});return false;}
+function pbajaAjax(f){if(typeof pbajano==='function')pbajano();pjAbrir('Dar de baja el punto',pjEspera('Empezando la baja…'),' ','');
+ pjPost(f,{},function(j){if(j.trabajo){pjTrabajo(j.trabajo,'panel.baja',j.nota);return;}pjAbrir(j.titulo||'No se dio de baja','<p>'+pjEsc(j.error||'Sin respuesta del panel.')+'</p>');},
+  function(m){pjAbrir('No se pudo','<p>'+pjEsc(m)+'</p>');});return false;}
+function popSeguir(id){pjSeguir(id,function(j){var v=document.getElementById('opvivo');if(v)v.innerHTML=pjProgreso(j);},
+ function(j){var c=document.getElementById('opcuerpo');if(c)c.innerHTML=j.html||('<p>'+pjEsc(j.mensaje)+'</p>');if(!j.ok)aviso(j.titulo_fin||'La operación no terminó bien',j.mensaje||'');});}
+function pjHuella(){var e=document.getElementById('phuella');if(!e)return;
+ fetch('/puntos/'+e.getAttribute('data-pid')+'/huella',{credentials:'same-origin',cache:'no-store'})
+ .then(function(r){return r.json();}).then(function(j){e.textContent=j.texto||'sin dato';}).catch(function(){e.textContent='no se pudo leer';});}
+function pjRetomar(){pjHuella();var e=document.getElementById('pjretomar');if(!e)return;var L=[];
+ try{L=JSON.parse(e.getAttribute('data-ops')||'[]');}catch(x){L=[];}
+ L.forEach(function(o){if(String(o.orden).indexOf('panel.')===0){pjTrabajo(o.id,o.orden);}else{pjOrq(o.id,o.orden);}});}
+document.addEventListener('DOMContentLoaded',pjRetomar);
+document.addEventListener('keydown',function(e){if(e.key==='Escape')pjCerrar();});
+</script>"""
 
 
 def aviso(texto, tipo="err"):
@@ -625,7 +723,8 @@ def pagina(d, titulo, cuerpo, refresco=0, en_lista=False):
             "<link rel=icon type=image/png href=/favicon.ico>"
             "<meta name=viewport content='width=device-width,initial-scale=1'>" + meta +
             "<title>%s</title><style>%s%s</style></head><body>" % (esc(titulo), d.BASE_CSS, _CSS)
-            + d.nav("/ajustes") + "<main>" + migas + cuerpo + "</main>" + _JS + "</body></html>")
+            + d.nav("/ajustes") + "<main>" + migas + cuerpo + "</main>" + _MODAL_TRABAJO + _JS + _JS_TRABAJOS
+            + "</body></html>")
 
 
 def _prohibido(h):
@@ -811,7 +910,8 @@ def _acciones_fila(p):
 
 
 _MODAL_BAJA = (
-    "<div id=pbajaov class=pbajaov><form method=post id=pbajaf class=pbajabox data-nombre=''>"
+    "<div id=pbajaov class=pbajaov><form method=post id=pbajaf class=pbajabox data-nombre='' "
+    "onsubmit='return pbajaAjax(this)'>"
     "<h3>Eliminar el punto <span id=pbajan></span></h3>"
     "<p>Quita del servidor su VPN, su Suricata y <b>todos sus datos</b>, y del panel sus salidas, su conexion "
     "y sus registros. No se puede deshacer.</p>"
@@ -991,26 +1091,35 @@ def _soltar_token(tok):
         _FORMS.pop(tok, None)
 
 
-def _responder(h, pid, res):
+def _responder(h, pid, res, ajax=False):
     mensaje, codigo, ok, extra = res
+    if ajax:
+        # el formulario sigue en la pagina: se le da un token nuevo para la siguiente vez
+        return h._json({"ok": bool(ok), "mensaje": mensaje, "token": str(uuid.uuid4())}, codigo)
     return ficha(h, pid, mensaje, codigo, ok=ok, extra_espejo=extra)
 
 
-def _repetida(h, pid, accion, est):
+def _repetida(h, pid, accion, est, ajax=False):
     d = _dash(h)
     if est[0] == "otro":
-        return ficha(h, pid, "Ese formulario ya se uso para otra orden u otro punto. Recarga la ficha.", 409)
+        return _responder(h, pid, ("Ese formulario ya se uso para otra orden u otro punto. Recarga la ficha.",
+                                   409, False, ""), ajax)
     if est[0] == "en_curso":
         _bit(d, "PUNTO-" + accion.upper(), pid=pid, resultado="REPETIDA-EN-CURSO")
-        return ficha(h, pid, "Esa orden ya se esta haciendo (doble clic o reintento): espera unos segundos "
-                             "y recarga la ficha.", 409)
+        return _responder(h, pid, ("Esa orden ya se esta haciendo (doble clic o reintento): espera unos "
+                                   "segundos y recarga la ficha.", 409, False, ""), ajax)
     _bit(d, "PUNTO-" + accion.upper(), pid=pid, resultado="REPETIDA")
+    if isinstance(est[1], str):
+        # ese formulario lanzo un trabajo del panel (por fetch): su resultado esta en el trabajo
+        return _responder(h, pid, ("Esa orden ya se lanzó desde la ficha: su resultado se vio allí. "
+                                   "(Ese formulario ya se habia enviado: no se repitio la orden.)", 409, False, ""), ajax)
     mensaje, codigo, ok, extra = est[1]
-    return ficha(h, pid, ((mensaje + " ") if mensaje else "")
-                 + "(Ese formulario ya se habia enviado: no se repitio la orden.)", codigo, ok=ok, extra_espejo=extra)
+    return _responder(h, pid, (((mensaje + " ") if mensaje else "")
+                               + "(Ese formulario ya se habia enviado: no se repitio la orden.)", codigo, ok, extra),
+                      ajax)
 
 
-def _con_token(h, pid, accion, form, hacer, validar=None):
+def _con_token(h, pid, accion, form, hacer, validar=None, ajax=False):
     """Orden de la ficha que hace el panel, de un solo uso por formulario (A-08).
 
     `validar()` (sin efectos: puede leer el router) devuelve None o la respuesta
@@ -1025,15 +1134,15 @@ def _con_token(h, pid, accion, form, hacer, validar=None):
     else:
         est = _estado_token(tok, clave)
         if est is not None:
-            return _repetida(h, pid, accion, est)
+            return _repetida(h, pid, accion, est, ajax)
     if validar is not None:
         pre = validar()
         if pre is not None:
-            return _responder(h, pid, pre)
+            return _responder(h, pid, pre, ajax)
     if tok:
         est = _tomar_token(tok, clave)
         if est is not None:
-            return _repetida(h, pid, accion, est)
+            return _repetida(h, pid, accion, est, ajax)
     try:
         res = hacer()
     except BaseException:
@@ -1042,7 +1151,7 @@ def _con_token(h, pid, accion, form, hacer, validar=None):
         raise
     if tok:
         _cerrar_token(tok, res)
-    return _responder(h, pid, res)
+    return _responder(h, pid, res, ajax)
 
 
 # --------------------------------------------------------------------------------------------
@@ -1077,7 +1186,9 @@ def _html_privado(h, s, code=200):
 
 
 def _pasos_limpios(pasos):
-    return [{k: p.get(k) for k in ("nombre", "estado", "detalle") if p.get(k) is not None} for p in pasos]
+    """Los pasos que se guardan y se ensenan: nombre, estado, detalle y cuanto duro (dur_s)."""
+    return [{k: p.get(k) for k in ("nombre", "estado", "detalle", "dur_s") if p.get(k) is not None}
+            for p in (pasos or []) if isinstance(p, dict)]
 
 
 ORDENES_CON_CLAVE = ("punto.crear", "punto.vpn.regenerar")
@@ -1127,6 +1238,8 @@ def vista_op(d, op_id, usuario):
     rec = ops().obtener(op_id)
     if rec is None or rec.get("usuario") != usuario:
         return None
+    if es_panel(rec.get("orden")):
+        return _vm_trabajo(op_id, rec)        # lo hace el panel: el orquestador no lo conoce
     vm = {"orden": rec.get("orden"), "pid": rec.get("pid"), "titulo": rec.get("nombre") or rec.get("pid"),
           "ros_version": rec.get("ros_version")}
     if rec.get("terminada"):
@@ -1194,16 +1307,41 @@ def vista_op(d, op_id, usuario):
     return vm
 
 
+def _dur(v):
+    try:
+        return " · %s s" % ("%.1f" % float(v)).replace(".", ",")
+    except (TypeError, ValueError):
+        return ""
+
+
 def _pasos(pasos):
     if not pasos:
         return ""
     out = "<ol>"
     for p in pasos:
+        if not isinstance(p, dict):
+            continue
         ok = p.get("estado") == "ok"
-        out += "<li>%s <span class=hint>%s%s</span></li>" % (
+        out += "<li>%s <span class=hint>%s%s%s</span></li>" % (
             esc(p.get("nombre")), "hecho" if ok else "fallo",
+            _dur(p.get("dur_s")) if p.get("dur_s") is not None else "",
             (" &mdash; " + esc(p.get("detalle"))) if p.get("detalle") else "")
     return out + "</ol>"
+
+
+def _avance_html(vm):
+    """El avance de una operacion aun abierta (la primera pintura; luego lo cambia el JS)."""
+    out = aviso(vm.get("error_canal"), "amb")
+    if vm.get("delante"):
+        out += "<p class=pjest>En cola: %s operacion(es) delante.</p>" % esc(vm.get("delante"))
+    else:
+        out += "<p class=pjest>%s</p>" % esc(("Paso actual: %s (%s)" % (vm.get("paso"), vm.get("avance")))
+                                             if vm.get("paso") else "Esperando al orquestador...")
+    if vm.get("porcentaje") is None:
+        out += "<progress></progress>"
+    else:
+        out += "<progress max=100 value='%s'></progress>" % esc(vm.get("porcentaje", 0))
+    return out + _pasos(vm.get("pasos"))
 
 
 def pagina_op(h, op_id):
@@ -1217,17 +1355,32 @@ def pagina_op(h, op_id):
     tit = "<h1>%s%s</h1>" % (esc(ORDENES.get(vm.get("orden"), vm.get("orden") or "Operacion")),
                              (" &middot; " + esc(vm.get("titulo"))) if vm.get("titulo") else "")
     if not vm.get("terminada"):
-        cuerpo = tit + aviso(vm.get("error_canal"), "amb")
-        if vm.get("delante"):
-            cuerpo += "<p>En cola: %s operacion(es) delante.</p>" % esc(vm.get("delante"))
-        else:
-            cuerpo += "<p>%s</p>" % esc(("Paso actual: %s (%s)" % (vm.get("paso"), vm.get("avance")))
-                                        if vm.get("paso") else "Esperando al orquestador...")
-        cuerpo += ("<progress max=100 value='%s'></progress>%s<p class=hint>Esta pagina se actualiza sola.</p>"
-                   % (esc(vm.get("porcentaje", 0)), _pasos(vm.get("pasos"))))
-        return _html_privado(h, pagina(d, "Operacion", cuerpo, refresco=2))
-    cuerpo = tit + _pasos(vm.get("pasos"))
+        # sin <meta refresh>: antes la pagina entera se recargaba cada 2 s (saltaba y parpadeaba).
+        # Ahora el JS pide /operaciones/<op_id>?json=1 y cambia la barra, los pasos y, al terminar,
+        # el resultado (con la clave de un solo uso si la trae: la entrega esa misma respuesta).
+        cuerpo = (tit + "<div id=opcuerpo><div id=opvivo>" + _avance_html(vm) + "</div>"
+                  "<p class=hint>Esta página sigue el avance sola, sin recargarse.</p></div>"
+                  "<script>document.addEventListener('DOMContentLoaded',function(){popSeguir('%s');});</script>"
+                  % esc(op_id))
+        return _html_privado(h, pagina(d, "Operacion", cuerpo))
+    _anotar_op(op_id, vista=True)
+    return _html_privado(h, pagina(d, "Operacion", tit + "<div id=opcuerpo>" + _cuerpo_fin(d, vm) + "</div>"))
+
+
+def _cuerpo_fin(d, vm):
+    """Lo que se ve de una operacion terminada, sin el titulo: la pagina de la operacion y el
+    JSON del avance (que lo pinta sin recargar) usan esto mismo. Si la operacion entrega la clave
+    de la VPN y vino en esta respuesta, va aqui: se pinta UNA vez."""
+    cuerpo = _pasos(vm.get("pasos"))
     pid = vm.get("pid")
+    if vm.get("panel"):
+        cuerpo += vm.get("html_panel") or aviso(vm.get("mensaje"), "info" if vm.get("ok") else "err")
+        if vm.get("siguiente"):
+            cuerpo += ("<p><a class=btn href='%s'>Seguir la baja en el orquestador</a></p>"
+                       % esc(vm.get("siguiente")))
+        elif pid and nodos.pid_valido(pid) and nodos.existe(pid):
+            cuerpo += "<p><a class='btn sec' href='/puntos/%s#espejo'>Ir a la ficha del punto</a></p>" % esc(pid)
+        return cuerpo
     if not vm.get("ok"):
         cuerpo += aviso(vm.get("mensaje"))
         lineas = vm.get("log_tail") or []
@@ -1238,14 +1391,14 @@ def pagina_op(h, op_id):
                        "<pre class=cmd>%s</pre></details>" % esc("\n".join(lineas)))
         if vm.get("orden") == "punto.crear":
             cuerpo += "<p><a class=btn href='/puntos/nuevo'>Volver a intentarlo</a></p>"
-        return _html_privado(h, pagina(d, "Operacion", cuerpo))
+        return cuerpo
     if vm.get("orden") == "punto.borrar":
         cuerpo += aviso("Punto borrado: se quitaron su VPN, su Suricata y sus datos del servidor y del panel.", "ok")
         cuerpo += ("<p class=hint>En el MikroTik quedan la interfaz <code>ids-vpn</code>, la ruta, el usuario "
                    "<code>ids-api</code> y lo que lleve el comentario <code>IDS ids-maat:%s</code>: "
                    "quitalos a mano (Documentacion &rarr; Puntos).</p>"
                    "<p><a class=btn href='/puntos'>Volver a Puntos</a></p>" % esc(pid))
-        return _html_privado(h, pagina(d, "Operacion", cuerpo))
+        return cuerpo
     r = vm.get("resultado") or {}
     if r.get("clave"):
         cuerpo += aviso("Listo. Copia ahora la clave: el panel NO la vuelve a mostrar. Si la pierdes, "
@@ -1288,35 +1441,279 @@ def pagina_op(h, op_id):
     if pid and nodos.pid_valido(pid):
         ancla = "#espejo" if vm.get("orden") == "punto.ajustar" else ""
         cuerpo += "<p><a class=btn href='/puntos/%s%s'>Ir a la ficha del punto</a></p>" % (esc(pid), ancla)
-    return _html_privado(h, pagina(d, "Operacion", cuerpo))
+    return cuerpo
 
 
-def _encolar(h, pid, orden, params, nombre=None, token="", al_fallar=None, nota_fallo=""):
-    """Una orden de cola del orquestador -> 303 a su avance. El op_id es el token del formulario
-    (A-08, como el alta): el mismo formulario enviado dos veces lleva a la misma operacion y el
-    orquestador no la encola dos veces. Sin token valido (cliente viejo), uno nuevo."""
+RE_AVANCE_TOTAL = re.compile(r"^[0-9]+/[0-9]+$")
+
+
+def _json_privado(h, obj, code=200):
+    """JSON con las cabeceras de la pagina de la operacion (puede llevar la clave de un solo uso
+    de la VPN): ni cache ni marcos (B-11)."""
+    b = json.dumps(obj, ensure_ascii=False).encode("utf-8")
+    h.send_response(code)
+    h.send_header("Content-Type", "application/json; charset=utf-8")
+    h.send_header("Content-Length", str(len(b)))
+    for k, v in CABECERAS_PRIVADAS:
+        h.send_header(k, v)
+    h.end_headers()
+    h.wfile.write(b)
+
+
+def json_op(h, op_id):
+    """GET /operaciones/<op_id>?json=1: el avance de una operacion (del orquestador o del panel)
+    para pintarlo sin recargar. Al terminar trae el cuerpo del resultado (`html`, el mismo de la
+    pagina) y se apunta como vista (la ficha ya no lo vuelve a ensenar)."""
     d = _dash(h)
-    usuario = _usuario(d)
+    barrer_bajas(d)
+    vm = vista_op(d, op_id, _usuario(d))
+    if vm is None:
+        return _json_privado(h, {"error": "Esa operación no existe o no la pediste tú."}, 404)
+    orden = vm.get("orden")
+    j = {"orden": orden, "titulo": ORDENES.get(orden, orden or "Operación"), "pid": vm.get("pid"),
+         "terminada": bool(vm.get("terminada"))}
+    if not j["terminada"]:
+        av = vm.get("avance")
+        j.update(etapa=vm.get("paso") or "", avance=av or "",
+                 porcentaje=_porcentaje(av) if RE_AVANCE_TOTAL.match(str(av or "")) else None,
+                 delante=vm.get("delante") or 0, pasos=_pasos_limpios(vm.get("pasos")),
+                 aviso=vm.get("error_canal") or "")
+        return _json_privado(h, j)
+    j.update(ok=bool(vm.get("ok")), mensaje=vm.get("mensaje") or "", pasos=_pasos_limpios(vm.get("pasos")),
+             html=_cuerpo_fin(d, vm), titulo_fin=vm.get("titulo_fin") or "",
+             siguiente=vm.get("siguiente") or "")
+    _anotar_op(op_id, vista=True)
+    return _json_privado(h, j)
+
+
+def encolar_orden(d, pid, orden, params, usuario, ip, nombre=None, token=""):
+    """Una orden de cola del orquestador SIN el manejador HTTP (la usa tambien un trabajo del panel,
+    p. ej. la baja): ("aceptada"|"repetida"|"otro"|"fallo", op_id, mensaje). El op_id es el token
+    del formulario (A-08, como el alta): el mismo formulario enviado dos veces lleva a la misma
+    operacion y el orquestador no la encola dos veces. Sin token valido (cliente viejo), uno nuevo."""
     p = nodos.punto(pid) or {}
     op_id = token if _operaciones.RE_OPID.match(token or "") else str(uuid.uuid4())
     previa = _reservar_op(op_id, usuario, orden, pid=pid, nombre=nombre or p.get("nombre") or pid,
                           ros_version=p.get("ros_version"))
+    accion = orden.upper().replace(".", "-")
     if previa is not None:
         if (previa.get("usuario"), previa.get("orden"), previa.get("pid")) != (usuario, orden, pid):
-            if al_fallar is not None:
-                al_fallar(pid)
-            return ficha(h, pid, nota_fallo + "Ese formulario ya se uso para otra orden u otro punto. Recarga la "
-                                              "ficha.", 409)
-        _bit(d, orden.upper().replace(".", "-"), pid=pid, resultado="REPETIDA", extra="op=%s" % op_id)
-        return h._redirect("/operaciones/%s" % op_id)
-    r = cliente().pedir(orden, params, quien="panel:%s" % usuario, ip=_ip(d), op_id=op_id)
-    _bit(d, orden.upper().replace(".", "-"), pid=pid, resultado=r.get("codigo"), extra="op=%s" % op_id)
+            return "otro", op_id, "Ese formulario ya se uso para otra orden u otro punto. Recarga la ficha."
+        _bit(d, accion, pid=pid, resultado="REPETIDA", extra="op=%s" % op_id, quien=usuario, ip=ip)
+        return "repetida", op_id, ""
+    r = cliente().pedir(orden, params, quien="panel:%s" % usuario, ip=ip, op_id=op_id)
+    _bit(d, accion, pid=pid, resultado=r.get("codigo"), extra="op=%s" % op_id, quien=usuario, ip=ip)
     if r.get("codigo") in ("ACEPTADA", "OK"):
-        return h._redirect("/operaciones/%s" % op_id)
+        return "aceptada", op_id, ""
     ops().quitar(op_id)
+    return "fallo", op_id, _orq.traducir(r.get("codigo"), r.get("mensaje"), r.get("datos"))
+
+
+def _encolar(h, pid, orden, params, nombre=None, token="", al_fallar=None, nota_fallo="", ajax=False):
+    """Una orden de cola del orquestador -> 303 a su avance (con ajax=1, {op_id} para seguirla en la
+    ficha sin recargar)."""
+    d = _dash(h)
+    est, op_id, msg = encolar_orden(d, pid, orden, params, _usuario(d), _ip(d), nombre=nombre, token=token)
+    if est in ("aceptada", "repetida"):
+        if ajax:
+            return h._json({"op_id": op_id, "token": str(uuid.uuid4())})
+        return h._redirect("/operaciones/%s" % op_id)
     if al_fallar is not None:
         al_fallar(pid)
-    return ficha(h, pid, nota_fallo + _orq.traducir(r.get("codigo"), r.get("mensaje"), r.get("datos")), 409)
+    if ajax:
+        return h._json({"error": nota_fallo + msg, "token": str(uuid.uuid4())}, 409)
+    return ficha(h, pid, nota_fallo + msg, 409)
+
+
+# --------------------------------------------------------------------------------------------
+# Trabajos del panel: lo que habla con el router va en un hilo y la pagina sigue su avance
+# --------------------------------------------------------------------------------------------
+# «Ver el plan», «Aplicar», «Pausar», «Retirar» del espejo y la baja (limpiar el router) tardaban
+# 15-45 s o mas DENTRO de la peticion. Ahora la peticion (fetch, ajax=1) devuelve enseguida el id
+# del trabajo y GET /operaciones/<id>?json=1 dice su avance por etapas y su resultado.
+#
+# Registro: el mismo de las operaciones del orquestador (operaciones.json, 0600) con ordenes
+# «panel.*»: asi una sola pantalla y un solo JSON sirven para las dos, la ficha retoma lo que
+# quedo a medias si se cerro la pestaña y el resultado se ve UNA vez (`vista`). El avance vive
+# solo en memoria; un trabajo abierto de otro proceso (el panel se reinicio) se cierra como
+# interrumpido al mirarlo. Un solo trabajo con el router por punto: un segundo clic (o una
+# segunda pestaña) recibe el id del que esta en marcha y se engancha a el, sin esperar 120 s a
+# un cerrojo. El hilo no tiene el contexto de la peticion: usuario e IP van explicitos.
+ARRANQUE = uuid.uuid4().hex          # este proceso del panel
+RETOMAR_S = 2 * 3600                 # la ficha retoma lo de las ultimas 2 h que no se vio
+RETOMABLES = ("punto.ajustar", "punto.arrancar", "punto.parar", "punto.reiniciar")
+MAX_HTML_TRABAJO = 200 * 1024
+RE_CUENTA = re.compile(r"[0-9]+/[0-9]+")
+_TRAB_LOCK = threading.Lock()
+_TRAB_EN_CURSO = {}                  # pid -> op_id del trabajo del panel que habla con su router
+
+
+def es_panel(orden):
+    return str(orden or "").startswith("panel.")
+
+
+def _cerrar_huerfano(op_id, rec):
+    """Un trabajo del panel abierto que no es de este proceso ya no corre: se cierra."""
+    if rec and es_panel(rec.get("orden")) and not rec.get("terminada") and rec.get("proceso") != ARRANQUE:
+        ops().terminar(op_id, codigo="FALLO", mensaje=(
+            "el panel se reinició mientras se hacía: mira cómo quedó el router (pide la vista previa) "
+            "antes de repetirlo"))
+        rec = ops().obtener(op_id) or rec
+    return rec
+
+
+def _vm_trabajo(op_id, rec):
+    """Modelo de un trabajo del panel para la pagina de la operacion y su JSON."""
+    rec = _cerrar_huerfano(op_id, rec)
+    vm = {"panel": True, "orden": rec.get("orden"), "pid": rec.get("pid"),
+          "titulo": rec.get("nombre") or rec.get("pid"), "terminada": bool(rec.get("terminada"))}
+    if not vm["terminada"]:
+        av = rec.get("avance")
+        vm.update(paso=rec.get("etapa") or "", avance=av or "",
+                  porcentaje=_porcentaje(av) if RE_AVANCE_TOTAL.match(str(av or "")) else None,
+                  pasos=rec.get("pasos") or [])
+        return vm
+    r = rec.get("resultado") if isinstance(rec.get("resultado"), dict) else {}
+    vm.update(ok=rec.get("codigo") == "OK", mensaje=rec.get("mensaje") or "", pasos=rec.get("pasos") or [],
+              html_panel=str(r.get("html") or ""), titulo_fin=str(r.get("titulo_fin") or ""),
+              siguiente=str(r.get("siguiente") or ""))
+    return vm
+
+
+def trabajo_en_curso(pid):
+    """(op_id, registro) del trabajo del panel que habla ahora con el router del punto, o (None, None)."""
+    with _TRAB_LOCK:
+        op_id = _TRAB_EN_CURSO.get(pid)
+        rec = ops().obtener(op_id) if op_id else None
+        if rec and not rec.get("terminada"):
+            return op_id, rec
+        _TRAB_EN_CURSO.pop(pid, None)
+    return None, None
+
+
+def lanzar_trabajo(d, pid, orden, usuario, ip, fn, nombre=None):
+    """Arranca `fn(avance)` en un hilo como trabajo `orden` del punto. (op_id, nuevo): si ya habia
+    uno con el router de ese punto, devuelve el suyo (nuevo=False) y no lanza otro.
+
+    `fn` devuelve {"ok", "mensaje", "resultado": {"html", "titulo_fin", "siguiente"}}; `avance`
+    acepta `avance(etapa="orden 2/6")`: cada etapa nueva cierra la anterior con su duracion y una
+    cuenta «i/N» da la barra."""
+    with _TRAB_LOCK:
+        previo = _TRAB_EN_CURSO.get(pid)
+        rec = ops().obtener(previo) if previo else None
+        if rec and not rec.get("terminada"):
+            return previo, False
+        op_id = str(uuid.uuid4())
+        ops().registrar(op_id, usuario, orden, pid=pid,
+                        nombre=nombre or (nodos.punto(pid) or {}).get("nombre") or pid,
+                        extra={"proceso": ARRANQUE, "ip": ip, "etapa": "en cola"})
+        _TRAB_EN_CURSO[pid] = op_id
+    threading.Thread(target=_correr_trabajo, args=(d, op_id, pid, usuario, ip, fn), daemon=True,
+                     name="panel-%s-%s" % (orden, pid)).start()
+    return op_id, True
+
+
+def _correr_trabajo(d, op_id, pid, usuario, ip, fn):
+    ctx = getattr(d, "CTX", None)
+    if ctx is not None:                       # la bitacora del nucleo toma de aqui quien e IP
+        ctx.user, ctx.ip = usuario, ip
+    pasos = []
+    actual = {"clave": None, "etapa": None, "t": time.monotonic()}
+
+    def cerrar(estado):
+        if actual["etapa"] is not None:
+            pasos.append({"nombre": actual["etapa"], "estado": estado,
+                          "dur_s": round(time.monotonic() - actual["t"], 1)})
+            actual["etapa"] = None
+
+    def avance(etapa=None, **_otros):
+        etapa = str(etapa or "")[:160]
+        clave = RE_CUENTA.sub("", etapa).strip()
+        if clave != actual["clave"] or actual["etapa"] is None:
+            cerrar("ok")
+            actual.update(clave=clave, t=time.monotonic())
+        actual["etapa"] = etapa
+        m = RE_CUENTA.search(etapa)
+        ops().avanzar(op_id, etapa=etapa, avance=m.group(0) if m else None, pasos=list(pasos))
+
+    res = None
+    try:
+        res = fn(avance)
+    except Exception as e:
+        res = {"ok": False, "mensaje": "fallo inesperado del panel: %s" % (str(e)[:200] or type(e).__name__)}
+    finally:
+        try:
+            if not isinstance(res, dict):
+                res = {"ok": False, "mensaje": "el trabajo no terminó (se cortó a medias)"}
+            cerrar("ok" if res.get("ok") else "fallo")
+            r = res.get("resultado") if isinstance(res.get("resultado"), dict) else {}
+            if len(str(r.get("html") or "")) > MAX_HTML_TRABAJO:
+                r = dict(r, html=aviso("El resultado es demasiado largo para enseñarlo aquí.", "amb"))
+            ops().terminar(op_id, codigo="OK" if res.get("ok") else "FALLO",
+                           mensaje=str(res.get("mensaje") or "")[:600], resultado=r, pasos=pasos,
+                           etapa=None, avance=None)
+        finally:
+            with _TRAB_LOCK:
+                if _TRAB_EN_CURSO.get(pid) == op_id:
+                    _TRAB_EN_CURSO.pop(pid, None)
+            if ctx is not None:
+                ctx.user = ctx.ip = None
+
+
+def _retomar_html(d, pid):
+    """Lo de este punto que la persona dejo a medias o termino sin verlo (cerro la pestaña): la ficha
+    lo retoma al abrir (el avance si sigue, o el resultado en un modal UNA vez). Como mucho uno de
+    prefijos (panel de la ficha) y uno del modal; nunca alta, regenerar ni baja del orquestador."""
+    usuario, ahora = _usuario(d), time.time()
+    pref = modal = None
+    for op_id, rec in sorted(ops().listar().items(), key=lambda kv: kv[1].get("creada") or 0):
+        orden = rec.get("orden")
+        if rec.get("usuario") != usuario or rec.get("pid") != pid:
+            continue
+        if not (es_panel(orden) or orden in RETOMABLES):
+            continue
+        if ahora - (rec.get("creada") or 0) > RETOMAR_S or (rec.get("terminada") and rec.get("vista")):
+            continue
+        if orden == "punto.ajustar":
+            pref = {"id": op_id, "orden": orden}
+        else:
+            modal = {"id": op_id, "orden": orden}
+    lista_ops = [x for x in (pref, modal) if x]
+    if not lista_ops:
+        return ""
+    return "<div id=pjretomar hidden data-ops='%s'></div>" % esc(json.dumps(lista_ops))
+
+
+MSG_AJUSTE = ("Hay un cambio de prefijos de este punto en marcha en el orquestador. Espera a que termine "
+              "y vuelve a pedir la vista previa: si aplicas ahora, llevarías al MikroTik la lista de redes "
+              "vieja.")
+
+
+def ajuste_pendiente(d, pid, usuario="?", ip=""):
+    """op_id de un punto.ajustar de ese punto pendiente o en curso, o None. Mira la cola de
+    estado.json y las que pidio el panel (de cualquier usuario) que aun no se cerraron: a esas se
+    les pregunta al orquestador y, si ya terminaron, se cierran aqui. Sin respuesta del
+    orquestador, se da por pendiente (es lo seguro)."""
+    est = nodos.leer_estado() or {}
+    en = (est.get("cola") or {}).get("en_curso")
+    if isinstance(en, dict) and en.get("orden") == "punto.ajustar" and en.get("pid") == pid:
+        return en.get("op_id") or "en-curso"
+    for op_id, rec in ops().listar().items():
+        if rec.get("orden") != "punto.ajustar" or rec.get("pid") != pid or rec.get("terminada"):
+            continue
+        r = cliente().pedir("op.estado", {"op_id": op_id}, quien="panel:%s" % usuario, ip=ip)
+        if r.get("codigo") == "NO_EXISTE":
+            ops().terminar(op_id, codigo="FALLO", mensaje="el orquestador no conoce esta operacion")
+            continue
+        dd = (r.get("datos") or {}) if r.get("codigo") == "OK" else {}
+        if dd.get("estado") == "terminada":
+            codigo = dd.get("codigo") or "FALLO"
+            if ops().terminar(op_id, codigo=codigo, mensaje=dd.get("mensaje") or "", pid=pid,
+                              pasos=_pasos_limpios(dd.get("pasos"))):
+                _bit(d, "PUNTO-AJUSTAR-FIN", pid=pid, resultado=codigo, extra="op=%s" % op_id, quien=usuario, ip=ip)
+            continue
+        return op_id
+    return None
 
 
 # --------------------------------------------------------------------------------------------
@@ -1703,13 +2100,15 @@ def ficha(h, pid, mensaje="", codigo=200, ok=False, extra_espejo=""):
     # API
     rt = _router(d, pid) or {}
     # la huella se lee por el tunel: sin el MikroTik conectado (lo normal tras el alta) la orden
-    # esperaba hasta 15 s y la ficha tardaba eso en abrir. Solo se pide con el router conectado.
+    # esperaba hasta 15 s y la ficha tardaba eso en abrir. Solo se pide con el router conectado, y
+    # ni asi frena la ficha: se pide por fetch despues de pintarla (GET /puntos/<pid>/huella) y se
+    # guarda 10 min por punto (P4).
     if sit["clave"] == "conectada":
-        hu = cliente().pedir("punto.api.huella", {"pid": pid}, quien="panel:%s" % _usuario(d), ip=_ip(d))
-        huella = (hu.get("datos") or {}).get("sha256") if hu.get("codigo") == "OK" else ""
-        huella_txt = huella or "sin dato"
+        hc = huella_cacheada(pid)
+        huella_html = (("<code>%s</code>" % esc(hc)) if hc else
+                       "<code id=phuella data-pid='%s'>comprobando…</code>" % esc(pid))
     else:
-        huella_txt = "se comprobará cuando el MikroTik conecte"
+        huella_html = "<code>se comprobará cuando el MikroTik conecte</code>"
     fijada = (rt.get("CERT_FP") or "").lower().replace(":", "")
     api_html = (
         "<form method=post action='/puntos/%s/api'><input type=hidden name=accion value=guardar>%s"
@@ -1720,15 +2119,16 @@ def ficha(h, pid, mensaje="", codigo=200, ok=False, extra_espejo=""):
         "<label><input type=checkbox name=enabled value=1%s> Permitir enviar IPs a este MikroTik "
         "(cuarentena)</label>"
         "<div class=acciones><button class=btn type=submit>Guardar</button>"
-        "<button class='btn sec' type=submit name=accion value=probar>Probar la conexion</button></div></form>"
+        "<button class='btn sec' type=submit name=accion value=probar onclick='return papiProbar(this)'>"
+        "Probar la conexion</button></div></form>"
         "<p class=hint>La conexion va por el relé del tunel del punto (API-SSL, puerto %s del router) con TLS "
         "extremo a extremo. La clave se guarda cifrada con la clave maestra y no se vuelve a mostrar.</p>"
-        "<p class=hint>Huella del certificado que ve el servidor: <code>%s</code><br>Huella fijada en el panel: "
+        "<p class=hint>Huella del certificado que ve el servidor: %s<br>Huella fijada en el panel: "
         "<code>%s</code></p>%s"
         % (esc(pid), campo_token(), esc(rt.get("USER", "")), "(guardada)" if rt.get("PASS") else "",
            "dejar vacio para conservar" if rt.get("PASS") else "clave del usuario ids-api",
            " checked" if rt.get("ENABLED") == "1" else "", esc(p.get("api_puerto") or 8729),
-           esc(huella_txt), esc(fijada or "ninguna (se fija en la primera conexion)"),
+           huella_html, esc(fijada or "ninguna (se fija en la primera conexion)"),
            ("<form method=post action='/puntos/%s/api' onsubmit=\"return ask(this,'Olvidar la huella',"
             "'La proxima conexion fijara la huella que presente el router. Hazlo solo si cambiaste su "
             "certificado.','Olvidar','danger')\"><input type=hidden name=accion value=olvidar_huella>%s"
@@ -1741,24 +2141,32 @@ def ficha(h, pid, mensaje="", codigo=200, ok=False, extra_espejo=""):
         "rechazaba. Siempre con vista previa y respaldo (export en el router y copia en el panel).</p>"
         + extra_espejo +
         "<div class=acciones>"
-        "<form method=post action='/puntos/%s/espejo'><input type=hidden name=accion value=plan>"
+        # por fetch: el trabajo habla con el router en segundo plano y el plan/resultado sale en un
+        # modal (sin JavaScript, el formulario de siempre)
+        "<form method=post action='/puntos/%s/espejo' id=pespplan onsubmit='return pesp(this)'>"
+        "<input type=hidden name=accion value=plan>"
         "<button class=btn type=submit>Ver el plan (vista previa)</button></form>"
-        "<form method=post action='/puntos/%s/espejo' onsubmit=\"return ask(this,'Pausar el espejo',"
-        "'Se deshabilitan las dos reglas mangle del punto. El fasttrack queda como esta.','Pausar')\">"
-        "<input type=hidden name=accion value=pausar>%s<button class='btn sec' type=submit>Pausar</button></form>"
-        "<form method=post action='/puntos/%s/espejo' onsubmit=\"return ask(this,'Retirar el espejo',"
-        "'Se borra lo que lleva el comentario del punto y la regla fasttrack recupera sus valores del "
-        "respaldo. No toca reglas ajenas.','Retirar','danger')\">"
-        "<input type=hidden name=accion value=retirar>%s<button class='btn sec' type=submit>Retirar</button></form>"
+        "<form method=post action='/puntos/%s/espejo'>"
+        "<input type=hidden name=accion value=pausar>%s<button class='btn sec' type=submit "
+        "onclick=\"if(ask(this,'Pausar el espejo','Se deshabilitan las dos reglas mangle del punto. El "
+        "fasttrack queda como está.','Pausar'))pesp(this.form);return false;\">Pausar</button></form>"
+        "<form method=post action='/puntos/%s/espejo'>"
+        "<input type=hidden name=accion value=retirar>%s<button class='btn sec' type=submit "
+        "onclick=\"if(ask(this,'Retirar el espejo','Se borra lo que lleva el comentario del punto y la regla "
+        "fasttrack recupera sus valores del respaldo. No toca reglas ajenas.','Retirar','danger'))"
+        "pesp(this.form);return false;\">Retirar</button></form>"
         "</div>" % (esc(pid), esc(pid), campo_token(), esc(pid), campo_token()))
     # Prefijos
+    # P2: por fetch; el avance del orquestador (con lo que tarda cada paso) se ve aqui sin recargar y
+    # al terminar sale un modal con «Llevarlos al MikroTik» (la vista previa del espejo)
     pref_html = (
-        "<form method=post action='/puntos/%s/ajustar' onsubmit=\"return ask(this,'Cambiar los prefijos',"
-        "'El Suricata del punto se recrea con los prefijos nuevos. Despues vuelve a aplicar el espejo para "
-        "llevarlos al MikroTik.','Cambiar')\">%s"
+        "<form method=post action='/puntos/%s/ajustar'>%s"
         "<label class=l>Prefijos de abonados (uno por linea)</label>"
         "<textarea class=t name=redes rows=4>%s</textarea>"
-        "<div class=acciones><button class=btn type=submit>Guardar prefijos</button></div></form>"
+        "<div class=acciones><button class=btn type=submit onclick=\"if(ask(this,'Cambiar los prefijos',"
+        "'El Suricata del punto toma los prefijos nuevos: el avance se ve aquí, sin recargar. Después se "
+        "llevan al MikroTik desde la vista previa del espejo.','Cambiar'))ppref(this.form);return false;\">"
+        "Guardar prefijos</button></div></form><div id=pprog class=pjcaja style='display:none'></div>"
         % (esc(pid), campo_token(), esc("\n".join(p.get("redes") or []))))
     # Servicio
     serv = "".join(
@@ -1779,7 +2187,7 @@ def ficha(h, pid, mensaje="", codigo=200, ok=False, extra_espejo=""):
         "(devuelve el fasttrack como estaba) y saca de sus address-lists las IPs que puso en cuarentena y los "
         "destinos bloqueados. Si el router no responde, la baja <b>no sigue</b> y te dice que falta; si ese "
         "router ya no existe, desmarca la casilla.</p>"
-        "<form method=post action='/puntos/%s/borrar' data-nombre='%s'>%s"
+        "<form method=post action='/puntos/%s/borrar' data-nombre='%s' onsubmit='return pbajaAjax(this)'>%s"
         "<label class=l><input type=checkbox name=limpiar_router value=1 checked> Limpiar antes el MikroTik "
         "(espejo y cuarentena)</label>"
         "<label class=l>Para confirmar, escribe el nombre del punto: <b>%s</b></label>"
@@ -1800,11 +2208,40 @@ def ficha(h, pid, mensaje="", codigo=200, ok=False, extra_espejo=""):
         "<section class=card id=api><h2>API del MikroTik</h2>%s</section>"
         "<section class=card id=espejo><h2>Espejo</h2>%s</section>"
         "<section class=card id=prefijos><h2>Prefijos del espejo</h2>%s</section>"
-        "<div id=baja>%s</div>"
+        "<div id=baja>%s</div>%s"
         % (esc(nombre), esc(pid), aviso(mensaje, "ok" if ok else "err"), caja_error,
            "" if p else aviso("El punto aun no aparece en el estado del orquestador (se actualiza cada 15 s).", "info"),
-           esc(pid), datos, salud_etapas_html(sal), serv, vpn_html, api_html, espejo_html, pref_html, baja))
+           esc(pid), datos, salud_etapas_html(sal), serv, vpn_html, api_html, espejo_html, pref_html, baja,
+           _retomar_html(d, pid)))
     return h._html(pagina(d, nombre, cuerpo), codigo)
+
+
+HUELLA_CACHE_S = 600
+RE_HUELLA_API = re.compile(r"[0-9A-Fa-f:]{16,128}")
+_HUELLAS = {}                # pid -> (instante, sha256 del certificado que presenta el router)
+
+
+def huella_cacheada(pid):
+    c = _HUELLAS.get(pid)
+    if c and 0 <= time.time() - c[0] < HUELLA_CACHE_S:
+        return c[1]
+    return ""
+
+
+def huella_json(h, pid):
+    """GET /puntos/<pid>/huella: la huella del certificado API-SSL que ve el servidor (orden
+    punto.api.huella, hasta 15 s por el tunel), con cache de 10 min por punto."""
+    d = _dash(h)
+    if situacion_vpn(nodos.punto(pid) or {})["clave"] != "conectada":
+        return h._json({"texto": "se comprobará cuando el MikroTik conecte"})
+    sha = huella_cacheada(pid)
+    if not sha:
+        hu = cliente().pedir("punto.api.huella", {"pid": pid}, quien="panel:%s" % _usuario(d), ip=_ip(d))
+        v = (hu.get("datos") or {}).get("sha256") if hu.get("codigo") == "OK" else ""
+        sha = v if isinstance(v, str) and RE_HUELLA_API.fullmatch(v) else ""
+        if sha:
+            _HUELLAS[pid] = (time.time(), sha)
+    return h._json({"texto": sha or "sin dato"})
 
 
 def logs(h, pid, consulta):
@@ -1826,13 +2263,14 @@ def logs(h, pid, consulta):
 # --------------------------------------------------------------------------------------------
 # Acciones de la ficha
 # --------------------------------------------------------------------------------------------
-def accion_api(h, pid, form):
+def accion_api(h, pid, form, ajax=False):
     """Guardar, probar u olvidar la huella de la API del router del punto. Un solo uso por
-    formulario (A-08)."""
+    formulario (A-08). Con ajax=1 (el boton «Probar la conexion»), {ok, mensaje} para un modal: la
+    prueba tarda 20-35 s con el router caido y la ficha no se queda en blanco."""
     d = _dash(h)
     acc = form.get("accion") or "guardar"
     if acc not in ("guardar", "probar", "olvidar_huella"):
-        return ficha(h, pid, "Accion de la API desconocida.", 400)
+        return _responder(h, pid, ("Accion de la API desconocida.", 400, False, ""), ajax)
     user = (form.get("user") or "").strip()[:64]
 
     def validar():
@@ -1869,7 +2307,7 @@ def accion_api(h, pid, form):
         ok, msg = probar_api(d, pid)
         _bit(d, "PUNTO-API", pid=pid, objetivo="probar", resultado="ok" if ok else "fallo")
         return "Prueba: " + msg, 200 if ok else 502, ok, ""
-    return _con_token(h, pid, "api-" + acc, form, hacer, validar)
+    return _con_token(h, pid, "api-" + acc, form, hacer, validar, ajax=ajax)
 
 
 def probar_api(d, pid):
@@ -1917,12 +2355,14 @@ def _plan_html(pe, pid, con_boton=False, titulo=""):
     elif pe["ok"] and not pe["bloqueos"]:
         out += aviso("El plan no tiene ordenes: el espejo del router ya esta como pide el punto.", "info")
     if con_boton and pe["ok"] and pe["lineas"] and not pe["bloqueos"] and not pe["accept"]:
-        out += ("<form method=post action='/puntos/%s/espejo' onsubmit=\"return ask(this,'Aplicar el espejo',"
-                "'Se respalda el firewall (export en el router y copia en el panel) y se aplican exactamente "
-                "estas %d ordenes.','Aplicar')\"><input type=hidden name=accion value=aplicar>%s"
+        # la huella de ESTE plan va en el formulario: el nucleo solo aplica el plan de esa huella
+        # (A-01, A-21). Por fetch: se aplica en segundo plano y el resultado sale en el modal.
+        out += ("<form method=post action='/puntos/%s/espejo'><input type=hidden name=accion value=aplicar>%s"
                 "<input type=hidden name=plan value='%s'>"
-                "<button class=btn type=submit>Aplicar este plan</button></form>"
-                % (esc(pid), len(pe["lineas"]), campo_token(), esc(pe["huella"])))
+                "<button class=btn type=submit onclick=\"if(ask(this,'Aplicar el espejo','Se respalda el "
+                "firewall (export en el router y copia en el panel) y se aplican exactamente estas %d "
+                "órdenes.','Aplicar'))pesp(this.form);return false;\">Aplicar este plan</button></form>"
+                % (esc(pid), campo_token(), esc(pe["huella"]), len(pe["lineas"])))
     return out
 
 
@@ -1948,77 +2388,253 @@ MSG_ACCEPT = ("El plan incluye una regla accept y el espejo nunca puede autoriza
               "Avisa al soporte.")
 
 
-def accion_espejo(h, pid, form):
-    """Vista previa, aplicar, pausar y retirar el espejo del punto.
+_NOMBRES_ESPEJO = {"plan": "espejo_plan", "aplicar": "espejo_aplicar", "pausar": "espejo_pausar",
+                   "retirar": "espejo_retirar"}
+_HUELLA_VACIA = _huella_plan([])
+_TITULOS_ESPEJO = {"plan": ("Vista previa del espejo", "Vista previa del espejo"),
+                   "aplicar": ("Espejo aplicado", "No se aplicó el espejo"),
+                   "pausar": ("Espejo pausado", "No se pausó el espejo"),
+                   "retirar": ("Espejo retirado", "No se retiró el espejo")}
 
-    Contrato con el nucleo: `espejo_plan(pid)` -> dict (ver `plan_espejo`); `espejo_aplicar(pid)`
-    o, si lo admite, `espejo_aplicar(pid, huella=<la de su plan>)` para que aplique ese plan y no
-    uno recalculado distinto (A-21); `espejo_pausar(pid)`, `espejo_retirar(pid)` -> dict con ok,
-    mensaje, lineas, avisos (y `plan` si el router cambio)."""
-    d = _dash(h)
-    acc = form.get("accion") or "plan"
-    nombres = {"plan": "espejo_plan", "aplicar": "espejo_aplicar", "pausar": "espejo_pausar",
-               "retirar": "espejo_retirar"}
-    if acc not in nombres:
-        return ficha(h, pid, "Accion de espejo desconocida.", 400)
+
+def _kw_avance(fn, avance):
+    """{"avance": avance} si `fn` lo admite (el nucleo si; los sustitutos de las pruebas viejas no)."""
+    return {"avance": avance} if avance is not None and _acepta(fn, "avance") else {}
+
+
+def _validar_aplicar(d, pid, huella, quien=None, ip=None):
+    """Solo con un nucleo VIEJO cuyo espejo_aplicar no recibe la huella: el panel rehace el plan
+    contra el router y compara (una lectura de mas). None si se puede aplicar o la respuesta
+    (mensaje, codigo, ok, html). Con el nucleo de hoy no hace falta: espejo_aplicar(huella=...)
+    rehace el plan, mira la huella, los bloqueos y el accept, y solo entonces aplica (2 lecturas
+    del router en vez de 3)."""
     fplan = getattr(d, "espejo_plan", None)
-    fn = getattr(d, nombres[acc], None)
-    if fn is None or fplan is None:
-        return ficha(h, pid, "El montaje del espejo no esta disponible en este panel.", 501)
+    try:
+        pe = plan_espejo(fplan(pid))
+    except Exception as e:
+        return "No se pudo calcular el plan: %s" % str(e)[:200], 502, False, ""
+    return _plan_no_aplicable(d, pid, pe, huella, quien, ip)
+
+
+def _plan_no_aplicable(d, pid, pe, huella, quien, ip):
+    """None si el plan `pe` se puede aplicar con la huella vista; si no, la respuesta con el plan."""
+    if pe["accept"]:
+        _bit(d, "ESPEJO-APLICAR", pid=pid, resultado="rechazado-accept", quien=quien, ip=ip)
+        return MSG_ACCEPT, 500, False, _plan_html(pe, pid)
+    if not pe["ok"]:
+        return ("No se pudo calcular el plan: %s" % (pe["mensaje"] or "sin detalle"), 502, False,
+                _plan_html(pe, pid))
+    if pe["bloqueos"]:
+        _bit(d, "ESPEJO-APLICAR", pid=pid, resultado="bloqueado", quien=quien, ip=ip)
+        return ("El plan tiene bloqueos: no se aplica. Resuelvelos en el router y vuelve a pedir la vista "
+                "previa.", 409, False, _plan_html(pe, pid))
+    if not pe["lineas"]:
+        _bit(d, "ESPEJO-APLICAR", pid=pid, resultado="plan-vacio", quien=quien, ip=ip)
+        return "No hay nada que aplicar: el espejo del router ya esta como pide el plan.", 409, False, \
+            _plan_html(pe, pid)
+    if huella != pe["huella"]:
+        _bit(d, "ESPEJO-APLICAR", pid=pid, resultado="plan-cambiado", quien=quien, ip=ip)
+        return ("El plan cambio desde la vista previa (el router o los prefijos se movieron). Revisa el "
+                "plan nuevo antes de aplicarlo.", 409, False, _plan_html(pe, pid, con_boton=True))
+    return None
+
+
+def _hacer_espejo(d, pid, acc, huella, quien, ip, avance=None):
+    """La orden del espejo contra el router: (mensaje, codigo, ok, html). La usan la peticion de
+    siempre (sin JavaScript) y el trabajo en segundo plano (con `avance`)."""
+    fn = getattr(d, _NOMBRES_ESPEJO[acc])
     if acc == "plan":
         try:
-            pe = plan_espejo(fplan(pid))
-        except Exception as e:
-            return ficha(h, pid, "No se pudo calcular el plan: %s" % str(e)[:200], 502)
-        if pe["accept"]:
-            _bit(d, "ESPEJO-PLAN", pid=pid, resultado="rechazado-accept")
-            return ficha(h, pid, MSG_ACCEPT, 500, extra_espejo=_plan_html(pe, pid))
-        _bit(d, "ESPEJO-PLAN", pid=pid, resultado="ok" if pe["ok"] else "fallo",
-             extra="lineas=%d bloqueos=%d" % (len(pe["lineas"]), len(pe["bloqueos"])))
-        return ficha(h, pid, extra_espejo=_plan_html(pe, pid, con_boton=True))
-    visto = {}
-
-    def validar():
-        if acc != "aplicar":
-            return None
-        try:
-            pe = plan_espejo(fplan(pid))
+            pe = plan_espejo(fn(pid, **_kw_avance(fn, avance)))
         except Exception as e:
             return "No se pudo calcular el plan: %s" % str(e)[:200], 502, False, ""
         if pe["accept"]:
-            _bit(d, "ESPEJO-APLICAR", pid=pid, resultado="rechazado-accept")
+            _bit(d, "ESPEJO-PLAN", pid=pid, resultado="rechazado-accept", quien=quien, ip=ip)
             return MSG_ACCEPT, 500, False, _plan_html(pe, pid)
-        if not pe["ok"]:
-            return ("No se pudo calcular el plan: %s" % (pe["mensaje"] or "sin detalle"), 502, False,
-                    _plan_html(pe, pid))
-        if pe["bloqueos"]:
-            _bit(d, "ESPEJO-APLICAR", pid=pid, resultado="bloqueado")
-            return ("El plan tiene bloqueos: no se aplica. Resuelvelos en el router y vuelve a pedir la vista "
-                    "previa.", 409, False, _plan_html(pe, pid))
-        if not pe["lineas"]:
-            _bit(d, "ESPEJO-APLICAR", pid=pid, resultado="plan-vacio")
-            return "No hay nada que aplicar: el espejo del router ya esta como pide el plan.", 409, False, \
-                _plan_html(pe, pid)
-        if (form.get("plan") or "") != pe["huella"]:
-            _bit(d, "ESPEJO-APLICAR", pid=pid, resultado="plan-cambiado")
-            return ("El plan cambio desde la vista previa (el router o los prefijos se movieron). Revisa el "
-                    "plan nuevo antes de aplicarlo.", 409, False, _plan_html(pe, pid, con_boton=True))
-        visto["pe"] = pe
-        return None
+        _bit(d, "ESPEJO-PLAN", pid=pid, resultado="ok" if pe["ok"] else "fallo",
+             extra="lineas=%d bloqueos=%d" % (len(pe["lineas"]), len(pe["bloqueos"])), quien=quien, ip=ip)
+        return "", 200, pe["ok"], _plan_html(pe, pid, con_boton=True)
+    kw = _kw_avance(fn, avance)
+    if acc == "aplicar" and _acepta(fn, "huella"):
+        kw["huella"] = huella          # el nucleo aplica ESE plan o nada (A-21)
+    try:
+        res = fn(pid, **kw)
+    except Exception as e:
+        res = {"ok": False, "mensaje": "no se pudo: %s" % str(e)[:200]}
+    ok, msg, _lineas, _avisos = plan_lineas(res)
+    if acc == "aplicar" and not ok and isinstance(res, dict) and "aplicable" in res:
+        # el nucleo rehizo el plan y no lo aplico (cambio, bloqueos, accept o vacio): lo que trae es
+        # el plan de ahora, y se ensena como tal (con Aplicar y su huella si cambio y se puede)
+        pre = _plan_no_aplicable(d, pid, plan_espejo(dict(res, ok=True, mensaje="")), huella, quien, ip)
+        if pre is not None:
+            return pre
+    _bit(d, "ESPEJO-" + acc.upper(), pid=pid, resultado="ok" if ok else "fallo", extra=msg[:120],
+         quien=quien, ip=ip)
+    return msg or ("Hecho." if ok else "No se pudo."), 200 if ok else 502, ok, _resultado_html(res, pid)
 
-    def hacer():
-        kw = {}
-        pe = visto.get("pe")
-        if pe and pe["huella_nucleo"] and _acepta(fn, "huella"):
-            kw["huella"] = pe["huella_nucleo"]
+
+def _res_trabajo(acc, resp):
+    mensaje, codigo, ok, extra = resp
+    html = (aviso(mensaje, "ok" if ok else "err") if mensaje else "") + (extra or "")
+    return {"ok": bool(ok), "mensaje": mensaje or ("Hecho." if ok else "No se pudo."),
+            "resultado": {"html": html, "codigo": codigo, "titulo_fin": _TITULOS_ESPEJO[acc][0 if ok else 1]}}
+
+
+def _bloqueo_aplicar(d, pid, huella, usuario, ip):
+    """Lo que impide aplicar antes de lanzar nada: (mensaje, codigo) o None."""
+    if not huella or huella == _HUELLA_VACIA:
+        return ("No hay un plan visto que aplicar: pide la vista previa y aplica desde ella.", 409)
+    if ajuste_pendiente(d, pid, usuario, ip):
+        _bit(d, "ESPEJO-APLICAR", pid=pid, resultado="ajuste-en-curso", quien=usuario, ip=ip)
+        return (MSG_AJUSTE, 409)
+    return None
+
+
+def _espejo_en_trabajo(h, d, pid, acc, huella, form, usuario, ip):
+    """La orden del espejo como trabajo del panel: responde enseguida {trabajo} y el hilo habla con
+    el router. Aplicar/pausar/retirar son de un solo uso por formulario: el reintento del mismo
+    formulario se engancha al trabajo que lanzo."""
+    nuevo_tok = str(uuid.uuid4())
+    tok = form.get("op") or ""
+    tok = tok if (acc != "plan" and _operaciones.RE_OPID.match(tok)) else None
+    clave = (usuario, pid, "espejo-" + acc)
+    if tok:
+        est = _tomar_token(tok, clave)
+        if est is not None:
+            if est[0] != "otro" and isinstance(est[1], str):
+                return h._json({"trabajo": est[1], "orden": "panel.espejo." + acc, "token": nuevo_tok,
+                                "nota": "Ese formulario ya se había enviado: se muestra lo que hizo."})
+            msg = ("Ese formulario ya se usó para otra orden u otro punto. Recarga la ficha." if est[0] == "otro"
+                   else "Esa orden ya se está haciendo (doble clic o reintento): espera unos segundos."
+                   if est[0] == "en_curso" else "Ese formulario ya se había enviado: no se repitió la orden.")
+            return h._json({"error": msg, "token": nuevo_tok}, 409)
+    viejo = acc == "aplicar" and not _acepta(getattr(d, "espejo_aplicar"), "huella")
+
+    def trabajo(avance):
+        if viejo:
+            avance(etapa="leer router")
+            pre = _validar_aplicar(d, pid, huella, usuario, ip)
+            if pre is not None:
+                return _res_trabajo(acc, pre)
+        return _res_trabajo(acc, _hacer_espejo(d, pid, acc, huella, usuario, ip, avance))
+    op_id, nuevo = lanzar_trabajo(d, pid, "panel.espejo." + acc, usuario, ip, trabajo)
+    if tok:
+        if nuevo:
+            _cerrar_token(tok, op_id)
+        else:
+            _soltar_token(tok)            # no se hizo nada con el: vale para repetirlo despues
+    rec = ops().obtener(op_id) or {}
+    nota = "" if nuevo else ("Ya había otra orden de este punto hablando con el MikroTik (%s): se muestra la "
+                             "suya. Cuando termine, vuelve a pedir lo que querías."
+                             % ORDENES.get(rec.get("orden"), rec.get("orden") or "?"))
+    return h._json({"trabajo": op_id, "orden": rec.get("orden") or "panel.espejo." + acc, "nota": nota,
+                    "token": nuevo_tok})
+
+
+def accion_espejo(h, pid, form, ajax=False):
+    """Vista previa, aplicar, pausar y retirar el espejo del punto.
+
+    Contrato con el nucleo: `espejo_plan(pid)` -> dict (ver `plan_espejo`); `espejo_aplicar(pid)`
+    o, si lo admite, `espejo_aplicar(pid, huella=<la del plan visto>)`, que rehace el plan contra
+    el router y solo aplica el de esa huella (A-21); `espejo_pausar(pid)`, `espejo_retirar(pid)`
+    -> dict con ok, mensaje, lineas, avisos (y `plan` si el router cambio). Si admiten `avance`,
+    cuentan sus etapas. Con ajax=1 la orden va a un trabajo en segundo plano ({trabajo}); sin
+    ajax, la peticion espera como antes."""
+    d = _dash(h)
+    acc = form.get("accion") or "plan"
+
+    def responder(msg, codigo):
+        if ajax:
+            return h._json({"error": msg, "titulo": "No se puede", "token": str(uuid.uuid4())}, codigo)
+        return ficha(h, pid, msg, codigo)
+    if acc not in _NOMBRES_ESPEJO:
+        return responder("Accion de espejo desconocida.", 400)
+    if getattr(d, _NOMBRES_ESPEJO[acc], None) is None or getattr(d, "espejo_plan", None) is None:
+        return responder("El montaje del espejo no esta disponible en este panel.", 501)
+    usuario, ip = _usuario(d), _ip(d)
+    huella = (form.get("plan") or "").strip()
+    if acc == "aplicar":
+        bloqueo = _bloqueo_aplicar(d, pid, huella, usuario, ip)
+        if bloqueo is not None:
+            if ajax:
+                return h._json({"error": bloqueo[0], "titulo": "Todavía no se puede aplicar",
+                                "token": str(uuid.uuid4())}, bloqueo[1])
+            return ficha(h, pid, bloqueo[0], bloqueo[1])
+    if ajax:
+        return _espejo_en_trabajo(h, d, pid, acc, huella, form, usuario, ip)
+    if acc == "plan":
+        mensaje, codigo, ok, extra = _hacer_espejo(d, pid, "plan", "", usuario, ip)
+        return ficha(h, pid, mensaje, codigo, ok=ok, extra_espejo=extra)
+    fn = getattr(d, _NOMBRES_ESPEJO[acc])
+
+    def validar():
+        if acc == "aplicar" and not _acepta(fn, "huella"):
+            return _validar_aplicar(d, pid, huella, usuario, ip)
+        return None
+    return _con_token(h, pid, "espejo-" + acc, form,
+                      lambda: _hacer_espejo(d, pid, acc, huella, usuario, ip), validar)
+
+
+# --------------------------------------------------------------------------------------------
+# Baja en segundo plano (P3)
+# --------------------------------------------------------------------------------------------
+def _baja_en_trabajo(h, d, pid, confirmar, limpiar_pedido, tok):
+    """La baja con fetch: un trabajo del panel limpia el MikroTik (avance «IPs quitadas i/N»), retira
+    el espejo y, solo si el router quedo limpio, encola punto.borrar con el token del formulario
+    como op_id (la marca _PREBAJA va ligada a ESA operacion y se renueva mientras dura). Si el
+    router no responde, la baja no sigue."""
+    usuario, ip = _usuario(d), _ip(d)
+    limpiar = getattr(d, "baja_limpiar_router", None) if limpiar_pedido else None
+    cancelar = getattr(d, "baja_cancelada", None)
+    renovar = getattr(d, "baja_renovar", None)
+
+    def trabajo(avance):
+        def av(etapa=None, **k):
+            avance(etapa=etapa, **k)
+            if renovar is not None:
+                try:
+                    renovar(pid, tok)          # la marca de 900 s no caduca a mitad de la limpieza
+                except Exception:
+                    pass
+        nota = ""
+        if limpiar is not None:
+            av(etapa="limpiar el MikroTik")
+            res = limpiar(pid, usuario=usuario, op=tok, **_kw_avance(limpiar, av))
+            if not res.get("ok"):
+                _bit(d, "PUNTO-BORRAR", pid=pid, resultado="router-sin-limpiar", quien=usuario, ip=ip)
+                msg = ("No se dio de baja: %s.%s Arregla la conexión con el router y vuelve a intentarlo; si "
+                       "ese router ya no existe, desmarca «Limpiar antes el MikroTik» (lo que el panel le puso "
+                       "tendrás que quitarlo a mano)." % (
+                           res.get("mensaje", "fallo"),
+                           " OJO: el router ya se tocó (se quitaron IPs de sus listas)." if res.get("tocado") else ""))
+                return {"ok": False, "mensaje": msg,
+                        "resultado": {"titulo_fin": "No se dio de baja", "html": aviso(msg)}}
+            nota = ("El router YA se limpió (%s): el punto sigue activo pero sin espejo; vuelve a montar el "
+                    "espejo desde su ficha o repite la baja. " % res.get("mensaje", ""))
+        else:
+            _bit(d, "PUNTO-BORRAR", pid=pid, resultado="sin-limpiar-router", quien=usuario, ip=ip)
+        av(etapa="encolar la baja en el orquestador")
         try:
-            res = fn(pid, **kw)
-        except Exception as e:
-            res = {"ok": False, "mensaje": "no se pudo: %s" % str(e)[:200]}
-        ok, msg, _lineas, _avisos = plan_lineas(res)
-        _bit(d, "ESPEJO-" + acc.upper(), pid=pid, resultado="ok" if ok else "fallo", extra=msg[:120])
-        return msg or ("Hecho." if ok else "No se pudo."), 200 if ok else 502, ok, _resultado_html(res, pid)
-    return _con_token(h, pid, "espejo-" + acc, form, hacer, validar)
+            est, op_id, msg = encolar_orden(d, pid, "punto.borrar", {"pid": pid, "confirmar": confirmar},
+                                            usuario, ip, nombre=confirmar, token=tok)
+        except BaseException:
+            if cancelar is not None:
+                cancelar(pid, op=tok)
+            raise
+        if est in ("aceptada", "repetida"):
+            return {"ok": True, "mensaje": "Baja encolada en el orquestador.",
+                    "resultado": {"siguiente": "/operaciones/%s" % op_id, "titulo_fin": "Baja en marcha",
+                                  "html": aviso("Router limpio y baja encolada en el orquestador.", "ok")}}
+        if cancelar is not None:
+            cancelar(pid, op=tok)
+        return {"ok": False, "mensaje": nota + msg,
+                "resultado": {"titulo_fin": "No se dio de baja", "html": aviso(nota + msg)}}
+    op_id, nuevo = lanzar_trabajo(d, pid, "panel.baja", usuario, ip, trabajo, nombre=confirmar)
+    rec = ops().obtener(op_id) or {}
+    nota = "" if nuevo else ("Ya había otra orden de este punto hablando con el MikroTik (%s): se muestra la "
+                             "suya. Cuando termine, vuelve a pedir la baja."
+                             % ORDENES.get(rec.get("orden"), rec.get("orden") or "?"))
+    return h._json({"trabajo": op_id, "orden": rec.get("orden") or "panel.baja", "nota": nota})
 
 
 # --------------------------------------------------------------------------------------------
@@ -2041,11 +2657,13 @@ def get(h, ruta, consulta):
     if m:
         if not _operaciones.RE_OPID.match(m.group(1)):
             h._html("<h1>No encontrado</h1>", 404)
+        elif consulta.get("json"):
+            json_op(h, m.group(1))
         else:
             pagina_op(h, m.group(1))
         return True
     m = RE_RUTA_PID.match(ruta)
-    if not m or m.group(2) not in (None, "logs"):
+    if not m or m.group(2) not in (None, "logs", "huella"):
         h._html("<h1>No encontrado</h1>", 404)
         return True
     pid = m.group(1)
@@ -2055,6 +2673,8 @@ def get(h, ruta, consulta):
         return True
     if m.group(2) == "logs":
         logs(h, pid, consulta)
+    elif m.group(2) == "huella":
+        huella_json(h, pid)
     else:
         ficha(h, pid)
     return True
@@ -2083,17 +2703,25 @@ def post(h, ruta, form):
         return True
     p = nodos.punto(pid) or {}
     tok = form.get("op") or ""
+    ajax = bool(form.get("ajax"))
     if acc == "borrar":
         confirmar = (form.get("confirmar") or "").strip()
         if not confirmar or confirmar != (p.get("nombre") or pid):
             _bit(_dash(h), "PUNTO-BORRAR", pid=pid, resultado="nombre-no-coincide")
-            ficha(h, pid, "Para dar de baja hay que escribir exactamente el nombre del punto.", 400)
+            msg = "Para dar de baja hay que escribir exactamente el nombre del punto."
+            if ajax:
+                h._json({"error": msg, "titulo": "No se dio de baja"}, 400)
+            else:
+                ficha(h, pid, msg, 400)
             return True
         d = _dash(h)
         # el op_id de la baja es el token del formulario: la marca de «en baja» del punto va ligada
         # a ESA operacion (si termina mal, el barrido la suelta: auditoria ap2 H1)
         if not _operaciones.RE_OPID.match(tok):
             tok = str(uuid.uuid4())
+        if ajax:
+            _baja_en_trabajo(h, d, pid, confirmar, bool(form.get("limpiar_router")), tok)
+            return True
         limpiar = getattr(d, "baja_limpiar_router", None)
         nota = ""
         if form.get("limpiar_router") and limpiar is not None:
@@ -2127,11 +2755,14 @@ def post(h, ruta, form):
     elif acc == "ajustar":
         redes, err = validar_redes(form.get("redes") or "")
         if err:
-            ficha(h, pid, err, 400)
+            if ajax:
+                h._json({"error": err, "token": str(uuid.uuid4())}, 400)
+            else:
+                ficha(h, pid, err, 400)
             return True
-        _encolar(h, pid, "punto.ajustar", {"pid": pid, "redes_abonados": redes}, token=tok)
+        _encolar(h, pid, "punto.ajustar", {"pid": pid, "redes_abonados": redes}, token=tok, ajax=ajax)
     elif acc == "api":
-        accion_api(h, pid, form)
+        accion_api(h, pid, form, ajax=ajax)
     else:
-        accion_espejo(h, pid, form)
+        accion_espejo(h, pid, form, ajax=ajax)
     return True

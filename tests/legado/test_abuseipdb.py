@@ -60,7 +60,10 @@ PIEZAS = ("FEEDS_CONF", "FEEDS_SECRETOS", "SECRETOS_AVISO", "_feeds_conf_crudo",
           "senal_de_categorias", "_cpes_del_nodo", "culpables_de",
           "DNSBL", "DNSBL_HIST", "DNSBL_MAX_IPS", "DNSBL_HILOS", "DNSBL_DIAS",
           "ZEN_COD", "_PBL", "_invertida", "dnsbl_una", "dnsbl_revisar",
-          "_dnsbl_hist", "vigilar_dnsbl",
+          "_dnsbl_hist", "vigilar_dnsbl", "_vigilar_dnsbl",
+          # guarda de «revisando» y revision de solo la nueva (apartado B, 2026-10-14)
+          "_REVISANDO", "_REVISANDO_LOCK", "_revisar_tomar", "_revisar_soltar",
+          "publicas_revisando", "_pares_publicas", "_vigilar_publicas",
           "DNSBL_EVENTOS_MAX", "dnsbl_cambios", "_dura", "dnsbl_historial_html",
           "RANGO_TOPE", "rango_detalle_html", "ficha_ip_html",
           # salir de las listas negras

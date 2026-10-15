@@ -14,9 +14,16 @@ RE_OPID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]
 MAX_OPS = 300
 RETENCION_S = 7 * 86400
 CAMPOS = ("usuario", "orden", "pid", "nombre", "ros_version", "creada", "terminada", "codigo", "mensaje",
-          "pasos", "total", "ya_existia")
-# lo que se apunta despues de terminar: que paso con la clave de la VPN (nunca la clave)
-ANOTABLES = ("entrega_clave",)
+          "pasos", "total", "ya_existia",
+          # trabajos del panel (ordenes «panel.*», que no van al orquestador): de que proceso son,
+          # la IP de quien lo pidio y su resultado (nunca claves)
+          "proceso", "ip", "resultado", "etapa", "avance")
+# lo que se apunta despues de terminar: que paso con la clave de la VPN (nunca la clave) y si la
+# persona ya vio el resultado (la ficha lo enseña UNA vez si se cerro la pestaña a mitad)
+ANOTABLES = ("entrega_clave", "vista")
+# el avance de un trabajo del panel: cambia a cada paso y solo vive en memoria (si el proceso se
+# reinicia, el trabajo tambien murio y se cierra como interrumpido)
+AVANCE = ("etapa", "avance", "pasos")
 
 
 class Operaciones:
@@ -37,11 +44,21 @@ class Operaciones:
         except OSError:
             pass
 
-    def registrar(self, op_id, usuario, orden, pid=None, nombre=None, ros_version=None):
+    def registrar(self, op_id, usuario, orden, pid=None, nombre=None, ros_version=None, extra=None):
         with self._lock:
             self._ops[op_id] = {"usuario": usuario, "orden": orden, "pid": pid, "nombre": nombre,
                                 "ros_version": ros_version, "creada": int(self.reloj()), "terminada": False}
+            self._ops[op_id].update({k: v for k, v in (extra or {}).items() if k in CAMPOS})
             self._guardar()
+
+    def avanzar(self, op_id, **campos):
+        """Avance de un trabajo del panel aun abierto (campos de AVANCE), solo en memoria."""
+        with self._lock:
+            o = self._ops.get(op_id)
+            if o is None or o.get("terminada"):
+                return False
+            o.update({k: v for k, v in campos.items() if k in AVANCE})
+            return True
 
     def quitar(self, op_id):
         with self._lock:

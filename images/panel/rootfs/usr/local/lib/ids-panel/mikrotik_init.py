@@ -571,10 +571,21 @@ def _orden(s, orden, args):
 def _marca():
     return time.strftime("%Y%m%d-%H%M%S")
 
-def _correr(s, cambios, res):
+def _avisar(avance, etapa, **extra):
+    """Cuenta al panel por donde va (`avance(etapa=..., avance="i/N")`). Opcional: un fallo
+    del que escucha no para nada en el router."""
+    if avance is None:
+        return
+    try:
+        avance(etapa=etapa, **extra)
+    except Exception:
+        pass
+
+def _correr(s, cambios, res, avance=None):
     """Aplica en orden y para en el PRIMER fallo: seguir podia dejar, por ejemplo, el espejo
     nuevo creado y el viejo sin apagar. Lo hecho hasta ahi queda dicho en res."""
     for n, c in enumerate(cambios):
+        _avisar(avance, "orden %d/%d" % (n + 1, len(cambios)), avance_n="%d/%d" % (n, len(cambios)))
         ok, err = _orden(s, c["orden"], c["args"])
         if not ok:
             res["fallo"] = "%s: %s" % (c["que"], err or "rechazado")
@@ -584,8 +595,9 @@ def _correr(s, cambios, res):
     res["ok"] = True
     return res
 
-def _exportar(s, pid, res):
+def _exportar(s, pid, res, avance=None):
     """Respaldo en el router (/export file=...). Sin el, no se toca nada."""
+    _avisar(avance, "export")
     nombre = "ids-maat-%s-%s" % (pid, _marca())
     ok, err = _orden(s, "/export", ["=file=" + nombre])
     if not ok:
@@ -680,10 +692,12 @@ def _con_mensaje(fn):
 
 
 @_con_mensaje
-def aplicar(conexion, plan, respaldo_dir):
-    """Aplica el plan si el router sigue como en la vista previa (ver el docstring del modulo)."""
+def aplicar(conexion, plan, respaldo_dir, avance=None):
+    """Aplica el plan si el router sigue como en la vista previa (ver el docstring del modulo).
+    `avance` (opcional) recibe las etapas: verificar, respaldo, export y orden i/N."""
     res = {"ok": False, "hechos": [], "fallo": None, "sin_aplicar": [], "respaldo": None,
            "export": None, "plan": None}
+    _avisar(avance, "verificar")
     try:
         actual, t = _calcular(conexion, plan["pid"], plan["sensor"], plan["puerto"],
                               plan["redes"], plan.get("lista", LISTA))
@@ -706,21 +720,23 @@ def aplicar(conexion, plan, respaldo_dir):
         return res
     fecha = _marca()
     nombre = "ids-maat-%s-%s" % (actual["pid"], fecha)
+    _avisar(avance, "respaldo")
     try:
         res["respaldo"] = _guardar_respaldo(respaldo_dir, actual, t, nombre, fecha)
     except (OSError, TypeError, ValueError) as e:
         res["fallo"] = "no se pudo guardar el respaldo local (%s): no se ha tocado nada" % e
         return res
+    _avisar(avance, "export")
     ok, err = _orden(conexion, "/export", ["=file=" + nombre])
     if not ok:
         res["fallo"] = "fallo el respaldo /export en el router (%s): no se ha tocado nada" % (err or "?")
         return res
     res["export"] = nombre
-    return _correr(conexion, actual["cambios"], res)
+    return _correr(conexion, actual["cambios"], res, avance)
 
 
 @_con_mensaje
-def pausar(conexion, pid, respaldo_dir=None):
+def pausar(conexion, pid, respaldo_dir=None, avance=None):
     """Deshabilita los dos mangle del punto. El fasttrack queda como esta. Con `respaldo_dir`,
     antes guarda tambien la copia local de esos mangle (`<respaldo_dir>/<pid>/pausa-*.json`)."""
     res = {"ok": False, "hechos": [], "fallo": None, "sin_aplicar": [], "export": None,
@@ -743,9 +759,9 @@ def pausar(conexion, pid, respaldo_dir=None):
         except (OSError, TypeError, ValueError) as e:
             res["fallo"] = "no se pudo guardar el respaldo local (%s): no se ha tocado nada" % e
             return res
-    if not _exportar(conexion, pid, res):
+    if not _exportar(conexion, pid, res, avance):
         return res
-    return _correr(conexion, cambios, res)
+    return _correr(conexion, cambios, res, avance)
 
 
 def _mangle_del_espejo(conexion, pid):
@@ -870,7 +886,7 @@ def plan_retirar(conexion, pid, respaldo=None, lista=None):
 
 
 @_con_mensaje
-def retirar(conexion, pid, respaldo=None, lista=None):
+def retirar(conexion, pid, respaldo=None, lista=None, avance=None):
     """Quita todo lo del espejo del punto y devuelve el fasttrack a como estaba."""
     res = {"ok": False, "hechos": [], "fallo": None, "sin_aplicar": [], "export": None,
            "avisos": [], "cambios": []}
@@ -883,6 +899,6 @@ def retirar(conexion, pid, respaldo=None, lista=None):
     if not p["cambios"]:
         res["ok"] = True
         return res
-    if not _exportar(conexion, pid, res):
+    if not _exportar(conexion, pid, res, avance):
         return res
-    return _correr(conexion, p["cambios"], res)
+    return _correr(conexion, p["cambios"], res, avance)

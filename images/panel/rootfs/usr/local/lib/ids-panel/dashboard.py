@@ -4926,7 +4926,20 @@ def medir_sensor(pid=None):
     o["alert_estado"] = prev.get("alert_estado", "ok")
     o["alert_titulo"] = prev.get("alert_titulo", "")
     o["alert_ts"] = prev.get("alert_ts", 0)
-    mal = o["nivel"] in ("warn", "down")
+    # Un punto recien creado (o creandose) que aun espera a su MikroTik no tiene trafico ni puede
+    # tenerlo: avisar «Sin trafico» o «Sensor detenido» por Telegram era ruido (el user, 2026-10-14).
+    # Mientras el MikroTik no haya conectado NUNCA (desde que el panel lo mira), ni avisa ni cuenta
+    # como «mal» (asi tampoco manda un «recuperado» al conectar). Si llego a conectar y luego se cae o
+    # deja de llegar trafico, avisa como siempre.
+    _sit = puntos_web.situacion_vpn(p)["clave"] if p else ""
+    o["mk_visto"] = bool(prev.get("mk_visto")) or puntos_web.mk_conectado(p)
+    if _sit in ("creando", "arrancando") or (_sit == "esperando" and not o["mk_visto"]):
+        o["esperando_mk"] = True
+        if o["nivel"] in ("warn", "down"):
+            o["nivel"] = "warn"
+            o["titulo"] = ("Creando el punto" if _sit == "creando" else
+                           "Esperando al MikroTik: todavía no conectó por la VPN (sin espejo aún)")
+    mal = o["nivel"] in ("warn", "down") and not o.get("esperando_mk")
     era_mal = prev.get("alert_estado", "ok") in ("warn", "down")
     aviso = None
     donde = "%s / %s" % (_hostname(), nodos.nombre(pid))
@@ -4937,7 +4950,7 @@ def medir_sensor(pid=None):
         if o.get("drop_ratio"): det.append(f"perdidas {o['drop_ratio']*100:.1f}%")
         if o.get("reporte_edad") is not None: det.append(f"reporte hace {o['reporte_edad']//60} min")
         aviso = f"{ico} Suricata [{donde}]: {o['titulo']}" + (" (" + ", ".join(det) + ")" if det else "")
-    elif era_mal and not mal:
+    elif era_mal and not mal and not o.get("esperando_mk"):
         aviso = f"✅ Suricata [{donde}]: sensor recuperado ({o['titulo']})"
     if aviso:
         enviar_telegram(aviso)
@@ -6981,49 +6994,64 @@ def _cats_de(dat):
         return []          # el endpoint de bloques no trae categorias (hay que mirar la IP)
     return [int(c) for c, _n in (dat.get("cats") or []) if str(c).isdigit()]
 
-def vigilar_publicas(forzar=False):
-    """Revisa la reputacion de las publicas declaradas y guarda la serie por dia.
-    Corre en el hilo de fondo; si no hay nada declarado, no hace nada ni gasta cuota."""
+def vigilar_publicas(forzar=False, solo=None):
+    """Revisa la reputacion de las publicas declaradas (o solo las de `solo`, p. ej. la que se
+    acaba de agregar) y guarda la serie por dia. Corre en el hilo de fondo; si no hay nada
+    declarado, no hace nada ni gasta cuota. Una entrada que ya se esta revisando no se revisa
+    dos veces a la vez."""
     decl = cargar_publicas()
     if not decl or not aidb_configurada():
+        return 0
+    pares = _pares_publicas(decl, solo)
+    mias = set(_revisar_tomar("aidb", [e for _r, e in pares]))
+    try:
+        return _vigilar_publicas(forzar, [(r, e) for r, e in pares if e in mias])
+    finally:
+        _revisar_soltar("aidb", mias)
+
+def _vigilar_publicas(forzar, pares):
+    if not pares:
         return 0
     hoy = time.strftime("%Y-%m-%d")
     hist = _pub_hist()
     n = 0
-    for rid, entradas in decl.items():
-        for ent in entradas:
-            if "/" in ent:
-                dat, origen, err = aidb_consultar_red(ent, refrescar=forzar)
-            else:
-                dat, origen, err = aidb_consultar(ent, refrescar=forzar)
-            if not dat:
-                continue
-            if origen == "api":
-                n += 1
-            sc = _peor_de(dat)
-            h = hist.get(ent)
-            if not isinstance(h, dict):
-                h = {"router": rid, "dias": {}}
-            antes = int(h.get("ultimo_score", 0))
-            h["router"] = rid
-            h["dias"] = h.get("dias") or {}
-            h["dias"][hoy] = sc
-            lim = time.strftime("%Y-%m-%d", time.localtime(time.time() - PUB_HIST_DIAS * 86400))
-            h["dias"] = {k: v for k, v in h["dias"].items() if k >= lim}
-            h["ultimo_score"] = sc
-            h["ultimo_ts"] = int(time.time())
-            hist[ent] = h
-            # aviso solo al CRUZAR el umbral: si no, avisaria en cada vuelta
-            if sc >= PUB_UMBRAL_AVISO and antes < PUB_UMBRAL_AVISO:
-                nom = (router_por_id(rid) or {}).get("nombre") or rid
-                try:
-                    enviar_telegram(f"\u26a0\ufe0f IP publica ensuciada [{_hostname()}]: {ent} "
-                                    f"({nom}) esta denunciada ({sc} % de abuso). "
-                                    f"Panel -> Consultar IP para ver que abonado lo causa.")
-                except Exception:
-                    pass
-                bitacora("PUBLICA-DENUNCIADA", f"{ent} score={sc} nodo={nom}", quien="auto")
+    nuevos = {}
+    for rid, ent in pares:
+        if "/" in ent:
+            dat, origen, err = aidb_consultar_red(ent, refrescar=forzar)
+        else:
+            dat, origen, err = aidb_consultar(ent, refrescar=forzar)
+        if not dat:
+            continue
+        if origen == "api":
+            n += 1
+        sc = _peor_de(dat)
+        h = hist.get(ent)
+        if not isinstance(h, dict):
+            h = {"router": rid, "dias": {}}
+        antes = int(h.get("ultimo_score", 0))
+        h["router"] = rid
+        h["dias"] = h.get("dias") or {}
+        h["dias"][hoy] = sc
+        lim = time.strftime("%Y-%m-%d", time.localtime(time.time() - PUB_HIST_DIAS * 86400))
+        h["dias"] = {k: v for k, v in h["dias"].items() if k >= lim}
+        h["ultimo_score"] = sc
+        h["ultimo_ts"] = int(time.time())
+        hist[ent] = nuevos[ent] = h
+        # aviso solo al CRUZAR el umbral: si no, avisaria en cada vuelta
+        if sc >= PUB_UMBRAL_AVISO and antes < PUB_UMBRAL_AVISO:
+            nom = (router_por_id(rid) or {}).get("nombre") or rid
+            try:
+                enviar_telegram(f"\u26a0\ufe0f IP publica ensuciada [{_hostname()}]: {ent} "
+                                f"({nom}) esta denunciada ({sc} % de abuso). "
+                                f"Panel -> Consultar IP para ver que abonado lo causa.")
+            except Exception:
+                pass
+            bitacora("PUBLICA-DENUNCIADA", f"{ent} score={sc} nodo={nom}", quien="auto")
     with _PUB_LOCK:
+        # releido dentro del cerrojo: otra revision pudo guardar mientras; solo van las de aqui
+        hist = _pub_hist()
+        hist.update(nuevos)
         _guardar_pub_hist(hist)
     return n
 
@@ -7515,46 +7543,87 @@ def rango_detalle_html(dat, esc=None, scb=None, tope=RANGO_TOPE):
                (", <b style='color:#b52a2a'>%d</b> con 75%% o mas" % peor) if peor else "",
                filas, aviso)) + _RANGO_JS
 
-def vigilar_dnsbl():
-    """Revisa las listas negras de todo lo declarado. Solo son consultas DNS: no gasta
-    cuota de AbuseIPDB ni depende de tener clave."""
+# Entradas publicas con una revision en marcha, por tipo (listas negras / AbuseIPDB). Dos clics
+# en «Agregar» (o «Revisar ahora» mientras se revisa la nueva) lanzaban dos hilos sobre lo mismo
+# que se pisaban el historial al guardarlo; ahora cada entrada la revisa un solo hilo a la vez, y
+# la pantalla de Reputacion pinta «revisando…» en su ficha mientras dura (GET /publicas/estado).
+_REVISANDO = {"dnsbl": set(), "aidb": set()}
+_REVISANDO_LOCK = threading.Lock()
+
+def _revisar_tomar(tipo, entradas):
+    """Las de `entradas` que nadie esta revisando ya (y quedan apuntadas como en revision)."""
+    with _REVISANDO_LOCK:
+        libres = [e for e in dict.fromkeys(entradas) if e not in _REVISANDO[tipo]]
+        _REVISANDO[tipo].update(libres)
+        return libres
+
+def _revisar_soltar(tipo, entradas):
+    with _REVISANDO_LOCK:
+        _REVISANDO[tipo].difference_update(entradas)
+
+def publicas_revisando():
+    """Entradas con una revision (listas negras o AbuseIPDB) en marcha ahora mismo."""
+    with _REVISANDO_LOCK:
+        return sorted(_REVISANDO["dnsbl"] | _REVISANDO["aidb"])
+
+def _pares_publicas(decl, solo):
+    return [(rid, ent) for rid, ents in decl.items() for ent in ents if solo is None or ent in solo]
+
+def vigilar_dnsbl(solo=None):
+    """Revisa las listas negras de todo lo declarado (o solo de las entradas de `solo`, p. ej. la
+    que se acaba de agregar). Solo son consultas DNS: no gasta cuota de AbuseIPDB ni depende de
+    tener clave. Una entrada que ya se esta revisando no se revisa dos veces a la vez."""
     decl = cargar_publicas()
     if not decl:
+        return 0
+    pares = _pares_publicas(decl, solo)
+    mias = set(_revisar_tomar("dnsbl", [e for _r, e in pares]))
+    try:
+        return _vigilar_dnsbl([(r, e) for r, e in pares if e in mias])
+    finally:
+        _revisar_soltar("dnsbl", mias)
+
+def _vigilar_dnsbl(pares):
+    if not pares:
         return 0
     hist = _dnsbl_hist()
     hoy = time.strftime("%Y-%m-%d")
     n = 0
-    for rid, entradas in decl.items():
-        for ent in entradas:
-            r = dnsbl_revisar(ent)
-            if r is None:
-                continue
-            n += 1
-            h = hist.get(ent)
-            if not isinstance(h, dict):
-                h = {"dias": {}}
-            antes = int(h.get("n_listadas", 0))
-            h["router"] = rid
-            h["dias"] = h.get("dias") or {}
-            h["dias"][hoy] = r["n_listadas"]
-            lim = time.strftime("%Y-%m-%d", time.localtime(time.time() - DNSBL_DIAS * 86400))
-            h["dias"] = {k: v for k, v in h["dias"].items() if k >= lim}
-            # ANTES del update: dnsbl_cambios compara con el estado anterior, y update lo pisa
-            h["eventos"] = dnsbl_cambios(h, r)
-            h.update(r)
-            hist[ent] = h
-            if r["n_listadas"] and not antes:
-                nom = (router_por_id(rid) or {}).get("nombre") or rid
-                try:
-                    enviar_telegram(f"\u26d4 Lista negra [{_hostname()}]: {r['n_listadas']} "
-                                    f"direccion(es) de {ent} ({nom}) estan en listas de bloqueo. "
-                                    f"Panel -> Consultar IP.")
-                except Exception:
-                    pass
-                bitacora("PUBLICA-EN-LISTA-NEGRA", f"{ent} listadas={r['n_listadas']}", quien="auto")
+    nuevos = {}
+    for rid, ent in pares:
+        r = dnsbl_revisar(ent)
+        if r is None:
+            continue
+        n += 1
+        h = hist.get(ent)
+        if not isinstance(h, dict):
+            h = {"dias": {}}
+        antes = int(h.get("n_listadas", 0))
+        h["router"] = rid
+        h["dias"] = h.get("dias") or {}
+        h["dias"][hoy] = r["n_listadas"]
+        lim = time.strftime("%Y-%m-%d", time.localtime(time.time() - DNSBL_DIAS * 86400))
+        h["dias"] = {k: v for k, v in h["dias"].items() if k >= lim}
+        # ANTES del update: dnsbl_cambios compara con el estado anterior, y update lo pisa
+        h["eventos"] = dnsbl_cambios(h, r)
+        h.update(r)
+        hist[ent] = nuevos[ent] = h
+        if r["n_listadas"] and not antes:
+            nom = (router_por_id(rid) or {}).get("nombre") or rid
+            try:
+                enviar_telegram(f"\u26d4 Lista negra [{_hostname()}]: {r['n_listadas']} "
+                                f"direccion(es) de {ent} ({nom}) estan en listas de bloqueo. "
+                                f"Panel -> Consultar IP.")
+            except Exception:
+                pass
+            bitacora("PUBLICA-EN-LISTA-NEGRA", f"{ent} listadas={r['n_listadas']}", quien="auto")
     with _PUB_LOCK:
+        # releido dentro del cerrojo: otra revision (de otras entradas) pudo guardar mientras esta
+        # consultaba; solo se ponen las revisadas aqui
+        hist = _dnsbl_hist()
+        hist.update(nuevos)
         try:
-            tmp = "%s.%d.tmp" % (DNSBL_HIST, os.getpid())
+            tmp = "%s.%d.%d.tmp" % (DNSBL_HIST, os.getpid(), threading.get_ident())
             with open(tmp, "w", encoding="utf-8") as f:
                 json.dump(hist, f)
             os.replace(tmp, DNSBL_HIST)
@@ -9831,17 +9900,39 @@ def _espejo_datos(pid):
         raise ValueError("el orquestador aun no publica la IP del sensor de %s" % pid)
     return sensor, puerto, list(p.get("redes") or [])
 
-def espejo_plan(pid):
+def _avisar_avance(avance, etapa):
+    """Cuenta por donde va un trabajo del panel (Puntos lo pinta sin recargar). Nunca falla."""
+    if avance is None:
+        return
+    try:
+        avance(etapa=etapa)
+    except Exception:
+        pass
+
+def _kw_avance(fn, avance):
+    """{"avance": avance} si `fn` lo admite (mikrotik_init lo admite; los de pruebas viejas no)."""
+    if avance is None:
+        return {}
+    f = getattr(fn, "__wrapped__", fn)
+    c = getattr(f, "__code__", None)
+    if c is None or "avance" not in c.co_varnames[:c.co_argcount + c.co_kwonlyargcount]:
+        return {}
+    return {"avance": avance}
+
+def espejo_plan(pid, avance=None):
     """Vista previa del espejo del punto, SIN tocar el router: mikrotik_init.plan(conexion,
     pid, sensor, puerto, redes, lista). Devuelve _espejo_vista(): las ordenes que se veran
     (`lineas`), sus avisos y bloqueos y la `huella` que hay que devolver para aplicar
-    (los fallos tambien, con ok=False: nunca lanza). Un pid invalido si lanza (400/404)."""
+    (los fallos tambien, con ok=False: nunca lanza). Un pid invalido si lanza (400/404).
+    `avance(etapa=...)` (opcional) recibe «conectar» y «leer router»."""
     pid = nodos.exigir_pid(pid)
+    _avisar_avance(avance, "conectar")
     try:
         pid, _r, s_ = _espejo_conexion(pid)
     except Exception as ex:
         return _espejo_fallo(ex)
     try:
+        _avisar_avance(avance, "leer router")
         sensor, puerto, redes = _espejo_datos(pid)
         return _espejo_vista(_mkinit().plan(s_, pid, sensor, puerto, redes, ESPEJO_LISTA),
                              "vista previa del espejo de %s" % pid)
@@ -9858,13 +9949,15 @@ def _huella_pedida(huella):
         huella = (getattr(CTX, "form", None) or {}).get("plan")
     return str(huella or "").strip()
 
-def espejo_aplicar(pid, usuario=None, huella=None):
+def espejo_aplicar(pid, usuario=None, huella=None, avance=None):
     """Aplica el espejo del punto EXACTAMENTE como se vio (auditoria A-01, A-21): se rehace el
     plan contra el router y solo se aplica si su huella es la del plan mostrado (`huella`, o
     el campo `plan` del formulario de la peticion). Sin huella, con la de un plan vacio, con
     un plan que cambio, con bloqueos o con un `accept`, NO se toca nada. Un solo aplicar a la
     vez por punto: un doble clic espera al primero y despues ve que el plan ya cambio
-    (auditoria A-08). Con `usuario`, deja linea en la bitacora."""
+    (auditoria A-08). Con `usuario`, deja linea en la bitacora. `avance(etapa=...)` (opcional)
+    recibe conectar, leer router y las de mikrotik_init.aplicar (verificar, respaldo, export,
+    orden i/N)."""
     pid = nodos.exigir_pid(pid)
     pedida = _huella_pedida(huella)
     res = None
@@ -9874,12 +9967,14 @@ def espejo_aplicar(pid, usuario=None, huella=None):
                 res = {"ok": False, "mensaje": "falta la huella del plan visto: pide la vista previa y "
                                                "aplica desde ella", "lineas": [], "avisos": []}
             else:
+                _avisar_avance(avance, "conectar")
                 try:
                     pid, _r, s_ = _espejo_conexion(pid)
                 except Exception as ex:
                     res = _espejo_fallo(ex)
                 else:
                     try:
+                        _avisar_avance(avance, "leer router")
                         sensor, puerto, redes = _espejo_datos(pid)
                         mi = _mkinit()
                         plan = mi.plan(s_, pid, sensor, puerto, redes, ESPEJO_LISTA)
@@ -9892,7 +9987,8 @@ def espejo_aplicar(pid, usuario=None, huella=None):
                                 "movieron): no se ha tocado nada. Revisa el plan nuevo antes de aplicarlo"))
                         else:
                             os.makedirs(ESPEJO_RESPALDOS, mode=0o700, exist_ok=True)
-                            res = _espejo_resultado(mi.aplicar(s_, plan, ESPEJO_RESPALDOS),
+                            res = _espejo_resultado(mi.aplicar(s_, plan, ESPEJO_RESPALDOS,
+                                                               **_kw_avance(mi.aplicar, avance)),
                                                     "espejo aplicado en %s" % pid)
                     except Exception as ex:
                         res = _espejo_fallo(ex)
@@ -9906,10 +10002,11 @@ def espejo_aplicar(pid, usuario=None, huella=None):
                                                          res["mensaje"][:200]), quien=usuario)
     return res
 
-def _espejo_orden(pid, usuario, orden):
+def _espejo_orden(pid, usuario, orden, avance=None):
     pid = nodos.exigir_pid(pid)
     try:
         with cerrojo_operacion(pid, "espejo"):       # una orden del espejo a la vez por punto (A-08)
+            _avisar_avance(avance, "conectar")
             try:
                 pid, _r, s_ = _espejo_conexion(pid)
             except Exception as ex:
@@ -9917,7 +10014,9 @@ def _espejo_orden(pid, usuario, orden):
             else:
                 try:
                     os.makedirs(ESPEJO_RESPALDOS, mode=0o700, exist_ok=True)
-                    res = _espejo_resultado(getattr(_mkinit(), orden)(s_, pid, ESPEJO_RESPALDOS),
+                    _avisar_avance(avance, "leer router")
+                    fn = getattr(_mkinit(), orden)
+                    res = _espejo_resultado(fn(s_, pid, ESPEJO_RESPALDOS, **_kw_avance(fn, avance)),
                                             "espejo de %s: %s hecho" % (pid, orden))
                 except Exception as ex:
                     res = _espejo_fallo(ex)
@@ -9931,16 +10030,16 @@ def _espejo_orden(pid, usuario, orden):
             pid, "ok" if res["ok"] else "fallo", res["mensaje"][:200]), quien=usuario)
     return res
 
-def espejo_pausar(pid, usuario=None):
+def espejo_pausar(pid, usuario=None, avance=None):
     """Pausa: deshabilita los dos mangle del punto (por comentario). Fasttrack intacto.
     mikrotik_init.pausar(conexion, pid, respaldo_dir)."""
-    return _espejo_orden(pid, usuario, "pausar")
+    return _espejo_orden(pid, usuario, "pausar", avance)
 
-def espejo_retirar(pid, usuario=None):
+def espejo_retirar(pid, usuario=None, avance=None):
     """Retirada: borra lo que lleva el comentario del punto y devuelve al fasttrack sus
     valores originales (del respaldo). Nunca toca reglas ajenas.
     mikrotik_init.retirar(conexion, pid, respaldo_dir)."""
-    return _espejo_orden(pid, usuario, "retirar")
+    return _espejo_orden(pid, usuario, "retirar", avance)
 
 # Puntos dados de baja en ESTE proceso: el fondo deja de trabajar con ellos aunque el
 # estado.json del orquestador aun los liste unos segundos (si no, el refrescador volvia a
@@ -9975,13 +10074,20 @@ def _pendientes_router(pid):
             for k, v in cargar_enviados(path).items() if _rid_entrada(k, v) == pid)
     return n + sum(1 for v in cargar_enviados(MK_SENT_DST).values() if pid in ((v or {}).get("puntos") or []))
 
-def _quitar_de_router(s_, pid, m, quien, acum):
+def _quitar_de_router(s_, pid, m, quien, acum, avance=None):
     """Quita del router del punto (conexion `s_` abierta) lo que el panel le puso en sus
     address-lists: CPEs en cuarentena (normal, DNS y graduada) y destinos bloqueados. Cada IP
     sale del registro solo si el router lo confirma, de su lista guardada Y de la configurada
     hoy (si la lista se renombro, la IP no se da por quitada sin buscarla donde esta: H10).
     Un error de la conexion corta aqui (IOError; el resto no se toca). Lo hecho va sumandose en
-    `acum` ("quitadas", "fallos"), asi se sabe tambien tras un corte a medias."""
+    `acum` ("quitadas", "fallos"), asi se sabe tambien tras un corte a medias. `avance`
+    (opcional) recibe «IPs quitadas i/N» tras cada una."""
+    total = _pendientes_router(pid) if avance is not None else 0
+
+    def _contar():
+        if avance is not None:
+            _avisar_avance(avance, "IPs quitadas %d/%d" % (acum["quitadas"] + len(acum["fallos"]),
+                                                            max(total, acum["quitadas"] + len(acum["fallos"]))))
 
     def _quitar(ip, listas):
         for lst in dict.fromkeys(l for l in listas if l):
@@ -10007,6 +10113,7 @@ def _quitar_de_router(s_, pid, m, quien, acum):
                 acum["quitadas"] += 1
             else:
                 acum["fallos"].append((ip, err))
+            _contar()
             # QUITADO-BAJA y no QUITADO: no es la liberacion de un CPE que se limpio (H6)
             mk_log("QUITADO-BAJA" if ok else "ERROR-QUITAR", ip, quien,
                    "lista=%s (baja del punto) %s" % (lst, err) + _suf_nodo(k), pid=pid)
@@ -10017,8 +10124,10 @@ def _quitar_de_router(s_, pid, m, quien, acum):
         ok, err = _quitar(ip, (lst,))
         if not ok:
             acum["fallos"].append((ip, err))
+            _contar()
             continue
         acum["quitadas"] += 1
+        _contar()
         with _ENV_LOCK:                          # releido dentro del cerrojo (auditoria A-03)
             env = cargar_enviados(MK_SENT_DST)
             rec = env.get(ip)
@@ -10031,7 +10140,7 @@ def _quitar_de_router(s_, pid, m, quien, acum):
                 guardar_enviados(env, MK_SENT_DST)
         mk_log("DESTINO-QUITADO-BAJA", ip, quien, "(baja del punto) nodo=%s" % pid, pid=pid)
 
-def baja_limpiar_router(pid, usuario=None, op=None):
+def baja_limpiar_router(pid, usuario=None, op=None, avance=None):
     """Antes de dar de baja un punto (auditoria A-21(5)): saca de las address-lists de su
     MikroTik lo que puso el panel y retira el espejo. Hay que hacerlo ANTES, porque la baja
     destruye el tunel por el que se llega al router; si no, los abonados en cuarentena
@@ -10071,9 +10180,10 @@ def baja_limpiar_router(pid, usuario=None, op=None):
             try:
                 # espera corta: la tarea de fondo del punto puede tardar minutos (H3)
                 with cerrojo_operacion(pid, "fondo", espera=30):
+                    _avisar_avance(avance, "conectar")
                     s_ = mk_conectar(m, timeout=15)
                     try:
-                        _quitar_de_router(s_, pid, m, quien, res)
+                        _quitar_de_router(s_, pid, m, quien, res, avance)
                     finally:
                         try: s_.close()
                         except Exception: pass
@@ -10092,7 +10202,8 @@ def baja_limpiar_router(pid, usuario=None, op=None):
                                                               res["fallos"][0][0], res["fallos"][0][1][:120]))
                 return res
             try:
-                esp = espejo_retirar(pid, usuario=quien)
+                _avisar_avance(avance, "retirar el espejo")
+                esp = espejo_retirar(pid, usuario=quien, **_kw_avance(espejo_retirar, avance))
             except Exception as ex:
                 esp = {"ok": False, "mensaje": str(ex)[:200]}
             res["espejo"] = esp
@@ -12117,6 +12228,23 @@ donde Suricata detecta casi todo. La salud del punto lo muestra como tal.</li>
 <li><b>Idempotente</b>: aplicar dos veces no duplica nada. <b>Pausar</b> deshabilita los dos mangle;
 <b>Retirar</b> borra lo del comentario del punto y devuelve al fasttrack sus valores del respaldo.</li>
 </ul>
+<p><b>Cómo se ve en la ficha.</b> Hablar con el router tarda (conectar por el túnel, leerlo, el
+<code>/export</code> del respaldo y cada orden), así que <b>Ver el plan</b>, <b>Aplicar este plan</b>,
+<b>Pausar</b> y <b>Retirar</b> van en segundo plano: se abre una ventana con el paso en que va
+(conectar, leer router, verificar, respaldo, export, orden 2 de 6...) y, al terminar, el plan o el
+resultado en esa misma ventana. La página no se recarga ni se queda en blanco; puedes cerrar la ventana
+(<b>Seguir en segundo plano</b>) y el resultado aparece igual cuando termina. Si cierras la pestaña, al
+volver a la ficha se retoma el avance o se enseña el resultado <b>una vez</b>.</p>
+<ul>
+<li><b>Aplicar</b> solo aplica el plan que viste, con su huella: el panel lo vuelve a calcular contra el
+router y, si cambió, no toca nada y te enseña el plan nuevo con su propio botón. Lee el router dos veces
+(antes, tres).</li>
+<li>Una sola orden con el router a la vez por punto: un segundo clic, u otra pestaña, se engancha a la
+que está en marcha en vez de esperar.</li>
+<li>Mientras haya un <b>cambio de prefijos</b> del punto en marcha en el orquestador, <b>Aplicar</b> no se
+deja: una ventana explica que hay que esperar a que termine (si no, llevarías al MikroTik la lista de redes
+vieja).</li>
+</ul>
 <p>Comprueba que llega mirando la salud por etapas del punto (<b>TZSP recibido</b> y <b>Trafico
 procesado</b>) o, en el router, <code>/ip firewall mangle print stats where comment~"ids-maat"</code>.</p>
 
@@ -12128,8 +12256,11 @@ los <b>prefijos del punto</b> (su <code>HOME_NET</code>).</p>
 <p><b>Síntoma típico:</b> la salud del punto dice <b>TZSP recibido</b> pero el panel se ve casi vacío.
 Casi siempre es que los prefijos no incluyen las redes de tus clientes.</p>
 <p>Los prefijos se eligen al dar de alta el punto y se cambian en su ficha (<b>Prefijos</b>): el
-Suricata del punto se recrea con los nuevos y después hay que <b>volver a aplicar el espejo</b> para
-llevarlos a la address-list <code>ids-vigilados</code> del router (con la misma vista previa).</p>
+Suricata del punto toma los nuevos y después hay que <b>volver a aplicar el espejo</b> para
+llevarlos a la address-list <code>ids-vigilados</code> del router (con la misma vista previa). Al pulsar
+<b>Guardar prefijos</b> la ficha no se recarga: debajo del formulario se ve el avance del orquestador paso
+a paso, con lo que tardó cada uno, y al terminar sale la ventana <b>Prefijos aplicados en el
+Suricata</b> con el botón <b>Llevarlos al MikroTik</b>, que abre la vista previa del espejo.</p>
 
 <h2>Sensor POST-NAT: analizar lo que hacen tus IPs públicas</h2>
 <p>Lo normal es espejar el <b>bridge</b> del MikroTik: ahí se ve quién es cada abonado (<code>10.x</code>)
@@ -12373,6 +12504,10 @@ y quítala con <b>Quitar marcadas</b>. Las que declaraste a mano no se ponen en 
 del router falla (timeout, usuario de la API sin permiso para esa tabla) o no trae <b>ninguna</b>
 pública, el resultado es parcial: el aviso dice qué lectura falló y <b>no se marca nada</b>, porque lo
 que falta no quiere decir que haya dejado de ser tuyo.</p>
+<p><b>Agregar</b> una pública no recarga la página: se guarda, se repinta solo la tarjeta de ese nodo y
+su chip dice <b>revisando…</b> mientras el panel consulta, en segundo plano y solo para la nueva, sus
+listas negras y su reputación en AbuseIPDB. Al terminar, la tarjeta se actualiza sola. Dos clics seguidos
+no lanzan dos revisiones de la misma entrada. Si no se puede agregar, el motivo sale en una ventana.</p>
 <p>Se revisan solas <b>cada 6 horas</b>. Cuando una pública <b>cruza</b> el 25&nbsp;% de abuso llega un
 aviso por Telegram (una vez, no en cada vuelta) y queda en el Registro. De cada pública se guarda la
 <b>serie por día</b> durante 180 días: es lo que permite enseñar que después de limpiar, el puntaje
@@ -12959,7 +13094,8 @@ fila), nunca al que tengas elegido en el selector. En «Todos» las acciones mas
 <ol>
 <li><b>Puntos &rarr; Agregar punto</b>: nombre, <b>prefijos de abonados</b> que se espejan, versión de
 RouterOS (6.49+ o 7) y perfil (reducido por defecto). Un doble clic no crea dos puntos.</li>
-<li>El servidor crea la VPN y el Suricata del punto; se ve el avance paso a paso.</li>
+<li>El servidor crea la VPN y el Suricata del punto; se ve el avance paso a paso, con lo que tarda
+cada uno, sin que la página se recargue.</li>
 <li>Al terminar se muestran <b>una sola vez</b> el usuario y la clave de la VPN y los comandos para el
 MikroTik (v7 y v6) con la clave puesta. Si la pierdes, en la ficha está <b>Regenerar la clave VPN</b>.
 Si el orquestador se reinició antes de entregarla, la página lo dice («La clave no llegó al panel») y
@@ -12983,14 +13119,23 @@ cualquier otra operación.</li>
 VPN (comandos sin la clave), API (usuario, clave, probar, huella), Espejo (plan, aplicar, pausar,
 retirar), Prefijos, Logs de la VPN y del Suricata, arrancar, parar, reiniciar y la baja. La huella del
 certificado del router se lee por el túnel: con el MikroTik sin conectar, la ficha dice «se comprobará
-cuando el MikroTik conecte» y abre sin esperar.</p>
+cuando el MikroTik conecte»; conectado, la ficha abre sin esperarla (dice «comprobando…» y la trae
+enseguida) y la recuerda 10 minutos.</p>
+<p>Lo que habla con el router o con la cola del orquestador va <b>en segundo plano</b>: el espejo (ver
+"El espejo del MikroTik"), los prefijos, <b>Probar la conexion</b> de la API y la baja muestran su avance
+y su resultado en una <b>ventana</b>, sin recargar la ficha ni poner avisos arriba. Si cierras la pestaña a
+mitad, al volver a la ficha se retoma el avance o se enseña el resultado una sola vez. Las páginas de
+operación (alta, arrancar, reiniciar...) también se actualizan solas sin recargarse; si una termina mal,
+el motivo sale en una ventana y los logs siguen debajo.</p>
 <h3>Retención</h3>
 <p>El objetivo es guardar <b>30 días</b> de eventos de cada punto. Se poda por fecha (lo que tiene más
 de 30 días). Si el disco del servidor baja del 15 % libre, se borran antes los rotados más viejos y
 queda registrado: por eso Puntos y Eventos dicen la <b>retencion efectiva</b> (desde qué fecha hay
 eventos de verdad) y nunca prometen 30 días si hubo borrado anticipado.</p>
 <h3>Baja</h3>
-<p>En la ficha, escribiendo el nombre del punto. Se borra todo el punto en el servidor (VPN, Suricata y
+<p>En la ficha (o en <b>Eliminar</b> de la lista), escribiendo el nombre del punto. La limpieza del
+MikroTik va en segundo plano y se ve en una ventana («IPs quitadas 12 de 40», retirar el espejo); solo si
+el router quedó limpio se encola la baja y se pasa a su página de avance. Se borra todo el punto en el servidor (VPN, Suricata y
 eventos) y en el panel (sus reportes, su conexión y sus registros); queda una línea en el Registro. Los
 identificadores no se reutilizan. En el MikroTik quedan lo que lleva el comentario
 <code>IDS ids-maat:&lt;punto&gt;</code> (el alta) o <code>IDS ids-maat:&lt;punto&gt;:espejo</code> (el espejo), la
@@ -13932,21 +14077,25 @@ def reputacion_page(res=None, texto="", msg="", ok=False, es_admin=False, volver
             # las que Detectar ya no trae llegan MARCADAS (marcar={rid: [..]}): quitarlas es
             # un clic en "Quitar marcadas" y su confirmacion, pero nunca se van solas
             _mar = set((marcar or {}).get(rid) or []) & set(entradas)
+            # la que se esta revisando (recien agregada o «Revisar ahora») lo dice en su chip
+            _rev = set(publicas_revisando())
             chips = "".join(
                 "<span class='pchip%s'>"
                 "<label title='%s'><input type=checkbox name=entrada value='%s' "
-                "data-org='%s'%s onchange='pmarcar(this)'><span class=mono>%s</span></label>"
+                "data-org='%s'%s onchange='pmarcar(this)'><span class=mono>%s</span>%s</label>"
                 "<button type=submit formaction='/publicas/quitar' name=solo "
                 "value='%s' title='Quitar solo esta'>&times;</button></span>"
                 % (" det" if _org.get(e) == "mikrotik" else "",
                    {"mikrotik": "detectada del MikroTik",
                     "manual": "declarada a mano"}.get(_org.get(e, ""), "origen desconocido"),
-                   esc(e), esc(_org.get(e, "")), " checked" if e in _mar else "", esc(e), esc(e))
+                   esc(e), esc(_org.get(e, "")), " checked" if e in _mar else "", esc(e),
+                   " <span class=previs data-rev='%s'>revisando…</span>" % esc(e) if e in _rev else "",
+                   esc(e))
                 for e in entradas)
         acciones = []
         if es_admin:
             acciones.append(
-                "<form method=post action='/publicas/agregar' class=padd>"
+                "<form method=post action='/publicas/agregar' class=padd onsubmit='return pubAgregar(this)'>"
                 f"<input type=hidden name=rid value='{esc(rid)}'>"
                 "<input name=entrada size=20 placeholder='IP o red (CIDR)' autocomplete=off>"
                 "<button class=primary type=submit>Agregar</button></form>")
@@ -13977,7 +14126,7 @@ def reputacion_page(res=None, texto="", msg="", ok=False, es_admin=False, volver
                         "Quitar marcadas (%d)" % len(_mar) if _mar else "Quitar marcadas"))
         editor = ("<div class=pedit>" + chips + "".join(acciones) + "</div>") if (chips or acciones) else ""
         bloques.append(
-            "<section class=card style='margin:0 0 12px'>"
+            f"<section class=card id='pubsec-{esc(rid)}' style='margin:0 0 12px'>"
             + (f"<h3 style='font-size:14px;margin:0 0 4px;color:#52514e'>Nodo {esc(nom)}</h3>"
                if multi else "")
             + editor
@@ -14003,6 +14152,29 @@ def reputacion_page(res=None, texto="", msg="", ok=False, es_admin=False, volver
                 "var faltan=[].some.call(cs,function(x){return !x.checked;});"
                 "[].forEach.call(cs,function(x){x.checked=faltan;});"
                 "pmarcar(f.querySelector('input[name=entrada]'));return false;}"
+                # «Agregar» SIN recargar (el user, 2026-10-14): la entrada se guarda por fetch, se
+                # repinta solo la tarjeta de ese nodo y, mientras se revisan sus listas negras y su
+                # reputacion (en segundo plano, solo la nueva), su chip dice «revisando…»
+                "function pubSecc(rid){var u=location.pathname+location.search.replace(/([?&])msg=[^&]*&?/,'$1');"
+                "fetch(u,{credentials:'same-origin',cache:'no-store'}).then(function(r){return r.text();})"
+                ".then(function(t){var doc=new DOMParser().parseFromString(t,'text/html'),"
+                "n=doc.getElementById('pubsec-'+rid),v=document.getElementById('pubsec-'+rid);"
+                "if(n&&v){v.parentNode.replaceChild(document.importNode(n,true),v);}}).catch(function(){});}"
+                "function pubMirar(rid,nuevas,n){setTimeout(function(){"
+                "fetch('/publicas/estado',{credentials:'same-origin',cache:'no-store'})"
+                ".then(function(r){return r.json();}).then(function(j){"
+                "var sigue=nuevas.some(function(e){return (j.revisando||[]).indexOf(e)>=0;});"
+                "if(sigue&&n<100){pubMirar(rid,nuevas,n+1);return;}pubSecc(rid);})"
+                ".catch(function(){if(n<100)pubMirar(rid,nuevas,n+1);});},3000);}"
+                "function pubAgregar(f){var b=f.querySelector('button');if(b)b.disabled=true;"
+                "var d=new URLSearchParams(new FormData(f));d.set('ajax','1');"
+                "fetch(f.getAttribute('action'),{method:'POST',credentials:'same-origin',"
+                "headers:{'Content-Type':'application/x-www-form-urlencoded'},body:d.toString()})"
+                ".then(function(r){return r.json();}).then(function(j){if(b)b.disabled=false;"
+                "if(!j.ok){aviso('No se agregó',j.msg||'');return;}"
+                "pubSecc(j.rid);if(j.nuevas&&j.nuevas.length)pubMirar(j.rid,j.nuevas,0);})"
+                ".catch(function(){if(b)b.disabled=false;"
+                "aviso('No se pudo','No se pudo hablar con el panel. Vuelve a intentarlo.');});return false;}"
                 "</script>")
     pub_html = ("<h2 style='font-size:17px;margin:18px 0 10px'>Tus IPs publicas</h2>"
                 "<p class=sub2 style='margin:-4px 0 10px'>El sensor no las ve (el espejo es "
@@ -14078,7 +14250,8 @@ def reputacion_page(res=None, texto="", msg="", ok=False, es_admin=False, volver
         ".pedit form{display:inline;margin:0}"
         ".pedit .padd input{padding:6px 10px;border:1px solid #d9d7d2;border-radius:8px;"
         "font:12.5px ui-monospace,Consolas,monospace}"
-        ".pedit .padd{display:inline-flex;gap:6px;align-items:center}")
+        ".pedit .padd{display:inline-flex;gap:6px;align-items:center}"
+        ".previs{font-size:11px;font-weight:600;color:#2a5fa0}")
     return ("<!doctype html><html lang=es><head><meta charset=utf-8><link rel=icon type=image/png href=/favicon.ico>"
             "<meta name=viewport content='width=device-width,initial-scale=1'><title>Suricata</title>"
             f"<style>{css}</style></head><body>" + nav("/reputacion") +
@@ -17786,6 +17959,12 @@ class H(BaseHTTPRequestHandler):
                 return self._prohibido()
             _f, _g, _gt = feeds_tabla()
             return self._json({"filas": _f, "gen": _g, "genT": _gt, "corriendo": feeds_corriendo()})
+        if path == "/publicas/estado":
+            # que publicas se estan revisando ahora (la pantalla de Reputacion lo pregunta tras
+            # «Agregar» para quitar el «revisando…» sin recargar). Solo entradas, sin datos.
+            if not self._admin():
+                return self._prohibido()
+            return self._json({"revisando": publicas_revisando()})
         if path == "/ventana-estado":
             return self._json(estado_ventana())
         if path == "/duenos":
@@ -18401,8 +18580,20 @@ class H(BaseHTTPRequestHandler):
             bitacora("CONFIG-PUBLICAS", f"nodo={rid} +1 ({len(ok_l)} en total)"
                                         + (f"; {len(tap)} ya cubiertas" if tap else "")
                                         + (f"; rechazada: {mal[0]}" if mal else ""))
-            if not mal:
-                threading.Thread(target=vigilar_dnsbl, daemon=True).start()
+            nuevas = [e for e in ok_l if e not in actuales]
+            if not mal and nuevas:
+                # solo la nueva (antes, las listas negras de TODAS y sin AbuseIPDB de la nueva) y
+                # con la guarda de «revisando»: dos clics no lanzan dos revisiones que se pisan
+                threading.Thread(target=vigilar_dnsbl, kwargs={"solo": nuevas}, daemon=True).start()
+                threading.Thread(target=vigilar_publicas, kwargs={"solo": nuevas}, daemon=True).start()
+            if q.get("ajax"):
+                # desde el boton, sin recargar: la pantalla repinta el nodo y sigue «revisando…»
+                if mal:
+                    return self._json({"ok": False, "msg": "No se agregó: " + mal[0]})
+                return self._json({"ok": True, "rid": rid, "nuevas": nuevas,
+                                   "msg": ("Agregada: %s. Revisando sus listas negras y su reputación…"
+                                           % ", ".join(nuevas)) if nuevas else
+                                          "Ya estaba declarada (o la cubre un rango ya declarado)."})
             return self._redirect(rep_aviso_url("No se agrego: " + mal[0]) if mal
                                   else "/reputacion")
         if ruta == "/publicas/quitar":

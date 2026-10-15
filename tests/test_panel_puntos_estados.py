@@ -270,14 +270,19 @@ class Operacion(_Base):
 class Huella(_Base):
     def test_sin_mikrotik_no_pide_la_huella(self):
         """p002 (MikroTik sin conectar): la ficha no pide punto.api.huella y dice cuándo se hará.
-        p001 (conectado): la pide como siempre."""
+        p001 (conectado): desde el apartado B tampoco la espera la ficha: la pinta «comprobando…» y
+        la pide por fetch (GET /puntos/p001/huella), que la guarda 10 min; la ficha siguiente ya la
+        trae sin preguntar otra vez (tests/test_panel_puntos_fondo.py, Ficha)."""
         h = self.get("/puntos/p002")
         self.assertEqual([x for x in self.p.orq.ordenes("punto.api.huella")], [])
         self.assertIn("se comprobará cuando el MikroTik conecte", h)
         h = self.get("/puntos/p001")
+        self.assertEqual(self.p.orq.ordenes("punto.api.huella"), [])
+        self.assertIn("<code id=phuella data-pid='p001'>comprobando…</code>", h)
+        self.assertEqual(json.loads(self.get("/puntos/p001/huella")), {"texto": "ab" * 32})
+        self.assertIn("<code>%s</code>" % ("ab" * 32), self.get("/puntos/p001"))
         pet = self.p.orq.ordenes("punto.api.huella")
         self.assertEqual([x["params"] for x in pet], [{"pid": "p001"}])
-        self.assertIn("ab" * 32, h)
 
 
 if __name__ == "__main__":
