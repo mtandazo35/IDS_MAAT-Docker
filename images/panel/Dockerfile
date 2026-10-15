@@ -30,7 +30,7 @@ ENV LANG=C.UTF-8 \
 
 RUN set -eux; \
     apt-get update; \
-    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends python3 python3-cryptography python3-reportlab tzdata; \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends python3 python3-cryptography python3-reportlab tzdata ca-certificates; \
     rm -rf /var/lib/apt/lists/*; \
     mkdir -p /usr/share/ids-maat; \
     dpkg-query -W -f='${Version}\n' python3-cryptography > /usr/share/ids-maat/cryptography-version; \
