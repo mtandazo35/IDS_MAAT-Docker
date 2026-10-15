@@ -435,6 +435,9 @@ class Baja(_Base):
         self.assertEqual(e["porcentaje"], 75)
         self.assertEqual([x["nombre"] for x in e["pasos"]], ["limpiar el MikroTik", "conectar"])
         self.assertEqual(self.p.orq.ordenes("punto.borrar"), [])          # aún no
+        # a mitad de la baja la marca existe y es de ESTA operación (al final no se mira: el barrido
+        # de fondo la suelta en cuanto la baja termina, y en el runner lento del CI llega antes)
+        self.assertEqual(self.p.d._PREBAJA["p001"][1], tok)
         self.para.set()
         f = self.fin(tid)
         self.assertTrue(f["ok"], f)
@@ -442,7 +445,9 @@ class Baja(_Base):
         self.assertEqual(self.orden[-1], "espejo")
         self.assertEqual([x["op_id"] for x in self.p.orq.ordenes("punto.borrar")], [tok])
         self.assertIn(tok, self.renovadas)
-        self.assertEqual(self.p.d._PREBAJA["p001"][1], tok)
+        marca = self.p.d._PREBAJA.get("p001")
+        if marca is not None:                       # si el barrido aún no la soltó, sigue siendo la suya
+            self.assertEqual(marca[1], tok)
 
     def test_router_sin_limpiar_no_encola_la_baja(self):
         """Si el router no queda limpio, la baja no sigue y lo dice (en el modal)."""
