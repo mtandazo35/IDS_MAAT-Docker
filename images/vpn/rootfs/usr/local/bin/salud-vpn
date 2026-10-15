@@ -1,14 +1,25 @@
 #!/bin/sh
 # salud-vpn: healthcheck del contenedor vpn (CONTRATO-F1a §5.7). Sano (0) si:
 #   - s6 da `up` para openvpn, tzsp-decap y rele-api;
+#   - openvpn lleva arriba más de 5 s según s6 (`updownfor`): un openvpn que muere al arrancar y
+#     s6 relanza una y otra vez sale «up» en cada vuelta (si este s6-svstat no da updownfor, esta
+#     comprobación se salta);
+#   - hay un socket TCP en LISTEN en el puerto de OpenVPN (`port` de server.conf, 1194 si no
+#     lo trae) dentro del contenedor: /proc/net/tcp del netns, estado 0A. Proceso vivo no es lo
+#     mismo que servidor escuchando;
 #   - /run/ids/tzsp.json tiene menos de 90 s (latido de tzsp-decap cada 30 s);
 #   - existe la tabla `inet ids_punto` (un netns sin su firewall no es sano).
-# Nunca falla por falta de espejo, punto pausado ni MikroTik desconectado.
-# IDS_SVSTAT, IDS_SERVICIOS, IDS_TZSP e IDS_AHORA solo existen para las pruebas.
+# Nunca falla por falta de espejo, punto pausado ni MikroTik desconectado (el LISTEN está con o
+# sin cliente).
+# IDS_SVSTAT, IDS_SERVICIOS, IDS_TZSP, IDS_AHORA, IDS_SERVERCONF e IDS_PROC_TCP solo existen para
+# las pruebas.
 set -u
 svstat="${IDS_SVSTAT:-/command/s6-svstat}"
 servicios="${IDS_SERVICIOS:-/run/service}"
 tzsp="${IDS_TZSP:-/run/ids/tzsp.json}"
+serverconf="${IDS_SERVERCONF:-/etc/ids/vpn/server.conf}"
+proc_tcp="${IDS_PROC_TCP:-/proc/net/tcp /proc/net/tcp6}"
+MIN_ARRIBA_S=5
 
 for s in openvpn tzsp-decap rele-api; do
   estado="$("$svstat" -o up "$servicios/$s" 2>/dev/null || true)"
@@ -17,6 +28,34 @@ for s in openvpn tzsp-decap rele-api; do
     exit 1
   fi
 done
+
+arriba="$("$svstat" -o updownfor "$servicios/openvpn" 2>/dev/null || true)"
+case "$arriba" in
+  ''|*[!0-9]*) ;;                      # sin dato: no se exige
+  *)
+    if [ "$arriba" -le "$MIN_ARRIBA_S" ]; then
+      echo "salud-vpn: openvpn lleva ${arriba} s arriba (¿se reinicia en bucle?)"
+      exit 1
+    fi
+    ;;
+esac
+
+puerto="$(sed -n 's/^[[:space:]]*port[[:space:]][[:space:]]*\([0-9][0-9]*\)[[:space:]]*$/\1/p' "$serverconf" 2>/dev/null | head -n 1)"
+[ -n "$puerto" ] || puerto=1194
+hex="$(printf '%04X' "$puerto")"
+escucha=no
+for f in $proc_tcp; do
+  [ -r "$f" ] || continue
+  while read -r _sl dir_local _remoto st _resto; do
+    case "$dir_local" in
+      *":$hex") [ "$st" = "0A" ] && escucha=si ;;
+    esac
+  done < "$f"
+done
+if [ "$escucha" != si ]; then
+  echo "salud-vpn: nadie escucha en ${puerto}/tcp"
+  exit 1
+fi
 
 if ! mtime="$(stat -c %Y "$tzsp" 2>/dev/null)"; then
   echo "salud-vpn: no existe $tzsp"

@@ -52,7 +52,8 @@ services:
     mem_limit: 192m
     memswap_limit: 192m
     pids_limit: 64
-    healthcheck: { test: ["CMD", "/usr/local/bin/salud-vpn"], interval: 30s, retries: 3 }
+    healthcheck: { test: ["CMD", "/usr/local/bin/salud-vpn"], interval: 30s, retries: 3,
+                   start_period: 30s, start_interval: 5s }
   suricata:
     image: ghcr.io/<owner>/ids-maat-suricata@sha256:<digest>
     container_name: ids-p003-suricata
@@ -77,7 +78,8 @@ services:
     mem_limit: 1600m          # motor medido + memcaps + 20 % (§10.3)
     memswap_limit: 1600m
     pids_limit: 256
-    healthcheck: { test: ["CMD", "/usr/local/bin/salud-suricata"], interval: 30s, retries: 3 }
+    healthcheck: { test: ["CMD", "/usr/local/bin/salud-suricata"], interval: 30s, retries: 3,
+                   start_period: 600s, start_interval: 5s }   # start_interval: Docker Engine >= 25
 networks:
   punto:
     driver: bridge
@@ -294,8 +296,8 @@ management /run/ids-ctl/ovpn-mgmt.sock unix
 
 | Contenedor | Healthcheck (solo «el proceso está vivo») | Nunca falla por |
 |---|---|---|
-| `vpn` | `openvpn` vivo, relé vivo, y `tzsp.json` con menos de 90 s (el latido de §5) | que no llegue espejo, que el punto esté pausado o que el MikroTik esté desconectado |
-| `suricata` | proceso vivo y el último `stats` del eve con menos de 120 s | que no haya tráfico |
+| `vpn` | `openvpn` vivo y con más de 5 s arriba según s6 (no en bucle de reinicios), un socket TCP en LISTEN en el `port` de `server.conf` (`/proc/net/tcp` del netns), relé vivo, y `tzsp.json` con menos de 90 s (el latido de §5) | que no llegue espejo, que el punto esté pausado o que el MikroTik esté desconectado |
+| `suricata` | proceso vivo y el último `stats` del eve con menos de 120 s **y posterior al arranque del proceso actual** (el eve se abre en modo añadir: tras un reinicio, el último stats es de la instancia anterior) | que no haya tráfico |
 
 - **Sin espejo no es un fallo del contenedor.** Es **salud funcional** y la vigila el orquestador
   ([ORQUESTADOR.md](ORQUESTADOR.md) §8):

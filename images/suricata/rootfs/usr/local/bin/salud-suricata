@@ -4,7 +4,11 @@
 Sano (exit 0) si:
   - /proc/1/cmdline contiene "suricata", y
   - en los últimos 512 KiB de /var/log/suricata/eve.json hay una línea con
-    "event_type":"stats" cuyo timestamp tiene menos de 120 s.
+    "event_type":"stats" cuyo timestamp tiene menos de 120 s, y
+  - ese stats es posterior al arranque del PID 1 actual (/proc/1/stat + btime de /proc/stat):
+    eve.json se abre en modo añadir y, tras un reinicio, su cola trae el último stats de la
+    instancia ANTERIOR; sin esto el contenedor nuevo salía sano antes de cargar las reglas.
+    Si no se puede saber cuándo arrancó, no se exige.
 
 Nunca falla por falta de tráfico: el evento stats sale cada 30 s aunque no llegue nada.
 Para las pruebas acepta IDS_EVE (ruta del eve) e IDS_AHORA (epoch) en el entorno.
@@ -17,6 +21,8 @@ from datetime import datetime
 
 EVE = "/var/log/suricata/eve.json"
 CMDLINE = "/proc/1/cmdline"
+STAT_PID1 = "/proc/1/stat"
+STAT_SISTEMA = "/proc/stat"
 COLA_BYTES = 512 * 1024
 MAX_EDAD_S = 120
 
@@ -27,6 +33,34 @@ def leer_cmdline(ruta=CMDLINE):
             return f.read()
     except OSError:
         return b""
+
+
+def inicio_proceso(stat=STAT_PID1, stat_sistema=STAT_SISTEMA, tics=None):
+    """Epoch del arranque de un proceso: btime (/proc/stat) + starttime (campo 22 de
+    /proc/<pid>/stat, en tics de reloj desde el arranque del sistema). None si no se puede leer."""
+    try:
+        with open(stat, "rb") as f:
+            texto = f.read().decode("utf-8", "replace")
+        with open(stat_sistema, "rb") as f:
+            sistema = f.read().decode("utf-8", "replace")
+    except OSError:
+        return None
+    # el nombre (campo 2) va entre paréntesis y puede llevar espacios y paréntesis: se corta
+    # por el ÚLTIMO «)»; detrás, el campo 3 es el primero y el 22 (starttime) es el 20.º
+    campos = texto[texto.rfind(")") + 1:].split()
+    btime = None
+    for linea in sistema.splitlines():
+        partes = linea.split()
+        if len(partes) == 2 and partes[0] == "btime" and partes[1].isdigit():
+            btime = int(partes[1])
+    if btime is None or len(campos) < 20 or not campos[19].isdigit():
+        return None
+    if tics is None:
+        try:
+            tics = os.sysconf("SC_CLK_TCK")
+        except (AttributeError, ValueError, OSError):
+            return None
+    return btime + int(campos[19]) / float(tics or 100)
 
 
 def ts_epoch(texto):
@@ -73,12 +107,16 @@ def ultimo_stats(ruta, nbytes=COLA_BYTES):
     return mejor
 
 
-def comprobar(eve=EVE, ahora=None, cmdline=None):
-    """(sano, motivo)."""
+def comprobar(eve=EVE, ahora=None, cmdline=None, inicio=None):
+    """(sano, motivo). `inicio`: epoch del arranque del PID 1; si no se pasa y el cmdline se lee
+    del /proc real, se lee también de ahí (con un cmdline dado, el proceso es de prueba y su
+    arranque es el que se pase)."""
     if ahora is None:
         ahora = time.time()
     if cmdline is None:
         cmdline = leer_cmdline()
+        if inicio is None:
+            inicio = inicio_proceso()
     if b"suricata" not in cmdline:
         return False, "el PID 1 no es suricata"
     try:
@@ -90,10 +128,13 @@ def comprobar(eve=EVE, ahora=None, cmdline=None):
     edad = ahora - t
     if edad >= MAX_EDAD_S:
         return False, "último stats de hace %d s (máximo %d s)" % (edad, MAX_EDAD_S)
+    if inicio is not None and t < inicio:
+        return False, ("último stats (hace %d s) anterior al arranque de suricata (hace %d s): "
+                       "sigue cargando" % (max(0, edad), max(0, ahora - inicio)))
     return True, "stats de hace %d s" % max(0, edad)
 
 
-def main(env=None, cmdline=None):
+def main(env=None, cmdline=None, inicio=None):
     env = os.environ if env is None else env
     eve = env.get("IDS_EVE") or EVE
     ahora = None
@@ -103,7 +144,7 @@ def main(env=None, cmdline=None):
         except ValueError:
             print("salud-suricata: IDS_AHORA no es un número")
             return 1
-    sano, motivo = comprobar(eve, ahora, cmdline)
+    sano, motivo = comprobar(eve, ahora, cmdline, inicio)
     print("salud-suricata: %s: %s" % ("sano" if sano else "MAL", motivo))
     return 0 if sano else 1
 

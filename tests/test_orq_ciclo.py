@@ -171,7 +171,9 @@ class Deshacer(unittest.TestCase):
         self.assert_sin_rastro("p001")
 
     def test_no_sano_deshace(self):
-        self.s.salud_inicial = "starting"
+        # unhealthy (no `starting`: eso es Suricata cargando reglas y ya no deshace el alta;
+        # tests/test_orq_alta_salud.py)
+        self.s.salud_inicial = "unhealthy"
         r = A.crear(self, self.orq, NORTE, "REVERTIDA")
         self.assertEqual(r["codigo"], "REVERTIDA")
         self.assertIn("esperar salud", r["mensaje"])

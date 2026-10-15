@@ -193,19 +193,43 @@ class ConFalsos(unittest.TestCase):
             "arg=TCP:100.64.3.2:8728,connect-timeout=5"])
 
     # --- salud-vpn --------------------------------------------------------------------------
-    def preparar_salud(self, caido=None, nft_ok=True, mtime=1760090000):
+    # /proc/net/tcp de un netns con OpenVPN escuchando en 0.0.0.0:1194 (04AA) y un cliente
+    # conectado (ESTABLISHED, 01); y el de uno sin nada en LISTEN en ese puerto
+    TCP_ESCUCHA = (
+        "  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode\n"
+        "   0: 00000000:04AA 00000000:0000 0A 00000000:00000000 00:00000000 00000000     0        0 4242 1\n"
+        "   1: 020140C8:04AA 2D7100CB:C822 01 00000000:00000000 02:00000A6B 00000000     0        0 4243 2\n")
+    TCP_SIN_ESCUCHA = (
+        "  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode\n"
+        "   0: 020140C8:04AA 2D7100CB:C822 01 00000000:00000000 02:00000A6B 00000000     0        0 4243 2\n"
+        "   1: 00000000:04AB 00000000:0000 0A 00000000:00000000 00:00000000 00000000     0        0 4244 1\n")
+
+    def preparar_salud(self, caido=None, nft_ok=True, mtime=1760090000, tcp=None, arriba="300",
+                       server_conf="port 1194\nproto tcp4-server\n"):
         svc = Path(self.dir.name) / "service"
         for s in LONGRUNS:
             (svc / s).mkdir(parents=True, exist_ok=True)
         caido = caido or ""
-        self.falso("s6-svstat", f'''[ "$1" = "-o" ] && [ "$2" = "up" ] || exit 9
+        # `-o up` como antes; `-o updownfor` (segundos desde el último up/down) solo si se da
+        # (arriba=None imita un s6-svstat que no conoce ese campo: sale con error)
+        updown = ("echo %s" % arriba if arriba is not None
+                  else 'echo "s6-svstat: fatal: unknown field" >&2; exit 100')
+        self.falso("s6-svstat", f'''[ "$1" = "-o" ] || exit 9
+if [ "$2" = "updownfor" ]; then {updown}; exit 0; fi
+[ "$2" = "up" ] || exit 9
 case "$3" in */{caido or "nada-caido"}) echo false ;; *) echo true ;; esac''')
         self.falso("nft", 'exit 0' if nft_ok else 'echo "Error: No such file or directory" >&2; exit 1')
         tzsp = Path(self.dir.name) / "tzsp.json"
         tzsp.write_text("{}", encoding="utf-8")
         os.utime(tzsp, (mtime, mtime))
+        ftcp = Path(self.dir.name) / "tcp"
+        ftcp.write_bytes((self.TCP_ESCUCHA if tcp is None else tcp).encode())
+        conf = Path(self.dir.name) / "server.conf"
+        conf.write_bytes(server_conf.encode())
+        # tcp6 no existe: se salta (en el contenedor IPv6 está desactivado)
         return {"IDS_SVSTAT": ruta_bash(self.falsos / "s6-svstat"), "IDS_SERVICIOS": ruta_bash(svc),
-                "IDS_TZSP": ruta_bash(tzsp)}
+                "IDS_TZSP": ruta_bash(tzsp), "IDS_PROC_TCP": ruta_bash(ftcp) + " " + ruta_bash(ftcp) + "6",
+                "IDS_SERVERCONF": ruta_bash(conf)}
 
     def salud(self, extra, ahora):
         return self.ejecutar(ay.BIN / "salud-vpn", extra_env={**extra, "IDS_AHORA": str(ahora)})
@@ -235,6 +259,41 @@ case "$3" in */{caido or "nada-caido"}) echo false ;; *) echo true ;; esac''')
         p = self.salud(self.preparar_salud(nft_ok=False), 1760090010)
         self.assertEqual(p.returncode, 1)
         self.assertIn("ids_punto", p.stdout)
+
+    def test_salud_sin_listen_en_el_puerto(self):
+        """Corrección de defecto (D6): openvpn «up» en s6 sin servidor escuchando salía sano."""
+        p = self.salud(self.preparar_salud(tcp=self.TCP_SIN_ESCUCHA), 1760090010)
+        self.assertEqual(p.returncode, 1, p.stdout)
+        self.assertIn("nadie escucha en 1194/tcp", p.stdout)
+
+    def test_salud_puerto_de_server_conf(self):
+        conf = "port 1195\nproto tcp4-server\n"
+        p = self.salud(self.preparar_salud(server_conf=conf), 1760090010)
+        self.assertEqual(p.returncode, 1)
+        self.assertIn("1195/tcp", p.stdout)
+        tcp = self.TCP_ESCUCHA.replace("00000000:04AA 00000000:0000 0A", "00000000:04AB 00000000:0000 0A")
+        p = self.salud(self.preparar_salud(server_conf=conf, tcp=tcp), 1760090010)
+        self.assertEqual(p.returncode, 0, p.stdout)
+        # sin línea `port`: el 1194 de OpenVPN
+        p = self.salud(self.preparar_salud(server_conf="proto tcp4-server\n"), 1760090010)
+        self.assertEqual(p.returncode, 0, p.stdout)
+
+    def test_salud_sano_con_mikrotik_desconectado(self):
+        """El LISTEN no depende del cliente: sin ninguna conexión establecida sigue sano."""
+        solo_listen = "".join(self.TCP_ESCUCHA.splitlines(True)[:2])
+        p = self.salud(self.preparar_salud(tcp=solo_listen), 1760090010)
+        self.assertEqual(p.returncode, 0, p.stdout)
+
+    def test_salud_openvpn_recien_arrancado(self):
+        """Un openvpn que s6 relanza en bucle está «up» unos segundos en cada vuelta."""
+        p = self.salud(self.preparar_salud(arriba="3"), 1760090010)
+        self.assertEqual(p.returncode, 1)
+        self.assertIn("openvpn lleva 3 s arriba", p.stdout)
+        self.assertEqual(self.salud(self.preparar_salud(arriba="6"), 1760090010).returncode, 0)
+
+    def test_salud_s6_sin_updownfor_no_se_exige(self):
+        p = self.salud(self.preparar_salud(arriba=None), 1760090010)
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
 
 
 if __name__ == "__main__":

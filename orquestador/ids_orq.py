@@ -78,7 +78,17 @@ IDS_ESPERA_MON_S = 60
 ENFRIAMIENTO_S = 7 * 86400
 RETENCION_OPS_S = 30 * 86400
 N_MAX = 250
-ESPERA_SALUD_S = 180
+# Espera a que un punto quede sano (alta, arrancar, reiniciar, ajustar): como mínimo
+# ESPERA_SALUD_S y, si la orden pasó por `suricata -T`, 2 × lo que tardó + ESPERA_SALUD_MARGEN_S
+# (Suricata carga en el contenedor las mismas reglas que el -T y luego espera a ids-mon y al primer
+# `stats`). El start_period de suricata en compose.yml.tmpl (600 s) es mayor que el mínimo, para
+# que Docker no lo marque unhealthy mientras se le espera.
+ESPERA_SALUD_S = 300
+ESPERA_SALUD_MARGEN_S = 90
+CURA_ERROR_S = 180                   # un punto en `error` con todo healthy este tiempo vuelve a activo
+STATUS_OVPN_VIEJO_S = 45             # OpenVPN reescribe openvpn-status.log cada 10 s (server.conf)
+MAX_LOG_OP = 100                     # líneas del log de una orden (log_tail), cada una de 500 como mucho
+LINEAS_LOG_FALLO = 40                # de `docker logs` por contenedor cuando falla la salud
 INTERVALO_SONDEO_S = 2.0
 INTERVALO_ESTADO_S = 15
 INTERVALO_NETNS_S = 30
@@ -805,8 +815,25 @@ def core_compose_args(*resto):
     return ["docker", "compose", "-p", CORE_PROYECTO, "-f", str(ruta(CORE_COMPOSE))] + list(resto)
 
 
-def esperar_salud(nombres, limite=None):
-    """Espera a que todos estén `healthy`; falla enseguida si alguno sale (exited/dead)."""
+def limite_salud(dur_T=None):
+    """Segundos de espera a la salud de un punto: max(ESPERA_SALUD_S, 2 × dur_T + margen) si la
+    orden midió un `suricata -T` (dur_T, en s) y ESPERA_SALUD_S si no."""
+    if dur_T is None:
+        return ESPERA_SALUD_S
+    return max(ESPERA_SALUD_S, 2 * dur_T + ESPERA_SALUD_MARGEN_S)
+
+
+def _parte_de(nombre):
+    """ids-p001-suricata -> suricata (los demás nombres, tal cual)."""
+    return re.sub(r"^ids-p[0-9]{3}-", "", nombre)
+
+
+def esperar_salud(nombres, limite=None, tolerar_arranque=False):
+    """Espera a que todos estén `healthy`; falla enseguida si alguno sale (exited/dead).
+
+    Con `tolerar_arranque`, al vencer el límite NO falla si todos siguen `running` y en
+    `healthy` o `starting` (Suricata cargando reglas): devuelve el inspect y quien llama mira
+    cuáles no están aún healthy. unhealthy, exited, dead o ausente siguen siendo un fallo."""
     limite = ESPERA_SALUD_S if limite is None else limite
     fin = time.monotonic() + limite
     while True:
@@ -814,11 +841,23 @@ def esperar_salud(nombres, limite=None):
         if all(info.get(n, {}).get("salud") == "healthy" for n in nombres):
             return info
         muertos = [n for n in nombres if info.get(n, {}).get("estado") in ("exited", "dead")]
-        if muertos or time.monotonic() >= fin:
-            malos = ", ".join("%s=%s/%s" % (n, info.get(n, {}).get("estado", "ausente"),
-                                            info.get(n, {}).get("salud", "-")) for n in nombres)
-            raise ErrorOrden("FALLO", "no sanos en %d s: %s" % (limite, malos))
+        vencido = time.monotonic() >= fin
+        if (vencido and not muertos and tolerar_arranque
+                and all(info.get(n, {}).get("estado") == "running"
+                        and info.get(n, {}).get("salud") in ("healthy", "starting") for n in nombres)):
+            return info
+        if muertos or vencido:
+            malos = ", ".join("%s=%s/%s" % (_parte_de(n), info.get(n, {}).get("estado", "ausente"),
+                                            info.get(n, {}).get("salud", "-"))
+                              for n in nombres if info.get(n, {}).get("salud") != "healthy")
+            raise ErrorOrden("FALLO", "no sanos tras %d s: %s" % (limite, malos))
         time.sleep(INTERVALO_SONDEO_S)
+
+
+def imagenes_ausentes(imgs, partes=("vpn", "suricata")):
+    """Las referencias de `imgs` que no están en el Docker local (`docker image inspect`)."""
+    return [imgs[parte] for parte in partes
+            if ejecutar(["docker", "image", "inspect", "--format", "{{.Id}}", imgs[parte]], timeout=60).rc != 0]
 
 
 def digest12(imagen):
@@ -842,14 +881,14 @@ def plantilla_suricata(imagen):
         asegurar_dir(tmp, 0o700)
         nombre = "ids-orq-plantilla-%s-%s" % (d12, secrets.token_hex(3))
         try:
-            ejecutar_ok(["docker", "create", "--name", nombre, imagen], timeout=120)
+            ejecutar_ok(["docker", "create", "--pull", "never", "--name", nombre, imagen], timeout=120)
             try:
                 for f in ("suricata.yaml.tmpl", "plantilla.json"):
                     ejecutar_ok(["docker", "cp", "%s:/usr/share/ids-maat/%s" % (nombre, f), str(tmp / f)],
                                 timeout=120)
             finally:
                 ejecutar(["docker", "rm", "-f", nombre], timeout=60)
-            r = ejecutar_ok(["docker", "run", "--rm", "--network", "none", "--entrypoint",
+            r = ejecutar_ok(["docker", "run", "--pull", "never", "--rm", "--network", "none", "--entrypoint",
                              "/usr/bin/suricata", imagen, "--build-info"], timeout=120)
             (tmp / "build-info.txt").write_text(r.out, encoding="utf-8")
             if destino.exists():
@@ -960,11 +999,22 @@ def mismo_inodo(path, st):
 # Lecturas de estado (estado.json §5.10)
 # --------------------------------------------------------------------------------------------
 
-def leer_status_openvpn(path):
+def leer_status_openvpn(path, t=None):
+    """Cliente VPN del punto según openvpn-status.log. OpenVPN lo reescribe cada 10 s: si lleva
+    más de STATUS_OVPN_VIEJO_S sin tocarse (OpenVPN caído o colgado), lo que dice ya no vale y
+    se da por desconectado con `viejo` = True."""
+    vacio = {"conectado": False, "desde": None, "ip_real": None, "usuario": None, "viejo": False}
     try:
-        txt = leer_de_contenedor(path, TOPE_STATUS_OVPN).decode("utf-8", errors="replace")
+        fd, st = abrir_de_contenedor(path)
+        try:
+            txt = _leer_fd(fd, TOPE_STATUS_OVPN).decode("utf-8", errors="replace")
+        finally:
+            os.close(fd)
     except OSError:
-        return {"conectado": False, "desde": None, "ip_real": None, "usuario": None}
+        return vacio
+    t = time.time() if t is None else t
+    if t - st.st_mtime > STATUS_OVPN_VIEJO_S:
+        return dict(vacio, viejo=True)
     for linea in txt.splitlines():
         if not linea.startswith("CLIENT_LIST,"):
             continue
@@ -978,8 +1028,8 @@ def leer_status_openvpn(path):
         except ValueError:
             desde = None
         usuario = c[9] if c[9] and c[9] != "UNDEF" else c[1]
-        return {"conectado": True, "desde": desde, "ip_real": ip, "usuario": usuario}
-    return {"conectado": False, "desde": None, "ip_real": None, "usuario": None}
+        return {"conectado": True, "desde": desde, "ip_real": ip, "usuario": usuario, "viejo": False}
+    return vacio
 
 
 def leer_tzsp(path, t):
@@ -1438,7 +1488,7 @@ CREATE TABLE IF NOT EXISTS punto (
   ros_version INTEGER NOT NULL, compat_v6 TEXT NOT NULL, api_puerto INTEGER NOT NULL,
   origen_ip TEXT, redes TEXT NOT NULL, usuario TEXT, cpuset_suricata TEXT,
   imagen_vpn TEXT, imagen_suricata TEXT, deseado TEXT NOT NULL, estado TEXT NOT NULL,
-  paso_error TEXT, creado INTEGER NOT NULL, actualizado INTEGER NOT NULL);
+  paso_error TEXT, creado INTEGER NOT NULL, actualizado INTEGER NOT NULL, error_desde INTEGER);
 CREATE TABLE IF NOT EXISTS enfriamiento (n INTEGER PRIMARY KEY, hasta INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS op (
   seq INTEGER PRIMARY KEY AUTOINCREMENT, op_id TEXT NOT NULL UNIQUE, orden TEXT NOT NULL,
@@ -1458,7 +1508,19 @@ def abrir_db():
     db.execute("PRAGMA synchronous=NORMAL")
     db.execute("PRAGMA busy_timeout=5000")
     db.executescript(ESQUEMA)
+    migrar_db(db)
     return db
+
+
+# Columnas añadidas después de la primera versión del esquema: (tabla, columna, tipo). Un orq.db
+# anterior las recibe al abrirse (CREATE TABLE IF NOT EXISTS no toca una tabla que ya existe).
+COLUMNAS_NUEVAS = (("punto", "error_desde", "INTEGER"),)
+
+
+def migrar_db(db):
+    for tabla, columna, tipo in COLUMNAS_NUEVAS:
+        if columna not in {f[1] for f in db.execute("PRAGMA table_info(%s)" % tabla)}:
+            db.execute("ALTER TABLE %s ADD COLUMN %s %s" % (tabla, columna, tipo))
 
 
 def fila_a_punto(f, cfg_base=None):
@@ -1486,12 +1548,14 @@ class Contexto:
         self.paso_actual = None
         self.deshacer = None
         self.mensaje = None
+        self.aviso = None              # se añade al mensaje de una orden que acaba OK
+        self.logs_volcados = set()     # pid cuyos `docker logs` ya están en el log de la orden
         self.pid = None
         self.quien = ""
 
     def registrar(self, linea):
         self.log.append(str(linea)[:500])
-        del self.log[:-50]
+        del self.log[:-MAX_LOG_OP]
 
     @contextmanager
     def paso(self, nombre):
@@ -1797,6 +1861,7 @@ class Orquestador:
         self._en_curso = None
         self._ultima_poda = 0.0
         self._threshold_fallido = {}     # pid -> {"ts", "mensaje"} hasta el siguiente que vaya bien
+        self._sano_desde = {}            # pid en `error` -> desde cuándo (tick) tiene todo healthy
 
     # ---- base de datos -----------------------------------------------------------------------
     def q(self, sql, args=()):
@@ -1942,7 +2007,7 @@ class Orquestador:
     def _progreso(self, ctx):
         self.x("UPDATE op SET paso=?, pasos=?, total=?, log=? WHERE op_id=?",
                (ctx.paso_actual, json.dumps(ctx.pasos, ensure_ascii=False), ctx.total,
-                json.dumps(ctx.log[-20:], ensure_ascii=False), ctx.op_id))
+                json.dumps(ctx.log[-MAX_LOG_OP:], ensure_ascii=False), ctx.op_id))
 
     def procesar_una(self):
         """Ejecuta la siguiente orden pendiente. Devuelve False si la cola está vacía."""
@@ -1961,6 +2026,8 @@ class Orquestador:
         try:
             datos, secretos = self.ejecutar_orden(ctx, f["orden"], params)
             codigo, mensaje = "OK", ctx.mensaje or "ok"
+            if ctx.aviso:
+                mensaje = "%s; %s" % (mensaje, ctx.aviso)
         except ErrorOrden as e:
             codigo, mensaje, datos = e.codigo, e.mensaje, e.datos
             if ctx.deshacer and self._deshacer(ctx) and codigo not in (
@@ -1981,7 +2048,7 @@ class Orquestador:
                "log=?, fin=?, params=NULL, pid=COALESCE(?, pid) WHERE op_id=?",
                (codigo, mensaje, json.dumps(datos or {}, ensure_ascii=False),
                 json.dumps(ctx.pasos, ensure_ascii=False), ctx.total,
-                json.dumps(ctx.log[-20:], ensure_ascii=False), ahora(), ctx.pid, f["op_id"]))
+                json.dumps(ctx.log[-MAX_LOG_OP:], ensure_ascii=False), ahora(), ctx.pid, f["op_id"]))
         self._diario(f, ctx, codigo)
         # estado.json al momento: si no, el panel sigue viendo hasta 15 s el punto recien dado de
         # baja (o parado, o creado) como estaba antes de la orden
@@ -2214,6 +2281,9 @@ class Orquestador:
             "nombre": p["nombre"], "n": p["n"], "puerto": p["puerto"], "tun_net": p["tun_net"],
             "perfil": p["perfil"], "hilos": p["hilos"], "ros_version": p["ros_version"],
             "compat_v6": p["compat_v6"], "deseado": p["deseado"], "estado": p["estado"],
+            # por qué está en `error` y desde cuándo (null en cualquier otro estado)
+            "paso_error": p.get("paso_error") if p["estado"] == "error" else None,
+            "error_desde": p.get("error_desde") if p["estado"] == "error" else None,
             # lo que necesita el panel para hablar con el MikroTik y montar su espejo
             "redes": list(p["redes"]), "api_puerto": p["api_puerto"], "sensor": p["sensor"],
             "mk": p["mk"], "tzsp_puerto": TZSP_PUERTO,
@@ -2387,14 +2457,14 @@ class Orquestador:
     def programar_reinicio(self, pid, parte, t=None):
         t = t if t is not None else time.time()
         p = self.punto(pid)
-        if p is None or p["deseado"] != "activo" or p["estado"] == "error":
+        # en `creando` o `borrando` la orden en curso decide (D13): nada de reinicios por detrás
+        if p is None or p["deseado"] != "activo" or p["estado"] in ("error", "creando", "borrando"):
             return
         if (pid, parte) in self._programados:
             return
         hechos = self._reinicios_1h(pid, parte, int(t))
         if hechos >= MAX_REINICIOS_HORA:
-            self.x("UPDATE punto SET estado='error', paso_error=?, actualizado=? WHERE pid=?",
-                   ("%s unhealthy tras %d reinicios en 1 h" % (parte, hechos), ahora(), pid))
+            self._marcar_error(pid, "%s unhealthy tras %d reinicios en 1 h" % (parte, hechos))
             log("%s: %s sigue unhealthy tras %d reinicios en 1 h: punto en error" % (pid, parte, hechos))
             return
         self._programados[(pid, parte)] = t + ESPERAS_REINICIO_S[min(hechos, len(ESPERAS_REINICIO_S) - 1)]
@@ -2426,7 +2496,38 @@ class Orquestador:
             for parte, c in e["contenedores"].items():
                 if c["salud"] == "unhealthy":
                     self.programar_reinicio(pid, parte, t)
+        if self._curar_errores(est, t):
+            est = self.escribir_estado()
         return est
+
+    def _curar_errores(self, est, t):
+        """Un punto en `error` (deseado activo) cuyos dos contenedores llevan CURA_ERROR_S seguidos
+        `healthy` vuelve a `activo` y desde ahí lo vigila la supervisión normal. La cuenta empieza
+        en el primer tick que los ve sanos y vuelve a cero con cualquier tick que no. Devuelve los
+        pid curados."""
+        curados = []
+        for pid, e in est["puntos"].items():
+            sanos = all(c["salud"] == "healthy" for c in e["contenedores"].values())
+            if (e["estado"] != "error" or e["deseado"] != "activo" or not sanos
+                    or (self._en_curso or {}).get("pid") == pid):
+                self._sano_desde.pop(pid, None)
+                continue
+            desde = self._sano_desde.setdefault(pid, t)
+            if t - desde < CURA_ERROR_S:
+                continue
+            self._sano_desde.pop(pid, None)
+            p = self.punto(pid)
+            if p is None or p["estado"] != "error":
+                continue
+            if self.x("UPDATE punto SET estado='activo', paso_error=NULL, error_desde=NULL, actualizado=? "
+                      "WHERE pid=? AND estado='error'", (ahora(), pid)).rowcount != 1:
+                continue
+            log("%s: lleva %d s sano: de error a activo (era: %s)" % (pid, int(t - desde), p["paso_error"]))
+            self._diario_linea({"ts": int(t), "evento": "supervision.curado", "pid": pid,
+                                "paso_error": p["paso_error"], "error_desde": p.get("error_desde"),
+                                "sano_s": int(t - desde)})
+            curados.append(pid)
+        return curados
 
     def bucle_supervision(self):
         while not self._parar.is_set():
@@ -2525,8 +2626,62 @@ class Orquestador:
                 return True
         return False
 
-    def esperar_salud(self, nombres, limite=None):
-        return esperar_salud(nombres, limite)
+    def esperar_salud(self, nombres, limite=None, tolerar_arranque=False):
+        return esperar_salud(nombres, limite, tolerar_arranque)
+
+    def _esperar_tolerante(self, ctx, nombres, limite):
+        """Espera la salud sin tumbar una orden buena porque Suricata tarde en cargar reglas (D1):
+        si al vencer `limite` todo sigue running y solo falta pasar de `starting` a `healthy`, la
+        orden sigue con un aviso y lo vigila la supervisión (si acaba unhealthy, la regla de
+        reinicios de siempre)."""
+        info = self.esperar_salud(nombres, limite, tolerar_arranque=True)
+        pendientes = [_parte_de(n) for n in nombres if (info.get(n) or {}).get("salud") != "healthy"]
+        if pendientes:
+            ctx.aviso = ("Suricata sigue cargando reglas; la supervisión lo vigila" if "suricata" in pendientes
+                         else "la VPN sigue arrancando; la supervisión la vigila")
+            ctx.registrar("tras %d s sigue en starting: %s (%s)" % (limite, ", ".join(pendientes), ctx.aviso))
+        return info
+
+    def _marcar_error(self, pid, motivo):
+        """Punto en `error` con su motivo (paso_error, 300 caracteres como mucho). error_desde se
+        queda con el primer paso a error: un fallo nuevo sobre uno viejo no lo rejuvenece."""
+        t = ahora()
+        self.x("UPDATE punto SET estado='error', paso_error=?, "
+               "error_desde=CASE WHEN estado='error' AND error_desde IS NOT NULL THEN error_desde ELSE ? END, "
+               "actualizado=? WHERE pid=?", (str(motivo)[:300], t, t, pid))
+
+    def _marcar_activo(self, pid):
+        self.x("UPDATE punto SET estado='activo', paso_error=NULL, error_desde=NULL, actualizado=? WHERE pid=?",
+               (ahora(), pid))
+
+    def _volcar_logs(self, ctx, pid, lineas=None):
+        """Las últimas `lineas` de `docker logs` de cada contenedor del punto al log de la orden
+        (lo que el panel enseña en log_tail), con prefijo [vpn] / [suricata] y sin las líneas con
+        password o key (el filtro de logs()). Una vez por orden y punto: va ANTES de deshacer, que
+        borra los contenedores y sus logs."""
+        if pid in ctx.logs_volcados:
+            return
+        ctx.logs_volcados.add(pid)
+        lineas = LINEAS_LOG_FALLO if lineas is None else lineas
+        filtro = re.compile(r"password|key", re.I)
+        for parte, nombre in nombres_contenedores(pid).items():
+            r = ejecutar(["docker", "logs", "--tail", str(lineas), nombre], timeout=60)
+            if r.rc != 0:
+                motivo = ((r.err or r.out).strip().splitlines() or ["sin salida"])[-1]
+                ctx.registrar("[%s] sin logs (docker logs salió con %s: %s)" % (parte, r.rc, motivo[:200]))
+                continue
+            for linea in [x for x in (r.out + r.err).splitlines() if not filtro.search(x)][-lineas:]:
+                ctx.registrar("[%s] %s" % (parte, linea))
+
+    @contextmanager
+    def _logs_si_falla(self, ctx, pid):
+        """Para «compose up» y «esperar salud»: si fallan, los logs de los contenedores al log de
+        la orden antes de que el deshacer (o el siguiente intento) los borre."""
+        try:
+            yield
+        except ErrorOrden:
+            self._volcar_logs(ctx, pid)
+            raise
 
     def validar_T(self, imagen, rule_path, perfil, hs_tmpl, reserva, etiqueta):
         """`suricata -T` efímero (§5.9) con un yaml de validación."""
@@ -2539,7 +2694,7 @@ class Orquestador:
         try:
             escribir_atomico(d / "suricata.yaml", yaml, modo=0o644)
             escribir_atomico(d / "threshold.config", "", modo=0o644)
-            ejecutar_ok(["docker", "run", "--rm", "--network", "none", "--read-only",
+            ejecutar_ok(["docker", "run", "--pull", "never", "--rm", "--network", "none", "--read-only",
                          "--tmpfs", "/tmp:size=64m", "--tmpfs", "/run:size=8m", "--cap-drop", "ALL",
                          "--security-opt", "no-new-privileges:true", "--memory", "%dm" % reserva,
                          "--memory-swap", "%dm" % reserva,
@@ -2602,6 +2757,7 @@ class Orquestador:
         self._espejo.pop(pid, None)
         for k in [k for k in self._programados if k[0] == pid]:
             del self._programados[k]
+        self._sano_desde.pop(pid, None)
         try:
             self.regenerar_fw(excluir=pid)
         except ErrorOrden as e:
@@ -2711,6 +2867,20 @@ class Orquestador:
                 raise ErrorOrden("FALLO", "no hay reglas (reglas/current): ejecuta «ids-orq reglas actualizar»")
             if prm["pid"] and self.q1("SELECT 1 FROM punto WHERE pid=?", (prm["pid"],)):
                 raise ErrorOrden("CONFLICTO", "%s ya existe" % prm["pid"])
+            # D7: sin las dos imágenes no se empieza (y nada las descarga a escondidas: todo va
+            # con --pull never)
+            faltan = imagenes_ausentes(imgs)
+            if faltan:
+                como = ("scripts/lab-actualizar.sh en el laboratorio o «docker pull %s»" % faltan[0]
+                        if imgs["dev"] else "«docker pull %s» (o vuelve a ejecutar install.sh)" % faltan[0])
+                raise ErrorOrden("FALLO", "falta la imagen %s: ejecuta %s" % (", ".join(faltan), como))
+            # D11: la admisión de RAM también ANTES de reservar el pid (los pid no se reutilizan:
+            # un alta que no cabe no debe gastar uno). Se repite tras asignar, como siempre.
+            mem = meminfo()
+            vivos = [(x["perfil"], x["hilos"]) for x in self.puntos()]
+            if not cabe(vivos, (prm["perfil"], prm["hilos"]), mem):
+                raise ErrorOrden("CONFLICTO", "no cabe un punto %s con %d hilo(s)" % (prm["perfil"], prm["hilos"]),
+                                 {"caben": caben(vivos, mem)})
         with ctx.paso("asignar"):
             n = self.asignar_n(prm["n"])
             der = derivar(n, cfg.tun_base, cfg.pool)
@@ -2767,8 +2937,10 @@ class Orquestador:
             self.escribir_yaml(p, imgs["suricata"], info_tmpl)
         with ctx.paso("suricata -T"):
             regla = PERFILES[prm["perfil"]]["reglas"]
+            t0 = time.monotonic()
             self.validar_T(imgs["suricata"], "/reglas/current/%s" % regla, prm["perfil"], info_tmpl,
                            self.reserva_T([prm["perfil"]]), pid)
+            dur_T = time.monotonic() - t0
         with ctx.paso("threshold.config"):
             escribir_atomico(ruta("/srv/ids/puntos/%s/suricata/threshold.config" % pid), render_threshold(pid),
                              modo=0o644)
@@ -2776,11 +2948,12 @@ class Orquestador:
             self.escribir_compose(p, imgs, cfg.version)
         with ctx.paso("firewall"):
             self.regenerar_fw()
-        with ctx.paso("compose up"):
+        with ctx.paso("compose up"), self._logs_si_falla(ctx, pid):
             ejecutar_ok(compose_args(pid, "up", "-d", "--pull", "never"), timeout=600)
-        with ctx.paso("esperar salud"):
-            self.esperar_salud(list(nombres_contenedores(pid).values()))
-        self.x("UPDATE punto SET estado='activo', paso_error=NULL, actualizado=? WHERE pid=?", (ahora(), pid))
+        with ctx.paso("esperar salud"), self._logs_si_falla(ctx, pid):
+            # D1: Suricata sigue en starting al vencer la espera = alta buena con aviso, no se deshace
+            self._esperar_tolerante(ctx, list(nombres_contenedores(pid).values()), limite_salud(dur_T))
+        self._marcar_activo(pid)
         ctx.deshacer = None
         ctx.mensaje = "punto %s creado" % pid
         return self._datos_punto(self.punto(pid), clave=clave)
@@ -2822,26 +2995,25 @@ class Orquestador:
             ejecutar_ok(compose_args(pid, "up", "-d", "--pull", "never", "--no-deps", "--force-recreate",
                                      "suricata"), timeout=600)
 
-    def _salud_o_error(self, ctx, pid, nombres):
+    def _salud_o_error(self, ctx, pid, nombres, limite=None):
+        """Espera la salud (límite de limite_salud(); `starting` al vencer = aviso, no fallo). Si
+        falla: logs de los contenedores al log de la orden y, si la pidió una persona, el punto a
+        `error` con el paso y el motivo."""
         try:
-            self.esperar_salud(nombres)
+            return self._esperar_tolerante(ctx, nombres, limite_salud(None) if limite is None else limite)
         except ErrorOrden as e:
-            for n in nombres:
-                r = ejecutar(["docker", "logs", "--tail", "50", n], timeout=60)
-                for linea in (r.out + r.err).splitlines()[-50:]:
-                    if not re.search(r"password|key", linea, re.I):
-                        ctx.registrar(linea)
+            self._volcar_logs(ctx, pid)
             # un reinicio de la supervisión no pasa el punto a error: eso lo decide la regla de
             # 3 reinicios en 1 h (programar_reinicio); uno pedido por una persona, sí
             if not ctx.quien.startswith("orq:"):
-                self.x("UPDATE punto SET estado='error', paso_error=?, actualizado=? WHERE pid=?",
-                       (e.mensaje[:200], ahora(), pid))
+                self._marcar_error(pid, "%s: %s" % (ctx.paso_actual or "esperar salud", e.mensaje))
             raise
 
     def o_arrancar(self, ctx, prm):
         p = self._p_o_noexiste(prm["pid"])
         pid, parte = p["pid"], prm["parte"]
-        with ctx.paso("arrancar"):
+        ctx.total = 2
+        with ctx.paso("arrancar"), self._logs_si_falla(ctx, pid):
             servicios = [] if parte == "todo" else [parte]
             ejecutar_ok(compose_args(pid, "up", "-d", "--pull", "never", *servicios), timeout=600)
             if parte == "todo":
@@ -2849,13 +3021,14 @@ class Orquestador:
         with ctx.paso("esperar salud"):
             nombres = list(nombres_contenedores(pid).values())
             self._salud_o_error(ctx, pid, nombres)
-            self.x("UPDATE punto SET estado='activo', paso_error=NULL, actualizado=? WHERE pid=?", (ahora(), pid))
+            self._marcar_activo(pid)
         self.comprobar_netns(pid)
         return {"observado": self._observado(pid)}
 
     def o_parar(self, ctx, prm):
         p = self._p_o_noexiste(prm["pid"])
         pid, parte = p["pid"], prm["parte"]
+        ctx.total = 1
         with ctx.paso("parar"):
             if parte == "todo":
                 ejecutar_ok(compose_args(pid, "stop"), timeout=300)
@@ -2871,23 +3044,38 @@ class Orquestador:
         p = self._p_o_noexiste(prm["pid"])
         pid, parte = p["pid"], prm["parte"]
         n = nombres_contenedores(pid)
+        ctx.total = 4 if parte in ("vpn", "todo") else 2
         if parte in ("vpn", "todo"):
-            with ctx.paso("reiniciar vpn"):
+            with ctx.paso("reiniciar vpn"), self._logs_si_falla(ctx, pid):
                 ejecutar_ok(["docker", "restart", "--time", "30", n["vpn"]], timeout=180)
             with ctx.paso("esperar vpn"):
                 self._salud_o_error(ctx, pid, [n["vpn"]])
-        with ctx.paso("reiniciar suricata"):
+        with ctx.paso("reiniciar suricata"), self._logs_si_falla(ctx, pid):
             self._reiniciar_suricata(pid)
         with ctx.paso("esperar salud"):
             self._salud_o_error(ctx, pid, [n["vpn"], n["suricata"]])
         if p["deseado"] == "activo":
-            self.x("UPDATE punto SET estado='activo', paso_error=NULL, actualizado=? WHERE pid=?", (ahora(), pid))
+            self._marcar_activo(pid)
         self.comprobar_netns(pid)
         return {"observado": self._observado(pid)}
 
     def o_ajustar(self, ctx, prm):
         p = self._p_o_noexiste(prm["pid"])
         pid = p["pid"]
+        # Varios ajustes seguidos del mismo punto (el panel manda la lista entera de prefijos en
+        # cada guardado): si detrás espera otro que fija EXACTAMENTE los mismos campos, este no
+        # cambia el resultado final y solo costaría un reinicio de Suricata más. Con campos
+        # distintos (p. ej. perfil y después prefijos) no se junta nada: se perdería el primero.
+        campos = sorted(set(prm) - {"pid"})
+        for f in self.q("SELECT op_id, params FROM op WHERE estado='pendiente' AND orden='punto.ajustar' "
+                        "AND pid=? AND op_id IS NOT ? ORDER BY seq", (pid, ctx.op_id)):
+            try:
+                otros = sorted(set(json.loads(f["params"] or "{}")) - {"pid"})
+            except (ValueError, TypeError):
+                continue
+            if otros == campos:
+                ctx.mensaje = "sustituida por una orden posterior (%s)" % f["op_id"]
+                return {"recreado": [], "sustituida_por": f["op_id"]}
         cfg = config()
         nuevo = dict(p)
         if "redes_abonados" in prm:
@@ -2897,7 +3085,12 @@ class Orquestador:
                 nuevo[k] = prm[k]
         if "origen_ip" in prm:
             nuevo["origen_ip"] = prm["origen_ip"]
-        cambia_sur = any(nuevo[k] != p[k] for k in ("perfil", "hilos", "redes"))
+        # perfil/hilos cambian el compose (memoria, CPU) y las reglas: -T y recrear el contenedor.
+        # Solo los prefijos cambian HOME_NET del suricata.yaml, que va montado y no forma parte del
+        # compose: `compose up -d` no recrearía nada y Suricata seguiría con las redes viejas.
+        cambia_motor = any(nuevo[k] != p[k] for k in ("perfil", "hilos"))
+        cambia_redes = nuevo["redes"] != p["redes"]
+        cambia_sur = cambia_motor or cambia_redes
         cambia_vpn = any(nuevo[k] != p[k] for k in ("compat_v6", "ros_version"))
         cambia_fw = (nuevo.get("origen_ip") or None) != (p.get("origen_ip") or None)
         recreado = []
@@ -2907,6 +3100,10 @@ class Orquestador:
         imgs = imagenes()
         sube = (PERFILES[nuevo["perfil"]]["mem_limit"] > PERFILES[p["perfil"]]["mem_limit"]
                 or nuevo["hilos"] > p["hilos"])
+        activo = p["deseado"] == "activo"
+        ctx.total = ((1 if sube else 0) + (2 if cambia_motor else 1 if cambia_redes else 0)
+                     + (2 if cambia_vpn else 0) + (1 if cambia_fw else 0) + (2 if cambia_sur and activo else 0))
+        dur_T = None
         if sube:
             with ctx.paso("admisión de RAM"):
                 mem = meminfo()
@@ -2916,16 +3113,22 @@ class Orquestador:
                                      {"caben": caben(otros, mem)})
         if nuevo["hilos"] != p["hilos"]:
             nuevo["cpuset_suricata"] = cpuset_suricata(ncpu(), nuevo["hilos"], self._ocupadas(excluir=pid))
-        if cambia_sur:
-            imagen = p.get("imagen_suricata") or imgs["suricata"]
+        imagen = p.get("imagen_suricata") or imgs["suricata"]
+        if cambia_motor:
             with ctx.paso("suricata.yaml + -T"):
                 info_tmpl = plantilla_suricata(imagen)
+                t0 = time.monotonic()
                 self.validar_T(imagen, "/reglas/current/%s" % PERFILES[nuevo["perfil"]]["reglas"],
                                nuevo["perfil"], info_tmpl, self.reserva_T([nuevo["perfil"]]), pid)
+                dur_T = time.monotonic() - t0
                 self.escribir_yaml(nuevo, imagen, info_tmpl)
             with ctx.paso("compose.yml"):
                 self.escribir_compose(nuevo, {"vpn": p.get("imagen_vpn") or imgs["vpn"], "suricata": imagen},
                                       cfg.version)
+        elif cambia_redes:
+            # sin -T: valida con un HOME_NET fijo (validar_T) y no probaría las redes nuevas
+            with ctx.paso("suricata.yaml"):
+                self.escribir_yaml(nuevo, imagen)
         with self.tx() as db:
             db.execute("UPDATE punto SET perfil=?, hilos=?, redes=?, compat_v6=?, ros_version=?, origen_ip=?, "
                        "cpuset_suricata=?, actualizado=? WHERE pid=?",
@@ -2946,11 +3149,20 @@ class Orquestador:
             with ctx.paso("firewall"):
                 self.regenerar_fw()
             recreado.append("firewall")
-        if cambia_sur and p["deseado"] == "activo":
-            with ctx.paso("recrear suricata"):
-                ejecutar_ok(compose_args(pid, "up", "-d", "--pull", "never"), timeout=600)
+        if cambia_sur and activo:
+            if cambia_motor:
+                # --force-recreate: recreado de verdad aunque Docker no viera diferencias (el yaml
+                # montado no cuenta); la vpn no se toca (solo se levanta si no estuviera)
+                with ctx.paso("recrear suricata"), self._logs_si_falla(ctx, pid):
+                    ejecutar_ok(compose_args(pid, "up", "-d", "--pull", "never", "--force-recreate", "suricata"),
+                                timeout=600)
+            else:
+                # el mismo reinicio que reglas y punto.reiniciar: Suricata relee el yaml al arrancar.
+                # reload-rules no vale: no está comprobado que relea las variables (HOME_NET)
+                with ctx.paso("reiniciar suricata"), self._logs_si_falla(ctx, pid):
+                    self._reiniciar_suricata(pid)
             with ctx.paso("esperar salud"):
-                self._salud_o_error(ctx, pid, list(nombres_contenedores(pid).values()))
+                self._salud_o_error(ctx, pid, list(nombres_contenedores(pid).values()), limite_salud(dur_T))
             recreado.append("suricata")
         datos = {"recreado": recreado}
         if cambia_vpn:
@@ -2962,6 +3174,7 @@ class Orquestador:
         p = self._p_o_noexiste(prm["pid"])
         pid = p["pid"]
         clave = nueva_clave()
+        ctx.total = 2
         with ctx.paso("usuarios"):
             usuario = p["usuario"] or nuevo_usuario()
             self.escribir_usuarios(p, usuario, clave)
@@ -3021,8 +3234,7 @@ class Orquestador:
             self._reiniciar_suricata(pid)
             self.esperar_salud([sur])
             if p["deseado"] == "activo":
-                self.x("UPDATE punto SET estado='activo', paso_error=NULL, actualizado=? WHERE pid=?",
-                       (ahora(), pid))
+                self._marcar_activo(pid)
         ctx.deshacer = deshacer
         recarga = "reload-rules"
         with ctx.paso("recargar reglas"):
@@ -3059,7 +3271,7 @@ class Orquestador:
                 creada = base / "releases" / ts
                 contenedor = "ids-reglas-%s" % ts
                 # --imagen: la referencia por digest de imagenes.json queda en el MANIFEST.json
-                r = ejecutar(["docker", "run", "--rm", "--name", contenedor,
+                r = ejecutar(["docker", "run", "--pull", "never", "--rm", "--name", contenedor,
                               "--network", "bridge", "--read-only", "--tmpfs", "/tmp:size=512m",
                               "--cap-drop", "ALL", "--security-opt", "no-new-privileges:true",
                               "--memory", "1g", "--memory-swap", "1g",
@@ -3743,8 +3955,8 @@ def _panel_contenedor(args_panel):
     cfg = config()
     imgs = imagenes_con_panel()
     dirs_panel()
-    args = ["docker", "run", "--rm", "--network", "none", "--log-driver", "none", "--read-only",
-            "--tmpfs", "/tmp:size=16m", "--cap-drop", "ALL", "--security-opt", "no-new-privileges:true",
+    args = ["docker", "run", "--pull", "never", "--rm", "--network", "none", "--log-driver", "none",
+            "--read-only", "--tmpfs", "/tmp:size=16m", "--cap-drop", "ALL", "--security-opt", "no-new-privileges:true",
             "--user", "%d:%d" % (UID_PANEL, GID_PANEL), "--memory", "256m", "--memory-swap", "256m",
             "--pids-limit", "64"]
     for k, v in entorno_panel(cfg).items():

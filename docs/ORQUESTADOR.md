@@ -95,7 +95,7 @@ No hay ninguna orden genérica de «ejecutar».
 | `punto.estado` | `pid` o `*` | lo observado (sin encolar) |
 | `punto.logs` | `pid`, `parte`, `lineas` ≤ 500 | líneas filtradas (`password`, `key`) |
 | `punto.vpn.regenerar` | `pid` | hash nuevo, desconexión por management y la clave una sola vez |
-| `punto.ajustar` | `pid`, `perfil?`, `hilos?`, `home_net?`, `tls_legacy?` | admisión, yaml completo nuevo, `-T` y recreación de lo afectado |
+| `punto.ajustar` | `pid`, `perfil?`, `hilos?`, `home_net?`, `tls_legacy?` | admisión, yaml completo nuevo, `-T` y recreación de lo afectado (perfil/hilos: `-T` y `--force-recreate` de `suricata`; solo los prefijos: yaml nuevo sin `-T` y reinicio de `suricata`, que relee el yaml montado). Varios ajustes pendientes del mismo punto con los mismos campos se juntan en el último |
 | `punto.threshold` | `pid`, `contenido` | valida línea a línea (solo `suppress`, `threshold`, `event_filter` y comentarios; ≤ 256 KiB), escribe `/srv/ids/puntos/<pid>/suricata/threshold.config` de forma atómica (guarda el anterior en `threshold.anterior`) y recarga sin cortar el espejo (`reload-rules` por el socket de control); si la recarga falla, reinicia `suricata`; si tampoco queda sano, vuelve al anterior, reinicia y acaba `REVERTIDA` con el aviso `THRESHOLD-FALLIDO`. Varias seguidas del mismo punto: solo se aplica la última. Un punto parado no se levanta (se aplica al arrancar). Se rechaza al encolar si el punto no existe o se está dando de baja ([CONTRATO-F2](CONTRATO-F2-panel.md) §6) |
 | `reglas.actualizar` | — | descarga, validación y reinicio en serie ([INSTANCIA.md](INSTANCIA.md) §11.1) |
 | `acceso.aplicar` / `acceso.confirmar` | `redes_gestion[]` (SSH), `ips_proxy[]` (panel), `proxy_actual`, `puertos_vpn[{puerto, origen?}]`, `ventana_s` (por defecto 300) / `token` | modo seguro ([RED-Y-FIREWALL.md](RED-Y-FIREWALL.md) §10) |
@@ -147,6 +147,22 @@ No hay ninguna orden genérica de «ejecutar».
 - **Docker no reinicia por `unhealthy`.** El orquestador reinicia con espera creciente (30 s,
   2 min, 10 min). A partir de 3 reinicios en una hora, deja el contenedor como está, pasa el punto
   a `error` y avisa.
+- **`error` dice por qué y se cura.** `estado.json` publica `paso_error` (el motivo, hasta 300
+  caracteres) y `error_desde` (epoch del primer paso a `error`); los dos son `null` en cualquier
+  otro estado. Si un punto en `error` (deseado activo) tiene sus dos contenedores `healthy` durante
+  3 min seguidos, vuelve a `activo` y queda en `orq.jsonl` como `supervision.curado`.
+- **Cliente VPN:** `vpn_cliente.viejo` es `true` si `openvpn-status.log` lleva más de 45 s sin
+  reescribirse (OpenVPN lo reescribe cada 10 s); entonces `conectado` es `false` diga lo que diga.
+- **Espera a la salud** (alta, arrancar, reiniciar, ajustar): `max(300 s, 2 × duración del
+  suricata -T de esa orden + 90 s)`, o 300 s si la orden no pasó por un -T. Si al vencer los
+  contenedores siguen `running` en `starting` (Suricata cargando reglas), la orden **no se deshace**:
+  acaba OK con el aviso «Suricata sigue cargando reglas; la supervisión lo vigila». Si alguno está
+  `exited`, `dead` o `unhealthy`, falla, y antes de deshacer (o de dejar el punto en `error`) las
+  últimas 40 líneas de `docker logs` de cada contenedor van al log de la orden (`log_tail`), con
+  prefijo `[vpn]`/`[suricata]` y sin las líneas que mencionan password o key.
+- **Imágenes:** el alta comprueba en «validar» que las dos imágenes están en el Docker local
+  (`docker image inspect`) y, si falta alguna, falla diciendo qué `docker pull` hacer. Ningún
+  `docker run`/`docker create`/`compose up` del orquestador descarga nada (`--pull never`).
 - **Lo deseado frente a lo observado:** un punto `pausado` no se levanta.
 - **Salud funcional:** espejo que no llega a Suricata, o punto activo sin espejo.
 
@@ -265,7 +281,9 @@ Todos los pasos son idempotentes: borrar lo ya borrado devuelve `OK`.
 - **Reiniciar:** **[O] `punto.reiniciar {parte}`**.
   - El orden es siempre primero el `vpn` y después `suricata`.
   - Antes se avisa de que serán 30–90 s sin captura.
-  - Si a los 180 s no está sano, el punto pasa a `error` con las últimas 50 líneas del log.
+  - Espera a la salud con el límite de §8 («Espera a la salud»). Si no queda sano, el punto pasa a
+    `error` con el motivo (`paso_error`) y las últimas 40 líneas de `docker logs` de cada
+    contenedor en el log de la orden.
 
 ### 11.4 Respaldo diario (diseño, **sin implementar**)
 

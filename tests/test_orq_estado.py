@@ -62,7 +62,9 @@ class Estado(unittest.TestCase):
         p = disco["puntos"]["p001"]
         self.assertEqual(set(p), {"nombre", "n", "puerto", "tun_net", "perfil", "hilos", "ros_version", "compat_v6",
                                   "deseado", "estado", "contenedores", "netns", "vpn_cliente", "tzsp", "suricata",
-                                  "avisos", "redes", "api_puerto", "sensor", "mk", "tzsp_puerto", "retencion"})
+                                  "avisos", "redes", "api_puerto", "sensor", "mk", "tzsp_puerto", "retencion",
+                                  "paso_error", "error_desde"})
+        self.assertEqual((p["paso_error"], p["error_desde"]), (None, None))
         # CONTRATO-F2 §9: retención efectiva (desde el primer evento que queda)
         self.assertEqual(set(p["retencion"]), {"objetivo_dias", "desde", "dias", "anticipado",
                                                "ultimo_anticipado"})
@@ -79,7 +81,7 @@ class Estado(unittest.TestCase):
             self.assertEqual((c["estado"], c["salud"]), ("running", "healthy"))
             self.assertIsInstance(c["inicio"], int)
         self.assertEqual(p["vpn_cliente"], {"conectado": True, "desde": 1760077000, "ip_real": "203.0.113.45",
-                                            "usuario": "vpn3a9f2c"})
+                                            "usuario": "vpn3a9f2c", "viejo": False})
         self.assertEqual(p["tzsp"], {"edad_s": 12, "rx": 1200, "tx": 1180, "rechazados": 20})
         self.assertEqual(p["suricata"]["reglas_cargadas"], 18234)
         self.assertEqual(p["suricata"]["kernel_packets"], 98765)

@@ -204,8 +204,15 @@ class Salud(Base):
 
     def test_estados(self):
         """Tipo: capacidad nueva (§10.6). VPN arriba o contenedor en marcha no son «sano»:
-        cada etapa dice lo suyo."""
-        self.assertEqual(self.salud(vpn_cliente={"conectado": False})["estado"], "desconectada")
+        cada etapa dice lo suyo.
+        (adaptada, 2026-10-14, D4) la VPN sana sin el MikroTik ya no es «desconectada» (rojo) sino
+        «esperando» (ámbar): lo normal tras un alta; «desconectada» es el contenedor vpn caido."""
+        self.assertEqual(self.salud(vpn_cliente={"conectado": False})["estado"], "esperando")
+        self.assertEqual(self.salud(contenedores={"vpn": {"estado": "exited", "salud": "none"},
+                                                  "suricata": {"estado": "running", "salud": "healthy"}}
+                                    )["estado"], "desconectada")
+        self.salud(contenedores={"vpn": {"estado": "running", "salud": "healthy"},
+                                 "suricata": {"estado": "running", "salud": "healthy"}})
         self.assertEqual(self.salud(vpn_cliente={"conectado": True, "ip_real": "198.51.100.9"},
                                     tzsp={"edad_s": None, "tx": None})["estado"], "sin datos")
         self.assertEqual(self.salud(tzsp={"edad_s": 5, "tx": 10, "rechazados": 0},

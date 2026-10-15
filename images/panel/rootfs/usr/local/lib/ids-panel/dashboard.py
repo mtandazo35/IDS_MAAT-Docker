@@ -4789,6 +4789,13 @@ def _estado_fresco():
 def _corriendo(cont, parte):
     return ((cont or {}).get(parte) or {}).get("estado") == "running"
 
+def _vivo(cont, parte):
+    """En marcha y no `unhealthy` (la salud del healthcheck manda sobre `running`). Sin `salud`
+    (orquestador viejo) o `none` (sin healthcheck), basta `running`; `starting` cuenta como vivo
+    (aun no se sabe: lo distingue salud_punto)."""
+    c = (cont or {}).get(parte) or {}
+    return c.get("estado") == "running" and c.get("salud") != "unhealthy"
+
 def medir_sensor(pid=None):
     """Mide el estado real del sensor de UN punto (captura, perdidas, servicios, frescura del
     reporte). Corre en el hilo de fondo y cachea en nodos/<pid>/sensor.json; el request
@@ -4970,7 +4977,11 @@ def estado_sensor(pid=None):
 # Por punto y por separado: VPN conectada, TZSP recibido, trafico procesado por Suricata
 # (captura y descartes con su alcance), eventos al dia y datos consultables. "VPN arriba",
 # "contenedor en marcha" o "cero alertas" NO son sano: cada etapa dice lo suyo.
-SALUD_ESTADOS = ("operativa", "degradada", "sin datos", "desconectada", "deshabilitada", "desconocido")
+SALUD_ESTADOS = ("operativa", "degradada", "sin datos", "desconectada", "deshabilitada", "desconocido",
+                 # D4: tras un alta correcta el punto no es rojo. «creando»/«arrancando» (gris) mientras
+                 # se monta, «esperando» (ámbar) con la VPN sana y sin MikroTik, «error» (rojo) con el
+                 # paso_error del orquestador. «desconectada» queda para la VPN caida de verdad.
+                 "creando", "arrancando", "esperando", "error")
 
 _ETAPAS = (("vpn", "VPN"), ("tzsp", "Espejo TZSP"), ("suricata", "Suricata"),
            ("eventos", "Eventos"), ("datos", "Datos consultables"))
@@ -4979,6 +4990,15 @@ def _etapa(ok, detalle, **extra):
     d = {"ok": ok, "estado": "ok" if ok else "fallo", "detalle": detalle}
     d.update(extra)
     return d
+
+def _pendiente(e, detalle=None):
+    """Una etapa que aun no se puede medir (el punto se esta creando o falta el MikroTik): sigue
+    sin ser `ok`, pero no es un fallo."""
+    if not e["ok"]:
+        e["estado"] = "pendiente"
+        if detalle:
+            e["detalle"] = detalle
+    return e
 
 def retencion_efectiva(pid):
     """Desde cuando hay eventos de verdad para ese punto. Si el orquestador la publica en
@@ -5053,13 +5073,23 @@ def salud_punto(pid):
     su = p.get("suricata") or {}
     cob = cobertura_tzsp(now, pid)
     et = {}
-    # 1) VPN: el MikroTik conectado a SU contenedor vpn (no basta con que el contenedor viva)
-    vpn_ok = bool(vc.get("conectado")) and _corriendo(cont, "vpn")
+    # 1) VPN: el MikroTik conectado a SU contenedor vpn (no basta con que el contenedor viva), y el
+    # contenedor sano: `salud` manda sobre `running` (un vpn unhealthy en marcha es una VPN caida)
+    cv = cont.get("vpn") or {}
+    mk = puntos_web.mk_conectado(p)
+    vpn_vivo = _vivo(cont, "vpn")
+    vpn_ok = mk and vpn_vivo
+    # tras el alta (o mientras se crea) lo que depende del MikroTik esta «pendiente», no en fallo
+    pend = p.get("estado") == "creando" or (vpn_vivo and not mk)
+    _sal_vpn = cv.get("salud")
     et["vpn"] = _etapa(vpn_ok,
                        ("conectada desde %s" % vc.get("ip_real")) if vpn_ok else
-                       ("contenedor vpn %s, MikroTik %s" % ((cont.get("vpn") or {}).get("estado", "?"),
-                                                           "conectado" if vc.get("conectado") else "sin conectar")),
+                       ("contenedor vpn %s%s, MikroTik %s" % (
+                           cv.get("estado", "?"), ("/%s" % _sal_vpn) if _sal_vpn not in (None, "", "none") else "",
+                           "conectado" if mk else ("sin dato reciente" if vc.get("viejo") else "sin conectar"))),
                        desde=vc.get("desde"))
+    if pend:
+        _pendiente(et["vpn"])
     # 2) TZSP: el receptor late y le llega espejo del origen permitido
     edad_tz = tz.get("edad_s")
     tz_ok = edad_tz is not None and edad_tz < SALUD_TZSP_MUDO and bool(tz.get("tx"))
@@ -5069,11 +5099,13 @@ def salud_punto(pid):
                         ("latido hace %ds, %s paquetes reenviados, %s rechazados" % (
                             edad_tz, tz.get("tx"), tz.get("rechazados"))),
                         rechazo=rech, avisos=[a for a in (p.get("avisos") or []) if "ESPEJO" in a])
+    if pend:
+        _pendiente(et["tzsp"], "esperando al MikroTik: sin él no hay espejo")
     # 3) Suricata: contadores de captura y descartes, con su alcance (desde que arranco)
     kp, kd = su.get("kernel_packets"), su.get("kernel_drops")
     drops_pct = round(100.0 * kd / kp, 2) if isinstance(kp, int) and kp and isinstance(kd, int) else None
     st_edad = su.get("stats_edad_s")
-    su_ok = (_corriendo(cont, "suricata") and isinstance(kp, int) and kp > 0
+    su_ok = (_vivo(cont, "suricata") and isinstance(kp, int) and kp > 0
              and st_edad is not None and st_edad < SALUD_EVE_MUDO)
     et["suricata"] = _etapa(su_ok and (drops_pct is None or drops_pct <= SALUD_DROPS * 100),
                             "contenedor %s, %s paquetes capturados, %s descartados%s" % (
@@ -5082,6 +5114,9 @@ def salud_punto(pid):
                             kernel_packets=kp, kernel_drops=kd, drops_pct=drops_pct,
                             alcance="acumulado desde el ultimo arranque del Suricata del punto",
                             reglas=su.get("reglas_cargadas"))
+    # un Suricata caido o enfermo es un fallo aunque falte el MikroTik; vivo y sin paquetes, pendiente
+    if pend and (p.get("estado") == "creando" or _vivo(cont, "suricata")):
+        _pendiente(et["suricata"])
     # 4) eventos al dia
     try:
         eve_edad = int(now - os.path.getmtime(nodos.eve_vivo(pid)))
@@ -5090,22 +5125,36 @@ def salud_punto(pid):
     et["eventos"] = _etapa(eve_edad is not None and eve_edad < SALUD_EVE_MUDO,
                            "sin eve.json" if eve_edad is None else "ultimo evento escrito hace %ds" % eve_edad,
                            edad_s=eve_edad)
+    if pend:
+        _pendiente(et["eventos"])
     # 5) datos consultables: el directorio del punto se puede leer
     try:
         consultable = os.path.isdir(nodos.dir_eventos(pid)) and os.access(nodos.dir_eventos(pid), os.R_OK)
     except Exception:
         consultable = False
     et["datos"] = _etapa(consultable, "eventos legibles" if consultable else "no se pueden leer los eventos")
+    if p.get("estado") == "creando":
+        _pendiente(et["datos"])
     captura = {"recorte_bytes": (cob or {}).get("recorte_bytes") or 10000,
                "redes": list(p.get("redes") or []),
                "alcance": "captura reducida: los primeros 10 KB de cada conexion de los prefijos vigilados"}
     # estado global
     if not fresco or not p:
         estado, motivo = "desconocido", "sin estado reciente del orquestador"
+    elif p.get("estado") == "creando":
+        estado, motivo = "creando", "el orquestador está creando el punto"
     elif p.get("deseado") not in (None, "", "activo"):
         estado, motivo = "deshabilitada", "punto parado (deseado=%s)" % p.get("deseado")
-    elif not et["vpn"]["ok"]:
+    elif p.get("estado") == "error":
+        _m = puntos_web.error_punto(p)[0]
+        estado, motivo = "error", _m or "el orquestador marcó el punto con error (sin motivo publicado)"
+    elif not vpn_vivo:
         estado, motivo = "desconectada", et["vpn"]["detalle"]
+    elif not mk and _sal_vpn == "starting":
+        estado, motivo = "arrancando", "contenedor vpn arrancando (comprobando su salud)"
+    elif not mk:
+        estado, motivo = "esperando", ("VPN lista: esperando a que el MikroTik conecte (pega en el router "
+                                       "los comandos de la ficha del punto)")
     elif not (tz_ok and isinstance(kp, int) and kp > 0):
         estado, motivo = "sin datos", "VPN arriba pero no llega espejo procesado"
     elif all(e["ok"] for e in et.values()):
@@ -12130,11 +12179,27 @@ usuarios en el selector de nodo, y con detalle en <b>Puntos</b>:</p>
 <li><b>Eventos actualizados</b>: el registro de eventos del punto se está escribiendo.</li>
 <li><b>Datos consultables</b>: el panel puede leerlos (reporte, eventos, histórico).</li>
 </ul>
-<p>Estados: <b>operativa</b>, <b>degradada</b>, <b>sin datos</b>, <b>desconectada</b>,
-<b>deshabilitada</b> y <b>desconocido</b>. Una VPN arriba, un contenedor en marcha o cero alertas
-<b>no</b> son «sano» por sí solos. La captura es reducida (los primeros 10 KB de cada conexión de los
-prefijos elegidos) y se muestra como tal. Lo publican el orquestador (cada 15 s) y el receptor TZSP de
-cada punto.</p>
+<p>Estados, con su color:</p>
+<ul>
+<li><b>creando…</b> y <b>arrancando</b> (gris): el orquestador está montando el punto o la VPN aún
+comprueba su salud. Las etapas salen como <b>pendiente</b>.</li>
+<li><b>esperando MikroTik</b> (ámbar): la VPN del punto está sana y lista, pero el MikroTik todavía no
+se conectó. Es lo normal justo después de un alta correcta, hasta que pegas los comandos en el router.
+Las etapas que dependen del MikroTik (VPN, espejo, tráfico y eventos) salen como <b>pendiente</b>, no
+como fallo.</li>
+<li><b>VPN caída</b> (rojo): el contenedor de la VPN no existe, está parado o su comprobación de salud
+falla. El motivo sale al lado.</li>
+<li><b>con error</b> (rojo): el orquestador dejó el punto en error. Puntos y la ficha dicen el
+<b>motivo</b> (el paso que falló) y <b>desde cuándo</b>, y la ficha trae <b>Reintentar arranque</b>
+(ver "Puntos: un MikroTik, su VPN y su Suricata").</li>
+<li><b>operativa</b> (verde), <b>degradada</b>, <b>sin datos</b>, <b>deshabilitada</b> (punto parado) y
+<b>desconocido</b> (sin estado reciente del orquestador).</li>
+</ul>
+<p>Cuenta la <b>salud</b> de cada contenedor y no solo que esté en marcha: una VPN en marcha pero
+enferma es una VPN caída. Y si el registro de la VPN lleva más de 45 s sin actualizarse, el MikroTik no
+se da por conectado. Una VPN arriba, un contenedor en marcha o cero alertas <b>no</b> son «sano» por sí
+solos. La captura es reducida (los primeros 10 KB de cada conexión de los prefijos elegidos) y se
+muestra como tal. Lo publican el orquestador (cada 15 s) y el receptor TZSP de cada punto.</p>
 
 <!--CAT:Pantallas--><h2>Mapa: a dónde atacan tus CPEs</h2>
 <p>En la pestaña <b>En vivo</b>, <b>debajo de la línea de tiempo</b> ("Ataques por hora y minuto"),
@@ -12896,14 +12961,29 @@ fila), nunca al que tengas elegido en el selector. En «Todos» las acciones mas
 RouterOS (6.49+ o 7) y perfil (reducido por defecto). Un doble clic no crea dos puntos.</li>
 <li>El servidor crea la VPN y el Suricata del punto; se ve el avance paso a paso.</li>
 <li>Al terminar se muestran <b>una sola vez</b> el usuario y la clave de la VPN y los comandos para el
-MikroTik (v7 y v6) con la clave puesta. Si la pierdes, en la ficha está <b>Regenerar la clave VPN</b>.</li>
+MikroTik (v7 y v6) con la clave puesta. Si la pierdes, en la ficha está <b>Regenerar la clave VPN</b>.
+Si el orquestador se reinició antes de entregarla, la página lo dice («La clave no llegó al panel») y
+trae el botón <b>Regenerar la clave VPN</b>: sin clave el MikroTik no puede conectar.</li>
+<li>Hasta que pegas los comandos en el router, el punto sale en <b>ámbar</b>, «esperando MikroTik»: es lo
+esperado, no un fallo.</li>
 <li>En la ficha: la clave de la <b>API</b>, <b>Probar conexion</b> y luego <b>Espejo &rarr; Ver el plan
 &rarr; Aplicar</b>.</li>
 </ol>
+<h3>Si algo falla</h3>
+<ul>
+<li>Si una operación (el alta, arrancar, reiniciar o cambiar los prefijos) termina mal, su página dice
+el motivo y, plegados en <b>Ver los últimos logs</b>, lo último que escribieron la VPN y el Suricata
+del punto antes de deshacer. Nunca salen claves en esos logs.</li>
+<li>Un punto <b>con error</b> sale en rojo en Puntos con el motivo y desde cuándo. En su ficha, el botón
+<b>Reintentar arranque</b> vuelve a levantar la VPN y el Suricata, y se sigue el avance como en
+cualquier otra operación.</li>
+</ul>
 <h3>La ficha del punto</h3>
 <p>Resumen (estado, salud por etapas, espejo, Suricata, alertas de 24 h y <b>retencion efectiva</b>),
 VPN (comandos sin la clave), API (usuario, clave, probar, huella), Espejo (plan, aplicar, pausar,
-retirar), Prefijos, Logs de la VPN y del Suricata, arrancar, parar, reiniciar y la baja.</p>
+retirar), Prefijos, Logs de la VPN y del Suricata, arrancar, parar, reiniciar y la baja. La huella del
+certificado del router se lee por el túnel: con el MikroTik sin conectar, la ficha dice «se comprobará
+cuando el MikroTik conecte» y abre sin esperar.</p>
 <h3>Retención</h3>
 <p>El objetivo es guardar <b>30 días</b> de eventos de cada punto. Se poda por fecha (lo que tiene más
 de 30 días). Si el disco del servidor baja del 15 % libre, se borran antes los rotados más viejos y

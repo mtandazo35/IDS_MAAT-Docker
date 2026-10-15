@@ -59,6 +59,7 @@ services:
       timeout: 10s
       retries: 3
       start_period: 30s
+      start_interval: 5s
   suricata:
     image: ghcr.io/mtandazo35/ids-maat-suricata@sha256:<digest>
     container_name: ids-p003-suricata
@@ -88,7 +89,8 @@ services:
       interval: 30s
       timeout: 10s
       retries: 3
-      start_period: 180s
+      start_period: 600s
+      start_interval: 5s
 networks:
   punto:
     name: ids-p003

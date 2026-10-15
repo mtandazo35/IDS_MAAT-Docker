@@ -47,6 +47,7 @@ services:
       timeout: 10s
       retries: 3
       start_period: 30s
+      start_interval: 5s
   suricata:
     image: @@IMAGEN_SURICATA@@
     container_name: ids-@@PID@@-suricata
@@ -76,7 +77,8 @@ services:
       interval: 30s
       timeout: 10s
       retries: 3
-      start_period: 180s
+      start_period: 600s
+      start_interval: 5s
 networks:
   punto:
     name: ids-@@PID@@

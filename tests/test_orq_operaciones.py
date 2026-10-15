@@ -51,7 +51,7 @@ class Operaciones(unittest.TestCase):
         r = A.ejecutar_orden(self.orq, "punto.reiniciar", {"pid": "p001", "parte": "suricata"})
         self.assertEqual(r["codigo"], "FALLO")
         self.assertEqual(self.orq.punto("p001")["estado"], "error")
-        self.assertIn("linea normal", r["log_tail"])
+        self.assertIn("[suricata] linea normal", r["log_tail"])
         self.assertFalse([x for x in r["log_tail"] if "password" in x])
 
     def test_ajustar_perfil_recrea_suricata(self):

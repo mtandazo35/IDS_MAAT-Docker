@@ -140,6 +140,8 @@ class SistemaFalso:
         self.nft_aplicado = []
         self.release_ts = None
         self.claves_panel = []    # claves que «imprimió» el ids-panel simulado
+        self.forzar_parte = {}    # parte -> {"estado", "salud"} al crearla o arrancarla
+        self.imagenes_faltan = set()   # referencias que `docker image inspect` no encuentra
 
     def __call__(self, args, entrada=None, timeout=600):
         mod = sys.modules[self.mod_name]
@@ -161,17 +163,47 @@ class SistemaFalso:
         mod.ncpu = lambda: self.e.ncpu
         mod.INTERVALO_SONDEO_S = 0.01
         mod.ESPERA_SALUD_S = 0.2
+        mod.ESPERA_SALUD_MARGEN_S = 0
         return self
 
     def ordenes(self, prefijo):
         return [a for a in self.llamadas if " ".join(a).startswith(prefijo)]
 
     # ---- simulaciones -------------------------------------------------------------------------
-    def _nuevo(self, nombre, pid_punto, parte):
+    def _nuevo(self, nombre, pid_punto, parte, compose=None):
         self.siguiente_pid += 1
         self.contenedores[nombre] = {"estado": "running", "salud": self.salud_inicial,
                                      "pid": self.siguiente_pid, "punto": pid_punto, "parte": parte,
-                                     "id": uuid.uuid4().hex * 2}
+                                     "id": uuid.uuid4().hex * 2, "compose": compose}
+        self.contenedores[nombre].update(self.forzar_parte.get(parte, {}))
+
+    def _arrancar(self, c):
+        """Arranca un contenedor que ya existe: proceso nuevo (pid nuevo), mismo contenedor."""
+        self.siguiente_pid += 1
+        c.update(estado="running", salud=self.salud_inicial, pid=self.siguiente_pid)
+        c.update(self.forzar_parte.get(c.get("parte"), {}))
+
+    @staticmethod
+    def _bloques_compose(fichero):
+        """{servicio: texto de su bloque} del compose.yml (lo que Docker compara para decidir si
+        recrea); {} si no se puede leer."""
+        try:
+            lineas = Path(fichero).read_text(encoding="utf-8").splitlines()
+        except OSError:
+            return {}
+        bloques, actual, dentro = {}, None, False
+        for linea in lineas:
+            if not linea.startswith(" "):
+                dentro = linea.rstrip() == "services:"
+                actual = None
+                continue
+            m = re.match(r"^  ([A-Za-z0-9_-]+):\s*$", linea)
+            if dentro and m:
+                actual = m.group(1)
+                bloques[actual] = []
+            elif dentro and actual:
+                bloques[actual].append(linea)
+        return {k: "\n".join(v) for k, v in bloques.items()}
 
     def _docker(self, a):
         sub = a[1]
@@ -187,12 +219,22 @@ class SistemaFalso:
             else:
                 nombres = {"vpn": "ids-%s-vpn" % pid, "suricata": "ids-%s-suricata" % pid}
             if accion == "up":
+                # como Docker: recrea si no existe, si se pide --force-recreate o si cambió el
+                # bloque del servicio en el compose (o se recreó la vpn, de la que suricata toma la
+                # red); arranca el que está parado; y NO toca el que está en marcha y sin cambios
+                # (el suricata.yaml va montado: cambiarlo no recrea nada)
+                bloques = self._bloques_compose(a[a.index("-f") + 1])
+                recreados = set()
                 for parte in (servicios or list(nombres)):
-                    if nombres[parte] not in self.contenedores or "--force-recreate" in resto:
-                        self._nuevo(nombres[parte], pid, parte)
-                    else:
-                        c = self.contenedores[nombres[parte]]
-                        c["estado"], c["salud"] = "running", self.salud_inicial
+                    c = self.contenedores.get(nombres[parte])
+                    h = bloques.get(parte)
+                    if (c is None or "--force-recreate" in resto
+                            or (h is not None and c.get("compose") not in (None, h))
+                            or (parte == "suricata" and "vpn" in recreados)):
+                        self._nuevo(nombres[parte], pid, parte, h)
+                        recreados.add(parte)
+                    elif c["estado"] != "running":
+                        self._arrancar(c)
                 return 0, "", ""
             if accion == "down":
                 for n in nombres.values():
@@ -233,9 +275,7 @@ class SistemaFalso:
             n = a[-1]
             if n not in self.contenedores:
                 return 1, "", "No such container: %s" % n
-            c = self.contenedores[n]
-            self.siguiente_pid += 1
-            c.update(estado="running", salud=self.salud_inicial, pid=self.siguiente_pid)
+            self._arrancar(self.contenedores[n])
             return 0, "", ""
         if sub == "stop":
             n = a[-1]
@@ -243,6 +283,8 @@ class SistemaFalso:
                 self.contenedores[n]["estado"] = "exited"
             return 0, "", ""
         if sub == "image":
+            if a[2:3] == ["inspect"] and a[-1] in self.imagenes_faltan:
+                return 1, "", "Error response from daemon: No such image: %s\n" % a[-1]
             return 0, "sha256:" + "d" * 64 + "\n", ""
         if sub == "create":
             return 0, "id\n", ""

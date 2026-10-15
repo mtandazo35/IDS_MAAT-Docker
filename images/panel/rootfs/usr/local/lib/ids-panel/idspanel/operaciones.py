@@ -15,6 +15,8 @@ MAX_OPS = 300
 RETENCION_S = 7 * 86400
 CAMPOS = ("usuario", "orden", "pid", "nombre", "ros_version", "creada", "terminada", "codigo", "mensaje",
           "pasos", "total", "ya_existia")
+# lo que se apunta despues de terminar: que paso con la clave de la VPN (nunca la clave)
+ANOTABLES = ("entrega_clave",)
 
 
 class Operaciones:
@@ -65,4 +67,18 @@ class Operaciones:
             o.update({k: v for k, v in campos.items() if k in CAMPOS})
             o["terminada"] = True
             self._guardar()
+            return True
+
+    def anotar(self, op_id, sobrescribir=True, **campos):
+        """Apunta campos de ANOTABLES en una operacion ya registrada. Con sobrescribir=False no
+        pisa lo que ya este (la peticion que gano `terminar` manda). False si no existe."""
+        with self._lock:
+            o = self._ops.get(op_id)
+            if o is None:
+                return False
+            nuevos = {k: v for k, v in campos.items()
+                      if k in ANOTABLES and (sobrescribir or k not in o)}
+            if nuevos:
+                o.update(nuevos)
+                self._guardar()
             return True

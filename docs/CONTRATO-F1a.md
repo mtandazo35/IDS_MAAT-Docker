@@ -341,6 +341,7 @@ services:
       timeout: 10s
       retries: 3
       start_period: 30s
+      start_interval: 5s
   suricata:
     image: ghcr.io/mtandazo35/ids-maat-suricata@sha256:<digest>
     container_name: ids-p003-suricata
@@ -370,7 +371,8 @@ services:
       interval: 30s
       timeout: 10s
       retries: 3
-      start_period: 180s
+      start_period: 600s
+      start_interval: 5s
 networks:
   punto:
     name: ids-p003
@@ -708,8 +710,8 @@ Líneas de log por **stderr** (exactas; las usan fail2ban y las pruebas de C):
 
 | Contenedor | Comando | Sano (exit 0) si… | `interval/timeout/retries/start_period` |
 |---|---|---|---|
-| `vpn` | `/usr/local/bin/salud-vpn` (sh) | `/command/s6-svstat -o up /run/service/<s>` da `true` para `openvpn`, `tzsp-decap` y `rele-api`; **y** `/run/ids/tzsp.json` tiene menos de 90 s (`stat -c %Y`); **y** `nft list table inet ids_punto` funciona | 30s / 10s / 3 / 30s |
-| `suricata` | `/usr/local/bin/salud-suricata` (python3) | `/proc/1/cmdline` contiene `suricata`; **y** en los últimos 512 KiB de `/var/log/suricata/eve.json` hay una línea con `"event_type":"stats"` cuyo `timestamp` tiene menos de 120 s | 30s / 10s / 3 / 180s |
+| `vpn` | `/usr/local/bin/salud-vpn` (sh) | `/command/s6-svstat -o up /run/service/<s>` da `true` para `openvpn`, `tzsp-decap` y `rele-api`; **y** `/run/ids/tzsp.json` tiene menos de 90 s (`stat -c %Y`); **y** `nft list table inet ids_punto` funciona; **y** hay un socket en LISTEN (`/proc/net/tcp`, estado `0A`) en el `port` de `server.conf`; **y** openvpn lleva más de 5 s arriba (`s6-svstat -o updownfor`, si existe) | 30s / 10s / 3 / 30s (start_interval 5s) |
+| `suricata` | `/usr/local/bin/salud-suricata` (python3) | `/proc/1/cmdline` contiene `suricata`; **y** en los últimos 512 KiB de `/var/log/suricata/eve.json` hay una línea con `"event_type":"stats"` cuyo `timestamp` tiene menos de 120 s y es posterior al arranque del PID 1 | 30s / 10s / 3 / 600s (start_interval 5s) |
 
 - Ninguno falla por falta de espejo, punto pausado o MikroTik desconectado.
 - `salud-suricata` acepta `IDS_EVE` (ruta del eve) y `IDS_AHORA` (epoch) en el entorno para las
@@ -780,7 +782,7 @@ docker run --rm --network none --read-only --tmpfs /tmp:size=64m --tmpfs /run:si
 ```
 
 Después, cambio atómico de `current` (`ln -sfn releases/<ts> current.tmp && mv -T current.tmp current`),
-reinicio **en serie** de cada `suricata` (espera a sano, máx. 180 s, antes del siguiente) y poda a
+reinicio **en serie** de cada `suricata` (espera a sano, máx. 300 s, antes del siguiente) y poda a
 3 releases. Si algo falla, `current` no se toca.
 
 ### 5.10 `estado.json` (C escribe; el panel de F1b lo leerá)
@@ -872,7 +874,8 @@ y `N` y guardar en `orq.db` → admisión de RAM (INSTANCIA §10.3, reserva `hos
 aunque no haya panel) → directorios → certificado de servidor → usuario y hash → `ccd` →
 `server.conf` → `suricata.yaml` → `suricata -T` efímero (§5.9) → `threshold.config` →
 `compose.yml` → puerto en `@puertos_vpn` y `ids_host.nft` → `docker compose up -d` → espera a
-`healthy` de los dos (≤ 180 s) → `activo`.
+`healthy` de los dos (≤ max(300 s, 2 × duración del -T + 90 s); si al vencer siguen `starting` sin
+errores, queda `activo` con aviso y lo vigila la supervisión) → `activo`.
 
 Validaciones de `punto.crear` (respuesta `INVALIDO` con el motivo): `redes_abonados` sin solapes
 con `<TUN_BASE>.0.0/16`, con `POOL_DOCKER` ni con `REDES_GESTION`; nunca `0.0.0.0/0`. Puerto

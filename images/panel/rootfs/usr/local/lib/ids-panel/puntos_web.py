@@ -64,12 +64,17 @@ AVISOS = {
     "REINICIOS": "3 o mas reinicios en la ultima hora",
     "DISCO": "Queda poco disco libre en el servidor (< 15 %): pueden borrarse eventos antes de 30 dias",
 }
-# estados de la salud por etapas (CONTRATO-F2 §10.6)
+# estados de la salud por etapas (CONTRATO-F2 §10.6). Tras un alta correcta el punto NO es rojo:
+# la VPN sana esperando al MikroTik es ámbar («esperando MikroTik»), mientras se crea o arranca es
+# gris, y rojo queda para lo que de verdad falla (VPN caída o el punto con error, con su motivo).
 SALUD_TXT = {"operativa": "operativa", "degradada": "degradada", "sin datos": "sin datos",
-             "desconectada": "desconectada", "deshabilitada": "deshabilitada",
-             "desconocido": "desconocido"}
+             "desconectada": "VPN caída", "deshabilitada": "deshabilitada",
+             "desconocido": "desconocido", "creando": "creando…", "arrancando": "arrancando",
+             "esperando": "esperando MikroTik", "error": "con error"}
 SALUD_COLOR = {"operativa": "#1a7f37", "degradada": "#e58a00", "sin datos": "#8a8a86",
-               "desconectada": "#c0392b", "deshabilitada": "#6b6a66", "desconocido": "#9a9a95"}
+               "desconectada": "#c0392b", "deshabilitada": "#6b6a66", "desconocido": "#9a9a95",
+               "creando": "#8a8a86", "arrancando": "#8a8a86", "esperando": "#d4a000", "error": "#c0392b"}
+MAX_MOTIVO = 300             # paso_error: el orquestador ya lo corta a 300; aqui tambien
 ETAPAS = (("vpn", "VPN conectada"), ("tzsp", "TZSP recibido"), ("suricata", "Trafico procesado"),
           ("eventos", "Eventos actualizados"), ("datos", "Datos consultables"))
 ORDENES = {"punto.crear": "Crear punto", "punto.borrar": "Borrar punto",
@@ -461,6 +466,75 @@ def _contenedor(c):
     return {"healthy": "sano", "unhealthy": "enfermo", "starting": "arrancando"}.get(sal, "en marcha")
 
 
+def mk_conectado(p):
+    """El MikroTik tiene el tunel arriba segun estado.json. Un openvpn-status.log viejo
+    (`vpn_cliente.viejo`) no es «conectado» aunque diga que si."""
+    vc = (p or {}).get("vpn_cliente") or {}
+    return bool(vc.get("conectado")) and not vc.get("viejo")
+
+
+def situacion_vpn(p):
+    """Como esta la VPN de un punto, igual en la lista, la ficha, la salud y el selector:
+    {"clave", "texto", "motivo"}. La clave es una de:
+      conectada   contenedor vivo y el MikroTik conectado
+      esperando   contenedor sano (o sin healthcheck) y el MikroTik aun sin conectar: lo normal
+                  tras un alta correcta, mientras no se pegan los comandos en el router (ámbar)
+      arrancando  contenedor en marcha con el healthcheck aun en `starting` (gris)
+      creando     el orquestador esta creando el punto (gris); parada / borrando, igual
+      caida       contenedor ausente, parado o `unhealthy` (rojo)
+    Manda `salud` (healthy) y no solo `running`; sin `salud` (orquestador viejo) o `none`
+    (imagen sin healthcheck) se toma `running` como vivo."""
+    p = p or {}
+    c = (p.get("contenedores") or {}).get("vpn") or {}
+    est, sal = c.get("estado"), c.get("salud")
+    if p.get("estado") == "creando":
+        return {"clave": "creando", "texto": "creando…", "motivo": "el orquestador está creando el punto"}
+    if p.get("estado") == "borrando":
+        return {"clave": "creando", "texto": "borrando", "motivo": "el orquestador está borrando el punto"}
+    if p.get("estado") == "parado" or p.get("deseado") == "parado":
+        return {"clave": "parada", "texto": "parada", "motivo": "punto parado"}
+    if est in (None, "ausente"):
+        return {"clave": "caida", "texto": "caída", "motivo": "el contenedor vpn no existe"}
+    if est != "running":
+        return {"clave": "caida", "texto": "caída", "motivo": "contenedor vpn %s" % est}
+    if sal == "unhealthy":
+        return {"clave": "caida", "texto": "caída", "motivo": "contenedor vpn enfermo (unhealthy)"}
+    if mk_conectado(p):
+        ip = (p.get("vpn_cliente") or {}).get("ip_real")
+        return {"clave": "conectada", "texto": "conectado",
+                "motivo": "MikroTik conectado desde %s" % (ip or "?")}
+    if sal == "starting":
+        return {"clave": "arrancando", "texto": "arrancando",
+                "motivo": "contenedor vpn arrancando (comprobando su salud)"}
+    viejo = " (el registro de la VPN no se actualiza: dato viejo)" if (p.get("vpn_cliente") or {}).get("viejo") else ""
+    return {"clave": "esperando", "texto": "esperando MikroTik",
+            "motivo": "VPN lista: esperando a que el MikroTik conecte" + viejo}
+
+
+def error_punto(p):
+    """(motivo, desde) de un punto en estado `error`: `paso_error` y `error_desde` del orquestador,
+    tolerando que falten. (None, None) si el punto no esta en error."""
+    p = p or {}
+    if p.get("estado") != "error":
+        return None, None
+    motivo = p.get("paso_error")
+    motivo = str(motivo)[:MAX_MOTIVO] if motivo not in (None, "") else ""
+    return motivo, _a_epoch(p.get("error_desde"))
+
+
+def error_html(p, ahora=None, boton=""):
+    """El motivo del error de un punto (escapado) y desde cuando, con un boton opcional."""
+    motivo, desde = error_punto(p)
+    if motivo is None:
+        return ""
+    ahora = ahora or time.time()
+    txt = ("Motivo: <b>%s</b>" % esc(motivo)) if motivo else "El orquestador no publicó el motivo."
+    if desde:
+        txt += (" &middot; desde hace %s (%s)"
+                % (_edad(ahora - desde), esc(time.strftime("%d/%m/%Y %H:%M", time.localtime(desde)))))
+    return "<div class=perr>%s%s</div>" % (txt, boton)
+
+
 # --------------------------------------------------------------------------------------------
 # Esqueleto de pagina (estilo del dashboard)
 # --------------------------------------------------------------------------------------------
@@ -514,6 +588,15 @@ _CSS = (
     "justify-content:center;padding:24px}"
     ".pbajabox{background:#fff;border-radius:14px;max-width:520px;width:100%;padding:22px 24px;"
     "box-shadow:0 16px 54px rgba(0,0,0,.45)}.pbajabox h3{margin:0 0 8px;font-size:19px}"
+    # motivo del error de un punto (lista y ficha) y el pill de la VPN en ámbar/gris (el Tailwind
+    # compilado solo trae el verde y el rojo)
+    ".perr{color:#b52a2a;font-size:12.5px;margin-top:3px;overflow-wrap:anywhere}"
+    ".perr form{display:inline-block;margin:6px 0 0}"
+    ".vpill{display:inline-flex;align-items:center;gap:6px;border-radius:999px;padding:2px 10px;font-size:12px;"
+    "font-weight:600}.vpill i{display:inline-block;width:6px;height:6px;border-radius:50%}"
+    ".vpill.amb{background:#fff7ed;color:#8a5a00}.vpill.amb i{background:#d4a000}"
+    ".vpill.gris{background:#f1f1ef;color:#5f5e5a}.vpill.gris i{background:#9a9a95}"
+    "details.plogs{margin:10px 0}details.plogs summary{cursor:pointer;font-weight:600;font-size:13px}"
 )
 
 _JS = ("<script>function pcopiar(id,b){var e=document.getElementById(id);if(!e)return;"
@@ -584,7 +667,23 @@ def comandos_html(texto, ros_version, prefijo):
 # Lista
 # --------------------------------------------------------------------------------------------
 _COLOR_ETAPA = {"ok": "#1a7f37", "sano": "#1a7f37", "aviso": "#e58a00", "degradada": "#e58a00",
-                "fallo": "#c0392b", "error": "#c0392b", "caido": "#c0392b"}
+                "fallo": "#c0392b", "error": "#c0392b", "caido": "#c0392b",
+                # la etapa aun no se puede medir (se esta creando o falta el MikroTik): no es un fallo
+                "pendiente": "#b5b3ad"}
+
+
+def pill_vpn(p):
+    """El pill de la columna VPN: verde conectado, ámbar esperando MikroTik, gris creando /
+    arrancando / parada y rojo caída. El `title` lleva el motivo."""
+    s = situacion_vpn(p)
+    if s["clave"] in ("conectada", "caida"):
+        tonos = (("tw-bg-green-50 tw-text-ok", "tw-bg-ok") if s["clave"] == "conectada"
+                 else ("tw-bg-red-50 tw-text-bad", "tw-bg-bad"))
+        return ("<span class='tw-inline-flex tw-items-center tw-gap-1.5 tw-rounded-full tw-px-2.5 tw-py-0.5 "
+                "tw-text-xs tw-font-semibold %s' title='%s'><span class='tw-h-1.5 tw-w-1.5 tw-rounded-full %s'>"
+                "</span>%s</span>" % (tonos[0], esc(s["motivo"]), tonos[1], esc(s["texto"])))
+    return ("<span class='vpill %s' title='%s'><i></i>%s</span>"
+            % ("amb" if s["clave"] == "esperando" else "gris", esc(s["motivo"]), esc(s["texto"])))
 
 
 def _kpis(total, operativos, vpn, alertas):
@@ -624,6 +723,7 @@ def lista(h, consulta):
         if p.get("deseado") == "parado" and p.get("estado") != "parado":
             estado += " (se esta parando)"
         avisos = "".join("<div class=pwarn>%s</div>" % esc(AVISOS.get(a, a)) for a in (p.get("avisos") or []))
+        avisos += error_html(p, ahora)       # punto en error: su motivo y desde cuando (D3)
         descarte = ""
         try:
             if su.get("kernel_packets"):
@@ -631,7 +731,7 @@ def lista(h, consulta):
                                                            / float(su["kernel_packets"]))
         except (TypeError, ValueError, ZeroDivisionError):
             descarte = ""
-        vpn_ok = bool((p.get("vpn_cliente") or {}).get("conectado"))
+        vpn_ok = situacion_vpn(p)["clave"] == "conectada"
         n_ok += 1 if sal.get("estado") == "operativa" else 0
         n_vpn += 1 if vpn_ok else 0
         tot_24 += n24 or 0
@@ -639,10 +739,6 @@ def lista(h, consulta):
             "<span class='tw-inline-block tw-h-2.5 tw-w-2.5 tw-rounded-full' title='%s' style='background:%s'></span>"
             % (esc("%s: %s%s" % (e["nombre"], e["estado"], (" - " + e["detalle"]) if e["detalle"] else "")),
                _COLOR_ETAPA.get(e["estado"], SALUD_COLOR.get(e["estado"], "#9a9a95"))) for e in sal["etapas"])
-        pill_vpn = ("<span class='tw-inline-flex tw-items-center tw-gap-1.5 tw-rounded-full tw-px-2.5 tw-py-0.5 "
-                    "tw-text-xs tw-font-semibold %s'><span class='tw-h-1.5 tw-w-1.5 tw-rounded-full %s'></span>%s</span>"
-                    % (("tw-bg-green-50 tw-text-ok", "tw-bg-ok", "conectado") if vpn_ok
-                       else ("tw-bg-red-50 tw-text-bad", "tw-bg-bad", "desconectado")))
         filas += (
             "<tr><td><a href='/puntos/%s'><b>%s</b></a><div class=hint>%s</div></td>"
             "<td>%s%s</td>"
@@ -651,7 +747,7 @@ def lista(h, consulta):
             "<td>%s</td><td>%s</td><td>%s%s</td><td class=num>%s%s</td><td>%s</td><td>%s</td></tr>"
             % (esc(pid), esc(p.get("nombre") or pid), esc(pid), esc(estado), avisos,
                salud_chip(sal), puntos_etapas, esc(sal.get("nota") or ""),
-               pill_vpn,
+               pill_vpn(p),
                ("%.0f paq/s" % pps if pps is not None else "-")
                + (("<div class=hint>hace %s</div>" % _edad(ahora - ultimo)) if ultimo else ""),
                esc(_contenedor(cont.get("suricata"))), descarte,
@@ -984,6 +1080,48 @@ def _pasos_limpios(pasos):
     return [{k: p.get(k) for k in ("nombre", "estado", "detalle") if p.get(k) is not None} for p in pasos]
 
 
+ORDENES_CON_CLAVE = ("punto.crear", "punto.vpn.regenerar")
+MAX_LOG_LINEAS = 120
+MAX_LOG_LARGO = 600
+# lo que nunca se ensena de un log aunque el orquestador ya lo filtre (password|key, como logs())
+RE_LOG_SECRETO = re.compile(r"password|passwd|key|clave|secret|token", re.I)
+
+
+def log_limpio(lineas):
+    """Las ultimas lineas de log de una operacion para la pagina: texto, con tope de lineas y de
+    largo, y sin las que puedan llevar una clave. [] si no hay nada que ensenar."""
+    if not isinstance(lineas, (list, tuple)):
+        return []
+    out = []
+    for x in lineas[-MAX_LOG_LINEAS:]:
+        if x is None or isinstance(x, (dict, list)):
+            continue
+        t = str(x)
+        if RE_LOG_SECRETO.search(t):
+            continue
+        out.append(t[:MAX_LOG_LARGO])
+    return out
+
+
+def _anotar_op(op_id, sobrescribir=True, **campos):
+    """Apunta en el registro de la operacion lo que `Operaciones.terminar` no admite: solo
+    `entrega_clave` («mostrada» o «no_llego»), nunca la clave (ver Operaciones.anotar)."""
+    return ops().anotar(op_id, sobrescribir=sobrescribir, **campos)
+
+
+def _entrega_clave(orden, codigo, res):
+    """Que paso con la clave de la VPN de una operacion recien terminada que la entrega: «mostrada»
+    (vino en esta respuesta), «ya_existia» (alta repetida: se entrego en su dia) o «no_llego»
+    (el orquestador la tenia solo en memoria y se reinicio antes de que el panel la pidiera)."""
+    if orden not in ORDENES_CON_CLAVE or codigo != "OK":
+        return None
+    if res.get("clave"):
+        return "mostrada"
+    if res.get("ya_entregada"):
+        return "ya_existia"
+    return "no_llego"
+
+
 def vista_op(d, op_id, usuario):
     """Modelo de la pagina de una operacion. None si no existe o no es de este usuario."""
     rec = ops().obtener(op_id)
@@ -994,7 +1132,13 @@ def vista_op(d, op_id, usuario):
     if rec.get("terminada"):
         vm.update({"terminada": True, "ok": rec.get("codigo") == "OK", "pasos": rec.get("pasos"),
                    "mensaje": _orq.traducir(rec.get("codigo"), rec.get("mensaje")),
-                   "ya_existia": rec.get("ya_existia")})
+                   "ya_existia": rec.get("ya_existia"), "entrega_clave": rec.get("entrega_clave")})
+        if not vm["ok"]:
+            # los logs del fallo no se guardan en el panel: se vuelven a pedir (una operacion que
+            # termino mal no lleva clave). Si el orquestador ya no la conoce, sin logs.
+            r = cliente().pedir("op.estado", {"op_id": op_id}, quien="panel:%s" % usuario, ip=_ip(d))
+            if r.get("codigo") == "OK":
+                vm["log_tail"] = log_limpio((r.get("datos") or {}).get("log_tail"))
         return vm
     r = cliente().pedir("op.estado", {"op_id": op_id}, quien="panel:%s" % usuario, ip=_ip(d))
     if r.get("codigo") not in ("OK", "NO_EXISTE"):
@@ -1017,6 +1161,9 @@ def vista_op(d, op_id, usuario):
     res = dd.get("resultado") if isinstance(dd.get("resultado"), dict) else {}
     pid = res.get("pid") or rec.get("pid")
     ya = bool(res.get("ya_entregada"))
+    if codigo != "OK":
+        vm["log_tail"] = log_limpio(dd.get("log_tail"))
+    entrega = _entrega_clave(rec.get("orden"), codigo, res)
     primera = ops().terminar(op_id, codigo=codigo, mensaje=mensaje, pid=pid, pasos=_pasos_limpios(pasos),
                              ya_existia=ya)
     if not primera:
@@ -1025,11 +1172,19 @@ def vista_op(d, op_id, usuario):
         # la tiene y la ensena aunque haya perdido la carrera de `terminar` (B-12).
         rec = ops().obtener(op_id) or {}
         vm.update({"terminada": True, "ok": rec.get("codigo") == "OK", "pasos": rec.get("pasos"),
-                   "mensaje": _orq.traducir(rec.get("codigo"), rec.get("mensaje"))})
+                   "mensaje": _orq.traducir(rec.get("codigo"), rec.get("mensaje")),
+                   "entrega_clave": rec.get("entrega_clave")})
         if res.get("clave"):
+            # la que gano `terminar` pudo apuntar «no_llego»: la clave SI llego, a esta
+            _anotar_op(op_id, entrega_clave="mostrada")
             vm.update({"ok": codigo == "OK", "pid": pid, "resultado": res, "ya_existia": ya,
-                       "mensaje": _orq.traducir(codigo, mensaje, res)})
+                       "mensaje": _orq.traducir(codigo, mensaje, res), "entrega_clave": "mostrada"})
         return vm
+    if entrega:
+        # D8: con esto una visita posterior sabe si la clave se ensenó o no llego nunca
+        # sin pisar el «mostrada» de una peticion a la vez que si recibio la clave (B-12)
+        _anotar_op(op_id, sobrescribir=False, entrega_clave=entrega)
+    vm["entrega_clave"] = entrega
     _bit(d, (rec.get("orden") or "op").upper().replace(".", "-") + "-FIN", pid=pid or "",
          resultado=codigo, extra="op=%s" % op_id)
     if codigo == "OK" and rec.get("orden") == "punto.borrar" and pid:
@@ -1075,6 +1230,12 @@ def pagina_op(h, op_id):
     pid = vm.get("pid")
     if not vm.get("ok"):
         cuerpo += aviso(vm.get("mensaje"))
+        lineas = vm.get("log_tail") or []
+        if lineas:
+            # D2: lo que dijeron los contenedores antes de deshacer (el orquestador lo filtra de
+            # claves; aqui se vuelve a filtrar y todo va escapado)
+            cuerpo += ("<details class=plogs><summary>Ver los últimos logs</summary>"
+                       "<pre class=cmd>%s</pre></details>" % esc("\n".join(lineas)))
         if vm.get("orden") == "punto.crear":
             cuerpo += "<p><a class=btn href='/puntos/nuevo'>Volver a intentarlo</a></p>"
         return _html_privado(h, pagina(d, "Operacion", cuerpo))
@@ -1106,9 +1267,24 @@ def pagina_op(h, op_id):
     elif vm.get("orden") == "punto.ajustar":
         cuerpo += aviso("Prefijos cambiados en el Suricata del punto. Falta llevarlos al MikroTik: vuelve a "
                         "aplicar el espejo (address-list ids-vigilados) desde la ficha, con su vista previa.", "info")
+    elif vm.get("orden") in ORDENES_CON_CLAVE and vm.get("entrega_clave") == "no_llego":
+        # D8: la clave solo vive en la memoria del orquestador hasta que el panel la pide; si se
+        # reinicio antes, se perdio. Sin ella el MikroTik no puede conectar: hay que regenerarla.
+        cuerpo += aviso("La clave no llegó al panel (el orquestador se reinició antes de entregarla) y ya no "
+                        "se puede recuperar. Regénérala: el MikroTik no puede conectar sin ella.", "err")
+        if pid and nodos.pid_valido(pid):
+            cuerpo += ("<form method=post action='/puntos/%s/regenerar' onsubmit=\"return ask(this,"
+                       "'Regenerar la clave VPN','Se crea una clave nueva y se muestra una sola vez, con los "
+                       "comandos para el MikroTik.','Regenerar')\">%s<p><button class=btn type=submit>"
+                       "Regenerar la clave VPN</button></p></form>" % (esc(pid), campo_token()))
+    elif vm.get("orden") in ORDENES_CON_CLAVE and vm.get("entrega_clave") == "mostrada":
+        cuerpo += aviso("La operación terminó bien. La clave ya se mostró una vez y el panel no la guarda: si "
+                        "no la copiaste, regénérala desde la ficha del punto.", "info")
+    elif vm.get("orden") in ORDENES_CON_CLAVE:
+        cuerpo += aviso("La operación terminó bien. El panel no guarda la clave: si no la tienes, regénérala "
+                        "desde la ficha del punto.", "info")
     else:
-        cuerpo += aviso("La operacion termino bien. Si mostraba una clave, ya se enseño una vez y el panel "
-                        "no la guarda.", "info")
+        cuerpo += aviso("La operación terminó bien.", "info")
     if pid and nodos.pid_valido(pid):
         ancla = "#espejo" if vm.get("orden") == "punto.ajustar" else ""
         cuerpo += "<p><a class=btn href='/puntos/%s%s'>Ir a la ficha del punto</a></p>" % (esc(pid), ancla)
@@ -1483,13 +1659,31 @@ def ficha(h, pid, mensaje="", codigo=200, ok=False, extra_espejo=""):
     vc = p.get("vpn_cliente") or {}
     cont = p.get("contenedores") or {}
     n24, completo = alertas_24h(pid, ahora)
+    sit = situacion_vpn(p)
+    if sit["clave"] == "conectada":
+        mk_txt = "conectado desde %s" % esc(vc.get("ip_real") or "?")
+    elif sit["clave"] == "esperando":
+        mk_txt = "esperando a que conecte" + (" (dato de la VPN viejo)" if vc.get("viejo") else "")
+    else:
+        mk_txt = "sin conectar"
+    # punto en error: el motivo, desde cuando y «Reintentar arranque» (encola punto.arrancar como el
+    # boton Arrancar de Servicio: mismo token de un solo uso y la misma pagina de operacion). Toda la
+    # ficha es solo de admin (get/post lo comprueban en el servidor).
+    reintentar = (
+        "<form method=post action='/puntos/%s/arrancar' onsubmit=\"return ask(this,'Reintentar arranque',"
+        "'El orquestador vuelve a levantar la VPN y el Suricata del punto. Si falla otra vez, verás el "
+        "motivo y los últimos logs.','Reintentar')\">%s<button class=btn type=submit>Reintentar arranque"
+        "</button></form>" % (esc(pid), campo_token()))
+    caja_error = error_html(p, ahora, boton=reintentar)
+    if caja_error:
+        caja_error = ("<div class='aviso err'><b>El punto está con error.</b> %s</div>"
+                      % caja_error)
     datos = "".join(
         "<div class=dato><div class=et>%s</div><div>%s</div></div>" % (esc(a), b) for a, b in (
             ("Estado", esc(ESTADOS.get(p.get("estado"), p.get("estado") or "sin datos"))
              + "".join("<div class=pwarn>%s</div>" % esc(AVISOS.get(x, x)) for x in (p.get("avisos") or []))),
             ("Salud", salud_chip(sal)),
-            ("VPN", esc(_contenedor(cont.get("vpn"))) + " &middot; MikroTik "
-             + ("conectado desde %s" % esc(vc.get("ip_real") or "?") if vc.get("conectado") else "desconectado")),
+            ("VPN", pill_vpn(p) + " " + esc(_contenedor(cont.get("vpn"))) + " &middot; MikroTik " + mk_txt),
             ("Espejo", ("%.0f paq/s" % pps if pps is not None else "sin medida")
              + (" &middot; ultimo hace %s" % _edad(ahora - ultimo) if ultimo else "")),
             ("Suricata", esc(_contenedor(cont.get("suricata"))) + " &middot; %s / %s paquetes vistos/descartados"
@@ -1508,8 +1702,14 @@ def ficha(h, pid, mensaje="", codigo=200, ok=False, extra_espejo=""):
                       "amb"))
     # API
     rt = _router(d, pid) or {}
-    hu = cliente().pedir("punto.api.huella", {"pid": pid}, quien="panel:%s" % _usuario(d), ip=_ip(d))
-    huella = (hu.get("datos") or {}).get("sha256") if hu.get("codigo") == "OK" else ""
+    # la huella se lee por el tunel: sin el MikroTik conectado (lo normal tras el alta) la orden
+    # esperaba hasta 15 s y la ficha tardaba eso en abrir. Solo se pide con el router conectado.
+    if sit["clave"] == "conectada":
+        hu = cliente().pedir("punto.api.huella", {"pid": pid}, quien="panel:%s" % _usuario(d), ip=_ip(d))
+        huella = (hu.get("datos") or {}).get("sha256") if hu.get("codigo") == "OK" else ""
+        huella_txt = huella or "sin dato"
+    else:
+        huella_txt = "se comprobará cuando el MikroTik conecte"
     fijada = (rt.get("CERT_FP") or "").lower().replace(":", "")
     api_html = (
         "<form method=post action='/puntos/%s/api'><input type=hidden name=accion value=guardar>%s"
@@ -1528,7 +1728,7 @@ def ficha(h, pid, mensaje="", codigo=200, ok=False, extra_espejo=""):
         % (esc(pid), campo_token(), esc(rt.get("USER", "")), "(guardada)" if rt.get("PASS") else "",
            "dejar vacio para conservar" if rt.get("PASS") else "clave del usuario ids-api",
            " checked" if rt.get("ENABLED") == "1" else "", esc(p.get("api_puerto") or 8729),
-           esc(huella or "sin dato"), esc(fijada or "ninguna (se fija en la primera conexion)"),
+           esc(huella_txt), esc(fijada or "ninguna (se fija en la primera conexion)"),
            ("<form method=post action='/puntos/%s/api' onsubmit=\"return ask(this,'Olvidar la huella',"
             "'La proxima conexion fijara la huella que presente el router. Hazlo solo si cambiaste su "
             "certificado.','Olvidar','danger')\"><input type=hidden name=accion value=olvidar_huella>%s"
@@ -1588,7 +1788,7 @@ def ficha(h, pid, mensaje="", codigo=200, ok=False, extra_espejo=""):
         "</div>" % (esc(pid), esc(nombre), campo_token(), esc(nombre)))
     cuerpo = (
         "<div class=ptit><h1>%s <span class=hint>%s</span></h1><a class='btn sec' href='/puntos'>Volver a "
-        "Puntos</a></div>%s%s"
+        "Puntos</a></div>%s%s%s"
         "<nav class=secnav><a href='#resumen'>Resumen</a><a href='#vpn'>VPN</a><a href='#api'>API</a>"
         "<a href='#espejo'>Espejo</a><a href='#prefijos'>Prefijos</a><a href='/puntos/%s/logs?parte=vpn'>Logs</a>"
         "<a href='#baja'>Baja</a></nav>"
@@ -1601,7 +1801,7 @@ def ficha(h, pid, mensaje="", codigo=200, ok=False, extra_espejo=""):
         "<section class=card id=espejo><h2>Espejo</h2>%s</section>"
         "<section class=card id=prefijos><h2>Prefijos del espejo</h2>%s</section>"
         "<div id=baja>%s</div>"
-        % (esc(nombre), esc(pid), aviso(mensaje, "ok" if ok else "err"),
+        % (esc(nombre), esc(pid), aviso(mensaje, "ok" if ok else "err"), caja_error,
            "" if p else aviso("El punto aun no aparece en el estado del orquestador (se actualiza cada 15 s).", "info"),
            esc(pid), datos, salud_etapas_html(sal), serv, vpn_html, api_html, espejo_html, pref_html, baja))
     return h._html(pagina(d, nombre, cuerpo), codigo)
