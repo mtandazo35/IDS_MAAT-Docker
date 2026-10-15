@@ -1,5 +1,6 @@
 """Apartado Puntos (puntos_web.py): alta, avance, clave VPN una sola vez, espejo sin `accept`,
 prefijos, API y baja (CONTRATO-F2 §5, §9, §10.2, OPERACION §2). Orquestador falso, sin red."""
+import json
 import os
 import re
 import sys
@@ -21,8 +22,7 @@ class Puntos(unittest.TestCase):
         return re.search(r"name=op value='([0-9a-f-]{36})'", r.texto).group(1)
 
     def _crear(self, token, nombre="este"):
-        return self.p.pedir("POST", "/puntos/nuevo", {"op": token, "nombre": nombre, "redes": "10.1.0.0/24\n10.2.0.0/24"},
-                            cookie=self.ana)
+        return self.p.pedir("POST", "/puntos/nuevo", {"op": token, "nombre": nombre}, cookie=self.ana)
 
     def test_alta_llama_punto_crear_y_redirige(self):
         """Capacidad nueva: el alta pide punto.crear con los datos del formulario y lleva al avance."""
@@ -33,23 +33,53 @@ class Puntos(unittest.TestCase):
         pet = self.p.orq.ordenes("punto.crear")
         self.assertEqual(len(pet), 1)
         self.assertEqual(pet[0]["op_id"], tok)
-        self.assertEqual(pet[0]["params"], {"nombre": "este", "redes_abonados": ["10.1.0.0/24", "10.2.0.0/24"],
-                                            "perfil": "reducido", "ros_version": 6})
+        self.assertEqual(pet[0]["params"], {"nombre": "este", "perfil": "reducido", "ros_version": 6})
         self.assertEqual(pet[0]["quien"], "panel:ana")
 
-    def test_alta_solo_pide_nombre_y_prefijos(self):
-        """Capacidad nueva (el user, 2026-10-15): el alta no pregunta RouterOS ni perfil. La VPN sale
-        compatible con 6.49+ y 7 (ros_version 6) y el perfil es el reducido, aunque el POST traiga otros."""
+    def test_alta_solo_pide_el_nombre(self):
+        """Capacidad nueva (el user, 2026-10-15: «los prefijos no van, solo es nombre del punto»): el
+        alta no pregunta prefijos, RouterOS ni perfil. Sin redes_abonados el orquestador pone las de por
+        defecto; la VPN sale compatible con 6.49+ y 7 y el perfil es el reducido, aunque el POST traiga
+        otra cosa."""
         r = self.p.pedir("GET", "/puntos/nuevo", cookie=self.ana)
-        for campo in ("name=nombre", "name=redes"):
-            self.assertIn(campo, r.texto)
-        for campo in ("name=ros_version", "name=perfil"):
+        self.assertIn("name=nombre", r.texto)
+        for campo in ("name=redes", "name=ros_version", "name=perfil"):
             self.assertNotIn(campo, r.texto)
         tok = re.search(r"name=op value='([0-9a-f-]{36})'", r.texto).group(1)
         self.p.pedir("POST", "/puntos/nuevo", {"op": tok, "nombre": "otro", "redes": "10.3.0.0/24",
                                                "ros_version": "7", "perfil": "completo"}, cookie=self.ana)
-        prm = self.p.orq.ordenes("punto.crear")[0]["params"]
-        self.assertEqual((prm["ros_version"], prm["perfil"]), (6, "reducido"))
+        self.assertEqual(self.p.orq.ordenes("punto.crear")[0]["params"],
+                         {"nombre": "otro", "perfil": "reducido", "ros_version": 6})
+
+    def test_la_lista_abre_el_alta_en_un_modal(self):
+        """Capacidad nueva (el user, 2026-10-15: «crea un modal nomas para eso y solicita el nombre»):
+        «Agregar punto» abre en la lista un modal con solo el nombre; sin JavaScript, el enlace sigue
+        llevando a /puntos/nuevo. La lista no se recarga sola con el modal abierto."""
+        h = self.p.pedir("GET", "/puntos", cookie=self.ana).texto
+        self.assertIn("<a class=btn href='/puntos/nuevo' onclick='palta();return false;'>Agregar punto</a>", h)
+        modal = h.split("<div id=paltaov", 1)[1].split("</form>", 1)[0]
+        self.assertIn("action='/puntos/nuevo'", modal)
+        self.assertIn("onsubmit='return paltaAjax(this)'", modal)
+        self.assertRegex(modal, r"name=op value='[0-9a-f-]{36}'")
+        self.assertIn("name=nombre", modal)
+        for campo in ("name=redes", "name=ros_version", "name=perfil", "<textarea"):
+            self.assertNotIn(campo, modal)
+        self.assertIn("!abierto('paltaov')", h)
+
+    def test_alta_desde_el_modal(self):
+        """Capacidad nueva: con ajax=1 (el modal) el alta responde {op_id} para ir al avance, y un
+        nombre malo, {error} para verlo dentro del modal, sin pedir nada al orquestador."""
+        tok = self._token()
+        r = self.p.pedir("POST", "/puntos/nuevo", {"op": tok, "nombre": "Mal Nombre", "ajax": "1"}, cookie=self.ana)
+        self.assertEqual(r.status, 400)
+        self.assertIn("minúsculas", json.loads(r.texto)["error"])
+        self.assertEqual(self.p.orq.ordenes("punto.crear"), [])
+        r = self.p.pedir("POST", "/puntos/nuevo", {"op": tok, "nombre": "norte", "ajax": "1"}, cookie=self.ana)
+        self.assertEqual(r.status, 200)
+        self.assertEqual(json.loads(r.texto), {"op_id": tok})
+        r = self.p.pedir("POST", "/puntos/nuevo", {"op": tok, "nombre": "norte", "ajax": "1"}, cookie=self.ana)
+        self.assertEqual(json.loads(r.texto), {"op_id": tok})               # doble clic: la misma
+        self.assertEqual(len(self.p.orq.ordenes("punto.crear")), 1)
 
     def test_doble_envio_no_crea_dos(self):
         """Capacidad nueva (idempotencia): el mismo formulario enviado dos veces es una sola orden."""
@@ -69,7 +99,7 @@ class Puntos(unittest.TestCase):
         self.p.d.guardar_usuarios(otro_admin)
         eva = self.p.entrar("eva")
         self.assertEqual(self.p.pedir("GET", "/operaciones/%s" % tok, cookie=eva).status, 404)
-        r = self.p.pedir("POST", "/puntos/nuevo", {"op": tok, "nombre": "otro", "redes": "10.3.0.0/24"}, cookie=eva)
+        r = self.p.pedir("POST", "/puntos/nuevo", {"op": tok, "nombre": "otro"}, cookie=eva)
         self.assertEqual(r.status, 409)
         self.assertEqual(len(self.p.orq.ordenes("punto.crear")), 1)
 
@@ -90,11 +120,11 @@ class Puntos(unittest.TestCase):
             self.assertNotIn("CLAVE-VPN-UNICA-7Q2", f.read())
 
     def test_formulario_invalido_no_llama(self):
-        """Conservacion: validacion de nombre y redes antes de pedir nada al orquestador."""
+        """Conservacion: validacion del nombre antes de pedir nada al orquestador."""
         tok = self._token()
-        for nombre, redes in (("Mal Nombre", "10.1.0.0/24"), ("bien", "0.0.0.0/0"), ("bien", "no-es-red")):
-            r = self.p.pedir("POST", "/puntos/nuevo", {"op": tok, "nombre": nombre, "redes": redes}, cookie=self.ana)
-            self.assertEqual(r.status, 400, (nombre, redes))
+        for nombre in ("Mal Nombre", "", "a", "-norte", "x" * 32):
+            r = self.p.pedir("POST", "/puntos/nuevo", {"op": tok, "nombre": nombre}, cookie=self.ana)
+            self.assertEqual(r.status, 400, nombre)
         self.assertEqual(self.p.orq.ordenes("punto.crear"), [])
 
     def test_lista_y_ficha(self):
@@ -124,7 +154,7 @@ class BotonEnlace(unittest.TestCase):
         p = PanelP()
         self.addCleanup(p.cerrar)
         h = p.pedir("GET", "/puntos", cookie=p.entrar("ana")).texto
-        self.assertIn("<a class=btn href='/puntos/nuevo'>Agregar punto</a>", h)
+        self.assertIn("<a class=btn href='/puntos/nuevo' onclick='palta();return false;'>Agregar punto</a>", h)
         self.assertRegex(h, r"a:hover\{color:var\(--brand-ink\)\}")       # la regla que lo provocaba
         for sel, color in ((r"\.btn:hover", "#fff"), (r"\.btn\.sec:hover", "#33322f"),
                            (r"\.btn\.peligro:hover", "#fff")):
@@ -140,7 +170,8 @@ class BotonEnlace(unittest.TestCase):
         ana = p.entrar("ana")
         lista = p.pedir("GET", "/puntos", cookie=ana).texto
         self.assertIn("<div class=ptbtns><a class='btn sec' href='/ajustes'>Volver a Ajustes</a>"
-                      "<a class=btn href='/puntos/nuevo'>Agregar punto</a></div>", lista)
+                      "<a class=btn href='/puntos/nuevo' onclick='palta();return false;'>Agregar punto</a></div>",
+                      lista)
         for ruta, h in (("/puntos", lista), ("/puntos/p001", p.pedir("GET", "/puntos/p001", cookie=ana).texto),
                         ("/puntos/nuevo", p.pedir("GET", "/puntos/nuevo", cookie=ana).texto)):
             self.assertNotIn("class=migas", h, ruta)

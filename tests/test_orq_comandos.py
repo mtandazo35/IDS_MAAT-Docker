@@ -176,8 +176,8 @@ class Cli(unittest.TestCase):
         self.assertTrue(out.startswith("INVALIDO"))
         rc, _ = self.cli("punto", "estado", "p009")
         self.assertEqual(rc, 4)
-        with self.assertRaises(SystemExit) as cm:
-            self.cli("punto", "crear", "--nombre", "norte")
+        with self.assertRaises(SystemExit) as cm:          # sin --nombre (--redes es opcional)
+            self.cli("punto", "crear", "--redes", "10.0.0.0/24")
         self.assertEqual(cm.exception.code, 2)
         self.e.escribir_meminfo(2048, 1024)
         rc, out = self.cli("punto", "crear", "--nombre", "norte", "--redes", "10.0.0.0/24")

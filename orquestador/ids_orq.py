@@ -1971,9 +1971,32 @@ def validar_redes(redes, cfg):
     return out
 
 
+# Prefijos de un punto creado sin ellos (el alta del panel solo pide el nombre, decision del dueño
+# 2026-10-15): todo el espacio privado y el CGNAT, que es donde estan los abonados de un ISP, menos
+# lo que no puede ser de abonados (base de tuneles, pool de Docker, redes de gestion). Con prefijos
+# demasiado estrechos el punto se queda sano y con 0 alertas (lab, p001); se estrechan en la ficha.
+REDES_POR_DEFECTO = ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "100.64.0.0/10")
+
+
+def redes_por_defecto(cfg):
+    redes = [ipaddress.IPv4Network(r) for r in REDES_POR_DEFECTO]
+    for fuera in [cfg.red_tuneles, cfg.pool] + list(cfg.redes_gestion):
+        quedan = []
+        for r in redes:
+            if not r.overlaps(fuera):
+                quedan.append(r)
+            elif not fuera.supernet_of(r):         # fuera esta dentro de r: r menos fuera
+                quedan.extend(r.address_exclude(fuera))
+        redes = quedan
+    if len(redes) > 64:
+        raise _inv("las redes por defecto, sin las reservadas, son %d (como mucho 64): indica "
+                   "redes_abonados" % len(redes))
+    return validar_redes([str(r) for r in sorted(redes)], cfg)
+
+
 def validar_crear(params, cfg):
     _solo(params, {"nombre", "redes_abonados", "perfil", "hilos", "ros_version", "compat_v6",
-                   "api_puerto", "origen_ip", "pid", "n"}, ("nombre", "redes_abonados"))
+                   "api_puerto", "origen_ip", "pid", "n"}, ("nombre",))
     nombre = params["nombre"]
     if not isinstance(nombre, str) or not RE_NOMBRE.match(nombre):
         raise _inv("nombre inválido (^[a-z0-9][a-z0-9-]{1,30}$)")
@@ -1983,7 +2006,9 @@ def validar_crear(params, cfg):
     compat = params.get("compat_v6") or "no"
     if compat not in ("no", "seclevel0", "legacy"):
         raise _inv("compat_v6 debe ser no, seclevel0 o legacy")
-    out = {"nombre": nombre, "redes_abonados": validar_redes(params["redes_abonados"], cfg),
+    redes = (validar_redes(params["redes_abonados"], cfg) if "redes_abonados" in params
+             else redes_por_defecto(cfg))
+    out = {"nombre": nombre, "redes_abonados": redes,
            "perfil": perfil, "hilos": _int(params.get("hilos", 1), "hilos", rango=(1, 2)),
            "ros_version": _int(params.get("ros_version", 7), "ros_version", validos=(6, 7)),
            "compat_v6": compat,
@@ -4280,7 +4305,7 @@ def construir_parser():
     ps = pu.add_subparsers(dest="sub", required=True)
     c = ps.add_parser("crear", parents=[comun])
     c.add_argument("--nombre", required=True)
-    c.add_argument("--redes", required=True, type=_redes_arg)
+    c.add_argument("--redes", type=_redes_arg)       # sin ella, redes_por_defecto
     c.add_argument("--perfil", choices=list(PERFILES))
     c.add_argument("--hilos", type=int, choices=(1, 2))
     c.add_argument("--ros", type=int, choices=(6, 7))
@@ -4358,9 +4383,10 @@ def orden_desde_args(a):
     if a.cmd == "punto":
         s = a.sub
         if s == "crear":
-            p = {"nombre": a.nombre, "redes_abonados": a.redes}
-            for k, v in (("perfil", a.perfil), ("hilos", a.hilos), ("ros_version", a.ros),
-                         ("compat_v6", a.compat_v6), ("api_puerto", a.api_puerto), ("origen_ip", a.origen_ip)):
+            p = {"nombre": a.nombre}
+            for k, v in (("redes_abonados", a.redes), ("perfil", a.perfil), ("hilos", a.hilos),
+                         ("ros_version", a.ros), ("compat_v6", a.compat_v6), ("api_puerto", a.api_puerto),
+                         ("origen_ip", a.origen_ip)):
                 if v is not None:
                     p[k] = v
             return "punto.crear", p

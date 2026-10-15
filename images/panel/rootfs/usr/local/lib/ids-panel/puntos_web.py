@@ -16,6 +16,8 @@ vista_op, la tabla y la ficha) y sus clientes idspanel/orq.py y operaciones.py.
 Rutas (h = manejador H del dashboard; consulta/form = dict con un valor por campo):
   GET  /puntos                         lista con salud por etapas y retencion efectiva
   GET  /puntos/nuevo   POST /puntos/nuevo   alta -> punto.crear -> 303 /operaciones/<op_id>
+                                        (solo el nombre; la lista la abre en un modal y manda
+                                        ajax=1: {op_id} o {error}; /puntos?alta=1 abre el modal)
   GET  /operaciones/<op_id>             avance; al terminar, usuario y clave VPN UNA sola vez
   GET  /operaciones/<op_id>?json=1      el mismo avance en JSON (la pagina y la ficha lo consultan
                                         sin recargar; al terminar trae el cuerpo del resultado)
@@ -162,25 +164,24 @@ def _bit(d, accion, pid="", objetivo="", resultado="", extra="", quien=None, ip=
         pass
 
 
-# El alta solo pide nombre y prefijos (el user, 2026-10-15: «no preguntes»). RouterOS 7 no negocia
-# el cifrado de datos (solo manda IV_PROTO=2: lab, p001 y p002) y OpenVPN usa el respaldo del
-# servidor; con ros_version 6 ese respaldo es AES-256-CBC y conectan igual un RouterOS 6.49+
-# (cipher=aes256) y un 7 (su bloque sale con cipher=aes256-cbc). El perfil, el de por defecto.
+# El alta solo pide el nombre (el user, 2026-10-15: «los prefijos no van, solo es nombre del punto»).
+# Los prefijos los pone el orquestador (redes_por_defecto: lo privado y el CGNAT sin sus redes
+# reservadas) y se estrechan luego en la ficha. RouterOS 7 no negocia el cifrado de datos (solo
+# manda IV_PROTO=2: lab, p001 y p002) y OpenVPN usa el respaldo del servidor; con ros_version 6 ese
+# respaldo es AES-256-CBC y conectan igual un RouterOS 6.49+ (cipher=aes256) y un 7 (su bloque sale
+# con cipher=aes256-cbc). El perfil, el de por defecto.
 ROS_ALTA = 6
 PERFIL_ALTA = "reducido"
 
 
 def validar_formulario_punto(f):
-    """(params para punto.crear, mensaje de error). Solo nombre y prefijos: RouterOS y perfil no se
-    preguntan (ROS_ALTA, PERFIL_ALTA)."""
+    """(params para punto.crear, mensaje de error). Solo el nombre: prefijos, RouterOS y perfil no
+    se preguntan (si llegan, se ignoran)."""
     nombre = (f.get("nombre") or "").strip()
     if not RE_NOMBRE.match(nombre):
         return None, ("El nombre solo admite minúsculas, números y guiones, de 2 a 31 caracteres, "
                       "empezando por letra o número (p. ej. norte).")
-    redes, err = validar_redes(f.get("redes") or "")
-    if err:
-        return None, err
-    return {"nombre": nombre, "redes_abonados": redes, "perfil": PERFIL_ALTA, "ros_version": ROS_ALTA}, ""
+    return {"nombre": nombre, "perfil": PERFIL_ALTA, "ros_version": ROS_ALTA}, ""
 
 
 def validar_redes(texto):
@@ -1069,7 +1070,7 @@ def lista(h, consulta):
                retencion_html(retencion(pid, p), ahora), _acciones_fila(p)))
     if not filas:
         filas = ("<tr><td colspan=9 class=hint style='padding:16px'>Todavía no hay puntos. "
-                 "<a href='/puntos/nuevo'>Agrega el primero</a>.</td></tr>")
+                 "<a href='/puntos/nuevo' onclick='palta();return false;'>Agrega el primero</a>.</td></tr>")
     cola = est.get("cola") or {}
     en = cola.get("en_curso")
     linea_cola = ("en curso: %s %s (%s)" % (en.get("orden"), en.get("pid") or "", en.get("paso") or "")
@@ -1091,7 +1092,7 @@ def lista(h, consulta):
         "<div class=ptit><div><h1>Puntos</h1><p class=sub>Cada punto es un MikroTik con su propia VPN y su "
         "propio Suricata. Cola del orquestador: %s &middot; pendientes: %s &middot; caben más puntos: %s</p></div>"
         "<div class=ptbtns><a class='btn sec' href='/ajustes'>Volver a Ajustes</a>"
-        "<a class=btn href='/puntos/nuevo'>Agregar punto</a></div></div>%s%s"
+        "<a class=btn href='/puntos/nuevo' onclick='palta();return false;'>Agregar punto</a></div></div>%s%s"
         "<div class='card tablewrap'><table><thead><tr><th>Punto</th><th>Estado</th><th>Salud por etapas</th>"
         "<th>VPN</th><th>Espejo</th><th>Suricata</th><th class=num>Alertas 24 h</th>"
         "<th>Retención efectiva</th><th>Acciones</th></tr></thead><tbody>%s</tbody></table></div>"
@@ -1102,7 +1103,8 @@ def lista(h, consulta):
            filas, RETENCION_OBJETIVO_DIAS))
     # sin <meta refresh>: recargaria la pagina con el modal de Eliminar a medio escribir. Se recarga
     # cada 30 s solo si no hay ningun modal abierto.
-    return h._html(pagina(d, "Puntos", cuerpo + _MODAL_BAJA + _RECARGA_LISTA + _retomar_lista_html(d)))
+    return h._html(pagina(d, "Puntos", cuerpo + _MODAL_BAJA + modal_alta(cap) + _RECARGA_LISTA
+                          + _retomar_lista_html(d)))
 
 
 def _acciones_fila(p):
@@ -1154,7 +1156,8 @@ _MODAL_BAJA = (
 _RECARGA_LISTA = (
     "<script>setInterval(function(){function abierto(id){var m=document.getElementById(id);"
     "return m&&m.style.display&&m.style.display!=='none';}"
-    "if(!abierto('pbajaov')&&!abierto('askov')&&!abierto('pjov'))location.reload();},30000);</script>")
+    "if(!abierto('pbajaov')&&!abierto('paltaov')&&!abierto('askov')&&!abierto('pjov'))location.reload();},"
+    "30000);</script>")
 
 
 def _retomar_lista_html(d):
@@ -1176,12 +1179,56 @@ def _retomar_lista_html(d):
 # --------------------------------------------------------------------------------------------
 # Alta
 # --------------------------------------------------------------------------------------------
+_TXT_NOMBRE = ("<label class=l>Nombre del punto <span class=hint>(minúsculas, números y guiones; p. ej. "
+               "norte)</span></label>")
+_TXT_ALTA = ("<p class=hint>Los prefijos de abonados se ponen solos (todas las redes privadas y el CGNAT); "
+             "si hace falta, se cambian luego en la ficha del punto.</p>")
+
+
+def _caben_html(cap):
+    caben = (cap or {}).get(PERFIL_ALTA)
+    if not isinstance(caben, int):
+        return ""
+    return "<p class=hint>Caben ahora en el servidor: %d punto%s más.</p>" % (caben, "" if caben == 1 else "s")
+
+
+def modal_alta(cap):
+    """«Agregar punto» de la lista: un modal que solo pide el nombre (el user, 2026-10-15). Va por
+    fetch (ajax=1): si el orquestador acepta, a /operaciones/<op_id>, donde sale el avance y, al
+    terminar, la clave VPN una sola vez; si no, el error dentro del modal. Sin JavaScript, el enlace
+    lleva a /puntos/nuevo, la misma pregunta en una pagina."""
+    return (
+        "<div id=paltaov class=pbajaov><form method=post action='/puntos/nuevo' id=paltaf class=pbajabox "
+        "onsubmit='return paltaAjax(this)'>"
+        "<h3>Agregar punto</h3>"
+        "<input type=hidden name=op value='%s'>%s"
+        "<input class=t name=nombre id=paltan required maxlength=31 autocomplete=off "
+        "pattern='[a-z0-9][a-z0-9\\-]{1,30}' title='minúsculas, números y guiones, de 2 a 31 caracteres' "
+        "oninput='this.value=this.value.toLowerCase()'>"
+        "<p class=pwarn id=paltaerr hidden></p>%s%s"
+        "<div class=acciones><button class='btn sec' type=button onclick='paltano()'>Cancelar</button>"
+        "<button class=btn type=submit>Crear punto</button></div></form></div>"
+        "<script>function palta(){var n=document.getElementById('paltan');"
+        "document.getElementById('paltaerr').hidden=true;n.value='';"
+        "document.getElementById('paltaov').style.display='flex';n.focus();}"
+        "function paltano(){document.getElementById('paltaov').style.display='none';}"
+        "function paltaMal(f,m){var b=f.querySelector('button[type=submit]'),e=document.getElementById('paltaerr');"
+        "b.disabled=false;b.textContent='Crear punto';e.textContent=m;e.hidden=false;}"
+        "function paltaAjax(f){var b=f.querySelector('button[type=submit]');b.disabled=true;b.textContent='Creando…';"
+        "document.getElementById('paltaerr').hidden=true;"
+        "pjPost(f,{},function(j){if(j.op_id){location.href='/operaciones/'+j.op_id;return;}"
+        "paltaMal(f,j.error||'Sin respuesta del panel.');},function(m){paltaMal(f,m);});return false;}"
+        "document.addEventListener('keydown',function(e){if(e.key==='Escape')paltano();});"
+        "if(/[?&]alta=1/.test(location.search))document.addEventListener('DOMContentLoaded',palta);</script>"
+        % (esc(str(uuid.uuid4())), _TXT_NOMBRE, _caben_html(cap), _TXT_ALTA))
+
+
 def form_nuevo(h, valores=None, mensaje="", codigo=200):
+    """La pregunta del modal en una pagina: sin JavaScript, o el error de un envio sin ajax."""
     d = _dash(h)
     v = valores or {}
     token = v.get("op") if _operaciones.RE_OPID.match(v.get("op") or "") else str(uuid.uuid4())
     cap = (((nodos.leer_estado() or {}).get("capacidad") or {}).get("caben")) or {}
-    caben = cap.get(PERFIL_ALTA)
     cuerpo = (
         "<div class=ptit><h1>Agregar punto</h1><a class='btn sec' href='/puntos'>Volver a Puntos</a></div>"
         "<p class=sub>Un punto es un MikroTik que manda una copia de su tráfico (el "
@@ -1189,52 +1236,52 @@ def form_nuevo(h, valores=None, mensaje="", codigo=200):
         "los comandos para pegar en el MikroTik: sirven para RouterOS 6.49 o superior y para RouterOS 7.</p>%s%s"
         "<form method=post action='/puntos/nuevo' class=card onsubmit=\"var b=this.querySelector('button');"
         "if(b){b.disabled=true;b.textContent='Creando...';}\">"
-        "<input type=hidden name=op value='%s'>"
-        "<label class=l>Nombre del punto <span class=hint>(minúsculas, números y guiones; p. ej. norte)</span></label>"
-        "<input class=t name=nombre required maxlength=31 value='%s'>"
-        "<label class=l>Prefijos de abonados que se espejan <span class=hint>(CIDR, uno por línea)</span></label>"
-        "<textarea class=t name=redes rows=4 required placeholder='10.0.0.0/24'>%s</textarea>"
+        "<input type=hidden name=op value='%s'>%s"
+        "<input class=t name=nombre required maxlength=31 value='%s'>%s"
         "<div class=acciones><button class=btn type=submit>Crear punto</button>"
         "<a class='btn sec' href='/puntos'>Cancelar</a></div></form>"
-        % (aviso(mensaje), ("<p class=hint>Caben ahora en el servidor: %d punto%s más.</p>"
-                            % (caben, "" if caben == 1 else "s")) if isinstance(caben, int) else "",
-           esc(token), esc(v.get("nombre", "")), esc(v.get("redes", ""))))
+        % (aviso(mensaje), _caben_html(cap), esc(token), _TXT_NOMBRE, esc(v.get("nombre", "")), _TXT_ALTA))
     return h._html(pagina(d, "Agregar punto", cuerpo), codigo)
 
 
 def crear(h, form):
     """punto.crear con un op_id que viene del formulario: un doble clic o un reintento con el mismo
-    formulario no pide un segundo punto, lleva a la misma operacion."""
+    formulario no pide un segundo punto, lleva a la misma operacion. Con ajax=1 (el modal de la
+    lista): {op_id} si va, {error} si no."""
     d = _dash(h)
     usuario = _usuario(d)
+    ajax = bool(form.get("ajax"))
     token = form.get("op") or ""
     op_id = token if _operaciones.RE_OPID.match(token) else str(uuid.uuid4())
     previa = ops().obtener(op_id)
     if previa is None:
         params, err = validar_formulario_punto(form)
         if err:
-            return form_nuevo(h, form, err, 400)
+            return h._json({"error": err}, 400) if ajax else form_nuevo(h, form, err, 400)
         # reserva atomica: dos envios a la vez del mismo formulario no piden dos puntos
         previa = _reservar_op(op_id, usuario, "punto.crear", nombre=params["nombre"],
                               ros_version=params["ros_version"])
     if previa is not None:
         if previa.get("usuario") != usuario or previa.get("orden") != "punto.crear":
-            return h._html(pagina(d, "Operación duplicada", aviso("Ese formulario ya se uso para otra "
-                                                                   "operación. Recarga la página.")), 409)
+            msg = "Ese formulario ya se uso para otra operación. Recarga la página."
+            if ajax:
+                return h._json({"error": msg, "token": str(uuid.uuid4())}, 409)
+            return h._html(pagina(d, "Operación duplicada", aviso(msg)), 409)
         _bit(d, "PUNTO-CREAR", objetivo=previa.get("nombre") or "", resultado="REPETIDA",
              extra="op=%s" % op_id)
-        return h._redirect("/operaciones/%s" % op_id)
+        return h._json({"op_id": op_id}) if ajax else h._redirect("/operaciones/%s" % op_id)
     r = cliente().pedir("punto.crear", params, quien="panel:%s" % usuario, ip=_ip(d), op_id=op_id)
     _bit(d, "PUNTO-CREAR", objetivo=params["nombre"], resultado=r.get("codigo"),
-         extra="redes=%d perfil=%s ros=%s op=%s" % (len(params["redes_abonados"]), params["perfil"],
-                                                    params["ros_version"], op_id))
+         extra="perfil=%s ros=%s op=%s" % (params["perfil"], params["ros_version"], op_id))
     if r.get("codigo") in ("ACEPTADA", "OK"):
-        return h._redirect("/operaciones/%s" % op_id)
+        return h._json({"op_id": op_id}) if ajax else h._redirect("/operaciones/%s" % op_id)
     ops().quitar(op_id)
     codigo = 503 if r.get("codigo") in (_orq.SIN_SERVICIO, _orq.SIN_TOKEN) else (
         409 if "CONFLICTO" in str(r.get("codigo")) else 400)
-    form = dict(form, op=str(uuid.uuid4()))
-    return form_nuevo(h, form, _orq.traducir(r.get("codigo"), r.get("mensaje"), r.get("datos")), codigo)
+    msg = _orq.traducir(r.get("codigo"), r.get("mensaje"), r.get("datos"))
+    if ajax:
+        return h._json({"error": msg, "token": str(uuid.uuid4())}, codigo)
+    return form_nuevo(h, dict(form, op=str(uuid.uuid4())), msg, codigo)
 
 
 # --------------------------------------------------------------------------------------------
@@ -1765,7 +1812,7 @@ def _cuerpo_fin(d, vm):
             cuerpo += ("<details class=plogs><summary>Ver los últimos logs</summary>"
                        "<pre class=cmd>%s</pre></details>" % esc("\n".join(lineas)))
         if vm.get("orden") == "punto.crear":
-            cuerpo += "<p><a class=btn href='/puntos/nuevo'>Volver a intentarlo</a></p>"
+            cuerpo += "<p><a class=btn href='/puntos?alta=1'>Volver a intentarlo</a></p>"
         return cuerpo
     if vm.get("orden") == "punto.borrar":
         cuerpo += aviso("Punto borrado: se quitaron su VPN, su Suricata y sus datos del servidor y del panel.", "ok")

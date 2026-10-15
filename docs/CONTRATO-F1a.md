@@ -871,7 +871,7 @@ código `CANCELADA` y quedan en `orq.jsonl`; nunca se ejecutan (los `pid` no se 
 
 | Orden | Parámetros | Encola | Devuelve en `datos` |
 |---|---|---|---|
-| `punto.crear` | `nombre`, `redes_abonados[]` (≤ 64, IPv4 CIDR), `perfil` (def. `reducido`), `hilos` 1–2 (def. 1), `ros_version` 6/7 (def. 7), `compat_v6` `no`/`seclevel0`/`legacy`, `api_puerto` 8729/8728, `origen_ip?`, `pid?`, `n?` | sí | `pid`, `n`, `puerto`, `tun_net`, `usuario`, `clave` (solo la primera vez), `comandos` |
+| `punto.crear` | `nombre`, `redes_abonados[]` (≤ 64, IPv4 CIDR; opcional desde 2026-10-15: sin ella, `redes_por_defecto`, lo privado y el CGNAT menos las redes reservadas), `perfil` (def. `reducido`), `hilos` 1–2 (def. 1), `ros_version` 6/7 (def. 7), `compat_v6` `no`/`seclevel0`/`legacy`, `api_puerto` 8729/8728, `origen_ip?`, `pid?`, `n?` | sí | `pid`, `n`, `puerto`, `tun_net`, `usuario`, `clave` (solo la primera vez), `comandos` |
 | `punto.borrar` | `pid`, `confirmar` (= nombre) | sí | — |
 | `punto.arrancar` / `punto.parar` / `punto.reiniciar` | `pid`, `parte` ∈ vpn/suricata/todo | sí | `observado` |
 | `punto.ajustar` | `pid`, `perfil?`, `hilos?`, `redes_abonados?`, `compat_v6?`, `ros_version?`, `origen_ip?` | sí | lo recreado |
@@ -920,7 +920,7 @@ que encolan, `--no-esperar` (imprime el `op_id` y sale).
 | Orden CLI | Orden del socket |
 |---|---|
 | `ids-orq servicio` | (arranca el servicio) |
-| `ids-orq punto crear --nombre X --redes CIDR[,CIDR…] [--perfil reducido\|completo-low\|completo] [--hilos 1\|2] [--ros 6\|7] [--compat-v6[=seclevel0\|legacy]] [--api-puerto 8729\|8728] [--origen-ip IP]` | `punto.crear` (`--compat-v6` sin valor = `seclevel0`) |
+| `ids-orq punto crear --nombre X [--redes CIDR[,CIDR…]] [--perfil reducido\|completo-low\|completo] [--hilos 1\|2] [--ros 6\|7] [--compat-v6[=seclevel0\|legacy]] [--api-puerto 8729\|8728] [--origen-ip IP]` | `punto.crear` (`--compat-v6` sin valor = `seclevel0`) |
 | `ids-orq punto borrar <pid> --confirmar <nombre>` | `punto.borrar` |
 | `ids-orq punto estado [<pid>\|'*']` | `punto.estado` |
 | `ids-orq punto arrancar\|parar\|reiniciar <pid> [--parte vpn\|suricata\|todo]` | `punto.*` |

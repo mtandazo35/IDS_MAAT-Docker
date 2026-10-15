@@ -188,7 +188,8 @@ punto. No llama al orquestador en cada carga.
 
 Los pasos y los errores están en [ORQUESTADOR.md](ORQUESTADOR.md) §11.1. En pantalla:
 
-1. **Datos:** solo nombre y redes (decisión del user, 2026-10-15). La VPN sale compatible con
+1. **Datos:** solo el nombre, en un modal (decisión del user, 2026-10-15). Los prefijos los pone el
+   orquestador (lo privado y el CGNAT) y se cambian en la ficha. La VPN sale compatible con
    RouterOS 6.49+ y 7 y el perfil es `reducido`; se muestra cuántos puntos caben.
 2. **Creación:** barra de avance alimentada por `op.estado`.
 3. **Conectar el MikroTik:** pestañas **v7** y **v6** con bloques separados para copiar

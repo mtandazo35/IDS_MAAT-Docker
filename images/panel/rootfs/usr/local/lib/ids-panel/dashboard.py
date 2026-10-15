@@ -12485,7 +12485,9 @@ prefijos»;</li>
 las que pesan al menos el 1 %). <b>No guarda nada</b>: revisa la lista, quita lo que no sea de
 abonados (servidores, gestión) y pulsa <b>Guardar prefijos</b>.</li>
 </ul>
-<p>Los prefijos se eligen al dar de alta el punto y se cambian en su ficha (<b>Prefijos</b>): el
+<p>Al dar de alta el punto los prefijos se ponen solos: todas las redes privadas y el CGNAT
+(<code>10/8</code>, <code>172.16/12</code>, <code>192.168/16</code>, <code>100.64/10</code>) menos las que
+usa el propio servidor (túneles, Docker, gestión). Se cambian en su ficha (<b>Prefijos</b>): el
 orquestador <b>reinicia el Suricata del punto</b> para que tome los nuevos (mientras dura el reinicio ese
 punto no inspecciona nada) y después hay que <b>volver a aplicar el espejo</b> para
 llevarlos a la address-list <code>ids-vigilados</code> del router (con la misma vista previa). Al pulsar
@@ -13377,9 +13379,10 @@ fila), nunca al que tengas elegido en el selector. En «Todos» las acciones mas
 </ul>
 <h3>Alta</h3>
 <ol>
-<li><b>Puntos &rarr; Agregar punto</b>: solo el nombre y los <b>prefijos de abonados</b> que se espejan.
-No se pregunta la versión: la VPN vale para RouterOS 6.49+ y 7 (los comandos traen el bloque de cada
-una) y el perfil es el reducido. Un doble clic no crea dos puntos.</li>
+<li><b>Puntos &rarr; Agregar punto</b> abre una ventana que pide <b>solo el nombre</b>. No se preguntan
+los prefijos (salen todas las redes privadas y el CGNAT; se cambian luego en la ficha), ni la versión: la
+VPN vale para RouterOS 6.49+ y 7 (los comandos traen el bloque de cada una) y el perfil es el reducido.
+Un doble clic no crea dos puntos.</li>
 <li>El servidor crea la VPN y el Suricata del punto; se ve el avance paso a paso, con lo que tarda
 cada uno, sin que la página se recargue.</li>
 <li>Al terminar salen la clave de la VPN y los comandos para el MikroTik con la clave puesta. La ficha
