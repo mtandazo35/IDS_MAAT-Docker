@@ -1002,7 +1002,8 @@ _O_NONBLOCK = getattr(os, "O_NONBLOCK", 0)
 _O_EXTRA = getattr(os, "O_BINARY", 0) | getattr(os, "O_CLOEXEC", 0)
 TOPE_STATUS_OVPN = 1024 * 1024        # openvpn-status.log: un cliente, unas pocas líneas
 TOPE_TZSP = 64 * 1024                  # tzsp.json: un objeto pequeño
-TOPE_STATS_EVE = 512 * 1024            # cola de eve.json donde buscar el último «stats»
+TOPE_STATS_EVE = 512 * 1024            # cola de eve.json donde buscar el último «stats» (yaml viejo)
+TOPE_STATS = 64 * 1024                 # cola de stats.json (un stats con totales y sin hilos: ~8 KB)
 TOPE_PRIMER_TS = 64 * 1024             # principio de un eve/dns (descomprimido)
 TOPE_PRIMER_TS_GZ = 1024 * 1024        # comprimido que se lee como mucho para sacar ese principio
 
@@ -1137,14 +1138,14 @@ def _ts_suricata(txt):
             return None
 
 
-def leer_stats_eve(path, t):
-    vacio = {"stats_edad_s": None, "reglas_cargadas": None, "reglas_fallidas": None,
-             "kernel_packets": None, "kernel_drops": None}
-    try:
-        bloque = leer_de_contenedor(path, TOPE_STATS_EVE, desde_el_final=True).decode(
-            "utf-8", errors="replace")
-    except OSError:
-        return vacio
+STATS_VACIO = {"stats_edad_s": None, "reglas_cargadas": None, "reglas_fallidas": None,
+               "kernel_packets": None, "kernel_drops": None}
+
+
+def _ultimo_stats(path, tope, t):
+    """(epoch o None, contadores) del último «stats» en los últimos `tope` bytes de `path`, o None
+    si no hay ninguno. Lanza OSError (FicheroNoSeguro incluido) si no se puede leer."""
+    bloque = leer_de_contenedor(path, tope, desde_el_final=True).decode("utf-8", errors="replace")
     for linea in reversed(bloque.splitlines()):
         if '"event_type":"stats"' not in linea:
             continue
@@ -1156,11 +1157,42 @@ def leer_stats_eve(path, t):
         motores = ((st.get("detect") or {}).get("engines")) or []
         cap = st.get("capture") or {}
         ts = _ts_suricata(ev.get("timestamp"))
-        return {"stats_edad_s": max(0, t - ts) if ts else None,
-                "reglas_cargadas": sum(int(m.get("rules_loaded", 0)) for m in motores) if motores else None,
-                "reglas_fallidas": sum(int(m.get("rules_failed", 0)) for m in motores) if motores else None,
-                "kernel_packets": cap.get("kernel_packets"), "kernel_drops": cap.get("kernel_drops")}
-    return vacio
+        return ts, {"stats_edad_s": max(0, t - ts) if ts else None,
+                    "reglas_cargadas": sum(int(m.get("rules_loaded", 0)) for m in motores) if motores else None,
+                    "reglas_fallidas": sum(int(m.get("rules_failed", 0)) for m in motores) if motores else None,
+                    "kernel_packets": cap.get("kernel_packets"), "kernel_drops": cap.get("kernel_drops")}
+    return None
+
+
+def leer_stats_eve(path, t):
+    """El último «stats» de la cola de eve.json. Con espejo real no basta: entre dos stats del eve
+    caben ~1,6 MB de eventos y la cola de TOPE_STATS_EVE casi nunca lo tiene. Solo queda para los
+    puntos con el suricata.yaml de antes de stats.json (ver leer_stats_punto)."""
+    try:
+        r = _ultimo_stats(path, TOPE_STATS_EVE, t)
+    except OSError:
+        return dict(STATS_VACIO)
+    return r[1] if r else dict(STATS_VACIO)
+
+
+def leer_stats_punto(datos, t):
+    """Contadores del Suricata del punto (`datos` = /srv/ids/datos/<pid>): el «stats» más reciente
+    de stats.json y stats.json.1 (logrotate corta con copytruncate y, justo después, el vivo está
+    vacío). Si no se puede leer ninguno de los dos (punto con el yaml de antes, hasta
+    `punto.reconfigurar`), la cola de eve.json como antes."""
+    datos = Path(datos)
+    mejor, leido = None, False
+    for nombre in ("stats.json", "stats.json.1"):
+        try:
+            r = _ultimo_stats(datos / nombre, TOPE_STATS, t)
+        except OSError:
+            continue
+        leido = True
+        if r and (mejor is None or (r[0] or 0) > (mejor[0] or 0)):
+            mejor = r
+    if leido:
+        return mejor[1] if mejor else dict(STATS_VACIO)
+    return leer_stats_eve(datos / "eve.json", t)
 
 
 def leer_reglas():
@@ -2448,7 +2480,7 @@ class Orquestador:
                         pico = int((d / "memory.peak").read_text().strip()) // (1024 * 1024)
                     break
         t = ahora()
-        st = leer_stats_eve(ruta("/srv/ids/datos/%s/eve.json" % p["pid"]), t)
+        st = leer_stats_punto(ruta("/srv/ids/datos/%s" % p["pid"]), t)
         return {"memoria_actual_mb": actual, "memoria_pico_mb": pico,
                 "kernel_packets": st["kernel_packets"], "kernel_drops": st["kernel_drops"],
                 "reglas_cargadas": st["reglas_cargadas"],
@@ -2515,7 +2547,7 @@ class Orquestador:
                            "imagen": i["imagen"] if i else None}
         ns = self._netns.get(pid) or {"coherente": None, "vpn": None, "suricata": None}
         tz = leer_tzsp(ruta("/srv/ids/run/%s/tzsp.json" % pid), t)
-        su = leer_stats_eve(ruta("/srv/ids/datos/%s/eve.json" % pid), t)
+        su = leer_stats_punto(ruta("/srv/ids/datos/%s" % pid), t)
         avisos = self._avisos_espejo(p, tz, su, t)
         if ns.get("coherente") is False:
             avisos.append("NETNS-DISTINTO")

@@ -3,15 +3,20 @@
 
 Sano (exit 0) si:
   - /proc/1/cmdline contiene "suricata", y
-  - en los últimos 512 KiB de /var/log/suricata/eve.json hay una línea con
-    "event_type":"stats" cuyo timestamp tiene menos de 120 s, y
+  - el último "event_type":"stats" de /var/log/suricata/stats.json (o de stats.json.1, el que
+    deja logrotate al cortar con copytruncate) tiene menos de 120 s, y
   - ese stats es posterior al arranque del PID 1 actual (/proc/1/stat + btime de /proc/stat):
     eve.json se abre en modo añadir y, tras un reinicio, su cola trae el último stats de la
     instancia ANTERIOR; sin esto el contenedor nuevo salía sano antes de cargar las reglas.
     Si no se puede saber cuándo arrancó, no se exige.
 
+Si no hay stats.json (punto con el suricata.yaml de antes, hasta `punto.reconfigurar`) se busca
+como antes en los últimos 512 KiB de eve.json, que con espejo real no basta: entre dos stats del
+eve caben ~1,6 MB de eventos.
+
 Nunca falla por falta de tráfico: el evento stats sale cada 30 s aunque no llegue nada.
-Para las pruebas acepta IDS_EVE (ruta del eve) e IDS_AHORA (epoch) en el entorno.
+Para las pruebas acepta IDS_EVE (ruta del eve; stats.json se busca a su lado) e IDS_AHORA (epoch)
+en el entorno.
 """
 import json
 import os
@@ -24,6 +29,7 @@ CMDLINE = "/proc/1/cmdline"
 STAT_PID1 = "/proc/1/stat"
 STAT_SISTEMA = "/proc/stat"
 COLA_BYTES = 512 * 1024
+COLA_STATS_BYTES = 64 * 1024     # un stats con totales y sin hilos ocupa ~8 KB
 MAX_EDAD_S = 120
 
 
@@ -107,6 +113,24 @@ def ultimo_stats(ruta, nbytes=COLA_BYTES):
     return mejor
 
 
+def ultimo_stats_punto(eve):
+    """(epoch, de dónde) del stats más reciente: stats.json y stats.json.1 junto al eve; si no
+    existe ninguno de los dos, la cola del eve. (None, de dónde) si no hay."""
+    base = os.path.dirname(eve)
+    mejor, hay_fichero = None, False
+    for nombre in ("stats.json", "stats.json.1"):
+        try:
+            t = ultimo_stats(os.path.join(base, nombre), COLA_STATS_BYTES)
+        except FileNotFoundError:
+            continue
+        hay_fichero = True
+        if t is not None and (mejor is None or t > mejor):
+            mejor = t
+    if hay_fichero:
+        return mejor, os.path.join(base, "stats.json")
+    return ultimo_stats(eve), "los últimos %d KiB de %s" % (COLA_BYTES // 1024, eve)
+
+
 def comprobar(eve=EVE, ahora=None, cmdline=None, inicio=None):
     """(sano, motivo). `inicio`: epoch del arranque del PID 1; si no se pasa y el cmdline se lee
     del /proc real, se lee también de ahí (con un cmdline dado, el proceso es de prueba y su
@@ -120,11 +144,11 @@ def comprobar(eve=EVE, ahora=None, cmdline=None, inicio=None):
     if b"suricata" not in cmdline:
         return False, "el PID 1 no es suricata"
     try:
-        t = ultimo_stats(eve)
+        t, origen = ultimo_stats_punto(eve)
     except OSError as e:
-        return False, "no se puede leer %s: %s" % (eve, e.strerror or e)
+        return False, "no se puede leer %s: %s" % (e.filename or eve, e.strerror or e)
     if t is None:
-        return False, "sin evento stats en los últimos %d KiB de %s" % (COLA_BYTES // 1024, eve)
+        return False, "sin evento stats en %s" % origen
     edad = ahora - t
     if edad >= MAX_EDAD_S:
         return False, "último stats de hace %d s (máximo %d s)" % (edad, MAX_EDAD_S)

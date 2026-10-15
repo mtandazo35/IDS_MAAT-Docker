@@ -201,6 +201,9 @@ Lo que trae la plantilla, ajustado para espejo:
 - `checksum-validation: no`;
 - un eve principal sin `flow`, `dns`, `quic`, `anomaly`, `ike` ni `bittorrent-dht`, con `stats`
   cada 30 s;
+- un `stats.json` aparte, solo con los `stats` (~8 KB cada 30 s): es de donde los leen el
+  orquestador, `salud-suricata` y el panel. Con espejo real, entre dos `stats` del eve caben
+  ~1,6 MB de eventos y buscarlos en la cola del eve fallaba casi siempre (punto «sin datos»);
 - un `dns.json` aparte, solo con las consultas;
 - `local.rules` con el dataset `feeds-dominios`.
 
@@ -330,7 +333,7 @@ management /run/ids-ctl/ovpn-mgmt.sock unix
 | Contenedor | Healthcheck (solo «el proceso está vivo») | Nunca falla por |
 |---|---|---|
 | `vpn` | `openvpn` vivo y con más de 5 s arriba según s6 (no en bucle de reinicios), un socket TCP en LISTEN en el `port` de `server.conf` (`/proc/net/tcp` del netns), relé vivo, y `tzsp.json` con menos de 90 s (el latido de §5) | que no llegue espejo, que el punto esté pausado o que el MikroTik esté desconectado |
-| `suricata` | proceso vivo y el último `stats` del eve con menos de 120 s **y posterior al arranque del proceso actual** (el eve se abre en modo añadir: tras un reinicio, el último stats es de la instancia anterior) | que no haya tráfico |
+| `suricata` | proceso vivo y el último `stats` de `stats.json` (o de `stats.json.1`, recién rotado) con menos de 120 s **y posterior al arranque del proceso actual** (se abre en modo añadir: tras un reinicio, el último stats es de la instancia anterior). Sin `stats.json` (yaml de antes), la cola de 512 KiB del eve | que no haya tráfico |
 
 - **Sin espejo no es un fallo del contenedor.** Es **salud funcional** y la vigila el orquestador
   ([ORQUESTADOR.md](ORQUESTADOR.md) §8):
@@ -425,6 +428,9 @@ y además  MemAvailable ≥ mem_limit(nuevo) + 512 MB
     número) y `nocompress` (F2, CONTRATO-F2 §9);
   - **sin `copytruncate`**;
   - `postrotate`: el orquestador pide `reopen-log-files` a cada instancia.
+  - `stats.json`: aparte, `size 5M`, `rotate 1` y **con `copytruncate`** (Suricata lo abre en modo
+    añadir); solo queda `stats.json.1`, que los lectores miran también para no quedarse sin dato
+    justo después del corte. No cuenta para la retención.
 
   **Retención por fecha (F2): 30 días.** El orquestador comprime los rotados conservando su mtime,
   poda lo que tiene más de 30 días y, por debajo del 15 % libre, borra antes de tiempo los rotados

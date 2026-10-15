@@ -187,6 +187,16 @@ else
   echo "---- suricata (docker logs ids-p001-suricata)"; docker logs ids-p001-suricata 2>&1 | tail -n 40
   conectado && diag_vpn
 fi
+stats_json() {   # el Suricata real escribe sus stats también en stats.json (2.º eve-log con stats)
+  grep -q '"event_type":"stats"' "$R/srv/ids/datos/p001/stats.json" 2>/dev/null
+}
+if esperar 90 stats_json; then
+  ok "stats en datos/p001/stats.json"
+else
+  mal "Suricata no escribe stats.json"
+  ls -la "$R/srv/ids/datos/p001/" 2>&1
+  echo "---- suricata (docker logs ids-p001-suricata)"; docker logs ids-p001-suricata 2>&1 | tail -n 40
+fi
 echo "  info memoria y CPU tras el paso 2:"
 docker stats --no-stream --format '         {{.Name}} {{.MemUsage}} cpu {{.CPUPerc}}' ids-p001-vpn ids-p001-suricata 2>&1
 

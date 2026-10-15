@@ -115,6 +115,42 @@ def main():
     check("los contadores son del punto pedido: p002 sin eve.json no hereda los de p001",
           ns["suricata_stats"]("p002") == {}, ns["suricata_stats"]("p002"))
 
+    # --- stats.json: con espejo real la cola del eve no tiene ningun stats -------------
+    # (lab 2026-10-15: ~1,6 MB de eventos entre dos stats; el punto salia «sin datos»)
+    def stats_ts(ts, kp):
+        return json.dumps({"timestamp": ts, "event_type": "stats",
+                           "stats": {"capture": {"kernel_packets": kp, "kernel_drops": 0}}}) + "\n"
+
+    def escribir(nombre, *lineas):
+        with open(os.path.join(ns["nodos"].dir_eventos("p001"), nombre), "w", encoding="utf-8") as f:
+            f.writelines(lineas)
+
+    relleno = json.dumps({"event_type": "tls", "tls": {"sni": "x" * 900}}) + "\n"
+    eve(ns, stats_ts("2026-10-15T21:00:12.152516+0000", 5), *([relleno] * 4000))
+    check("eve de varios MB sin stats en su cola: sin stats.json no hay contadores",
+          os.path.getsize(ruta_eve(ns)) > 3 * 1024 * 1024 and ns["suricata_stats"]() == {},
+          ns["suricata_stats"]())
+    escribir("stats.json", stats_ts("2026-10-15T21:00:42.154027+0000", 3816801))
+    check("con stats.json se leen sus contadores aunque el eve sea enorme",
+          (ns["suricata_stats"]().get("capture") or {}).get("kernel_packets") == 3816801,
+          ns["suricata_stats"]())
+    escribir("stats.json")
+    escribir("stats.json.1", stats_ts("2026-10-15T21:00:12.152516+0000", 1),
+             stats_ts("2026-10-15T21:01:12.155796+0000", 4000000))
+    check("recien cortado por logrotate (stats.json vacio) vale el ultimo de stats.json.1",
+          (ns["suricata_stats"]().get("capture") or {}).get("kernel_packets") == 4000000,
+          ns["suricata_stats"]())
+    escribir("stats.json", stats_ts("2026-10-15T21:01:42.157248+0000", 4100000))
+    check("entre stats.json y stats.json.1 gana el mas reciente",
+          (ns["suricata_stats"]().get("capture") or {}).get("kernel_packets") == 4100000,
+          ns["suricata_stats"]())
+    escribir("stats.json")
+    os.remove(os.path.join(ns["nodos"].dir_eventos("p001"), "stats.json.1"))
+    eve(ns, stats_ok)
+    check("con stats.json vacio no se vuelve al eve: no hay contadores recientes",
+          ns["suricata_stats"]() == {}, ns["suricata_stats"]())
+    os.remove(os.path.join(ns["nodos"].dir_eventos("p001"), "stats.json"))
+
     # --- umbrales coherentes -----------------------------------------------------------
     check("el umbral de perdida es un porcentaje bajo, no un valor simbolico",
           0 < ns["SALUD_DROPS"] <= 0.05, ns["SALUD_DROPS"])

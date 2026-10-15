@@ -30,6 +30,17 @@ LOGROTATE_CONTRATO = """/srv/ids/datos/*/eve.json /srv/ids/datos/*/dns.json {
         /usr/local/bin/ids-orq reabrir-logs >/dev/null 2>&1 || true
     endscript
 }
+# Solo las estadísticas de Suricata (~8 KB cada 30 s): se guarda el anterior y nada más.
+# copytruncate porque Suricata lo abre en modo añadir; el lector mira también stats.json.1
+# para no quedarse sin dato justo después del corte.
+/srv/ids/datos/*/stats.json {
+    size 5M
+    rotate 1
+    copytruncate
+    nocompress
+    missingok
+    notifempty
+}
 /srv/ids/estado/orq.jsonl {
     monthly
     rotate 24
@@ -52,7 +63,10 @@ class Ficheros(unittest.TestCase):
     def test_logrotate_exacto(self):
         txt = (H / "logrotate" / "ids-maat.conf").read_text(encoding="utf-8")
         self.assertEqual(txt, LOGROTATE_CONTRATO)
-        self.assertNotIn("copytruncate", txt)
+        # eve/dns sin copytruncate (se reabren con reopen-log-files); solo stats.json lo lleva
+        eve_dns = txt.split("}", 1)[0]
+        self.assertNotIn("copytruncate", eve_dns)
+        self.assertEqual(txt.count("copytruncate"), 2)       # el comentario + el de stats.json
 
     def test_modulos_sysctl_ssh(self):
         mods = [x for x in (H / "modules" / "ids.conf").read_text(encoding="utf-8").splitlines()
@@ -104,6 +118,33 @@ class LogrotateReal(unittest.TestCase):
             self.assertRegex(rotados[0], r"^eve\.json-\d{8}-\d{6}$")
             self.assertFalse(eve.exists())                          # nocreate: lo reabre Suricata
             self.assertEqual(marca.read_text().strip(), "reabrir-logs")
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+
+    def test_stats_json_copytruncate(self):
+        """stats.json: se corta en su sitio (mismo inodo, Suricata sigue escribiendo en modo
+        añadir) y queda un solo anterior, stats.json.1; no pide reabrir los logs."""
+        d = Path(tempfile.mkdtemp(prefix="lr-"))
+        try:
+            marca = d / "reabierto"
+            orq = d / "ids-orq"
+            orq.write_text("#!/bin/sh\necho \"$@\" > %s\n" % marca, encoding="utf-8")
+            orq.chmod(0o755)
+            conf = LOGROTATE_CONTRATO.replace("/srv/ids", str(d / "srv/ids")).replace("/usr/local/bin/ids-orq", str(orq))
+            (d / "lr.conf").write_text(conf, encoding="utf-8")
+            st = d / "srv/ids/datos/p001/stats.json"
+            st.parent.mkdir(parents=True)
+            for vuelta in ("primero", "segundo"):
+                st.write_text('{"event_type":"stats","v":"%s"}\n' % vuelta, encoding="utf-8")
+                ino = st.stat().st_ino
+                r = subprocess.run(["logrotate", "-f", "-s", str(d / "estado"), str(d / "lr.conf")],
+                                   capture_output=True, text=True)
+                self.assertEqual(r.returncode, 0, r.stderr)
+                self.assertEqual(st.stat().st_ino, ino)
+                self.assertEqual(st.stat().st_size, 0)
+            self.assertEqual(sorted(f.name for f in st.parent.iterdir()), ["stats.json", "stats.json.1"])
+            self.assertIn("segundo", (st.parent / "stats.json.1").read_text(encoding="utf-8"))
+            self.assertFalse(marca.exists())
         finally:
             shutil.rmtree(d, ignore_errors=True)
 

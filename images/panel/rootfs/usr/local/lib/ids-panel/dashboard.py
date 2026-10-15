@@ -4774,29 +4774,51 @@ SALUD_TZSP_MUDO = 90    # el receptor reescribe tzsp.json cada 30 s
 SALUD_ESTADO_VIEJO = 120   # estado.json lo reescribe el orquestador cada 15 s
 
 def suricata_stats(pid=None, tam=3 * 1024 * 1024):
-    """Los contadores del ultimo evento 'stats' del eve.json del punto.
+    """Los contadores del ultimo evento 'stats' del Suricata del punto.
 
     Suricata publica ahi mucho mas que los drops: si un memcap se agota, empieza a tirar
     flujos o a no reensamblar, y las alertas que faltan no dejan ningun rastro. Mirar
     solo kernel_drops deja ciego justo al caso mas enganoso, porque el kernel no ha
-    tirado nada: lo tira Suricata por quedarse sin memoria."""
+    tirado nada: lo tira Suricata por quedarse sin memoria.
+
+    Se leen de stats.json (solo stats, ~8 KB cada 30 s) y de stats.json.1 (logrotate corta
+    con copytruncate); vale el mas reciente. Sin ninguno de los dos (punto con el
+    suricata.yaml de antes) se buscan en la cola de `tam` bytes del eve.json, que con espejo
+    real puede no tener ninguno: entre dos stats caben ~1,6 MB de eventos."""
     pid = nodos.exigir_pid(pid if pid is not None else nodos.nodo_actual())
-    ruta = nodos.eve_vivo(pid)
-    try:
+
+    def ultimo(ruta, nbytes):
+        # (timestamp, stats) del ultimo 'stats' de la cola, o None; OSError si no se lee
         with open(ruta, "rb") as f:
             f.seek(0, 2)
-            f.seek(max(0, f.tell() - tam))
+            f.seek(max(0, f.tell() - nbytes))
             cola = f.read().decode("utf-8", "replace").split("\n")
-    except OSError:
-        return {}
-    for linea in reversed(cola):
-        if '"event_type":"stats"' not in linea.replace(" ", ""):
-            continue
+        for linea in reversed(cola):
+            if '"event_type":"stats"' not in linea.replace(" ", ""):
+                continue
+            try:
+                ev = json.loads(linea)
+            except ValueError:
+                continue
+            return str(ev.get("timestamp") or ""), (ev.get("stats") or {})
+        return None
+
+    mejor, leido = None, False
+    for nombre in ("stats.json", "stats.json.1"):
         try:
-            return (json.loads(linea).get("stats") or {})
-        except ValueError:
+            r = ultimo(os.path.join(nodos.dir_eventos(pid), nombre), 64 * 1024)
+        except OSError:
             continue
-    return {}
+        leido = True
+        # mismo formato y zona (la UTC del contenedor) en los dos: se comparan como texto
+        if r and (mejor is None or r[0] > mejor[0]):
+            mejor = r
+    if not leido:
+        try:
+            mejor = ultimo(nodos.eve_vivo(pid), tam)
+        except OSError:
+            return {}
+    return mejor[1] if mejor else {}
 
 def salud_memcaps(st):
     """Los contadores de memoria agotada que NO deberian ser nunca mayores que cero."""
@@ -5246,8 +5268,11 @@ def salud_punto(pid):
     su_ok = (_vivo(cont, "suricata") and isinstance(kp, int) and kp > 0
              and st_edad is not None and st_edad < SALUD_EVE_MUDO)
     et["suricata"] = _etapa(su_ok and (drops_pct is None or drops_pct <= SALUD_DROPS * 100),
+                            ("contenedor %s, sin estadísticas recientes del Suricata" % (
+                                (cont.get("suricata") or {}).get("estado", "?"))) if kp is None else
                             "contenedor %s, %s paquetes capturados, %s descartados%s" % (
-                                (cont.get("suricata") or {}).get("estado", "?"), kp, kd,
+                                (cont.get("suricata") or {}).get("estado", "?"), kp,
+                                "?" if kd is None else kd,
                                 (" (%.2f%%)" % drops_pct) if drops_pct is not None else ""),
                             kernel_packets=kp, kernel_drops=kd, drops_pct=drops_pct,
                             alcance="acumulado desde el último arranque del Suricata del punto",
@@ -5302,6 +5327,8 @@ def salud_punto(pid):
     elif not mk:
         estado, motivo = "esperando", ("VPN lista: esperando a que el MikroTik conecte (pega en el router "
                                        "los comandos de la ficha del punto)")
+    elif tz_ok and kp is None:
+        estado, motivo = "sin datos", "llega el espejo pero el Suricata no publica sus estadísticas"
     elif not (tz_ok and isinstance(kp, int) and kp > 0):
         estado, motivo = "sin datos", "VPN arriba pero no llega espejo procesado"
     elif all(e["ok"] for e in et.values()):
@@ -12488,7 +12515,9 @@ usuarios en el selector de nodo, y con detalle en <b>Puntos</b>:</p>
 <ul>
 <li><b>VPN</b>: el MikroTik tiene el túnel arriba.</li>
 <li><b>Espejo TZSP</b>: llega el espejo al receptor del punto.</li>
-<li><b>Suricata</b>: cuenta paquetes capturados y sus <b>descartes</b>.</li>
+<li><b>Suricata</b>: cuenta paquetes capturados y sus <b>descartes</b>, sacados de las estadísticas
+que el Suricata del punto publica cada 30 s. Si llega el espejo pero no hay estadísticas recientes,
+el punto sale <b>sin datos</b> con ese motivo: no es que falte tráfico, es que el Suricata no informa.</li>
 <li><b>Eventos</b>: el registro de eventos del punto se está escribiendo.</li>
 <li><b>Datos consultables</b>: el panel puede leerlos (reporte, eventos, histórico).</li>
 </ul>

@@ -116,6 +116,20 @@ outputs:
             threads: no
             deltas: no
 
+  # stats también aparte: con espejo real entre dos stats del eve caben ~1,6 MB (2 300 eventos
+  # en 30 s) y quien buscaba el último en la cola del eve no lo encontraba (punto «sin datos»).
+  # Este crece ~8 KB cada 30 s pase lo que pase; lo leen el orquestador, salud-suricata y el
+  # panel. En el eve siguen para la página Eventos. Lo rota logrotate con copytruncate.
+  - eve-log:
+      enabled: yes
+      filetype: regular
+      filename: stats.json
+      types:
+        - stats:
+            totals: yes
+            threads: no
+            deltas: no
+
   # DNS aparte y solo consultas.
   - eve-log:
       enabled: yes

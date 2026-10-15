@@ -4,6 +4,7 @@ Escribe lo que en produccion escriben el orquestador y Suricata:
   RUN/estado.json            puntos publicados por el orquestador
   RUN/<pid>/tzsp.json        contadores del espejo
   DATOS/<pid>/eve.json       eventos de Suricata (alert, dns, tls, http, flow, stats)
+  DATOS/<pid>/stats.json     solo los stats, como el 2.º eve-log de la plantilla
   PANEL/estado/abonados.json mapa pid|ip -> abonado (lo que daria la API del MikroTik)
 
   python generar_datos.py <dir-base> [--horas 26] [--vivo]
@@ -408,6 +409,7 @@ def main():
         # vaciar, no borrar: en Windows os.remove falla (WinError 32) si el panel lo tiene abierto
         os.makedirs(os.path.dirname(ruta), exist_ok=True)
         open(ruta, "w").close()
+        open(os.path.join(datos, pid, "stats.json"), "w").close()
         if p.get("sin_eventos"):
             continue
         fin = ahora - p.get("sin_espejo_h", 0) * 3600
@@ -424,6 +426,7 @@ def main():
             t += 300
         evs = sorted(evs + st, key=lambda e: e["timestamp"])
         escribir(ruta, evs, "w")
+        escribir(os.path.join(datos, pid, "stats.json"), st, "w")
         print("%s %-12s %6d eventos (%d alertas)" % (pid, p["nombre"], len(evs),
               sum(1 for e in evs if e["event_type"] == "alert")))
     estado(run, datos, ahora, inicio, ultimo_stats)
@@ -447,6 +450,7 @@ def main():
                 s = stats(t, int(t - inicio), pk, pk // 2000, mem)
                 ultimo_stats[pid] = dict(s, _t=t)
                 evs.append(s)
+                escribir(os.path.join(datos, pid, "stats.json"), [s])
             escribir(os.path.join(datos, pid, "eve.json"), evs)
         estado(run, datos, t, inicio, ultimo_stats)
         t_prev = t
