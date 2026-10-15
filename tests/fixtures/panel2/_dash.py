@@ -150,6 +150,10 @@ def restaurar():
             os.environ.pop(k, None)
         else:
             os.environ[k] = v
+    # la CLI (`ids-panel`, llamada aqui en el mismo proceso) pone IDS_TZ en TZ con tzset, como el
+    # panel al arrancar: con TZ ya devuelta, que la libc tambien vuelva a la hora de antes
+    if hasattr(time, "tzset"):
+        time.tzset()
     sys.modules.pop("dashboard", None)
 
 

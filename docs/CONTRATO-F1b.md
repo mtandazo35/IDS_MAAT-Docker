@@ -225,7 +225,7 @@ está cómo se usa.
 |---|---|
 | §0.2 fila 12: matriz del release `[vpn, suricata]` | `[panel, vpn, suricata]` |
 | §2.1: `/srv/ids/panel/` no se crea | `/srv/ids/panel/` `root:10500` **2770** (los ficheros del panel, 0600 de 10500, heredan el grupo); `/srv/ids/core/` `root:root` 0700 con `compose.yml` 0600. Los crea `ids-orq panel aplicar` |
-| §4.9 `ids.conf` | clave opcional `ZONA_HORARIA=<Región/Ciudad>` (`install.sh --zona`); sin ella, UTC. Sin `--zona`, una reinstalación conserva la que hubiera |
+| §4.9 `ids.conf` | clave `ZONA_HORARIA=<Región/Ciudad>` (`install.sh --zona`, por defecto `America/Guayaquil`; el instalador la escribe siempre). Sin `--zona`, una reinstalación conserva la que hubiera. Corrección 2026-10-15 («UTC dentro, Ecuador fuera»): el instalador pone también el **servidor** en esa zona (journal, logs, nombres de los rotados, timers); los contenedores siguen en UTC y todo lo que se muestra va en esa zona |
 | §4.10 `imagenes.json` | añade `"panel"`. Con `"dev": false`, `ghcr.io/mtandazo35/ids-maat-panel@sha256:<64 hex>`. El orquestador la acepta ausente (un `imagenes.json` de F1a sigue valiendo para los puntos); `panel aplicar` la exige |
 | §6.4 `release.json` | `imagenes.panel` por digest (obligatoria: `release_json.py --panel`) y un job `visibilidad` tras `release` |
 | §5.15 `ids-orq.service` | `RuntimeDirectoryPreserve=yes`: el panel monta `/run/ids-orq`; si systemd lo borrara al reiniciar el servicio, el montaje se quedaría con el directorio viejo, sin socket |
@@ -311,6 +311,7 @@ networks:
   ni supervisado como tal), y `install.sh` no lo toma por un contenedor ajeno con puertos.
 - `IDS_PROXY` = `IPS_PROXY` de `ids.conf` (IPs sueltas sin `/32`); `IDS_EMPRESA` = `NOMBRE_DNS`;
   `IDS_TZ` = `ZONA_HORARIA` o `America/Guayaquil` (hora de Ecuador); `TZ` del contenedor siempre `UTC` (la zona solo al mostrar).
+  El servidor sí va en `ZONA_HORARIA`: lo fija el instalador («UTC dentro, Ecuador fuera», 2026-10-15).
 - `IDS_ORQ_TOKEN` es la **ruta** del fichero del token (montaje de un fichero `root:10500` 0640);
   el token nunca va en el entorno ni en el compose.
 - Red `ids-core`: `10.210.255.0/24` (reservada en F1a; fuera de las /28 de los puntos y del `bip`

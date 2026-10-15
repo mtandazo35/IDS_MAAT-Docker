@@ -19,6 +19,9 @@ T=$(mktemp -d)
 trap 'rm -rf "$T"' EXIT
 WINDOWS=0
 case "$(uname -s)" in MINGW*|MSYS*|CYGWIN*) WINDOWS=1 ;; esac
+# Git Bash: «ln -s» copia el destino (y falla si no existe). Con winsymlinks:sys crea enlaces que
+# readlink, mv y tar de MSYS tratan como tales, sin permisos de administrador (/etc/localtime).
+if [ "$WINDOWS" = 1 ]; then export MSYS="${MSYS:+$MSYS }winsymlinks:sys"; fi
 PY=""
 for c in python3 python "py -3"; do
   # shellcheck disable=SC2086
@@ -37,6 +40,12 @@ esperar 0 "con --tun-base 198.18 y --dueno-ip"             bash install.sh --sol
 esperar 0 "formato --opcion=valor"                         bash install.sh --solo-validar --version=v0.1.0 --nombre=ids.empresa.example --gestion=192.0.2.0/25 --proxy=203.0.113.50
 esperar 0 "proxy /28 y dos proxies"                        bash install.sh --solo-validar "${V[@]}" --proxy 203.0.113.48/28,203.0.113.70
 esperar 0 "--help"                                         bash install.sh --help
+if grep -q "zona horaria del servidor" "$T/salida" && grep -q "ni hace flush ruleset" "$T/salida" \
+   && ! grep -q "pipefail" "$T/salida"; then
+  ok "--help: la cabecera entera, con --zona del servidor"
+else
+  mal "--help: la cabecera sale cortada, de más o sin --zona del servidor"; sed 's/^/        /' "$T/salida"
+fi
 esperar 1 "sin --gestion"                                  bash install.sh --solo-validar --version v0.1.0 --nombre ids.empresa.example --proxy 203.0.113.50
 esperar 1 "sin --proxy"                                    bash install.sh --solo-validar --version v0.1.0 --nombre ids.empresa.example --gestion 192.0.2.0/25
 esperar 1 "gestión más ancha que /16"                      bash install.sh --solo-validar "${V[@]}" --gestion 10.0.0.0/8
@@ -69,6 +78,11 @@ esperar 1 "--imagenes con referencia peligrosa"            bash install.sh --sol
 esperar 1 "--imagenes con panel peligroso"                 bash install.sh --solo-validar "${LAB[@]}" --imagenes 'vpn=a,suricata=b,panel=--privileged'
 esperar 0 "--zona Región/Ciudad"                           bash install.sh --solo-validar "${V[@]}" --zona America/Guayaquil
 esperar 1 "--zona inválida"                                bash install.sh --solo-validar "${V[@]}" --zona 'America/Guayaquil;x'
+esperar 1 "--zona con una ruta: no es una zona"            bash install.sh --solo-validar "${V[@]}" --zona ../../etc/passwd
+esperar 0 "--zona UTC"                                     bash install.sh --solo-validar "${V[@]}" --zona UTC
+if grep -q " zona=UTC " "$T/salida"; then ok "--solo-validar dice la zona (UTC)"; else mal "--solo-validar dice la zona (UTC)"; sed 's/^/        /' "$T/salida"; fi
+esperar 0 "sin --zona ni ids.conf"                         bash install.sh --solo-validar "${V[@]}"
+if grep -q " zona=America/Guayaquil " "$T/salida"; then ok "sin --zona: la de Ecuador"; else mal "sin --zona: la de Ecuador"; sed 's/^/        /' "$T/salida"; fi
 
 # ---------------------------------------------------------------------------------------------
 # Trozos del instalador con órdenes simuladas. Cada prueba corre en un subshell que carga las
@@ -93,6 +107,7 @@ en_instalador() {
     useradd() { echo "useradd $*" >> "$LLAMADAS"; }
     getent() { return 2; }
     apt-get() { echo "apt-get $*" >> "$LLAMADAS"; }
+    timedatectl() { echo "timedatectl $*" >> "$LLAMADAS"; return 1; }
     # shellcheck disable=SC2086
     python3() { command $PY "$@"; }
     "$@"
@@ -136,6 +151,7 @@ IPS_PROXY=203.0.113.50
 IGNOREIP_DUENO=203.0.113.20
 PUERTO_PANEL=5637
 POOL_DOCKER=10.210.0.0/16
+ZONA_HORARIA=America/Guayaquil
 EOF
   diff "$T/ids.conf.esperado" "$IDS_RAIZ/etc/ids-maat/ids.conf" || return 8
   secretos || return 9
@@ -154,16 +170,84 @@ EOF
   return 0
 }
 
-p_zona_en_ids_conf() {   # --zona va a ZONA_HORARIA; sin --zona se conserva la que hubiera
+p_zona_en_ids_conf() {   # ZONA_HORARIA siempre: --zona; sin ella, la que hubiera; si no, Ecuador
   local conf="$IDS_RAIZ/etc/ids-maat/ids.conf"
   mkdir -p "$IDS_RAIZ/etc/ids-maat"
-  parsear_args "${V[@]}" --zona America/Guayaquil && validar_args || return 1
-  escribir_ids_conf || return 2
-  grep -qx "ZONA_HORARIA=America/Guayaquil" "$conf" || return 3
+  parsear_args "${V[@]}" && validar_args && escribir_ids_conf || return 1      # primera vez, sin --zona
+  grep -qx "ZONA_HORARIA=America/Guayaquil" "$conf" || { cat "$conf"; return 2; }
   ZONA=""
-  parsear_args "${V[@]}" && validar_args && escribir_ids_conf || return 4
-  grep -qx "ZONA_HORARIA=America/Guayaquil" "$conf" || { cat "$conf"; return 5; }
-  [ "$(grep -c '^ZONA_HORARIA=' "$conf")" = 1 ] || return 6
+  parsear_args "${V[@]}" --zona America/Lima && validar_args && escribir_ids_conf || return 3
+  grep -qx "ZONA_HORARIA=America/Lima" "$conf" || { cat "$conf"; return 4; }
+  ZONA=""
+  parsear_args "${V[@]}" && validar_args && escribir_ids_conf || return 5      # reinstalación sin --zona
+  grep -qx "ZONA_HORARIA=America/Lima" "$conf" || { cat "$conf"; return 6; }
+  [ "$(grep -c '^ZONA_HORARIA=' "$conf")" = 1 ] || return 7
+  ZONA=""
+  echo "VERSION=0.1.0" > "$conf"                                                # ids.conf sin ZONA_HORARIA
+  parsear_args "${V[@]}" && validar_args && escribir_ids_conf || return 8
+  grep -qx "ZONA_HORARIA=America/Guayaquil" "$conf" || { cat "$conf"; return 9; }
+  ZONA=""
+  echo "ZONA_HORARIA=../../etc/passwd" > "$conf"                                # editada a mano y mala
+  ( parsear_args "${V[@]}" && validar_args && escribir_ids_conf ) >/dev/null 2>&1 && return 10
+  grep -qx "ZONA_HORARIA=../../etc/passwd" "$conf" || return 11                 # no sigue ni la pisa
+  return 0
+}
+
+zoneinfo_falso() {   # zoneinfo_falso <zona>…: ficheros de zona (falsos) bajo ${IDS_RAIZ}/usr/share/zoneinfo
+  local z
+  for z in "$@"; do
+    mkdir -p "$(dirname "$IDS_RAIZ/usr/share/zoneinfo/$z")"
+    echo "TZif falso $z" > "$IDS_RAIZ/usr/share/zoneinfo/$z"
+  done
+}
+
+p_zona_host() {   # zona del SERVIDOR: enlace atómico, /etc/timezone, idempotente, zona inexistente, UTC
+  local lt="$IDS_RAIZ/etc/localtime" tz="$IDS_RAIZ/etc/timezone"
+  zoneinfo_falso America/Guayaquil America/Lima UTC
+  mkdir -p "$IDS_RAIZ/etc/ids-maat"
+  ln -s /usr/share/zoneinfo/Etc/UTC "$lt" || return 1                 # como viene la imagen de Debian
+  echo Etc/UTC > "$tz"
+  # sin --zona ni ids.conf: la de Ecuador; en pruebas, el enlace a mano (nunca timedatectl)
+  zona_host > "$T/zona" 2>&1 || { cat "$T/zona"; return 2; }
+  [ "$(readlink "$lt")" = /usr/share/zoneinfo/America/Guayaquil ] || { echo "localtime -> $(readlink "$lt")"; return 3; }
+  [ "$(cat "$tz")" = America/Guayaquil ] || return 4
+  if [ -e "$IDS_RAIZ/etc/.localtime.ids" ] || [ -L "$IDS_RAIZ/etc/.localtime.ids" ]; then return 5; fi
+  grep -qF "zona horaria del servidor: Etc/UTC -> America/Guayaquil" "$T/zona" || { cat "$T/zona"; return 6; }
+  grep -qx "systemctl try-restart fail2ban.service" "$LLAMADAS" || { cat "$LLAMADAS"; return 7; }
+  grep -q "^timedatectl" "$LLAMADAS" && return 8
+  # segunda pasada: no toca nada (ni enlace, ni /etc/timezone, ni fail2ban) ni dice nada
+  ln() { echo "ln $*" >> "$LLAMADAS"; command ln "$@"; }
+  mv() { echo "mv $*" >> "$LLAMADAS"; command mv "$@"; }
+  : > "$LLAMADAS"
+  zona_host > "$T/zona" 2>&1 || { cat "$T/zona"; return 9; }
+  [ -s "$LLAMADAS" ] && { cat "$LLAMADAS"; return 10; }
+  [ -s "$T/zona" ] && { cat "$T/zona"; return 11; }
+  # el enlace relativo que deja timedatectl también es «ya está»
+  command ln -sfn ../usr/share/zoneinfo/America/Guayaquil "$lt"
+  zona_host > "$T/zona" 2>&1 || { cat "$T/zona"; return 12; }
+  [ -s "$LLAMADAS" ] && { cat "$LLAMADAS"; return 13; }
+  # una zona que no existe: falla con su nombre y sin tocar nada
+  ZONA=America/Atlantida
+  ( zona_host ) > "$T/zona" 2>&1 && return 14
+  grep -qF "America/Atlantida no existe" "$T/zona" || { cat "$T/zona"; return 15; }
+  [ "$(readlink "$lt")" = ../usr/share/zoneinfo/America/Guayaquil ] || return 16
+  [ "$(cat "$tz")" = America/Guayaquil ] || return 17
+  [ -s "$LLAMADAS" ] && { cat "$LLAMADAS"; return 18; }
+  # sin --zona, la de ids.conf (reinstalación); sin /etc/timezone, no se crea
+  ZONA=""
+  echo "ZONA_HORARIA=America/Lima" > "$IDS_RAIZ/etc/ids-maat/ids.conf"
+  rm -f "$tz"
+  zona_host > "$T/zona" 2>&1 || { cat "$T/zona"; return 19; }
+  [ "$(readlink "$lt")" = /usr/share/zoneinfo/America/Lima ] || { echo "localtime -> $(readlink "$lt")"; return 20; }
+  [ -e "$tz" ] && return 21
+  # --zona UTC: el servidor en UTC (/usr/share/zoneinfo/UTC)
+  ZONA=""
+  parsear_args "${V[@]}" --zona UTC && validar_args || return 22
+  echo America/Lima > "$tz"
+  zona_host > "$T/zona" 2>&1 || { cat "$T/zona"; return 23; }
+  [ "$(readlink "$lt")" = /usr/share/zoneinfo/UTC ] || { echo "localtime -> $(readlink "$lt")"; return 24; }
+  [ "$(cat "$tz")" = UTC ] || return 25
+  grep -qF "zona horaria del servidor: America/Lima -> UTC" "$T/zona" || { cat "$T/zona"; return 26; }
   return 0
 }
 
@@ -188,15 +272,21 @@ p_respaldo() {
   echo "VERSION=0.1.0" > "$IDS_RAIZ/etc/ids-maat/ids.conf"
   echo '{"p001": {"PASS": "enc1:x"}}' > "$IDS_RAIZ/srv/ids/panel/conf/routers.json"
   echo "db" > "$IDS_RAIZ/srv/ids/estado/orq.db"
+  # la zona del servidor (zona_host la cambia): el enlace entra como enlace, aunque esté colgado
+  ln -s /usr/share/zoneinfo/America/Atlantida "$IDS_RAIZ/etc/localtime" || return 5
+  echo America/Atlantida > "$IDS_RAIZ/etc/timezone"
   TS=20261010T081500Z
   respaldo || return 1
   local f="$IDS_RAIZ/root/backups/ids-maat-install-$TS.tar.gz" lista
   lista=$(tar -tzf "$f") || return 2
   for e in etc/ssh/sshd_config etc/docker/daemon.json srv/ids/fw/ids_host.nft etc/ids-maat/ids.conf \
-           srv/ids/panel/conf/routers.json srv/ids/estado/orq.db; do
+           srv/ids/panel/conf/routers.json srv/ids/estado/orq.db etc/localtime etc/timezone; do
     grep -qx "$e" <<<"$lista" || { echo "falta $e en el respaldo"; return 3; }
   done
   if grep -E '(^|/)master\.key$' <<<"$lista" >/dev/null; then echo "la clave maestra está en el respaldo"; return 4; fi
+  lista=$(tar -tvzf "$f") || return 2                      # sin tubería: pipefail y grep -q
+  grep -q "etc/localtime -> /usr/share/zoneinfo/America/Atlantida$" <<<"$lista" \
+    || { echo "etc/localtime no va como enlace"; echo "$lista"; return 6; }
   return 0
 }
 
@@ -342,9 +432,9 @@ p_principal_revertido_no_dice_instalado() {
   # Todo simulado salvo el modo seguro: la reversión se dispara durante fail2ban (lento) y el
   # dueño confirma tarde. El instalador debe fallar y no decir «instalado».
   local paso
-  for paso in comprobar_sistema comprobar_tun_base comprobar_acceso_ssh respaldo paquetes obtener_release \
-              docker_ce docker_daemon modulos_sysctl_hora usuario_y_arbol escribir_ids_conf secretos pki \
-              instalar_orquestador firewall ssh_endurecer imagenes arrancar panel; do
+  for paso in comprobar_sistema comprobar_tun_base comprobar_acceso_ssh respaldo paquetes zona_host \
+              obtener_release docker_ce docker_daemon modulos_sysctl_hora usuario_y_arbol escribir_ids_conf \
+              secretos pki instalar_orquestador firewall ssh_endurecer imagenes arrancar panel; do
     eval "$paso() { :; }"
   done
   readlink() { echo /root/ids-maat-install.sh; }
@@ -727,10 +817,10 @@ p_principal_completo_log_sin_clave() {
   # principal entero con los pasos del sistema simulados: crea el log del instalador, levanta el
   # panel, imprime la clave en la terminal y la deja enmascarada en el log.
   local paso log
-  for paso in comprobar_sistema comprobar_tun_base comprobar_acceso_ssh respaldo paquetes obtener_release \
-              docker_ce docker_daemon modulos_sysctl_hora usuario_y_arbol escribir_ids_conf secretos pki \
-              instalar_orquestador armar_reversion firewall ssh_endurecer fail2ban_jaulas esperar_confirmacion \
-              imagenes arrancar; do
+  for paso in comprobar_sistema comprobar_tun_base comprobar_acceso_ssh respaldo paquetes zona_host \
+              obtener_release docker_ce docker_daemon modulos_sysctl_hora usuario_y_arbol escribir_ids_conf \
+              secretos pki instalar_orquestador armar_reversion firewall ssh_endurecer fail2ban_jaulas \
+              esperar_confirmacion imagenes arrancar; do
     eval "$paso() { :; }"
   done
   orq_falso
@@ -742,6 +832,30 @@ p_principal_completo_log_sin_clave() {
   grep -qF "clave             ********" "$log" || return 6
   grep -qF "log del instalador: $log" "$T/principal" || return 7
   if [ "$WINDOWS" = 0 ]; then [ "$(stat -c %a "$log")" = 600 ] || return 8; fi
+  return 0
+}
+
+p_principal_zona_en_su_sitio() {
+  # zona_host una vez: tras paquetes (tzdata), fuera de la ventana del modo seguro
+  # (armar_reversion … esperar_confirmacion) y antes de arrancar (ids-orq nace con la zona)
+  local paso n_paq n_zona n_armar n_esperar n_arrancar
+  : > "$T/orden"
+  for paso in comprobar_sistema comprobar_tun_base comprobar_acceso_ssh respaldo paquetes zona_host \
+              obtener_release docker_ce docker_daemon modulos_sysctl_hora usuario_y_arbol escribir_ids_conf \
+              secretos pki instalar_orquestador armar_reversion firewall ssh_endurecer fail2ban_jaulas \
+              esperar_confirmacion imagenes arrancar panel resumen; do
+    eval "$paso() { echo $paso >> \"\$T/orden\"; }"
+  done
+  ( principal "${V[@]}" ) > "$T/principal" 2>&1 || { cat "$T/principal"; return 1; }
+  [ "$(grep -cx zona_host "$T/orden")" = 1 ] || { cat "$T/orden"; return 2; }
+  n_paq=$(grep -nx paquetes "$T/orden" | cut -d: -f1)
+  n_zona=$(grep -nx zona_host "$T/orden" | cut -d: -f1)
+  n_armar=$(grep -nx armar_reversion "$T/orden" | cut -d: -f1)
+  n_esperar=$(grep -nx esperar_confirmacion "$T/orden" | cut -d: -f1)
+  n_arrancar=$(grep -nx arrancar "$T/orden" | cut -d: -f1)
+  [ "$n_paq" -lt "$n_zona" ] || { cat "$T/orden"; return 3; }
+  [ "$n_zona" -lt "$n_arrancar" ] || { cat "$T/orden"; return 4; }
+  if [ "$n_armar" -lt "$n_zona" ] && [ "$n_zona" -lt "$n_esperar" ]; then cat "$T/orden"; return 5; fi
   return 0
 }
 
@@ -777,7 +891,9 @@ else
 fi
 esperar 0 "imagenes.json de producción: las tres por digest" en_instalador p_imagenes_produccion_descarga_las_tres
 esperar 0 "imagen privada en GHCR: error claro con enlace" en_instalador p_imagen_privada_error_claro
-esperar 0 "--zona en ids.conf y se conserva"              en_instalador p_zona_en_ids_conf
+esperar 0 "ids.conf: ZONA_HORARIA siempre (o Ecuador)"    en_instalador p_zona_en_ids_conf
+esperar 0 "zona del servidor: enlace, timezone, idempotente" en_instalador p_zona_host
+esperar 0 "principal: zona tras paquetes, antes de arrancar" en_instalador p_principal_zona_en_su_sitio
 esperar 0 "panel nuevo: URL, admin y clave; log sin clave" en_instalador p_panel_nuevo_resumen_y_log_enmascarado
 esperar 0 "panel: reinstalación conserva la clave"        en_instalador p_panel_reinstalacion_conserva_la_clave
 esperar 0 "panel: crear-admin dice que ya existía"        en_instalador p_panel_admin_ya_existia

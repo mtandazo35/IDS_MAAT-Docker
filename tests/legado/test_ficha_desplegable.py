@@ -28,7 +28,9 @@ ARBOL = ast.parse(DASH)
 
 PIEZAS = ("RANGO_TOPE", "_RANGO_JS", "rango_detalle_html", "ficha_ip_html",
           "AIDB_CATS", "AIDB_REMEDIO",
-          "js_attr")   # F1 (auditoria B-17): datos dentro de manejadores JS, escapados para JS
+          "js_attr",   # F1 (auditoria B-17): datos dentro de manejadores JS, escapados para JS
+          # las fechas de AbuseIPDB (UTC) se ensenan en la hora de la empresa (2026-10-15)
+          "IDS_TZ", "_zona", "TZ_EC", "fecha_ec")
 
 fallos = 0
 
@@ -42,9 +44,11 @@ def check(d, c, e=""):
 
 def entorno():
     import time as _t
+    import datetime as _dt
     # el cruce con los CPEs tiene su propia prueba (test_culpables_ficha); aqui solo
     # estorbaria, porque esta ficha se mira por lo que trae de AbuseIPDB
-    ns = {"html": __import__("html"), "time": _t, "json": __import__("json"),
+    ns = {"html": __import__("html"), "time": _t, "json": __import__("json"), "os": os,
+          "datetime": _dt.datetime, "timezone": _dt.timezone, "timedelta": _dt.timedelta,
           "culpables_ficha_html":
               lambda ip, cats, esc=None, tope=6, ejemplos=None: ""}
     for n in ARBOL.body:

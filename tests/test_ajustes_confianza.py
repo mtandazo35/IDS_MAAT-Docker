@@ -11,6 +11,7 @@ import io
 import json
 import os
 import sys
+import time
 import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -118,6 +119,15 @@ class Confianza(unittest.TestCase):
         self.assertIn("Demasiados intentos fallidos", t)
 
 
+def _devolver_tz(tz):
+    if tz is None:
+        os.environ.pop("TZ", None)
+    else:
+        os.environ["TZ"] = tz
+    if hasattr(time, "tzset"):
+        time.tzset()
+
+
 class Rescate(unittest.TestCase):
     """`ids-panel confianza ver|agregar|vaciar`, lo que corre `ids-orq panel confianza`."""
 
@@ -128,6 +138,9 @@ class Rescate(unittest.TestCase):
         from idspanel import cli
         self.cli = cli
         sys.modules["dashboard"] = self.d
+        # la CLI pone la zona de la empresa (IDS_TZ) en el proceso, como el panel al arrancar:
+        # al acabar se deja la de antes, para no cambiarle la hora local a las pruebas siguientes
+        self.addCleanup(_devolver_tz, os.environ.get("TZ"))
 
     def correr(self, *args):
         out, err = io.StringIO(), io.StringIO()

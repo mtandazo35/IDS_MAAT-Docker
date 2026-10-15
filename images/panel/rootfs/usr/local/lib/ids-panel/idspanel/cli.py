@@ -62,8 +62,13 @@ def nueva_clave(largo=LARGO_GENERADA):
 
 
 def _dash():
-    """El módulo del panel (mismo almacén de usuarios y mismo hash que usa la web)."""
+    """El módulo del panel (mismo almacén de usuarios y mismo hash que usa la web), con la zona
+    de la empresa (IDS_TZ) ya puesta en este proceso, como hace el panel al arrancar: el
+    contenedor corre en UTC y, sin ella, la bitácora y el nombre de las copias salían en UTC,
+    mezclados con las líneas del panel en hora local. Es la misma función del panel, no una
+    copia (también cae en UTC-5 fijo sin tzdata). `salud` no carga el panel: no escribe nada."""
     import dashboard
+    dashboard._aplicar_tz()
     return dashboard
 
 

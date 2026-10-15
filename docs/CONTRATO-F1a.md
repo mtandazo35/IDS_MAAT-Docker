@@ -1176,14 +1176,20 @@ Pasos (idempotente: se puede volver a ejecutar para cambiar gestión/proxy):
    sin solapes entre gestión, `<tun-base>.0.0/16` y `10.210.0.0/16`. `--tun-base` solo se acepta
    si todavía no hay puntos.
 2. **Respaldo** en `/root/backups/ids-maat-install-<ts>.tar.gz` de `/etc/ssh/sshd_config*`,
-   `/etc/docker/`, `/srv/ids/fw/`, `/etc/fail2ban/` y `/etc/ids-maat/` antes de tocar nada.
-3. Paquetes: `nftables fail2ban python3 python3-systemd openssl logrotate curl ca-certificates`.
+   `/etc/docker/`, `/srv/ids/fw/`, `/etc/fail2ban/` y `/etc/ids-maat/` antes de tocar nada
+   (desde 2026-10-15 también `/etc/localtime`, como enlace, y `/etc/timezone`).
+3. Paquetes: `nftables fail2ban python3 python3-systemd openssl logrotate curl ca-certificates`
+   (más `systemd-timesyncd` y, desde 2026-10-15, `tzdata`).
    **Nunca** `iptables-persistent`/`netfilter-persistent` ni `ufw`. `systemctl disable --now nftables`.
 4. Docker CE desde su repositorio con la versión mayor fijada (`28`) por `apt` pin, más
    `docker-compose-plugin`; `daemon.json` = RED §1 **más** `"bip": "10.210.254.1/24"`. Comprueba
    `update-alternatives --query iptables` → `iptables-nft`.
 5. `modules/ids.conf` (`tun`, `veth`, `nft_ct`), `sysctl/90-ids.conf` (`net.core.rmem_max=33554432`),
-   `systemd-timesyncd`.
+   `systemd-timesyncd`. **Zona horaria del servidor** (2026-10-15, «UTC dentro, Ecuador fuera»):
+   `zona_host` deja `/etc/localtime` en `--zona`, la de `ids.conf` o `America/Guayaquil`
+   (`timedatectl` o enlace atómico; idempotente; una zona inexistente falla antes de tocar nada). Se
+   hace justo tras los paquetes (hace falta `tzdata`), fuera del modo seguro y antes de `arrancar`.
+   Los contenedores siguen en UTC.
 6. Grupo y usuario `ids-panel` 10500; árbol de §2.1; `ids.conf`; secretos (si no existen).
 7. PKI si no existe: CA RSA 2048 SHA-256 de 20 años (`CN=ids-maat-ca <NOMBRE_DNS>`) y `dh.pem`
    `ffdhe2048` con `openssl genpkey -genparam -algorithm DH -pkeyopt dh_param:ffdhe2048`.

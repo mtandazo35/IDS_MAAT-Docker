@@ -28,6 +28,7 @@ import tempfile
 import types
 import urllib.error
 import urllib.parse
+from datetime import datetime, timezone, timedelta
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import _comun  # noqa: E402  (pone tests/legado en sys.path)
@@ -69,7 +70,9 @@ PIEZAS = ("FEEDS_CONF", "FEEDS_SECRETOS", "SECRETOS_AVISO", "_feeds_conf_crudo",
           # salir de las listas negras
           "DNSBL_SALIDA", "DNSBL_DIAS_LIMPIO", "dias_sin_abuso", "dnsbl_tendencia",
           "dnsbl_listas_afectadas", "dnsbl_salida", "dnsbl_expediente",
-          "_SAL_COLOR", "_SAL_POL", "_salida_html")
+          "_SAL_COLOR", "_SAL_POL", "_salida_html",
+          # las fechas de AbuseIPDB (UTC) se ensenan en la hora de la empresa (2026-10-15)
+          "IDS_TZ", "_zona", "TZ_EC", "fecha_ec")
 
 fallos = 0
 def check(d, c, e=""):
@@ -116,6 +119,7 @@ def entorno(tmp, red, panel):
     # AbuseIPDB se guarda cifrada en feeds.conf y se descifra en memoria al consultar
     ns = {"nodos": panel[0], "secretos": panel[1],
           "json": json, "os": os, "re": re, "time": __import__("time"), "html": __import__("html"),
+          "datetime": datetime, "timezone": timezone, "timedelta": timedelta,
           "threading": __import__("threading"), "ipaddress": __import__("ipaddress"),
           "socket": __import__("socket"), "sys": __import__("sys"),
           # sin clave de Groq no se consulta: aqui se prueba AbuseIPDB, no la IA
@@ -130,6 +134,8 @@ def entorno(tmp, red, panel):
             getattr(n.targets[0], "id", "") if isinstance(n, ast.Assign) and n.targets else "")
         if nombre in PIEZAS:
             exec(ast.get_source_segment(DASH, n) or "", ns)
+    # la hora de la empresa, siempre Ecuador aqui (venga lo que venga en IDS_TZ)
+    ns["TZ_EC"] = ns["_zona"]("America/Guayaquil")
     # la tendencia de abuso saliente tiene su propia prueba; aqui basta con que exista
     ns.setdefault("cargar_metricas", lambda: {})
     ns["FEEDS_CONF"] = os.path.join(tmp, "feeds.conf")
@@ -201,6 +207,10 @@ def main():
     txt = ns["aidb_cats_txt"](d["cats"])
     check("y las traduce: eso es 'que ataques hace'", "SSH" in txt and "Fuerza bruta" in txt, txt)
     check("guarda ejemplos del texto de las denuncias", len(d.get("ejemplos") or []) == 3, d.get("ejemplos"))
+    # (2026-10-15) se cortaba a 19 caracteres: sin el «+00:00», y se ensenaba como si fuera
+    # hora local (5 h adelantada). Se guarda en UTC con su zona; la hora local, al mostrarla
+    check("la ultima denuncia se guarda en UTC y con su zona",
+          d.get("ultimo") == "2026-09-20T10:00:00+00:00", d.get("ultimo"))
 
     # --- 4) la cache no gasta cuota ---
     antes = len(red.llamadas)
@@ -270,6 +280,8 @@ def main():
     check("dice cuantas direcciones tiene la red", d9.get("hosts") == 256, d9)
     check("y cuales estan denunciadas", d9.get("n_den") == 2, d9)
     check("ordenadas de peor a mejor", d9["denunciadas"][0][0] == "200.0.0.7", d9["denunciadas"])
+    check("con la ultima denuncia en UTC con hora y zona, no solo la fecha UTC",
+          d9["denunciadas"][0][3] == "2026-09-21T10:00:00+00:00", d9["denunciadas"][0])
     check("gasta la cuota de REDES, no la de IPs",
           ns3["aidb_restantes_bloque"]() == ns3["AIDB_CUOTA_BLOQUE"] - 1
           and ns3["aidb_restantes"]() == ns3["AIDB_CUOTA"], 
@@ -313,13 +325,23 @@ def main():
     # o sea fuera de la pantalla.
     pag_red = ns["reputacion_page"](res=[("200.0.0.0/24",
                                           {"tipo": "red", "red": "200.0.0.0/24", "hosts": 256,
-                                           "n_den": 1, "ts": 0,
-                                           "denunciadas": [["200.0.0.7", 38, 11, "2026-09-19", "EC"]]},
+                                           "n_den": 2, "ts": 0,
+                                           "denunciadas": [["200.0.0.7", 38, 11, "2026-09-19", "EC"],
+                                                           ["200.0.0.9", 20, 2,
+                                                            "2026-10-16T03:00:00+00:00", "EC"]]},
                                           "cache", "")], texto="200.0.0.0/24")
     check("el formulario va por GET, para que el boton Atras funcione",
           "method=get" in pag_red and "method=post action='/reputacion'" not in pag_red)
     check("cada direccion de la red recuerda de donde viene",
           "volver=200.0.0.0/24" in pag_red, pag_red[pag_red.find("ver qué hace") - 200:][:200])
+    # (2026-10-15) la ultima denuncia de AbuseIPDB viene en UTC: las 03:00 del 16 son las
+    # 22:00 del 15 en Ecuador. Antes salia la fecha UTC cortada, un dia por delante
+    _fila9 = pag_red[pag_red.find("<tr><td class=mono>200.0.0.9</td>"):]
+    _fila9 = _fila9[:_fila9.find("</tr>")]
+    check("la ultima denuncia de cada direccion sale en hora de Ecuador, con su dia",
+          "<td class=mono>15/10/2026 22:00</td>" in _fila9 and "2026-10-16" not in _fila9, _fila9)
+    check("  y una fecha sin hora de la cache vieja sale tal cual, sin romper",
+          "<td class=mono>2026-09-19</td>" in pag_red, "")
 
     pag_ip = ns["reputacion_page"](res=[("200.0.0.7", d, "cache", "")],
                                    texto="200.0.0.7", volver="200.0.0.0/24")
@@ -327,6 +349,9 @@ def main():
           "Volver a 200.0.0.0/24" in pag_ip)
     check("se dice CUANDO se verifico, no de donde salio el dato",
           "última verificación" in pag_ip and "de cache" not in pag_ip, "")
+    check("y la ultima denuncia, en hora de Ecuador (10:00 UTC son las 05:00)",
+          "última 20/09/2026 05:00" in pag_ip and "2026-09-20T10:00" not in pag_ip,
+          pag_ip[pag_ip.find("denunciantes distintos"):][:120])
     check("y la vuelta va ANTES del resultado, no al final de la pagina",
           pag_ip.index("Volver a 200.0.0.0/24") < pag_ip.index("Confianza de abuso"),
           (pag_ip.index("Volver a 200.0.0.0/24"), pag_ip.index("Confianza de abuso")))

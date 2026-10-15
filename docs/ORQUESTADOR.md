@@ -194,7 +194,10 @@ disponible» y no hacen nada.
   nombre fechado (`eve.json-AAAAMMDD-HHMMSS`) y **sin tope de número** (`rotate -1`, sin `maxage`).
 - **Compresión:** la hace el orquestador (hilo aparte, cada minuto) con los rotados que llevan 2 min
   sin escribirse: `.gz` atómico que **conserva el mtime** (= su último evento), el dueño y el modo.
-  Eventos y el generador del panel saltan ficheros por mtime.
+  Eventos y el generador del panel saltan ficheros por mtime. **Nunca pisa un `.gz` que ya existe:**
+  logrotate fecha el nombre en hora local y, si el reloj de pared retrocede (cambio de zona horaria
+  del host, ajuste de NTP), repite nombres; el nuevo se guarda entonces como
+  `eve.json-AAAAMMDD-HHMMSS-2.gz`, `-3.gz`…, que la poda, la retención y Eventos tratan como a los demás.
 - **Poda por fecha** (al arrancar y cada 24 h): se borra un rotado cuando su última escritura posible
   (la más tardía entre la fecha del nombre y el mtime) tiene más de 30 días. Una línea `poda.fecha`
   por punto en `orq.jsonl`.

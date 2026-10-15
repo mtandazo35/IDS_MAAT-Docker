@@ -15,7 +15,8 @@
 #        --imagenes vpn=<ref>,suricata=<ref>,panel=<ref> --nombre … --gestion … --proxy …
 #
 # Otras opciones:
-#   --zona             zona horaria con la que el panel muestra las fechas (por defecto America/Guayaquil)
+#   --zona             zona horaria del servidor y de lo que se muestra (panel, informes); por defecto
+#                      America/Guayaquil. Los contenedores trabajan en UTC por dentro
 #   --solo-validar     valida los argumentos y sale sin tocar nada
 #   --confirmar        desde una sesión SSH NUEVA: confirma el acceso y anula la reversión
 #   --sin-reversion    sin modo seguro (instalación desde la consola del proveedor)
@@ -38,6 +39,7 @@ PUERTO_PANEL=5637
 POOL_DOCKER=10.210.0.0/16
 VENTANA_REVERSION=300
 UNIDAD_REVERSION=ids-maat-revertir-acceso
+ZONA_DEFECTO=America/Guayaquil   # zona del servidor y del panel sin --zona (los clientes son ISP de Ecuador)
 R="${IDS_RAIZ:-}"            # prefijo de rutas para las pruebas; vacío en producción
 R="${R%/}"
 
@@ -58,7 +60,7 @@ aviso()  { printf '\033[1;33m!!\033[0m  %s\n' "$*" >&2; registrar "!!  $*"; }
 fallar() { printf '\033[1;31mERROR:\033[0m %s\n' "$*" >&2; registrar "ERROR: $*"; exit 1; }
 
 uso() {
-  sed -n '2,26p' "$0" | sed 's/^# \{0,1\}//'
+  sed -n '2,27p' "$0" | sed 's/^# \{0,1\}//'
 }
 
 # ---------------------------------------------------------------------------------------------
@@ -153,6 +155,10 @@ parsear_args() {
   done
 }
 
+zona_valida() {   # UTC o Región/Ciudad[/Subzona]: lo mismo que acepta ids-orq (RE_ZONA)
+  [[ "$1" =~ ^(UTC|[A-Za-z]+(/[A-Za-z0-9_+-]+){1,2})$ ]]
+}
+
 validar_args() {
   local c norm lista="" lista_proxy="" otro tun
   [[ "$NOMBRE" =~ ^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?)+$ ]] \
@@ -184,7 +190,7 @@ validar_args() {
   if [ -n "$DUENO" ]; then
     ip_a_int "$DUENO" >/dev/null || fallar "--dueno-ip debe ser una IPv4"
   fi
-  if [ -n "$ZONA" ] && ! [[ "$ZONA" =~ ^(UTC|[A-Za-z]+(/[A-Za-z0-9_+-]+){1,2})$ ]]; then
+  if [ -n "$ZONA" ] && ! zona_valida "$ZONA"; then
     fallar "--zona debe ser UTC o Región/Ciudad (p. ej. America/Guayaquil)"
   fi
   if [ -n "$DESDE_REPO" ]; then
@@ -229,6 +235,19 @@ comprobar_tun_base() {
   elif [ "$actual" != "$TUN_BASE" ] && hay_puntos; then
     fallar "--tun-base solo se acepta si todavía no hay puntos (la base actual es $actual)"
   fi
+}
+
+# Zona horaria del servidor y del panel: --zona; sin ella, la de ids.conf (una reinstalación la
+# conserva, como --tun-base); si no hay ninguna, la de Ecuador. La de ids.conf pudo editarse a
+# mano: se valida igual que --zona antes de usarla en una ruta.
+elegir_zona() {
+  local conf="${R}/etc/ids-maat/ids.conf"
+  if [ -z "$ZONA" ] && [ -f "$conf" ]; then
+    ZONA=$(sed -n 's/^ZONA_HORARIA=//p' "$conf")
+  fi
+  ZONA="${ZONA:-$ZONA_DEFECTO}"
+  zona_valida "$ZONA" \
+    || fallar "zona horaria inválida: '$ZONA' (--zona o ZONA_HORARIA de /etc/ids-maat/ids.conf): debe ser UTC o Región/Ciudad, p. ej. $ZONA_DEFECTO"
 }
 
 comprobar_sistema() {
@@ -333,9 +352,12 @@ respaldo() {
   # Incluye el panel (usuarios, routers.json con las claves API cifradas, exclusiones, registros),
   # el estado del orquestador (orq.db), la PKI y los puntos (auditoría B-05). La clave maestra NO
   # entra: con ella y el tar se descifrarían los secretos; se respalda aparte (OPERACION §3, B-06).
+  # La zona horaria del servidor también (zona_host la cambia): /etc/localtime va como enlace.
   for p in etc/ssh/sshd_config etc/ssh/sshd_config.d etc/docker srv/ids/fw etc/fail2ban etc/ids-maat \
-           etc/systemd/journald.conf.d srv/ids/panel srv/ids/estado srv/ids/pki srv/ids/puntos; do
-    [ -e "${R}/$p" ] && rel+=("$p")
+           etc/systemd/journald.conf.d etc/localtime etc/timezone srv/ids/panel srv/ids/estado srv/ids/pki \
+           srv/ids/puntos; do
+    # -L: un enlace se guarda aunque apunte a algo que ya no existe (-e lo sigue)
+    { [ -e "${R}/$p" ] || [ -L "${R}/$p" ]; } && rel+=("$p")
   done
   if [ ${#rel[@]} -gt 0 ]; then
     (umask 077; tar -czf "$destino" --exclude=etc/ids-maat/master.key -C "${R:-/}" "${rel[@]}")
@@ -365,7 +387,7 @@ paquetes() {
   export DEBIAN_FRONTEND=noninteractive
   apt-get update -qq
   apt-get install -y -qq --no-install-recommends nftables fail2ban python3 python3-systemd openssl \
-    logrotate curl ca-certificates systemd-timesyncd >/dev/null
+    logrotate curl ca-certificates systemd-timesyncd tzdata >/dev/null
   # nftables.service hace «flush ruleset» al parar o recargar: se desactiva y se enmascara SIN pararlo
   systemctl disable nftables.service >/dev/null 2>&1 || true
   systemctl mask nftables.service >/dev/null 2>&1 || true
@@ -446,6 +468,45 @@ modulos_sysctl_hora() {
   systemctl enable --now systemd-timesyncd >/dev/null 2>&1 || aviso "systemd-timesyncd no arrancó"
 }
 
+# Zona horaria del SERVIDOR (paso 5, la hora): journal, logs, nombres de los rotados de logrotate y
+# timers en la hora de ZONA (--zona, la de ids.conf o la de Ecuador). Los contenedores siguen en UTC
+# por dentro (TZ=UTC en el compose) y el panel muestra en ZONA_HORARIA. Idempotente: si
+# /etc/localtime ya apunta a la zona, no toca nada.
+zona_del_host() {   # zona a la que apunta ${R}/etc/localtime, como la lee timedatectl; vacío si no se sabe
+  local l
+  l=$(readlink "${R}/etc/localtime" 2>/dev/null) || return 0
+  case "$l" in
+    /usr/share/zoneinfo/*) echo "${l#/usr/share/zoneinfo/}" ;;
+    ../usr/share/zoneinfo/*) echo "${l#../usr/share/zoneinfo/}" ;;   # el relativo de timedatectl
+  esac
+}
+
+zona_host() {
+  local z antes
+  elegir_zona
+  z="$ZONA"
+  [ -f "${R}/usr/share/zoneinfo/$z" ] \
+    || fallar "la zona horaria $z no existe (falta /usr/share/zoneinfo/$z): revisa --zona (UTC o Región/Ciudad, p. ej. $ZONA_DEFECTO)"
+  antes=$(zona_del_host)
+  [ "$antes" = "$z" ] && return 0
+  # timedatectl (systemd-timedated por D-Bus). Sin D-Bus (contenedor, chroot) o en las pruebas, el
+  # mismo enlace a mano: se crea aparte y se renombra encima (atómico: nunca falta /etc/localtime).
+  if [ -n "$R" ] || ! timedatectl set-timezone "$z" >/dev/null 2>&1; then
+    if ! { ln -sfn "/usr/share/zoneinfo/$z" "${R}/etc/.localtime.ids" \
+           && mv -Tf "${R}/etc/.localtime.ids" "${R}/etc/localtime"; }; then
+      rm -f "${R}/etc/.localtime.ids"
+      aviso "no se pudo poner el servidor en la zona $z (sigue en ${antes:-desconocida}); el panel la usa igual"
+      return 0
+    fi
+  fi
+  if [ -f "${R}/etc/timezone" ]; then
+    printf '%s\n' "$z" > "${R}/etc/timezone" || aviso "no se pudo actualizar /etc/timezone"
+  fi
+  # fail2ban toma la zona al arrancar (fechas de su log); ids-orq, cuando arrancar lo reinicia
+  systemctl try-restart fail2ban.service >/dev/null 2>&1 || true
+  log "zona horaria del servidor: ${antes:-desconocida} -> $z"
+}
+
 mkd() {   # mkd <ruta> <modo> [gid]
   install -d -m "$2" "${R}$1"
   chmod "$2" "${R}$1"
@@ -486,11 +547,8 @@ usuario_y_arbol() {
 }
 
 escribir_ids_conf() {
-  local tmp="${R}/etc/ids-maat/.ids.conf.nuevo" conf="${R}/etc/ids-maat/ids.conf"
-  # sin --zona se conserva la que hubiera (como con --tun-base)
-  if [ -z "$ZONA" ] && [ -f "$conf" ]; then
-    ZONA=$(sed -n 's/^ZONA_HORARIA=//p' "$conf")
-  fi
+  local tmp="${R}/etc/ids-maat/.ids.conf.nuevo"
+  elegir_zona     # ZONA_HORARIA siempre: --zona, la que hubiera o la de Ecuador
   cat > "$tmp" <<EOF
 VERSION=${VERSION#v}
 NOMBRE_DNS=$NOMBRE
@@ -500,8 +558,8 @@ IPS_PROXY=$PROXY
 IGNOREIP_DUENO=$DUENO
 PUERTO_PANEL=$PUERTO_PANEL
 POOL_DOCKER=$POOL_DOCKER
+ZONA_HORARIA=$ZONA
 EOF
-  if [ -n "$ZONA" ]; then echo "ZONA_HORARIA=$ZONA" >> "$tmp"; fi
   chmod 0644 "$tmp"
   mv "$tmp" "${R}/etc/ids-maat/ids.conf"
 }
@@ -943,19 +1001,23 @@ principal() {
   validar_args
   if [ "$SOLO_VALIDAR" = 1 ]; then
     comprobar_tun_base
-    echo "argumentos válidos: nombre=$NOMBRE gestion=$GESTION proxy=$PROXY tun-base=$TUN_BASE version=$VERSION"
+    elegir_zona
+    echo "argumentos válidos: nombre=$NOMBRE gestion=$GESTION proxy=$PROXY tun-base=$TUN_BASE zona=$ZONA version=$VERSION"
     return 0
   fi
   comprobar_sistema
   comprobar_tun_base
+  elegir_zona
   comprobar_acceso_ssh
   TS=$(date -u +%Y%m%dT%H%M%SZ)
   install -d -m 0700 "${R}/root/ids-maat"
   LOG_INSTALL="${R}/root/ids-maat/install-${TS}.log"
   (umask 077; : > "$LOG_INSTALL")
-  registrar "install.sh $VERSION: nombre=$NOMBRE gestion=$GESTION proxy=$PROXY tun-base=$TUN_BASE"
+  registrar "install.sh $VERSION: nombre=$NOMBRE gestion=$GESTION proxy=$PROXY tun-base=$TUN_BASE zona=$ZONA"
   respaldo                   # 2
   paquetes                   # 3
+  zona_host                  # 5 (adelantado: recién instalado tzdata; fuera del modo seguro y antes de
+                             #    arrancar, que reinicia ids-orq ya con la zona)
   obtener_release            # 11 (adelantado: host/ y el orquestador salen de la release verificada)
   docker_ce                  # 4
   docker_daemon              # 4

@@ -46,6 +46,24 @@ def hora_ec(ts):
         except (ValueError, TypeError):
             pass
     return ts[11:19] if len(ts) >= 19 else ""
+
+def fecha_ec(v, fmt="%d/%m/%Y %H:%M"):
+    """Marca ISO 8601 de una API externa (AbuseIPDB las da en UTC: «…+00:00» o «…Z») en la
+    hora de IDS_TZ, para mostrarla. Sin zona se toma como UTC: la cache vieja la guardaba
+    cortada a 19 caracteres, sin el «+00:00». Lo que no se entiende sale tal cual, como antes;
+    una fecha sin hora («2026-09-19», cache vieja) tambien: sin la hora no se sabe en que dia
+    cae aqui (las 03:00 UTC del 16 son las 22:00 del 15 en Ecuador)."""
+    s = str(v or "").strip()
+    if len(s) < 16 or s[10:11] not in ("T", " "):
+        return s
+    try:
+        # la «Z» a mano: fromisoformat la acepta solo desde Python 3.11, y la «z» nunca
+        d = datetime.fromisoformat(s[:-1] + "+00:00" if s[-1:] in ("Z", "z") else s)
+        if d.tzinfo is None:
+            d = d.replace(tzinfo=timezone.utc)
+        return d.astimezone(TZ_EC).strftime(fmt)
+    except (ValueError, OverflowError):      # fecha imposible o fuera de rango al cambiar de zona
+        return s
 _up = urllib.parse      # alias corto. A NIVEL DE MODULO a proposito: ver abajo.
 # Estuvo como "import urllib.parse as _up" DENTRO de un par de ramas del manejador GET, y
 # eso convierte a _up en una variable LOCAL de todo el metodo. Las ramas que la importaban
@@ -6642,8 +6660,10 @@ def _aidb_resumen_red(cidr, d):
     den = []
     for r in (d.get("reportedAddress") or []):
         try:
+            # la ultima denuncia, en UTC y con hora y zona: se pasa a IDS_TZ al pintarla (fecha_ec).
+            # Cortada a 10 era la fecha UTC, que de 19:00 a 24:00 en Ecuador ya es la de mañana
             den.append([r.get("ipAddress", ""), int(r.get("abuseConfidenceScore") or 0),
-                        int(r.get("numReports") or 0), (r.get("mostRecentReport") or "")[:10],
+                        int(r.get("numReports") or 0), (r.get("mostRecentReport") or "")[:32],
                         (r.get("countryCode") or "")[:2]])
         except (TypeError, ValueError):
             continue
@@ -6759,7 +6779,8 @@ def _aidb_resumen(d):
             "tor": bool(d.get("isTor")), "blanca": bool(d.get("isWhitelisted")),
             "reportes": int(d.get("totalReports") or 0),
             "denunciantes": int(d.get("numDistinctUsers") or 0),
-            "ultimo": (d.get("lastReportedAt") or "")[:19],
+            # en UTC y con su zona («+00:00»): fecha_ec la pasa a IDS_TZ al mostrarla
+            "ultimo": (d.get("lastReportedAt") or "")[:32],
             "cats": [[c, n] for c, n in orden],
             # ya traducidas: el generador del reporte las pinta sin conocer la taxonomia
             "cats_nom": [AIDB_CATS.get(c, "categoría %d" % c) for c, _n in orden],
@@ -7731,7 +7752,7 @@ def rango_detalle_html(dat, esc=None, scb=None, tope=RANGO_TOPE):
         "ver qué hace</a></td></tr>"
         "<tr class=fichafila hidden><td colspan=6 class=fichacel></td></tr>"
         % (esc(str(a[0])), scb(int(a[1]), corto=True),
-           "{:,}".format(int(a[2])).replace(",", "."), esc(str(a[3])), esc(str(a[4])),
+           "{:,}".format(int(a[2])).replace(",", "."), esc(fecha_ec(a[3])), esc(str(a[4])),
            js_attr(a[0]))
         for a in den[:tope])
     peor = sum(1 for a in den if int(a[1]) >= 75)
@@ -14238,7 +14259,7 @@ def ficha_ip_html(d, ip="", esc=None, scb=None):
         + "</div>"
         f"<div style='font-size:13px;margin-bottom:8px'><b>{d.get('reportes', 0):,}</b> denuncias de "
         f"<b>{d.get('denunciantes', 0):,}</b> denunciantes distintos"
-        + (f" &middot; última {esc(d.get('ultimo'))}" if d.get("ultimo") else "") + "</div>"
+        + (f" &middot; última {esc(fecha_ec(d.get('ultimo')))}" if d.get("ultimo") else "") + "</div>"
         + chips + arr_html
     # con los textos de las denuncias: si por categoria no sale nadie, se leen
     + culpables_ficha_html(d.get("ip") or ip, cats, esc, ejemplos=d.get("ejemplos"))
@@ -14315,7 +14336,7 @@ def reputacion_page(res=None, texto="", msg="", ok=False, es_admin=False, volver
                     "<tr><td class=mono>" + esc(str(a[0])) + "</td>"
                     f"<td class=num>{_scb(int(a[1]), corto=True)}</td>"
                     f"<td class=num>{int(a[2]):,}</td>"
-                    f"<td class=mono>{esc(str(a[3]))}</td>"
+                    f"<td class=mono>{esc(fecha_ec(a[3]))}</td>"
                     f"<td>{esc(str(a[4]))}</td>"
                     f"<td><a href='?ips={esc(str(a[0]))}&amp;volver={esc(d.get('red') or ip)}'>"
                     "ver qué hace</a></td></tr>"
@@ -20134,13 +20155,24 @@ class H(BaseHTTPRequestHandler):
     def log_message(self, *a):
         pass
 
+def _tz_proceso():
+    """Valor de TZ para el proceso: el nombre de IDS_TZ. Sin tzdata la libc no encuentra ese
+    nombre y cae en UTC, mientras TZ_EC (las pantallas) usa la zona fija de _zona(): entonces
+    va esa misma en formato POSIX («<-05>5» es UTC-5: POSIX cuenta el desfase al reves)."""
+    off = TZ_EC.utcoffset(None) if isinstance(TZ_EC, timezone) else None
+    if not off:                       # zona de tzdata, o UTC
+        return IDS_TZ
+    h = int(off.total_seconds()) // 3600
+    return "<%+03d>%d" % (h, -h)
+
 def _aplicar_tz():
     """El contenedor corre con TZ=UTC: el panel y sus subprocesos (generador, informe) usan
-    la zona de la empresa (IDS_TZ)."""
+    la zona de la empresa (IDS_TZ). La CLI (`ids-panel`) la aplica igual al cargar el panel,
+    para que lo que escribe (bitacora, copias) vaya en la misma hora que lo del panel."""
     # Windows no tiene tzset (solo pruebas/local): ahi TZ con un nombre IANA confunde al CRT
     # y se queda la hora del sistema
     if hasattr(time, "tzset"):
-        os.environ["TZ"] = IDS_TZ
+        os.environ["TZ"] = _tz_proceso()
         time.tzset()
 
 def crear_servidor(bind=None, port=None):

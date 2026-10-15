@@ -1354,7 +1354,9 @@ def validar_threshold(contenido):
 # DISCO_MIN_LIBRE_PCT, antes de tiempo, empezando por los rotados más viejos de cualquier punto.
 
 RE_ROTADO = re.compile(r"^(eve|dns)\.json[-.].+$")
-RE_FECHA_ROTADO = re.compile(r"^(?:eve|dns)\.json-(\d{8})-(\d{6})(?:\.gz)?$")
+# El .gz puede llevar -2, -3… tras la hora: comprimir_rotado no pisa un .gz que ya existe cuando
+# logrotate repite un nombre (el reloj de pared retrocede). La fecha del nombre vale igual.
+RE_FECHA_ROTADO = re.compile(r"^(?:eve|dns)\.json-(\d{8})-(\d{6})(?:(?:-\d{1,3})?\.gz)?$")
 
 
 def fecha_rotado(path):
@@ -1398,18 +1400,29 @@ def rotados(pid):
 RE_ROTADO_SIN_COMPRIMIR = re.compile(r"^(?:eve|dns)\.json-\d{8}-\d{6}$")
 ESPERA_COMPRIMIR_S = 120             # Suricata ya reabrió (postrotate) y no escribe más en el rotado
 INTERVALO_COMPRIMIR_S = 60
+MAX_SUFIJO_GZ = 999                  # <rotado>.gz ya existe: -2.gz … -999.gz (RE_FECHA_ROTADO)
 
 
 def comprimir_rotado(f):
     """gzip de un rotado conservando su mtime (= su último evento), dueño y modo: Eventos del
-    panel salta ficheros por mtime y logrotate/gzip no lo conservan. Atómico (.tmp + rename);
-    el original solo se borra cuando el .gz está completo. Devuelve la ruta del .gz o None.
+    panel salta ficheros por mtime y logrotate/gzip no lo conservan. Atómico (.tmp + enlace al
+    nombre final); el original solo se borra cuando el .gz está completo. Devuelve la ruta del
+    .gz o None.
+
+    Nunca pisa un .gz que ya existe. logrotate fecha el nombre en hora local del host: si el
+    reloj de pared retrocede (cambio de zona horaria, p. ej. de UTC a America/Guayaquil, o un
+    ajuste de NTP) repite nombres, y el .gz de antes guarda otros eventos. El nuevo se queda
+    entonces con el primer nombre libre de <rotado>-2.gz, -3.gz… (hasta MAX_SUFIJO_GZ), que
+    RE_ROTADO y RE_FECHA_ROTADO reconocen: la poda y la retención lo tratan como a los demás.
+    El paso al nombre final es os.link, que falla si el nombre existe: no hay carrera entre
+    mirar si está libre y escribirlo.
 
     datos/<pid> lo escribe el contenedor suricata (A-04): el origen se abre sin seguir enlaces y
     solo si es un fichero regular con un nombre; el temporal se crea nuevo (O_EXCL|O_NOFOLLOW,
     tras borrar el NOMBRE que hubiera, que nunca sigue un enlace) y su modo, dueño y fechas se
-    ponen sobre el descriptor. Antes de renombrar y de borrar se comprueba que cada nombre sigue
-    siendo el inodo que se ha escrito o leído."""
+    ponen sobre el descriptor. Antes de enlazar y de borrar se comprueba que cada nombre sigue
+    siendo el inodo que se ha escrito o leído, y el enlace no sigue un enlace simbólico (linkat
+    sin AT_SYMLINK_FOLLOW): el .gz nunca es un enlace duro a un fichero del host."""
     import gzip
     f = Path(f)
     try:
@@ -1417,7 +1430,6 @@ def comprimir_rotado(f):
     except OSError as e:
         log("comprimir %s: no se toca (%s)" % (f, e))
         return None
-    destino = f.with_name(f.name + ".gz")
     # con punto delante: el glob `eve.json*` del panel (Eventos, generador) no lo ve a medias
     tmp = f.with_name("." + f.name + ".gz.tmp")
     fd_tmp = None
@@ -1456,7 +1468,24 @@ def comprimir_rotado(f):
         fd_tmp = None
         os.close(fd_src)
         fd_src = None
-        os.replace(str(tmp), str(destino))
+        # os.link y no os.replace: si el nombre ya existe falla en vez de pisar el .gz de antes
+        sin_seguir = {"follow_symlinks": False} if os.link in os.supports_follow_symlinks else {}
+        destino = None
+        for n in range(1, MAX_SUFIJO_GZ + 1):
+            candidato = f.with_name(f.name + (".gz" if n == 1 else "-%d.gz" % n))
+            try:
+                os.link(str(tmp), str(candidato), **sin_seguir)
+            except FileExistsError:
+                continue                   # guarda otros eventos: se prueba el siguiente nombre
+            destino = candidato
+            break
+        if destino is None:
+            raise FileExistsError("no queda nombre libre para el .gz (de %s.gz a %s-%d.gz)"
+                                  % (f.name, f.name, MAX_SUFIJO_GZ))
+        os.unlink(str(tmp))                # el nombre: nunca sigue un enlace
+        if destino.name != f.name + ".gz":
+            log("comprimir %s: %s.gz ya existe (logrotate repitió el nombre); guardado como %s"
+                % (f, f.name, destino.name))
         if mismo_inodo(f, st):
             os.unlink(str(f))
         return destino
