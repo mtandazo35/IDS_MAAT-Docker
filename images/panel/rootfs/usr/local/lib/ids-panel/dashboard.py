@@ -4913,10 +4913,16 @@ def medir_sensor(pid=None):
     pid = nodos.exigir_pid(pid if pid is not None else nodos.nodo_actual())
     ruta_s = nodos.salida(SENSOR_FILE, pid)
     prev = {}
+    prev_ilegible = False            # el fichero esta pero no se entiende (no es lo mismo que no estar)
     try:
-        prev = json.load(open(ruta_s, encoding="utf-8"))
-    except Exception:
+        with open(ruta_s, encoding="utf-8") as f:
+            prev = json.load(f)
+        if not isinstance(prev, dict):
+            prev, prev_ilegible = {}, True
+    except FileNotFoundError:
         pass
+    except Exception:
+        prev_ilegible = True
     now = time.time()
     est, fresco = _estado_fresco()
     p = nodos.punto(pid) or {}
@@ -5041,8 +5047,18 @@ def medir_sensor(pid=None):
     # como «mal» (asi tampoco manda un «recuperado» al conectar). Si llego a conectar y luego se cae o
     # deja de llegar trafico, avisa como siempre.
     _sit = puntos_web.situacion_vpn(p)["clave"] if p else ""
-    o["mk_visto"] = bool(prev.get("mk_visto")) or puntos_web.mk_conectado(p)
-    if _sit in ("creando", "arrancando") or (_sit == "esperando" and not o["mk_visto"]):
+    # ¿Conecto alguna vez? Un sensor.json de antes de esta marca (sin la clave) o que no se puede
+    # leer cuenta como «ya visto»: si no, con el router caido en el primer ciclo Telegram callaria
+    # para siempre. Sin fichero, vale la evidencia que deja el trafico (paquetes que solo llegan
+    # por el espejo del MikroTik).
+    _su_p, _tz_p = p.get("suricata") or {}, p.get("tzsp") or {}
+    _hubo_trafico = any(isinstance(x, int) and x > 0
+                        for x in (_su_p.get("kernel_packets"), _tz_p.get("rx"), _tz_p.get("tx")))
+    o["mk_visto"] = (bool(prev.get("mk_visto", bool(prev))) or prev_ilegible
+                     or puntos_web.mk_conectado(p) or _hubo_trafico)
+    # un Suricata parado o enfermo SI avisa aunque se espere al MikroTik (salud_punto lo da en rojo)
+    if _sit in ("creando", "arrancando") or (_sit == "esperando" and not o["mk_visto"]
+                                             and _vivo(cont, "suricata")):
         o["esperando_mk"] = True
         if o["nivel"] in ("warn", "down"):
             o["nivel"] = "warn"
@@ -5272,6 +5288,15 @@ def salud_punto(pid):
         estado, motivo = "error", _m or "el orquestador marcó el punto con error (sin motivo publicado)"
     elif not vpn_vivo:
         estado, motivo = "desconectada", et["vpn"]["detalle"]
+    elif not _vivo(cont, "suricata"):
+        # VPN sana pero el Suricata parado, en bucle de reinicios o unhealthy: rojo, este o no el
+        # MikroTik (antes salia «esperando», ámbar, y parecia lo normal tras un alta)
+        _cs = cont.get("suricata") or {}
+        estado = "error"
+        motivo = "el Suricata del punto no está en marcha (contenedor %s%s): %s" % (
+            _cs.get("estado") or "ausente",
+            ("/%s" % _cs.get("salud")) if _cs.get("salud") not in (None, "", "none") else "",
+            et["suricata"]["detalle"])
     elif not mk and _sal_vpn == "starting":
         estado, motivo = "arrancando", "contenedor vpn arrancando (comprobando su salud)"
     elif not mk:
@@ -5360,6 +5385,8 @@ def aplicar_politicas(pid=None):
         cat = categoria_de_cats(c.get("cats_top"))
         act = accion_para(cat, c.get("banda", ""), m)
         k = clave_cpe(ip, pid)             # a que nodo pertenece este CPE
+        if nunca_bloquear(k):
+            continue                       # «Nunca bloquear» (global o de este punto): ni se mira
         if act == "cuarentena":
             deseado[k] = (sc, cat)
         elif act == "notificar":
@@ -5405,6 +5432,9 @@ def aplicar_politicas(pid=None):
         if rid_de(k) != pid:
             continue                   # de otro punto: ni se mira
         if env[k].get("pol") and k not in deseado:
+            if (env[k].get("por") == "politica-rapida" and not nunca_bloquear(k)
+                    and _rapida_sigue(k, env[k], cq, pid)):
+                continue               # infeccion confirmada por el barrido: no sale por la banda
             # de la lista en la que ESTA (la guardada), no de la que le tocaria hoy
             lst = env[k].get("lista") or m.get("LIST", "")
             if lst:
@@ -5451,6 +5481,31 @@ def aplicar_politicas(pid=None):
                 sueltas.append(k)
                 mk_log("POLITICA-LIBERADO", ip_de(k), "politica", f"lista={lst}" + _suf_nodo(k))
         _registrar_enviados(sent_path, nuevas if sent_path == MK_SENT else {}, sueltas)
+
+def _rapida_sigue(k, v, cq, pid):
+    """¿Sigue calificando un CPE que mando el barrido rapido (`por` politica-rapida)?
+
+    El barrido lo manda por INFECCION CONFIRMADA, no por la banda del Top: si aplicar_politicas
+    lo midiera con la banda (MEDIO con la clase «si ALTO») o con la clase de su desglose, lo
+    sacaria al ciclo siguiente y el barrido lo volveria a mandar al minuto (entra y sale cada
+    5 min). Se queda mientras el reporte lo vea como candidato o siga con alertas en la ventana
+    (`vigiladas`, la misma vara que lo enviado a mano), y mientras el reporte sea de antes del
+    envio (aun no ha podido verlo). Sale cuando un reporte posterior ya no lo trae."""
+    try:
+        gen = int(cq.get("generado") or 0)
+    except (TypeError, ValueError):
+        gen = 0
+    try:
+        cuando = int(v.get("cuando") or 0)
+    except (TypeError, ValueError):
+        cuando = 0
+    if gen and cuando and gen < cuando:
+        return True
+    for key in ("candidatos", "vigiladas"):
+        for c in cq.get(key, []) or []:
+            if clave_cpe(c.get("ip", ""), c.get("router", "") or pid) == k:
+                return True
+    return False
 
 def _registrar_enviados(path, nuevas, sueltas, pisar=False):
     """Anota altas y bajas en el registro RELEYENDOLO dentro del cerrojo: entre que se
@@ -12124,7 +12179,8 @@ def documentacion_page(embed=False, pagina=""):
 <table><tr><th>Pestaña</th><th>Qué hace</th></tr>
 <tr><td><b>En vivo</b></td><td>Vista principal. Arriba, el <b>resumen de las últimas 24h</b>:
 atacantes por puerto (qué IP golpea qué puerto), IPs origen (atacantes), IPs destino (objetivos) y la
-línea de tiempo por intervalos de 30 minutos. Se actualiza sola cada 20 segundos.</td></tr>
+línea de tiempo en 48 barras (de 30 minutos con la ventana de 24 h; con una ventana más corta, más
+cortas). Se actualiza sola cada 20 segundos.</td></tr>
 <tr><td><b>Top orígenes</b></td><td>Ranking del <b>Top 5 de CPEs que más alertan</b> (quién ataca más),
 con el desglose de cada uno: puerto origen, IP destino, dueño/organización del destino, puerto y
 protocolo. Debajo, el <b>espejo</b>: <b>Top IPs destino más atacadas</b> (los blancos que reciben más
@@ -12137,13 +12193,19 @@ imprimir a PDF salen todas las filas.</td></tr>
 <b>DNS sospechoso</b>, con su <b>nivel de confianza</b>, la <b>evidencia</b> que lo respalda (botón
 "Ver evidencia") y la <b>salud del sensor</b> arriba. Desde aquí se envían/quitan del MikroTik.
 Se explica en "Cuarentena: enviar CPEs infectados al MikroTik (API v6 y v7)".</td></tr>
+<tr><td><b>Consultar IP</b></td><td>La reputación de una IP o red pública en AbuseIPDB (a qué se dedica)
+y, arriba, <b>tus IPs públicas</b> de cada nodo con sus listas negras. Se explica en "Consultar IP o red:
+qué ataques se le denuncian".</td></tr>
 <tr><td><b>Histórico</b></td><td>El <b>abuso saliente día a día</b>: ataques, tendencia, CPEs, por qué
 atacan y por qué puerto, y cuántos se pusieron en cuarentena y se liberaron. Del nodo que se mira (o de
-todos). Se guarda solo el reporte más reciente: no hay instantáneas viejas que abrir.</td></tr>
+todos). Su título es <b>Abuso saliente</b> y al final lleva el diagnóstico del MikroTik (ver "Protección en
+el MikroTik: qué le falta"). Se guarda solo el reporte más reciente: no hay
+instantáneas viejas que abrir.</td></tr>
 <tr><td><b>Reporte</b></td><td>El <b>informe de 3 días: conducta por abonado</b>. Agrupa a los CPEs
 por categoría de abuso (primero lo que hay que cortar: botnet, escaneo, fuerza bruta) y de cada uno da
 alertas, firmas, destinos, puertos, dominios consultados y cuándo se le vio. Arriba, el filtro por IP o
-firma y <b>Generar informe PDF</b> (de 1, 3, 7 o 30 días) para mandárselo al cliente. Se explica en
+firma, <b>Generar informe PDF</b> (de 1, 3, 7 o 30 días) para mandárselo al cliente y <b>Descargar
+CSV</b>. Se explica en
 "Abuso saliente: el número que hay que poder enseñar".</td></tr>
 <tr><td><b>Eventos</b></td><td>Buscador de los <b>eventos de Suricata</b> del nodo elegido (o de
 todos): por fecha y hora, firma (texto o SID), severidad, IP origen o destino, puerto, protocolo y tipo de
@@ -12161,7 +12223,7 @@ tu monitoreo SNMP, un falso positivo puntual). Permite exclusiones <b>temporales
 <li><b>Usuarios y roles</b>: crear, editar, borrar y cambiar el rol (su propia clave la cambia con el
 lápiz de su fila).</li>
 <li><b>IPs de confianza</b>: desde dónde se puede entrar al panel y las IPs bloqueadas por fallar la clave.</li>
-<li><b>MikroTik</b>: lo común a todos los routers (listas, acciones, caducidad y políticas de cuarentena).</li>
+<li><b>MikroTik</b>: lo común a todos los routers (listas por categoría, acciones y políticas de cuarentena).</li>
 <li><b>Puntos</b>: alta, ficha y baja de cada MikroTik. No es pestaña: se abre desde aquí.</li>
 <li><b>DNS</b>: los resolutores conocidos (ver "Resolutores DNS").</li>
 <li><b>Reputación</b>: las claves de abuse.ch, AbuseIPDB, Groq y Telegram, el estado de los feeds y
@@ -12182,21 +12244,23 @@ va en la dirección (<code>?nodo=</code>), así que un enlace copiado abre lo mi
 elegir, vale el último de tu sesión y, si no hay, «Todos». Un nodo mal escrito da error (no se cambia
 por «Todos»). No sale en Ajustes, Puntos, Registro ni Documentación, que no dependen del nodo.</td></tr>
 <tr><td><b>Tu usuario</b> (arriba a la derecha)</td><td>Tu foto (o tus iniciales) y tu nombre; al tocarlo se
-abre un menú con tu rol y: <b>Mi cuenta</b> (nombre, correo, foto), <b>Cambiar contraseña</b>,
+abre un menú con tu rol y: <b>Mi cuenta</b> (el administrador, su ficha de usuario: nombre, correo,
+foto; operador y solo lectura, su <b>Perfil</b>: foto y clave), <b>Cambiar contraseña</b>,
 <b>Cerrar sesión</b> y <b>Desconectar en</b>, el tiempo que le queda a tu sesión (dura 12 horas desde
 que entras; al llegar a cero vuelve a pedir la clave). Si la pantalla es estrecha sale solo la foto.</td></tr>
 </table>
 
 <h2>Cada cuánto se actualiza</h2>
 <ul>
-<li><b>Feed de últimos ataques</b> (En vivo, abajo): cada <b>20 segundos</b>.</li>
-<li><b>Resumen (tiles, gráficos y línea de tiempo), Detalle, Top e Histórico</b>: se regeneran
+<li><b>En vivo</b>: la página se recarga sola cada <b>20 segundos</b>, pero lo que enseña cambia
+cuando se regenera el resumen.</li>
+<li><b>Resumen (tiles, gráficos, línea de tiempo y mapa), Detalle, Top e Histórico</b>: se regeneran
 en segundo plano cada <b>5 minutos</b>. Por eso los gráficos casi no cambian entre
-recargas y el feed de abajo sí (ese es en vivo).</li>
+recargas.</li>
 <li><b>Salud del sensor</b> (tarjeta en Cuarentena): se mide cada <b>~60 segundos</b>.</li>
 <li><b>El distintivo "En cuarentena" del Top</b> no espera esos 5 minutos: cada vez que
 <b>entra o sale</b> un CPE de cualquiera de las dos listas (infectados o DNS), el resumen se
-regenera en unos segundos. Así el Top no marca como en cuarentena a un CPE que acabas de
+regenera en uno o dos minutos (esas regeneraciones se atienden como mucho una por minuto). Así el Top no marca como en cuarentena a un CPE que acabas de
 quitar, ni deja sin marcar al que acaba de entrar (también cuando lo libera el sistema solo).</li>
 <li><b>Cuarentena automática</b> (si está activada): las políticas por clase se aplican junto
 con el resumen (cada 5 min), pero hay un <b>barrido rápido cada ~60 s</b> que envía YA a los CPEs
@@ -12210,7 +12274,9 @@ cambiarla se regenera cada punto y al final Todos; mientras tanto la página dic
 <li><b>Reglas ET</b>: las actualiza el orquestador cada día para todos los puntos (ver
 "De dónde saca Suricata para confirmar (reglas) y cómo se actualiza"). <b>Informe por Telegram</b>: una
 vez al día, ver "Reportes e informe diario".</li>
-<li>Todas las horas del panel están en la <b>hora local</b> configurada en el servidor.</li>
+<li>Todas las horas del panel están en la <b>hora local</b> del servidor: la zona
+<code>ZONA_HORARIA</code> de su configuración (<code>IDS_TZ</code> en el panel; por defecto
+<code>America/Guayaquil</code>).</li>
 </ul>
 
 <h2>Colores de gravedad</h2>
@@ -12266,8 +12332,10 @@ publica como una versión nueva. Después reinicia el Suricata de cada punto <b>
 <p><b>Cómo se actualiza (automático):</b></p>
 <ul>
 <li>El orquestador lo hace <b>una vez al día</b> para todos los puntos.</li>
-<li>Si la validación falla, <b>se quedan las reglas anteriores</b> y el aviso queda en el <b>Registro</b>:
-ningún punto se queda sin reglas por una descarga mala.</li>
+<li>Si la validación falla, <b>se quedan las reglas anteriores</b>: ningún punto se queda sin reglas
+por una descarga mala. La actualización forzada desde el panel deja su resultado en el
+<b>Registro</b>; la diaria no pasa por el panel y su fallo se ve en el servidor
+(<code>systemctl status ids-reglas</code> o <code>journalctl -u ids-reglas</code>).</li>
 </ul>
 {ubox}
 <p><b>Forzar una actualización ahora</b>: el botón de arriba (administrador) o, en el servidor,
@@ -12293,8 +12361,8 @@ algunos minutos, no es instantáneo, pero acierta mucho más.</li>
 gratis y no dependen de nada; después las del panel.</p>
 
 <h3>Protección en el MikroTik: qué le falta</h3>
-<p>Al principio de <b>Abuso saliente</b>, el panel <b>le pregunta al router</b> y dice qué tiene y
-qué le falta para poder cortar, con el comando exacto de cada cosa:</p>
+<p>Al final de la pestaña <b>Histórico</b> (titulada <b>Abuso saliente</b>), el panel <b>le pregunta al
+router</b> y dice qué tiene y qué le falta para poder cortar, con el comando exacto de cada cosa:</p>
 <ul>
 <li><b>El espejo activo.</b> Si el sniffer se paró, el sensor está ciego y todo lo demás da igual.</li>
 <li><b>Que las address-lists CORTEN.</b> Es el fallo más caro: el panel mete CPEs en la lista, dice
@@ -12355,18 +12423,19 @@ que está en marcha en vez de esperar.</li>
 deja: una ventana explica que hay que esperar a que termine (si no, llevarías al MikroTik la lista de redes
 vieja).</li>
 </ul>
-<p>Comprueba que llega mirando la salud por etapas del punto (<b>TZSP recibido</b> y <b>Tráfico
-procesado</b>) o, en el router, <code>/ip firewall mangle print stats where comment~"ids-maat"</code>.</p>
+<p>Comprueba que llega mirando la salud por etapas del punto (<b>Espejo TZSP</b> y <b>Suricata</b>)
+o, en el router, <code>/ip firewall mangle print stats where comment~"ids-maat"</code>.</p>
 
 <h3>Prefijos: por qué a veces no se ven datos</h3>
 <p>El espejo de cada punto llega a su receptor TZSP (en su contenedor VPN) y su Suricata lo inspecciona.
 Pero el panel muestra <b>alertas</b>, no tráfico normal, y las reglas de <b>ataque saliente</b> (escaneo
 de puertos, Telnet/Mirai, fuerza bruta SSH de un CPE) solo disparan si la IP de origen está dentro de
 los <b>prefijos del punto</b> (su <code>HOME_NET</code>).</p>
-<p><b>Síntoma típico:</b> la salud del punto dice <b>TZSP recibido</b> pero el panel se ve casi vacío.
+<p><b>Síntoma típico:</b> la etapa <b>Espejo TZSP</b> del punto está bien pero el panel se ve casi vacío.
 Casi siempre es que los prefijos no incluyen las redes de tus clientes.</p>
 <p>Los prefijos se eligen al dar de alta el punto y se cambian en su ficha (<b>Prefijos</b>): el
-Suricata del punto toma los nuevos y después hay que <b>volver a aplicar el espejo</b> para
+orquestador <b>reinicia el Suricata del punto</b> para que tome los nuevos (mientras dura el reinicio ese
+punto no inspecciona nada) y después hay que <b>volver a aplicar el espejo</b> para
 llevarlos a la address-list <code>ids-vigilados</code> del router (con la misma vista previa). Al pulsar
 <b>Guardar prefijos</b> la ficha no se recarga: debajo del formulario se ve el avance del orquestador paso
 a paso, con lo que tardó cada uno, y al terminar sale la ventana <b>Prefijos aplicados en el
@@ -12389,7 +12458,7 @@ los abonados que salen por ella</b>. El panel lo <b>impide</b> si esas IPs está
 <b>Consultar IP &rarr; Tus IPs públicas</b>. Declararlas ahí no es opcional en este modo.</li>
 <li><b>El espejo tiene que salir por el túnel del punto</b>, desde la IP del MikroTik dentro del
 túnel. El receptor de cada punto descarta lo que llega por otro lado, y eso solo se ve en la salud por
-etapas (<b>TZSP recibido</b>): por eso conviene mirarla tras cualquier cambio.</li>
+etapas (<b>Espejo TZSP</b>): por eso conviene mirarla tras cualquier cambio.</li>
 <li><b>El espejo duplica el tráfico dentro del túnel</b> y va por UDP sin retransmisión: con pérdida
 el IDS ve tráfico incompleto <b>y no avisa</b>. Para un sensor remoto conviene <b>filtrar en el
 propio MikroTik</b> (<code>filter-port</code>, <code>filter-protocol</code>): con 25, 22, 23, 445,
@@ -12414,10 +12483,10 @@ puerto, eso <b>sí</b> es un ataque y sigue saliendo como tal.</p>
 <p>La salud se mide <b>por punto y por etapas</b>, porque cada una falla por su lado. La ven todos los
 usuarios en el selector de nodo, y con detalle en <b>Puntos</b>:</p>
 <ul>
-<li><b>VPN conectada</b>: el MikroTik tiene el túnel arriba.</li>
-<li><b>TZSP recibido</b>: llega el espejo al receptor del punto.</li>
-<li><b>Tráfico procesado</b>: Suricata cuenta paquetes capturados y sus <b>descartes</b>.</li>
-<li><b>Eventos actualizados</b>: el registro de eventos del punto se está escribiendo.</li>
+<li><b>VPN</b>: el MikroTik tiene el túnel arriba.</li>
+<li><b>Espejo TZSP</b>: llega el espejo al receptor del punto.</li>
+<li><b>Suricata</b>: cuenta paquetes capturados y sus <b>descartes</b>.</li>
+<li><b>Eventos</b>: el registro de eventos del punto se está escribiendo.</li>
 <li><b>Datos consultables</b>: el panel puede leerlos (reporte, eventos, histórico).</li>
 </ul>
 <p>Estados, con su color:</p>
@@ -12426,13 +12495,15 @@ usuarios en el selector de nodo, y con detalle en <b>Puntos</b>:</p>
 comprueba su salud. Las etapas salen como <b>pendiente</b>.</li>
 <li><b>esperando MikroTik</b> (ámbar): la VPN del punto está sana y lista, pero el MikroTik todavía no
 se conectó. Es lo normal justo después de un alta correcta, hasta que pegas los comandos en el router.
-Las etapas que dependen del MikroTik (VPN, espejo, tráfico y eventos) salen como <b>pendiente</b>, no
+Las etapas que dependen del MikroTik (VPN, Espejo TZSP, Suricata y Eventos) salen como <b>pendiente</b>, no
 como fallo.</li>
 <li><b>VPN caída</b> (rojo): el contenedor de la VPN no existe, está parado o su comprobación de salud
 falla. El motivo sale al lado.</li>
 <li><b>con error</b> (rojo): el orquestador dejó el punto en error. Puntos y la ficha dicen el
 <b>motivo</b> (el paso que falló) y <b>desde cuándo</b>, y la ficha trae <b>Reintentar arranque</b>
-(ver "Puntos: un MikroTik, su VPN y su Suricata").</li>
+(ver "Puntos: un MikroTik, su VPN y su Suricata"). También sale así si la VPN está sana pero el
+<b>Suricata del punto</b> está parado, reiniciándose en bucle o enfermo, haya conectado o no el MikroTik:
+no se queda en ámbar como si fuera lo normal tras un alta.</li>
 <li><b>operativa</b> (verde), <b>degradada</b>, <b>sin datos</b>, <b>deshabilitada</b> (punto parado) y
 <b>desconocido</b> (sin estado reciente del orquestador).</li>
 </ul>
@@ -12466,17 +12537,18 @@ más repetidos y se indica cuántos más hay.</li>
 un panel fijo con ese mismo detalle, cómodo de leer en el teléfono. Puedes <b>arrastrar</b> para
 mover el mapa, usar <b>+</b> / <b>&minus;</b> o <b>Ctrl + rueda</b> para acercar, y <b>Vista completa</b>
 para volver al mundo entero.</li>
-<li><b>No pierde el zoom:</b> la página se recarga sola cada 5 min; el mapa <b>repone la vista</b>
+<li><b>No pierde el zoom:</b> la página se recarga sola cada 20 s; el mapa <b>repone la vista</b>
 (el zoom, el desplazamiento y el país que tenías abierto) en vez de volver al mundo entero. Se
 guarda por pestaña del navegador, así que otra pestaña o una sesión nueva empiezan limpias.</li>
-<li><b>Cobertura:</b> el mapa reconoce los <b>174 países</b> del atlas (todos los que trae el
-TopoJSON, más Kosovo). Si un país no tiene nombre traducido, se usa el del propio mapa.</li>
+<li><b>Cobertura:</b> el mapa reconoce <b>175 países</b>: los 174 del atlas que traen código en el
+TopoJSON, más Kosovo. Si un país no tiene nombre traducido, se usa el del propio mapa.</li>
 <li><b>Solo destinos públicos:</b> las IPs privadas (tu red) o sin país no cuentan en el mapa.</li>
 <li><b>El mapa</b> se dibuja en el navegador con un <b>TopoJSON</b> del mundo servido por el
 propio panel (viene en su imagen); no llama a ningún CDN externo.</li>
 <li>Si el mapa sale vacío, casi siempre es que la base GeoIP no se instaló (no había internet
-en la instalación). El panel <b>se auto-provisiona</b> al arrancar (baja el mapa y construye la
-base GeoIP en 2do plano si falta); también se reconstruye reiniciando el panel. Necesita salida a
+en la instalación). El panel <b>se auto-provisiona</b> al arrancar: si falta, baja y construye la
+base GeoIP en segundo plano (el mapa no se baja: viene en la imagen); también se reconstruye
+reiniciando el panel. Necesita salida a
 internet la primera vez.</li>
 </ul>
 <p class="muted" style="color:#52514e;font-size:12px">Mapa inspirado en
@@ -12488,10 +12560,11 @@ internet la primera vez.</li>
 los CPE que <b>ya</b> cruzaron el umbral. Para justificar un corte ante un cliente, o para ver
 a quién se le repite el patrón día tras día, hace falta lo contrario: <b>varios días</b> y
 <b>todos</b> los CPE. Eso es esta pestaña.</p>
-<p>Lee <code>eve.json</code> y <code>dns.json</code> <b>y sus rotados</b>. Es importante:
-logrotate parte los logs cada día, así que "3 días" nunca está en un solo archivo; si solo se
-mirara el log actual, el reporte diría 3 días y en realidad sería el de hoy. Los rotados más
-viejos que la ventana se saltan por su fecha, sin abrirlos.</p>
+<p>Sale del <b>historial del punto</b> (<code>historial.db</code>), donde el panel va sumando cada 5
+minutos lo nuevo de <code>eve.json</code> y <code>dns.json</code> y lo guarda 30 días. Es importante:
+logrotate parte los logs, así que "3 días" nunca está en un solo archivo; con lo ya contado guardado
+aparte, la rotación y los reinicios no le quitan días. Solo la primera vez, con el historial todavía
+vacío, lee los logs y sus rotados.</p>
 <p>Solo entran <b>tus abonados</b> (los rangos de <code>MIS_REDES</code>). Una IP de internet
 no es un CPE: llenaría la tabla de servidores ajenos y no serviría para decidir a quién cortar.</p>
 <p><b>Qué cuenta como alerta.</b> Igual que En vivo, el reporte <b>descarta el ruido</b>: las
@@ -12517,7 +12590,7 @@ leen. Va ahí porque responde a la misma pregunta que el paginador y se usa al t
 y sale <b>aunque haya una sola página</b>: si no, al elegir 100 desaparecería el paginador y con
 él la única forma de volver a 10. El tamaño de página y el filtro viajan juntos: cambiar uno no
 borra el otro.</p>
-<p>El <b>CSV</b> usa punto y coma y lleva BOM, que es lo que abre Excel en español sin pedir
+<p>El <b>CSV</b> (botón <b>Descargar CSV</b> del Reporte) usa punto y coma y lleva BOM, que es lo que abre Excel en español sin pedir
 nada. Las firmas que traen <code>;</code> o comillas van entrecomilladas: sin eso se corren
 las columnas y el cliente termina leyendo el dato de otro abonado.</p>
 <p>La pestaña <b>Histórico</b> ya no es una lista de archivos: es la <b>tendencia del abuso que sale
@@ -12534,7 +12607,7 @@ Debajo, una barra por día (7, 30, 90 o 365) y dos tablas: <b>por qué atacan</b
 salen</b>, que es justo lo que hay que mirar para decidir la regla de salida que más abuso corta.</p>
 <h3>De dónde salen esos números</h3>
 <ul>
-<li>Los reportes HTML se podan a los <b>3 días</b>, así que la tendencia <b>no</b> sale de ellos: se
+<li>De los reportes HTML solo se conserva el <b>último</b>, así que la tendencia <b>no</b> sale de ellos: se
 acumula aparte, por nodo (<code>/srv/ids/panel/nodos/&lt;punto&gt;/</code>), y se guarda <b>400 días</b>.
 En «Todos» se ven los nodos juntos.</li>
 <li>Se cuenta de forma <b>incremental</b> (solo lo posterior a la corrida anterior), no recontando la
@@ -12546,7 +12619,8 @@ gris). Un día sin datos no es un día tranquilo. La marca es por día y no se e
 de esa corrida.</li>
 <li>Las cuarentenas se cuentan aparte, en el archivo del panel, porque el log de cuarentena solo
 guarda 15 días.</li>
-<li>La tendencia necesita <b>14 días</b> de datos para poder comparar; antes de eso lo dice.</li>
+<li>La tendencia necesita el <b>doble del periodo</b> en datos para poder comparar (14 días con 7, 60
+con 30...); antes de eso lo dice.</li>
 </ul>
 
 <h2>Consultar IP o red: qué ataques se le denuncian</h2>
@@ -12708,7 +12782,7 @@ porque cambian: conviene repasarlas una vez al año.</p>
 <li>El plan gratuito da <b>1.000 consultas al día</b> (se reinicia a medianoche <b>UTC</b>). El panel
 lleva la cuenta y la muestra en la pestaña.</li>
 <li>Lo ya consultado sale de una <b>caché</b> y no gasta cuota: 7 días si la IP está limpia, 12 horas
-si tiene denuncias. Se puede marcar <b>Forzar consulta nueva</b> para saltársela.</li>
+si tiene denuncias. Se puede marcar la casilla <b>sin cache</b> para saltársela.</li>
 <li>El enriquecimiento automático tiene su propio tope y <b>no puede tocar una reserva</b> de 300
 consultas, para que un barrido no te deje sin poder consultar a mano.</li>
 <li><b>Nunca</b> se envían IPs privadas: las de tus abonados (10.x, 172.16-31.x, 192.168.x, 100.64.x)
@@ -12734,7 +12808,7 @@ Con ella activa, cada atacante de <b>Ataques entrantes</b> muestra un botón <b>
 <ul>
 <li><b>Nunca se denuncia solo.</b> Siempre lo pulsa una persona, y con confirmación.</li>
 <li><b>Nunca se denuncian IPs tuyas.</b> Ni las privadas de tus abonados ni tus rangos públicos de
-NAT: denunciar tu propio rango te mete a <b>vos</b> en las listas negras. Tampoco las de la lista
+NAT (los declarados en <b>Consultar IP &rarr; Tus IPs públicas</b>): denunciar tu propio rango te mete a <b>vos</b> en las listas negras. Tampoco las de la lista
 <b>Nunca bloquear</b>.</li>
 <li><b>El comentario no lleva ninguna IP</b>, ni la del atacante (ya va en su campo) ni la de la
 máquina atacada. Solo el nombre de la firma, el puerto y cuántas alertas hubo.</li>
@@ -12806,7 +12880,8 @@ esas IPs. Sin ese matcher &mdash;o cortando en <code>raw</code>&mdash; se tiran 
 <b>respuestas</b> a lo que pidió tu abonado, y el cliente se queda sin poder entrar a un sitio
 legítimo sin que nadie entienda por qué.</li>
 <li><b>La lista se descarga del panel</b> (<code>/blocklist.rsc</code>, con sesión de
-administrador; en «Todos» o por nodo) y se importa en el router con <code>/import</code>. El MikroTik
+administrador; en «Todos» o por nodo) y se importa en el router con <code>/import</code>. Ninguna
+pantalla la enlaza todavía: se abre escribiendo esa dirección detrás de la del panel. El MikroTik
 no llega al panel por el túnel (por él solo pasan el espejo y la API), así que ya no se la baja solo.
 Meterle miles de entradas una a una por la API tardaría horas.</li>
 </ul>
@@ -12816,7 +12891,7 @@ Meterle miles de entradas una a una por la API tardaría horas.</li>
 <h2>Reportes e informe diario</h2>
 <ul>
 <li>El reporte gráfico de cada nodo (y el de «Todos») lo genera el panel cada 5 minutos, de un
-nodo en uno; los guardados están en <b>Histórico</b>.</li>
+nodo en uno; solo se guarda el último (la evolución día a día está en <b>Histórico</b>).</li>
 <li>Informe de texto por Telegram: se envía cada día a las 07:30 (hora local), con una sección por
 nodo, al chat configurado en <b>Ajustes &rarr; Reputación &rarr; Telegram</b> (ver "Avisos por
 Telegram").</li>
@@ -12843,12 +12918,16 @@ túnel. La API no se abre a internet ni a tu LAN.</p>
 maestra del servidor y no se vuelve a mostrar.</p>
 
 <h3>3) La regla que DECIDE qué hacer con la lista (tú la defines)</h3>
-<p>Ejemplo: cortar el tráfico saliente de los CPE en cuarentena (misma sintaxis en v6 y v7):</p>
-<pre><code>/ip firewall filter add chain=forward src-address-list=suricata-cuarentena action=drop comment="Suricata: CPE en cuarentena"</code></pre>
+<p>Cada CPE va a la address-list de <b>su categoría</b> (<code>clientes-botnet</code>,
+<code>clientes-escaneo</code>&hellip;, ver "Una lista por categoría de abuso"; su fila lo dice), y los de
+DNS sospechoso a <code>suricata-dns-sospechoso</code>. La regla de cada lista no hace falta escribirla:
+en <b>Ajustes &rarr; MikroTik</b> eliges la acción de la lista y el panel la pone con <b>Ver / aplicar en el
+router</b> (ver "Acciones por categoría: lo que el router hace con cada lista"). A mano, cortar el
+tráfico saliente de una lista sería (misma sintaxis en v6 y v7):</p>
+<pre><code>/ip firewall filter add chain=forward src-address-list=clientes-botnet action=drop comment="Suricata: CPE en cuarentena"</code></pre>
 <p>Alternativas según tu política: en vez de <code>action=drop</code> puedes redirigir a un portal,
-marcar en <code>mangle</code> para limitar velocidad, o registrar. La <b>address-list</b> por defecto
-es <code>suricata-cuarentena</code> (cámbiala en Ajustes si usas otro nombre).</p>
-<p><b>Sin caducidad.</b> Las IPs de abonados entran sin TTL, se envíen a mano, con <b>Enviar todos</b>
+marcar en <code>mangle</code> para limitar velocidad, o registrar.</p>
+<p><b>Sin caducidad.</b> Las IPs de abonados entran sin TTL, se envíen a mano, con <b>Enviar confirmados</b>
 o por política (ver "Cuarentena automática (políticas por clase de abuso)"), y el panel las <b>saca solo
 cuando el abonado deja de enviar virus</b> (el CPE ya no sale como infectado); también puedes quitarlas a
 mano con el botón <b>Quitar</b> de la pestaña. No es una opción: con un TTL la IP salía a la hora aunque
@@ -12859,15 +12938,15 @@ bajo todavía se queda.</p>
 <h3>4) Configurar y probar en el panel</h3>
 <ol>
 <li><b>Puntos &rarr; ficha del punto &rarr; API</b>: usuario, clave y <b>Permitir enviar</b>. Lo común a
-todos los nodos (nombres de las address-list, acciones, caducidad y políticas) está en Ajustes &rarr; MikroTik,
+todos los nodos (nombres de las listas por categoría, acciones y políticas) está en Ajustes &rarr; MikroTik,
 que además resume la conexión de cada nodo.</li>
 <li>Confirma la <b>huella del certificado</b> de la API (ver "Puntos: un MikroTik, su VPN y su Suricata",
 apartado <b>La huella del certificado de la API</b>): hasta entonces el panel no le manda la clave de
-<code>ids-api</code> al router. Después pulsa <b>Probar conexión</b>: si conecta, muestra el nombre
+<code>ids-api</code> al router. Después pulsa <b>Probar la conexión</b>: si conecta, muestra el nombre
 (identity) del router. Si un día el router presenta otro certificado, la conexión se rechaza hasta que lo
 revises.</li>
-<li>En <b>Cuarentena</b>, cada CPE infectado confirmado muestra <b>Enviar a cuarentena</b>
-(lo agrega a la lista de <b>su</b> nodo) y luego <b>Quitar</b> (lo saca). Todo queda en el registro de
+<li>En <b>Cuarentena</b>, cada CPE candidato muestra <b>Enviar</b> (lo agrega a la lista de su
+categoría en el MikroTik de <b>su</b> nodo; debajo dice a cuál) y luego <b>Quitar</b> (lo saca). Todo queda en el registro de
 cuarentena del panel y en el <b>Registro</b>.</li>
 </ol>
 <p>En la tabla <b>Enviados manualmente</b> puedes <b>ordenar por cualquier columna</b>: haz
@@ -12875,7 +12954,7 @@ clic en la cabecera (CPE, Lista, Por, Enviado, Última revisión&hellip;) para o
 <b>ascendente</b>, y otra vez para <b>descendente</b>. Las columnas de fecha ordenan por
 tiempo real, no por texto. El orden que elijas <b>se conserva</b> al pulsar <b>Quitar</b> o
 al recargarse la página, y esta <b>vuelve a la altura donde estabas</b> en vez de saltar
-arriba del todo (también en el refresco automático de cada 5 min).</p>
+arriba del todo. La pestaña no se recarga sola: para ver lo último, recárgala.</p>
 <p><b>Quitar varias a la vez:</b> cada fila tiene una <b>casilla</b> (y la cabecera una para
 <b>seleccionar todas</b>). Al marcar alguna se activa <b>Quitar seleccionados (N)</b>, que abre
 una <b>ventana de confirmación</b> con la lista de IPs antes de tocar nada; las de la lista de
@@ -12896,17 +12975,19 @@ el nodo de la IP (<code>punto|IP</code>), nunca el que tengas elegido en el sele
 <p>El aviso de arriba de la pestaña cambia de color según el estado:</p>
 <ul>
 <li><b style="color:#1a7f37">Verde &mdash; MikroTik habilitado</b>: marcaste <b>Permitir enviar</b> y la conexión
-(usuario y clave del nodo) está completa. Aparecen los botones <b>Enviar a cuarentena</b> por CPE y
-<b>Enviar todos</b>.</li>
+(usuario y clave del nodo) está completa. Aparecen los botones <b>Enviar</b> por CPE y
+<b>&#9888; Enviar confirmados (N)</b>. El verde no prueba que el router conteste: eso lo dicen la
+huella confirmada y <b>Probar la conexión</b> de la ficha.</li>
 <li><b style="color:#b52a2a">Rojo &mdash; Falta configurar la conexión</b>: marcaste <b>Permitir enviar</b>
-pero todavía falta el usuario o la clave (o no conecta). Completa la API del punto y pulsa
-<b>Probar conexión</b>. Mientras tanto no se envía nada.</li>
+pero todavía falta el usuario o la clave. Completa la API del punto y pulsa
+<b>Probar la conexión</b>. Mientras tanto no se envía nada.</li>
 <li><b>Gris &mdash; Modo sugerencia (dry-run)</b>: el permiso está apagado. Solo se listan candidatos;
 el panel no toca el router.</li>
 </ul>
-<p><b>Enviar todos:</b> con el estado en verde, el botón <b>Enviar todos (N)</b> manda de una a la
-address-list todos los CPE de la lista que aún no estén en cuarentena (tope de 50 por acción; si el
-router deja de responder, se detiene y avisa). En «Todos» se reparte <b>por nodo</b> y el resultado
+<p><b>Enviar confirmados:</b> con el estado en verde, el botón <b>&#9888; Enviar confirmados (N)</b> manda
+de una, cada uno a la lista de su categoría, los CPE <b>confirmados</b> (confianza alta: 2 o más pruebas
+independientes) que aún no estén en cuarentena (tope de 50 por nodo; si el router deja de responder,
+se detiene y avisa). En «Todos» se reparte <b>por nodo</b> y el resultado
 se da por nodo: un router caído no frena a los demás. Cada IP queda <b>sin caducidad</b> (ver
 <b>Sin caducidad</b>, en el apartado 3). Toda acción queda en el Registro.</p>
 
@@ -12918,10 +12999,19 @@ ataque vuelve. Ese ciclo es la razón habitual de que estos programas no bajen n
 SSH/Telnet, SMB, RDP/VNC y TR-069. El abonado sigue navegando, viendo streaming y jugando, así que
 <b>no llama</b>, y el corte aguanta en el tiempo. Aquí sí se corta también el 587/465: ese equipo ya
 está comprometido.</p>
-<p>Las reglas se pegan una vez y están en <b>Ajustes &rarr; MikroTik</b>. Al enviar el primer CPE el
-panel <b>comprueba que exista alguna regla usando esa lista</b> y avisa si no: una address-list sin
-regla que la use no bloquea nada, y sin ese aviso el panel diría "enviado" mientras el CPE sigue
-atacando.</p>
+<p><b>Sin botón en el panel.</b> Hoy ninguna pantalla manda un CPE a la graduada ni enseña sus reglas:
+la lista y su envío existen, pero falta el botón. Si la quieres usar, las reglas se pegan una vez en el
+router (misma sintaxis en v6 y v7):</p>
+<pre><code>/ip firewall filter
+add chain=forward src-address-list=suricata-graduada protocol=tcp dst-port=25,465,587 action=drop comment="Suricata graduada: correo saliente (spam)"
+add chain=forward src-address-list=suricata-graduada protocol=tcp dst-port=22,2222,23,2323 action=drop comment="Suricata graduada: SSH y Telnet (escaneo y fuerza bruta)"
+add chain=forward src-address-list=suricata-graduada protocol=tcp dst-port=445,139 action=drop comment="Suricata graduada: SMB (gusanos)"
+add chain=forward src-address-list=suricata-graduada protocol=tcp dst-port=3389,5900 action=drop comment="Suricata graduada: RDP y VNC (fuerza bruta)"
+add chain=forward src-address-list=suricata-graduada protocol=tcp dst-port=7547,37215 action=drop comment="Suricata graduada: TR-069 e IoT (botnets)"</code></pre>
+<p>Al enviar un CPE a la graduada el panel <b>comprueba que exista alguna regla usando esa lista</b> y
+avisa si no: una address-list sin regla que la use no bloquea nada, y sin ese aviso el panel diría
+"enviado" mientras el CPE sigue atacando. Las IPs entran con <b>1 día</b> de caducidad y nadie las
+saca antes: no se liberan solas cuando el CPE deja de atacar.</p>
 
 <h2>Cuarentena automática (políticas por clase de abuso)</h2>
 <p>Además de enviar a mano, el panel puede actuar solo. En <b>Ajustes &rarr; MikroTik</b>, con
@@ -12960,22 +13050,26 @@ exclusiones, con <b>anti-rebote de 60&nbsp;s</b> por CPE. MEDIO/BAJO siguen en e
 darles el mismo trato en el firewall, y no es el mismo problema. Por eso cada CPE va a la
 address-list de <b>su categoría</b>, y cada lista se trata como corresponde:</p>
 <table>
-<tr><th>Categoría</th><th>Lista</th><th>Qué se hace</th></tr>
+<tr><th>Categoría</th><th>Lista</th><th>Qué conviene hacer</th></tr>
 <tr><td>Botnet / CnC</td><td><code>clientes-botnet</code></td><td><b>Cortar.</b> El equipo está
 comprometido y ataca a terceros.</td></tr>
+<tr><td>DNS de malware</td><td><code>clientes-dns-malware</code></td><td><b>Redirigir</b> su DNS a tu
+resolutor, que ya filtra. Ni se entera.</td></tr>
 <tr><td>Escaneo</td><td><code>clientes-escaneo</code></td><td><b>Cortar.</b></td></tr>
 <tr><td>Fuerza bruta</td><td><code>clientes-fuerza-bruta</code></td><td><b>Cortar.</b></td></tr>
 <tr><td>Spam</td><td><code>clientes-spam</code></td><td>Cerrarle <b>solo el correo saliente</b>. No
 hace falta dejarlo sin internet.</td></tr>
-<tr><td>DNS de malware</td><td><code>clientes-dns-malware</code></td><td><b>Redirigir</b> su DNS a tu
-resolutor, que ya filtra. Ni se entera.</td></tr>
 <tr><td>Criptominado</td><td><code>clientes-minado</code></td><td><b>Encolar</b>, no cortar: es
-consumo. Con <b>su propia marca y su propia cola</b> (<code>minado-con</code> /
-<code>minado</code>), separadas de las del P2P.</td></tr>
+consumo. Con <b>su propia marca y su propia cola</b> (las dos se llaman <code>suricata-minado</code>),
+separadas de las del P2P.</td></tr>
 <tr><td>P2P</td><td><code>clientes-p2p</code></td><td><b>Encolar</b>, no cortar: es consumo. Marca
-<code>p2p-con</code> / <code>p2p</code> y su cola.</td></tr>
+y cola <code>suricata-p2p</code>.</td></tr>
 <tr><td>Otros</td><td><code>clientes-otros</code></td><td>Lo que no encaja en nada de lo anterior.</td></tr>
 </table>
+<p>Es una recomendación. La acción que el panel trae elegida de serie (se cambia en <b>Ajustes &rarr;
+MikroTik</b> y no se aplica sin confirmar) es: <b>Solo navegación</b> para botnet, <b>DNS protegido</b>
+para DNS de malware, <b>Frenar escaneo</b> para escaneo, <b>Cortar todo</b> para fuerza bruta, <b>Sin
+correo saliente</b> para spam y <b>Nada</b> para criptominado, P2P y otros.</p>
 <p>La clasificación va de <b>lo más grave a lo más leve</b> y manda la primera que casa: quien tiene
 una botnet <b>y además</b> usa BitTorrent es, a efectos de qué hacer con él, un CPE con botnet
 &mdash; aunque el P2P tenga diez veces más alertas.</p>
@@ -12985,7 +13079,8 @@ encadenadas: <code>mark-connection</code> &rarr; <code>mark-packet</code> &rarr;
 nada y no da error</b>: una <code>/queue simple</code> con <code>target=""</code> no engancha
 tráfico, y una marca de paquete que ninguna cola consume no la usa nadie. P2P y criptominado
 llevan <b>marcas y colas distintas</b>, para poder darles límites distintos y saber cuál consume.
-Las reglas listas para copiar están en <b>MikroTik &rarr; Reglas</b>.</p>
+No hace falta copiarlas: la acción <b>Limitar</b> de <b>Ajustes &rarr; MikroTik</b> pone las tres con
+<b>Ver / aplicar en el router</b>.</p>
 <p>Por qué una regla puede <b>parecer</b> que no funciona (el orden frente al fasttrack, las conexiones
 que ya estaban abiertas y el <code>redirect</code> al resolutor del propio router): ver "Acciones por
 categoría: lo que el router hace con cada lista".</p>
@@ -13010,7 +13105,8 @@ por 443 sigue hablando.</td></tr>
 <tr><td><b>Redirigir DNS</b></td><td>fuerza el 53 a tu resolutor (dst-nat a la IP que pongas; vacío =
 <code>redirect</code> al propio router, que entonces debe resolver).</td></tr>
 <tr><td><b>Limitar</b></td><td>marca de conexión + marca de paquete + cola (<code>queue tree</code>) con el
-límite que pongas (p.ej. <code>2M</code> o <code>2M/2M</code>). Sin límite no se aplica.</td></tr>
+límite que pongas (p.ej. <code>2M</code>: la <code>max-limit</code> de una <code>queue tree</code> lleva un
+solo valor; <code>2M/2M</code> es la forma de las <code>queue simple</code>). Sin límite no se aplica.</td></tr>
 <tr><td><b>Mis reglas</b></td><td>pegas tu bloque de RouterOS tal cual (tablas <code>raw</code>, <code>nat</code>,
 <code>filter</code>, <code>mangle</code>, <code>queue tree</code>). Escribe <code>{{LISTA}}</code> donde vaya la
 address-list de la clase; el <code>comment</code> lo pone el panel y <code>place-before=0</code> significa
@@ -13076,36 +13172,39 @@ habilitas <code>/ip dns set allow-remote-requests=yes</code>, o usas
 cuántos cambios le faltan, además de si alguna lista con CPEs dentro no la usa ninguna regla.</p>
 
 <h2>Las address-lists: cuál es cuál</h2>
-<p>Ya son cinco y conviene tenerlas claras, porque <b>no todas se usan igual</b>: tres miran el
-<b>origen</b> (a quién se corta) y dos el <b>destino</b> o la entrada. Confundir
+<p>Son unas cuantas y conviene tenerlas claras, porque <b>no todas se usan igual</b>: las de abonados
+miran el <b>origen</b> (a quién se corta) y las de terceros el <b>destino</b> o la entrada. Confundir
 <code>src-address-list</code> con <code>dst-address-list</code> en la regla es el error que hace que
 "funcione" sin bloquear nada, o que bloquee lo que no era.</p>
 <table>
 <tr><th>Lista</th><th>Qué lleva dentro</th><th>En la regla</th><th>TTL</th></tr>
-<tr><td><code>suricata-cuarentena</code></td><td><b>CPEs infectados</b> (malware/CnC confirmado)</td>
-<td><code>src-address-list</code></td><td>1 h</td></tr>
+<tr><td><code>clientes-&lt;categoría&gt;</code> (las 8 de "Una lista por categoría de abuso")</td>
+<td><b>CPEs</b> en cuarentena, cada uno en la de su categoría (botnet, escaneo, spam&hellip;)</td>
+<td><code>src-address-list</code></td><td>sin caducidad</td></tr>
 <tr><td><code>suricata-dns-sospechoso</code></td><td><b>CPEs</b> que consultan dominios de botnet</td>
-<td><code>src-address-list</code></td><td>1 d</td></tr>
+<td><code>src-address-list</code></td><td>sin caducidad</td></tr>
 <tr><td><code>suricata-graduada</code></td><td><b>CPEs</b> con corte <b>parcial</b>: solo los puertos
 de abuso, el resto le sigue funcionando</td><td><code>src-address-list</code></td><td>1 d</td></tr>
 <tr><td><code>suricata-destinos-malos</code></td><td><b>IPs públicas ajenas</b> de mala reputación a
 las que tus CPEs salen (C2, malware, redes secuestradas)</td><td><b><code>dst-address-list</code></b>
-</td><td>7 d</td></tr>
+</td><td>7 d (a mano) / 1 d (preventivo)</td></tr>
 <tr><td><code>suricata-atacantes</code></td><td><b>IPs públicas ajenas</b> que atacan tu red desde
 internet</td><td><code>src-address-list</code> + <code>connection-state=new</code></td><td>1 d</td></tr>
 </table>
 <p>Las tres primeras contienen <b>IPs de tus abonados</b>; las dos últimas, <b>IPs públicas de
-terceros</b> &mdash; y ninguna de esas dos acepta una IP tuya, ni privada ni pública. Las tres de
-abonados no caducan (cuándo sale cada una, ver "Cuarentena: enviar CPEs infectados al MikroTik (API v6 y
-v7)"); las de terceros conservan su TTL.</p>
-<p>Cada una de estas cinco tiene su nombre configurable en <b>Ajustes &rarr; MikroTik</b> y lleva su
-propio registro en el panel, así que quitar algo de una no toca las demás. Las de cada categoría de
-abuso (<code>clientes-botnet</code>, <code>clientes-spam</code>&hellip;, ver "Una lista por categoría de
-abuso") también se renombran ahí, un campo por lista, por si ya tienes tu propia nomenclatura. Al enviar
+terceros</b> &mdash; y ninguna de esas dos acepta una IP tuya, ni privada ni pública. Las de cuarentena
+por categoría y la de DNS no caducan (cuándo sale cada una, ver "Cuarentena: enviar CPEs infectados al
+MikroTik (API v6 y v7)"); la graduada y las de terceros conservan su TTL, y a esas nadie las saca
+antes.</p>
+<p>Solo las de cada categoría de abuso (<code>clientes-botnet</code>, <code>clientes-spam</code>&hellip;)
+se renombran en <b>Ajustes &rarr; MikroTik</b>, un campo por lista, por si ya tienes tu propia
+nomenclatura; las <code>suricata-*</code> tienen nombre fijo, y ningún TTL se configura. Cada lista
+lleva su propio registro en el panel, así que quitar algo de una no toca las demás. Al enviar
 se <b>guarda en qué lista quedó</b> cada CPE: si mañana cambia su categoría o renombras la lista, el
 panel lo saca de donde está de verdad y no de donde tocaría hoy.</p>
-<p>El TTL de los destinos es más largo (7 d) a propósito: un servidor de control no deja de serlo en
-una hora, y ahí no hay ningún abonado esperando a que se le devuelva el servicio.</p>
+<p>El TTL de los destinos bloqueados a mano es más largo (7 d) a propósito: un servidor de control no
+deja de serlo en una hora, y ahí no hay ningún abonado esperando a que se le devuelva el servicio. Los
+del preventivo llevan 1 d porque cada importación los vuelve a poner.</p>
 
 <h2>Destinos de mala reputación (en Cuarentena)</h2>
 <p>La cuarentena corta al <b>abonado</b>. Esto corta el <b>destino</b>, que es lo que mantiene vivo
@@ -13117,8 +13216,11 @@ contactan y un botón para bloquearlos en <b>todos</b> los nodos a la vez. La re
 <code>dst-address-list</code>, no de origen: no se bloquea a nadie, se bloquea <b>a donde va</b>.</p>
 <h3>Preventivo: cortar ANTES de que nadie llegue</h3>
 <p>Lo anterior es <b>reactivo</b>: bloquea destinos que un CPE <b>ya</b> contactó. Mejor es lo
-contrario, y también está: el router se baja cada hora la lista de <b>infraestructura fichada</b> y
-corta la salida hacia ella <b>antes</b> de que ningún abonado llegue. Así el equipo infectado ni
+contrario, y también está: la lista de <b>infraestructura fichada</b> va al router y este corta la
+salida hacia ella <b>antes</b> de que ningún abonado llegue. El router no se la baja solo (por el túnel
+solo pasan el espejo y la API): un administrador la descarga desde el aviso <b>Bloqueo preventivo</b> de
+Cuarentena (<code>destinos.rsc</code>) y la importa en el router con <code>/import</code>; para tenerla al
+día, se repite de vez en cuando. Así el equipo infectado ni
 siquiera consigue instrucciones, y no hace falta detectarlo primero.</p>
 <p>Al <b>preventivo</b> solo entran los feeds en los que se puede confiar para cortar <b>por
 destino</b>: <b>C2 activo</b> (Feodo) e <b>infraestructura delictiva</b> (Spamhaus DROP), que son
@@ -13137,12 +13239,12 @@ rango de NAT), que pasa el filtro de "es pública" y aun así no hay que bloquea
 delictiva (al preventivo, solo C2 activo e infra delictiva). <b>No</b> se propone ni entra al preventivo lo que
 viene de listas de "esta IP escaneo a alguien" (CINS, AbuseIPDB): describen a un atacante, pero <b>esa
 misma IP puede alojar además algo legítimo</b> &mdash;una web que un abonado visita&mdash;, y bloquearla
-por destino deja sin servicio a un abonado que no hizo nada. Si aun así las quieres ver, se pueden
-pedir.</li>
+por destino deja sin servicio a un abonado que no hizo nada.</li>
 </ul>
 <p>Lo que marques como <b>destino confiable</b> (falso positivo) desaparece de la lista y no se
 vuelve a proponer. Y sin una regla en el MikroTik que use esa address-list, el panel diría
-"bloqueado" sin bloquear nada: la regla está ahí mismo para copiarla.</p>
+"bloqueado" sin bloquear nada. La pantalla no la trae; se pega una vez en el router:</p>
+<pre><code>/ip firewall raw add chain=prerouting dst-address-list=suricata-destinos-malos action=drop comment="Suricata: destinos de mala reputacion"</code></pre>
 
 <h2>Falsos positivos: excluir un destino y liberar en cadena</h2>
 <p>Si una IP <b>destino</b> (p.ej. un DNS público) dispara falsos positivos en muchos CPEs, en la
@@ -17435,6 +17537,7 @@ def _enviar_confirmados(nodo_form, tipo):
     reg = MK_SENT_DNS if dns else MK_SENT
     env = cargar_enviados(reg)
     por_nodo = {}
+    protegidas = []
     for c in cq:
         rid_c = c.get("router", "") or ("" if nodos.es_todos(vista) else vista)
         if not rid_c:
@@ -17444,6 +17547,10 @@ def _enviar_confirmados(nodo_form, tipo):
         except nodos.NodoInvalido:
             continue
         if clave in env or c.get("confianza") != "alta" or not _destino_ok(clave):
+            continue
+        # «Nunca bloquear» (tambien `pNNN|IP`): el reporte puede ser de antes de anadirla
+        if nunca_bloquear(clave):
+            protegidas.append(ip_de(clave))
             continue
         try:
             ipaddress.ip_address(ip_de(clave))
@@ -17534,6 +17641,10 @@ def _enviar_confirmados(nodo_form, tipo):
     if viejas:
         partes.append("%d omitido(s) por evidencia vieja, la IP puede ser hoy de otro abonado: %s%s" % (
             len(viejas), ", ".join(viejas[:5]), " y %d más" % (len(viejas) - 5) if len(viejas) > 5 else ""))
+    if protegidas:
+        partes.append("%d omitido(s) por estar en «Nunca bloquear»: %s%s" % (
+            len(protegidas), ", ".join(protegidas[:5]),
+            " y %d más" % (len(protegidas) - 5) if len(protegidas) > 5 else ""))
     if not partes:
         return 0, "No había confirmados pendientes de enviar."
     return total, "Envío masivo " + "; ".join(partes)

@@ -139,8 +139,12 @@ Reglas para todas las fases:
   - **un punto nuevo no ve nada del anterior:** con la misma LAN y, pasado el enfriamiento, el
     mismo `N`, el punto nuevo recibe otro id (`p002`, nunca `p001`). Su histórico, sus cuarentenas,
     sus exclusiones y su bitácora están vacíos;
-  - **baja con API:** en el router no queda ninguna entrada `ids-maat:p001`, las cuarentenas vivas
-    se han retirado y el respaldo se ha hecho en el propio router;
+  - **baja con API:** antes de encolar la baja, el panel saca del router las IPs que puso
+    (cuarentenas y destinos bloqueados) y retira el espejo (con su respaldo y la regla fasttrack
+    devuelta a sus valores originales); en el router **siguen** lo del alta (bloque de aislamiento
+    de `filter`, ruta blackhole, `ids-vpn`, usuario y grupo `ids-api`, CA del VPS), que se quita con
+    el bloque «terminar una baja con API» de [OPERACION.md](OPERACION.md) §2.1, y tras pegarlo no
+    queda ninguna entrada `ids-maat:p001`;
   - **baja sin API:** el panel avisa de que las entradas quedan en el router y entrega los
     comandos;
   - las credenciales borradas ya no conectan;
@@ -171,7 +175,9 @@ Reglas para todas las fases:
   - 3 `nc <vps> <puerto>` colgados no impiden que el MikroTik reconecte tras cortarle la VPN
     (`max-clients 16`, `hand-window 20`; en el log del `vpn` no aparece «would exceed maximum
     number of clients»);
-  - más de 10 conexiones nuevas por minuto a un puerto VPN se descartan;
+  - más de 10 conexiones nuevas por minuto **desde una misma IP de origen** se descartan; el freno
+    suma todos los puertos VPN del VPS (11 conexiones repartidas entre los puertos de dos puntos
+    también lo disparan);
   - una conexión directa al puerto del panel desde una IP que no es del proxy se descarta en el
     firewall del host;
   - **cabeceras del proxy:**
@@ -205,8 +211,9 @@ Reglas para todas las fases:
   - la sección Documentación del panel, reescrita sin EveBox, sin `systemctl` y sin `openvpn.sh`;
   - el changelog en las etiquetas de las imágenes.
 - **Pruebas:** cada comando de OPERACION se ejecuta en una VM limpia siguiendo el texto al pie de
-  la letra, incluida una **recuperación completa desde el respaldo diario en otro VPS**. CI
-  comprueba los enlaces internos.
+  la letra, incluida una **recuperación completa en otro VPS desde el respaldo manual** de
+  [OPERACION.md](OPERACION.md) §3.1 (no hay respaldo diario: `sistema.respaldar` está reservada).
+  CI comprueba los enlaces internos.
 - **Hecho cuando:** otra persona instala, da de alta un punto y recupera el VPS **solo con la
   documentación**.
 
@@ -246,10 +253,10 @@ El canario es un VPS de pruebas con 2 puntos que **repiten la misma LAN** (dos C
 | 9 | **RouterOS 6.49** (el más antiguo de la flota y la versión mínima): TLS moderno; si falla, `SECLEVEL=0` y luego `legacy` | decisión d de ARQUITECTURA §10 |
 | 10 | `connect-to` por nombre DNS y el certificado `ids-promax` en 6.49 (tiempo del `sign`, flags K/T) | nombre DNS por empresa y alta de la API-SSL |
 | 11 | v7 con `cipher=aes256-gcm` y `verify-server-certificate=yes`; **6.49** pegando el bloque tal cual: `/file print file=` + `/file set contents=` (línea de ~1,3 KB) + `/certificate import` dejan `ids-maat-ca-<pid>.txt_0` con flag T, y el túnel conecta con la verificación activa; con un `connect-to` que no está en el certificado, no conecta | el script v6/v7 de [OPERACION.md](OPERACION.md) §1.4 |
-| 11b | Aislamiento de `ids-vpn` en 6.49 y v7: tras pegar las 3 reglas, el `accept` queda encima de los dos `drop`; la API del panel sigue entrando (el `accept` cuenta en `/ip firewall filter print stats`); el espejo sigue llegando; y, en el VPS de laboratorio, con la tabla `inet ids_punto` relajada a mano, un `nc 100.64.N.2 22` desde el netns del `vpn` no conecta (lo cuenta el `drop` de `input`) | [OPERACION.md](OPERACION.md) §1.5 |
+| 11b | Aislamiento de `ids-vpn` en 6.49 y v7, pegando el bloque tal cual (5 reglas y la línea `move`) **en una sesión de terminal recién abierta, sin ningún `print` antes**, y en un router **con FastTrack activo** (en `filter` la posición 0 es la regla dinámica del contador de FastTrack): el `move` con varias reglas y `destination=[:pick [find dynamic=no] 0]` funciona en las dos versiones y deja las cinco reglas juntas encima de la primera regla no dinámica (comprobar con `/ip firewall filter print`); con `filter` sin más reglas que las del bloque, el `on-error` absorbe el fallo y no queda nada roto; la API del panel sigue entrando (el `accept` cuenta en `print stats`); el espejo sigue llegando; en el VPS de laboratorio, con la tabla `inet ids_punto` relajada a mano, `nc 100.64.N.2 22` y un UDP desde el netns del `vpn` no llegan (los cuentan los `drop` de `input`); y en un router con las 3 reglas del script anterior, `remove [find comment="IDS ids-maat:<pid>"]` + el bloque entero deja la API funcionando | [OPERACION.md](OPERACION.md) §1.5 |
 | 12 | Sintaxis del blackhole en v7 y, con el túnel caído, ningún TZSP por la WAN | ruta de seguridad |
 | 13 | `fail2ban-regex` de `ids-vpn` sobre fallos reales | jaula OpenVPN |
-| 14 | El encierro systemd del orquestador no rompe docker, nft ni `systemd-run` | `ReadWritePaths` |
+| 14 | El encierro systemd del orquestador no rompe docker, nft, `systemd-run` ni `fail2ban-client` (el `ids-orq vpn desbanear <ip>` desbanea de verdad con `ProtectSystem=strict`) | `ReadWritePaths` |
 | 15 | Actualización de `vX` a `vX+1` y una reversión forzada (fallo de salud simulado en el punto 2) | flujo de actualización |
 
 ## 3. Riesgos
@@ -272,9 +279,9 @@ El canario es un VPS de pruebas con 2 puntos que **repiten la misma LAN** (dos C
 | 14 | OpenSSL 3 con RouterOS 6.49 | el v6 no conecta | prueba en F1a; `SECLEVEL=0` y después `legacy`, solo en ese punto; nada anterior a 6.49 |
 | 15 | Puertos OpenVPN abiertos a internet | fuerza bruta, CPU por scrypt | `meter` en el host, freno antes de scrypt, jaula `ids-vpn`, origen fijo opcional |
 | 16 | `/ip service … address=` pisa a otros sistemas | facturación sin API | usuario API exclusivo y regla de entrada propia; el panel nunca toca la lista |
-| 17 | API sin certificado (ADH) o en claro | suplantación del router | API-SSL con certificado y huella fijada; 8728 solo como excepción con aviso |
+| 17 | API sin certificado (ADH) o en claro | suplantación del router | API-SSL con certificado y huella confirmada por un administrador (VPN-06); una huella vacía heredada (ADH) se sigue aceptando y la ficha avisa para revisarla; con 8728 (en claro) el panel no conecta, porque habla siempre TLS |
 | 18 | `tzsp-decap` en Python | techo de pps | `SO_RCVBUFFORCE`, comparar rx con tx; receptor en C/Go si hace falta |
-| 19 | Disco lleno | capturas vacías sin error | logrotate cada 15–60 min con `maxage 3`, `df` con aviso directo |
+| 19 | Disco lleno | capturas vacías sin error | logrotate cada 30 min (`ids-logrotate.timer`) por tamaño (`maxsize 1G`, `rotate -1`, sin `maxage`); el orquestador comprime los rotados, poda por fecha a los 30 días y, si `/srv/ids` baja del 15 % libre, borra los rotados más viejos y avisa (`DISCO`, `RETENCION-REDUCIDA`; [ORQUESTADOR.md](ORQUESTADOR.md) §8.1) |
 | 20 | Actualización a medias o GHCR caído | instancias mezcladas | digests en `orq.db`, pull antes, serie y reversión |
 | 21 | Migración del panel sin vuelta atrás | datos perdidos al revertir | respaldo previo; revertir el panel exige restaurar y se avisa |
 | 22 | Montar el enlace `current` | las reglas nuevas nunca se ven | montar el padre, enlace relativo |
@@ -284,7 +291,7 @@ El canario es un VPS de pruebas con 2 puntos que **repiten la misma LAN** (dos C
 | 26 | Datos de puntos mezclados | cuarentena al abonado equivocado | `CpeRef`, `AlcanceRequerido`, `EVE-MEZCLA`, `ROUTER-NO-COINCIDE`, borrado total en la baja, ids nunca reutilizados, pruebas F2 y F3 |
 | 27 | Feed envenenado | cuarentenas masivas | tope de cuarentenas automáticas por hora y punto, y aviso |
 | 28 | Panel caído sin avisos | ceguera sin que nadie se entere | avisos directos del orquestador |
-| 29 | VPS perdido | reconfigurar todos los MikroTik | respaldo diario con copia fuera, `connect-to` por nombre DNS, recuperación probada en F5 |
+| 29 | VPS perdido | reconfigurar todos los MikroTik | `connect-to` por nombre DNS; **no hay respaldo diario** (`sistema.respaldar` reservada): instantánea del proveedor y respaldo manual con copia fuera ([OPERACION.md](OPERACION.md) §3), `master.key` aparte; recuperación probada en F5 |
 | 30 | Cabeceras `X-Forwarded-*` falsificadas | IP falsa en la bitácora, freno de login esquivado, cookie `Secure` mal decidida | solo se creen si el par TCP es una IP del proxy; el firewall solo deja llegar al proxy; pruebas F4 |
 | 31 | Proxy inverso caído | panel inaccesible | túnel SSH de emergencia desde las redes de gestión |
-| 32 | Baja por error | pérdida irreversible de todo el histórico del punto | confirmación escribiendo el nombre y aviso explícito; los respaldos diarios lo conservan hasta caducar (14 días) |
+| 32 | Baja por error | pérdida irreversible de todo el histórico del punto | confirmación escribiendo el nombre y aviso explícito. No hay respaldo diario que lo conserve: solo un respaldo manual o de `install.sh` hecho antes de la baja (sin los eventos de `/srv/ids/datos`, [OPERACION.md](OPERACION.md) §3.1) o la instantánea del proveedor |

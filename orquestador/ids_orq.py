@@ -132,7 +132,7 @@ PASOS_CREAR = ["validar", "asignar", "admisión de RAM", "directorios", "certifi
 
 ORDENES_COLA = {"punto.crear", "punto.borrar", "punto.arrancar", "punto.parar",
                 "punto.reiniciar", "punto.ajustar", "punto.vpn.regenerar", "punto.threshold",
-                "reglas.actualizar", "sistema.reconciliar"}
+                "punto.reconfigurar", "reglas.actualizar", "sistema.reconciliar"}
 ORDENES_LECTURA = {"punto.estado", "punto.logs", "punto.comandos", "punto.api.huella",
                    "punto.medir", "logs.reabrir", "sistema.estado", "sistema.capacidad",
                    "op.estado"}
@@ -764,6 +764,41 @@ def lineas_ca_mikrotik(pid, ca_pem):
         % (nombre, fichero, cuerpo, fichero, nombre, fichero))
 
 
+def bloque_aislamiento(pid, sensor, api):
+    """Las líneas RouterOS que aíslan ids-vpn (VPN-02, revisión C1/C2): por el túnel solo entra la
+    API desde el sensor y nada se enruta desde él.
+
+    Sin `place-before`: en RouterOS ese número es el del ÚLTIMO `print` de la sesión (sin print,
+    «no such item»; con print, tres `place-before=0` seguidos quedan en el orden en que se
+    escriben y el drop de input tapa el accept). Aquí cada regla se añade al final y ninguna
+    depende del orden entre ellas: los drop van negados (otro origen, otro protocolo, otro puerto)
+    y no casan con lo que acepta el accept. La última línea las sube todas por encima de las
+    reglas del router, delante de la primera no dinámica (delante de una dinámica no se puede);
+    si falla (p. ej. la lista estaba vacía y ya son las primeras), `on-error` la deja pasar.
+    La primera línea quita las de un alta anterior (con su orden roto): así el bloque se puede
+    volver a pegar solo en un router ya dado de alta. `in-interface=ids-vpn` en los `find`: las
+    reglas forward del espejo de versiones anteriores llevan el mismo comentario y no se tocan."""
+    com = "IDS ids-maat:%s" % pid
+    return (
+        "# Aislamiento de ids-vpn: por el túnel solo entra la API desde el sensor y nada se enruta\n"
+        "# desde él. Las reglas no dependen del orden entre ellas y la última línea las sube encima\n"
+        "# de las del router. Para rehacerlo en un router ya dado de alta, pega desde aquí hasta el\n"
+        "# final: la primera línea quita las reglas de antes.\n"
+        "/ip firewall filter remove [find comment=\"%(c)s\" in-interface=ids-vpn]\n"
+        "/ip firewall filter add chain=input in-interface=ids-vpn src-address=!%(s)s action=drop \\\n"
+        "    comment=\"%(c)s\"\n"
+        "/ip firewall filter add chain=input in-interface=ids-vpn protocol=!tcp action=drop \\\n"
+        "    comment=\"%(c)s\"\n"
+        "/ip firewall filter add chain=input in-interface=ids-vpn protocol=tcp dst-port=!%(a)s \\\n"
+        "    action=drop comment=\"%(c)s\"\n"
+        "/ip firewall filter add chain=input in-interface=ids-vpn src-address=%(s)s protocol=tcp \\\n"
+        "    dst-port=%(a)s action=accept comment=\"%(c)s\"\n"
+        "/ip firewall filter add chain=forward in-interface=ids-vpn action=drop comment=\"%(c)s\"\n"
+        ":do {/ip firewall filter move [/ip firewall filter find comment=\"%(c)s\" in-interface=ids-vpn] "
+        "destination=[:pick [/ip firewall filter find dynamic=no] 0]} on-error={}\n"
+        % {"c": com, "s": sensor, "a": api})
+
+
 def comandos_mikrotik(p, nombre_dns, clave=None, ca_pem=None, aviso_cert=None):
     """Bloque de `ids-orq punto ovpn-client` (§5.12). p: pid, nombre, n, puerto, tun_net, sensor,
     ros_version, api_puerto. Sin clave se imprime <CLAVE-VPN>. `ca_pem`: el ca.crt del VPS (si no
@@ -777,36 +812,16 @@ def comandos_mikrotik(p, nombre_dns, clave=None, ca_pem=None, aviso_cert=None):
     api = p["api_puerto"]
     sensor = p["sensor"]
     ca = lineas_ca_mikrotik(pid, ca_pem if ca_pem is not None else leer_ca_pem())
-    # VPN-02: por ids-vpn solo entra la API desde el sensor. NO se usa place-before=0: en RouterOS
-    # los números son los del último `print` de la sesión (sin print, «no such item»), así que tres
-    # place-before=0 seguidos dejaban el accept DEBAJO del drop de input y el panel sin API. Ahora
-    # los drop están negados y no se pisan con el accept: el orden entre ellas da igual. Se añaden
-    # al final y la última línea las sube todas por encima de la primera regla no dinámica (la
-    # dinámica de fasttrack se salta), buscando por comentario, sin números.
     comun = (
         "/user group add name=ids-api policy=read,write,api\n"
-        "/user add name=ids-api group=ids-api address=%(s)s/32 password=<CLAVE-API>\n"
-        "# ids-vpn aislada: por ella solo entra la API desde el sensor (el orden de estas cinco da igual).\n"
-        "# Router configurado antes: quita primero las reglas viejas del alta con\n"
-        "#   /ip firewall filter remove [find comment=\"IDS ids-maat:%(p)s\"]\n"
-        "/ip firewall filter add chain=input in-interface=ids-vpn src-address=!%(s)s action=drop \\\n"
-        "    comment=\"IDS ids-maat:%(p)s\"\n"
-        "/ip firewall filter add chain=input in-interface=ids-vpn protocol=!tcp action=drop \\\n"
-        "    comment=\"IDS ids-maat:%(p)s\"\n"
-        "/ip firewall filter add chain=input in-interface=ids-vpn protocol=tcp dst-port=!%(a)s action=drop \\\n"
-        "    comment=\"IDS ids-maat:%(p)s\"\n"
-        "/ip firewall filter add chain=input in-interface=ids-vpn src-address=%(s)s protocol=tcp \\\n"
-        "    dst-port=%(a)s action=accept comment=\"IDS ids-maat:%(p)s\"\n"
-        "/ip firewall filter add chain=forward in-interface=ids-vpn action=drop \\\n"
-        "    comment=\"IDS ids-maat:%(p)s\"\n"
-        "# arriba del todo (con la lista vacía no hay nada que mover y no pasa nada):\n"
-        ":do {/ip firewall filter move [/ip firewall filter find comment=\"IDS ids-maat:%(p)s\"] "
-        "destination=[:pick [/ip firewall filter find dynamic=no] 0]} on-error={}\n"
-        % {"s": sensor, "p": pid, "a": api})
+        "/user add name=ids-api group=ids-api address=%s/32 password=<CLAVE-API>\n"
+        "%s" % (sensor, bloque_aislamiento(pid, sensor, api)))
     cabecera_aviso = "".join("# AVISO: %s\n" % x for x in (aviso_cert or "").splitlines() if x.strip())
     return (
         "# ids-maat %s (%s) · N=%s · puerto %s · túnel %s · declarado RouterOS v%d\n"
         "# El bloque v%d solo conecta tras: ids-orq punto ajustar %s --ros %d\n"
+        "# Antes de pegar: el reloj del router en hora (/system ntp client). El certificado del\n"
+        "# servidor vale desde 2 días antes de emitirse; con el reloj más atrasado, el MikroTik lo rechaza.\n"
         "%s"
         "#\n"
         "%s"
@@ -877,7 +892,8 @@ def docker_inspect(nombres):
         salud = ((st.get("Health") or {}).get("Status")) or "none"
         out[nombre] = {"estado": st.get("Status", "?"), "salud": salud,
                        "inicio": _epoch_rfc3339(st.get("StartedAt")), "imagen": obj.get("Image", ""),
-                       "pid": st.get("Pid") or 0, "id": obj.get("Id", "")}
+                       "pid": st.get("Pid") or 0, "id": obj.get("Id", ""),
+                       "reinicios": obj.get("RestartCount") or 0}
     return out
 
 
@@ -904,23 +920,37 @@ def _parte_de(nombre):
 
 
 def esperar_salud(nombres, limite=None, tolerar_arranque=False):
-    """Espera a que todos estén `healthy`; falla enseguida si alguno sale (exited/dead).
+    """Espera a que todos estén `healthy`; falla enseguida si alguno sale (exited/dead) o está
+    `restarting` (murió y Docker lo relanza: revisión A3).
 
     Con `tolerar_arranque`, al vencer el límite NO falla si todos siguen `running` y en
-    `healthy` o `starting` (Suricata cargando reglas): devuelve el inspect y quien llama mira
-    cuáles no están aún healthy. unhealthy, exited, dead o ausente siguen siendo un fallo."""
+    `healthy` o `starting` (Suricata cargando reglas) Y ninguno ha vuelto a arrancar desde el
+    primer sondeo en que se le vio running (mismo StartedAt y mismo RestartCount): un contenedor
+    en bucle de reinicios (restart: unless-stopped) vuelve a `starting` cada vez y, con el
+    start_period de 600 s, nunca llega a unhealthy. Devuelve el inspect y quien llama mira cuáles
+    no están aún healthy. unhealthy, exited, dead, restarting o ausente siguen siendo un fallo."""
     limite = ESPERA_SALUD_S if limite is None else limite
     fin = time.monotonic() + limite
+    primera = {}                       # nombre -> (inicio, reinicios) del primer sondeo en running
     while True:
         info = docker_inspect(nombres)
+        for n in nombres:
+            i = info.get(n) or {}
+            if i.get("estado") == "running" and n not in primera:
+                primera[n] = (i.get("inicio"), i.get("reinicios", 0))
         if all(info.get(n, {}).get("salud") == "healthy" for n in nombres):
             return info
-        muertos = [n for n in nombres if info.get(n, {}).get("estado") in ("exited", "dead")]
+        muertos = [n for n in nombres if info.get(n, {}).get("estado") in ("exited", "dead", "restarting")]
         vencido = time.monotonic() >= fin
-        if (vencido and not muertos and tolerar_arranque
-                and all(info.get(n, {}).get("estado") == "running"
-                        and info.get(n, {}).get("salud") in ("healthy", "starting") for n in nombres)):
-            return info
+        if vencido and not muertos and tolerar_arranque:
+            en_bucle = [n for n in nombres if n in primera
+                        and (info[n].get("inicio"), info[n].get("reinicios", 0)) != primera[n]]
+            if en_bucle:
+                raise ErrorOrden("FALLO", "bucle de reinicios: %s volvió a arrancar durante los %d s de espera"
+                                 % (", ".join(_parte_de(n) for n in en_bucle), limite))
+            if all(info.get(n, {}).get("estado") == "running"
+                   and info.get(n, {}).get("salud") in ("healthy", "starting") for n in nombres):
+                return info
         if muertos or vencido:
             malos = ", ".join("%s=%s/%s" % (_parte_de(n), info.get(n, {}).get("estado", "ausente"),
                                             info.get(n, {}).get("salud", "-"))
@@ -1555,47 +1585,100 @@ def sujeto_servidor(pid, nombre_dns):
     return "/OU=server-%s/CN=%s" % (pid, cn)
 
 
-def cert_lleva_nombre(crt, nombre_dns):
-    """¿El certificado de servidor `crt` lleva NOMBRE_DNS en el SAN? (los de antes de VPN-01 solo
-    llevaban CN=server-<pid>, y un MikroTik con verify-server-certificate=yes no los acepta)."""
+def problema_cert(crt, nombre_dns, ca=None):
+    """Por qué el MikroTik (verify-server-certificate=yes) rechazaría el certificado de servidor
+    `crt`, o None si no hay motivo:
+      - "nombre": no lleva NOMBRE_DNS en el SAN (los de antes de VPN-01 solo llevaban
+        CN=server-<pid>) o no existe;
+      - "ca": lo lleva, pero no lo firma la CA actual del VPS (`ca`, por defecto
+        /srv/ids/pki/ca.crt), ha caducado o no es de servidor (revisión C5). `openssl verify` con
+        -purpose sslserver y -verify_hostname/-verify_ip hace lo que comprueba el router."""
     if not Path(crt).exists():
-        return False
+        return "nombre"
     r = ejecutar(["openssl", "x509", "-in", str(crt), "-noout", "-ext", "subjectAltName"], timeout=30)
     if r.rc != 0:
-        return False
+        return "nombre"
     try:
         objetivo = san_servidor(nombre_dns)
     except ErrorOrden:
-        return False
+        return "nombre"
     tipo, valor = objetivo.split(":", 1)
     etiqueta = "IP Address" if tipo == "IP" else "DNS"
-    return re.search(r"(^|[\s,])%s:%s(\s|,|$)" % (re.escape(etiqueta), re.escape(valor)), r.out,
-                     re.I | re.M) is not None
+    if re.search(r"(^|[\s,])%s:%s(\s|,|$)" % (re.escape(etiqueta), re.escape(valor)), r.out,
+                 re.I | re.M) is None:
+        return "nombre"
+    ca = ruta("/srv/ids/pki/ca.crt") if ca is None else Path(ca)
+    r = ejecutar(["openssl", "verify", "-CAfile", str(ca), "-purpose", "sslserver",
+                  "-verify_ip" if tipo == "IP" else "-verify_hostname", valor, str(crt)], timeout=30)
+    return None if r.rc == 0 else "ca"
+
+
+def cert_lleva_nombre(crt, nombre_dns, ca=None):
+    """¿Aceptaría el MikroTik el certificado de servidor `crt`? Lleva NOMBRE_DNS en el SAN y lo
+    firma la CA actual del VPS (problema_cert)."""
+    return problema_cert(crt, nombre_dns, ca) is None
 
 
 AVISO_CERT_VIEJO = ("el certificado del servidor de este punto es anterior a la verificación del servidor y\n"
                     "el MikroTik lo rechazará con verify-server-certificate=yes: «Regenerar la clave VPN»\n"
                     "(ids-orq punto vpn-regenerar <pid>) lo renueva; hasta entonces no pegues este bloque.")
+AVISO_CERT_OTRA_CA = ("el certificado del servidor de este punto no lo firma la CA actual del VPS (o ha caducado)\n"
+                      "y el MikroTik lo rechazará con verify-server-certificate=yes: «Regenerar la clave VPN»\n"
+                      "(ids-orq punto vpn-regenerar <pid>) lo renueva; hasta entonces no pegues este bloque.")
+# Margen para routers con el reloj atrasado (revisión C3): el certificado de servidor vale desde
+# 2 días antes de emitirse. El script del MikroTik recomienda además NTP en el router.
+MARGEN_RELOJ_S = 2 * 86400
+DIAS_CERT_SERVIDOR = 3650
+OPENSSL_CA_CONF = """[ca]
+default_ca = ids
+[ids]
+dir              = @@DIR@@
+database         = $dir/index.txt
+new_certs_dir    = $dir
+serial           = $dir/serial
+default_md       = sha256
+policy           = politica
+unique_subject   = no
+copy_extensions  = none
+email_in_dn      = no
+[politica]
+organizationalUnitName = optional
+commonName             = supplied
+"""
 
 
 def cert_servidor(pid, nombre_dns):
+    """Certificado de servidor del punto firmado por la CA del VPS, con notBefore = ahora −
+    MARGEN_RELOJ_S. Se firma con `openssl ca -startdate` (en un directorio temporal con su
+    index.txt y serial): `openssl x509 -req -not_before` solo existe desde OpenSSL 3.4 (Debian 13
+    trae 3.5, pero el CI corre en Ubuntu 24.04 con 3.0) y `openssl ca` admite -startdate en todas."""
     pki = asegurar_ca(nombre_dns)
     srv = pki / "servidores"
     key, crt, csr, ext = (srv / ("%s.key" % pid), srv / ("%s.crt" % pid), srv / ("%s.csr" % pid),
                           srv / ("%s.ext" % pid))
     san = san_servidor(nombre_dns)
+    tmp = srv / (".%s.ca.%s" % (pid, secrets.token_hex(4)))
     try:
+        asegurar_dir(tmp, 0o700)
+        (tmp / "index.txt").write_text("", encoding="utf-8")
+        (tmp / "serial").write_text(secrets.token_hex(16) + "\n", encoding="ascii")
+        conf = tmp / "ca.cnf"
+        conf.write_text(OPENSSL_CA_CONF.replace("@@DIR@@", str(tmp).replace("\\", "/")), encoding="utf-8")
         ext.write_text(EXT_SERVIDOR.replace("@@SAN@@", san), encoding="utf-8")
         ejecutar_ok(["openssl", "req", "-new", "-newkey", "rsa:2048", "-nodes", "-sha256",
                      "-keyout", str(key), "-subj", sujeto_servidor(pid, nombre_dns), "-out", str(csr)],
                     timeout=120)
-        ejecutar_ok(["openssl", "x509", "-req", "-in", str(csr), "-CA", str(pki / "ca.crt"),
-                     "-CAkey", str(pki / "ca.key"), "-set_serial", "0x" + secrets.token_hex(16),
-                     "-days", "3650", "-sha256", "-extfile", str(ext), "-out", str(crt)], timeout=120)
+        desde = time.strftime("%Y%m%d%H%M%SZ", time.gmtime(time.time() - MARGEN_RELOJ_S))
+        ejecutar_ok(["openssl", "ca", "-batch", "-config", str(conf), "-notext", "-preserveDN",
+                     "-cert", str(pki / "ca.crt"), "-keyfile", str(pki / "ca.key"), "-in", str(csr),
+                     "-startdate", desde, "-days", str(DIAS_CERT_SERVIDOR), "-md", "sha256",
+                     "-extfile", str(ext), "-out", str(crt)], timeout=120)
     finally:
         for f in (csr, ext):
             if f.exists():
                 f.unlink()
+        if tmp.exists():
+            borrar_arbol(tmp)
     _chmod(key, 0o600)
     _chmod(crt, 0o644)
     return key, crt
@@ -1651,9 +1734,16 @@ COLUMNAS_NUEVAS = (("punto", "error_desde", "INTEGER"),)
 
 
 def migrar_db(db):
+    """Añade las COLUMNAS_NUEVAS que falten. Dos procesos pueden abrir orq.db a la vez (el
+    servicio y el `fw-render` de install.sh, revisión A5): si el otro añadió la columna entre el
+    PRAGMA y el ALTER, SQLite responde «duplicate column name» y eso ya es lo que se quería."""
     for tabla, columna, tipo in COLUMNAS_NUEVAS:
         if columna not in {f[1] for f in db.execute("PRAGMA table_info(%s)" % tabla)}:
-            db.execute("ALTER TABLE %s ADD COLUMN %s %s" % (tabla, columna, tipo))
+            try:
+                db.execute("ALTER TABLE %s ADD COLUMN %s %s" % (tabla, columna, tipo))
+            except sqlite3.OperationalError as e:
+                if "duplicate column" not in str(e).lower():
+                    raise
 
 
 def fila_a_punto(f, cfg_base=None):
@@ -1880,7 +1970,8 @@ def validar_params(orden, params, cfg_fn):
     if orden == "punto.threshold":
         _solo(params, {"pid", "contenido"}, ("pid", "contenido"))
         return {"pid": _pid(params["pid"]), "contenido": validar_threshold(params["contenido"])}
-    if orden in ("punto.vpn.regenerar", "punto.comandos", "punto.api.huella", "punto.medir"):
+    if orden in ("punto.vpn.regenerar", "punto.comandos", "punto.api.huella", "punto.medir",
+                 "punto.reconfigurar"):
         _solo(params, {"pid"}, ("pid",))
         return {"pid": _pid(params["pid"])}
     if orden == "punto.estado":
@@ -2287,6 +2378,7 @@ class Orquestador:
             "punto.arrancar": self.o_arrancar, "punto.parar": self.o_parar,
             "punto.reiniciar": self.o_reiniciar, "punto.ajustar": self.o_ajustar,
             "punto.vpn.regenerar": self.o_regenerar, "punto.threshold": self.o_threshold,
+            "punto.reconfigurar": self.o_reconfigurar,
             "reglas.actualizar": self.o_reglas,
             "sistema.reconciliar": self.o_reconciliar,
         }
@@ -2636,6 +2728,12 @@ class Orquestador:
             self.comprobar_netns(pid)
         elif accion == "die" and p["deseado"] == "activo" and (self._en_curso or {}).get("pid") != pid:
             self.x("INSERT INTO reinicio (pid, parte, ts) VALUES (?,?,?)", (pid, parte, ahora()))
+            # A3: un bucle de reinicios (Docker lo relanza con unless-stopped) no llega a unhealthy
+            # con el start_period de 600 s: la regla de 3 en 1 h se aplica también a las muertes
+            hechos = self._reinicios_1h(pid, parte, ahora())
+            if hechos >= MAX_REINICIOS_HORA and p["estado"] not in ("error", "creando", "borrando"):
+                self._marcar_error(pid, "%s murió %d veces en 1 h (bucle de reinicios)" % (parte, hechos))
+                log("%s: %s murió %d veces en 1 h: punto en error" % (pid, parte, hechos))
         elif accion.startswith("health_status") and accion.endswith("unhealthy"):
             self.programar_reinicio(pid, parte)
 
@@ -2998,12 +3096,15 @@ class Orquestador:
         texto = render_compose(p, imgs, version, ncpu(), raiz_host=raiz())
         escribir_atomico(ruta("/srv/ids/puntos/%s/compose.yml" % p["pid"]), texto, modo=0o600)
 
-    def escribir_yaml(self, p, imagen, tmpl_info=None):
+    def render_yaml(self, p, imagen, tmpl_info=None):
         tmpl, manifiesto, hs = tmpl_info or plantilla_suricata(imagen)
-        yaml = render_suricata(tmpl, manifiesto, valores_suricata(
+        return render_suricata(tmpl, manifiesto, valores_suricata(
             p["pid"], home_net(p["redes"]), "/reglas/current/%s" % PERFILES[p["perfil"]]["reglas"],
             p["n"], p["hilos"], p["perfil"], hs))
-        escribir_atomico(ruta("/srv/ids/puntos/%s/suricata/suricata.yaml" % p["pid"]), yaml, modo=0o644)
+
+    def escribir_yaml(self, p, imagen, tmpl_info=None):
+        escribir_atomico(ruta("/srv/ids/puntos/%s/suricata/suricata.yaml" % p["pid"]),
+                         self.render_yaml(p, imagen, tmpl_info), modo=0o644)
 
     def escribir_usuarios(self, p, usuario, clave):
         escribir_atomico(ruta("/srv/ids/puntos/%s/vpn/usuarios" % p["pid"]),
@@ -3023,12 +3124,22 @@ class Orquestador:
                                       (key, "server.key", 0o600), (pki / "dh.pem", "dh.pem", 0o644)):
             escribir_atomico(vpn / destino, Path(origen).read_bytes(), modo=modo)
 
+    def _validar_ca(self, si_existe=False):
+        """La CA del VPS tiene que poder ir en el script del MikroTik (leer_ca_pem). Con
+        `si_existe`, una CA que aún no existe no es un fallo (la crea asegurar_ca)."""
+        if si_existe and not ruta("/srv/ids/pki/ca.crt").exists():
+            return None
+        return leer_ca_pem()
+
     def comandos(self, p, nombre_dns, clave=None):
-        """comandos_mikrotik con la CA del VPS y, si el certificado que usa el `vpn` del punto aún
-        no lleva NOMBRE_DNS (puntos de antes de VPN-01), el aviso de regenerar en la cabecera."""
+        """comandos_mikrotik con la CA del VPS y, si el MikroTik rechazaría el certificado que usa
+        el `vpn` del punto (sin NOMBRE_DNS, de antes de VPN-01, o no firmado por la CA actual), el
+        aviso de regenerar en la cabecera."""
         crt = ruta("/srv/ids/puntos/%s/vpn/server.crt" % p["pid"])
-        aviso = None if cert_lleva_nombre(crt, nombre_dns) else AVISO_CERT_VIEJO.replace("<pid>", p["pid"])
-        return comandos_mikrotik(p, nombre_dns, clave, ca_pem=leer_ca_pem(), aviso_cert=aviso)
+        motivo = problema_cert(crt, nombre_dns)
+        aviso = {None: None, "nombre": AVISO_CERT_VIEJO, "ca": AVISO_CERT_OTRA_CA}[motivo]
+        return comandos_mikrotik(p, nombre_dns, clave, ca_pem=leer_ca_pem(),
+                                 aviso_cert=aviso.replace("<pid>", p["pid"]) if aviso else None)
 
     def _datos_punto(self, p, clave=None, ya=False):
         cfg = config()
@@ -3076,6 +3187,9 @@ class Orquestador:
                 como = ("scripts/lab-actualizar.sh en el laboratorio o «docker pull %s»" % faltan[0]
                         if imgs["dev"] else "«docker pull %s» (o vuelve a ejecutar install.sh)" % faltan[0])
                 raise ErrorOrden("FALLO", "falta la imagen %s: ejecuta %s" % (", ".join(faltan), como))
+            # C4: la CA va en el script del MikroTik; si no sirve, el alta fallaría al final con la
+            # clave ya generada y perdida. Si aún no existe la crea el paso «certificado».
+            self._validar_ca(si_existe=True)
             # D11: la admisión de RAM también ANTES de reservar el pid (los pid no se reutilizan:
             # un alta que no cabe no debe gastar uno). Se repite tras asignar, como siempre.
             mem = meminfo()
@@ -3117,6 +3231,7 @@ class Orquestador:
             self.crear_dirs(pid)
         with ctx.paso("certificado"):
             self.instalar_cert(pid, cfg.nombre_dns)
+            self._validar_ca()
         with ctx.paso("usuario VPN"):
             usuario = nuevo_usuario()
             clave = nueva_clave()
@@ -3192,6 +3307,31 @@ class Orquestador:
             ejecutar_ok(compose_args(pid, "up", "-d", "--pull", "never", "--no-deps", "--force-recreate",
                                      "suricata"), timeout=600)
 
+    def _reiniciar_enfermos(self, ctx, pid, parte="todo"):
+        """A1 («Reintentar arranque» = punto.arrancar): `compose up -d` no toca un contenedor que
+        está en marcha, aunque esté `unhealthy` o en bucle (`restarting`), y la espera de salud
+        vencería sin que nada cambie. Esos se reinician de verdad: la vpn con `docker restart` y,
+        detrás, siempre suricata (comparte su netns: network_mode service:vpn); suricata solo, con
+        el reinicio de siempre (restart o, si falla, force-recreate). Devuelve las partes
+        reiniciadas."""
+        n = nombres_contenedores(pid)
+        info = docker_inspect(list(n.values()))
+        enfermos = [x for x in (("vpn", "suricata") if parte == "todo" else (parte,))
+                    if (info.get(n[x]) or {}).get("estado") == "restarting"
+                    or ((info.get(n[x]) or {}).get("estado") == "running"
+                        and (info.get(n[x]) or {}).get("salud") == "unhealthy")]
+        for x in enfermos:
+            i = info.get(n[x]) or {}
+            ctx.registrar("%s estaba %s/%s: se reinicia" % (x, i.get("estado"), i.get("salud")))
+        hechos = []
+        if "vpn" in enfermos:
+            ejecutar_ok(["docker", "restart", "--time", "30", n["vpn"]], timeout=180)
+            hechos.append("vpn")
+        if hechos or "suricata" in enfermos:
+            self._reiniciar_suricata(pid)
+            hechos.append("suricata")
+        return hechos
+
     def _salud_o_error(self, ctx, pid, nombres, limite=None):
         """Espera la salud (límite de limite_salud(); `starting` al vencer = aviso, no fallo). Si
         falla: logs de los contenedores al log de la orden y, si la pidió una persona, el punto a
@@ -3215,6 +3355,7 @@ class Orquestador:
             ejecutar_ok(compose_args(pid, "up", "-d", "--pull", "never", *servicios), timeout=600)
             if parte == "todo":
                 self.x("UPDATE punto SET deseado='activo', actualizado=? WHERE pid=?", (ahora(), pid))
+            self._reiniciar_enfermos(ctx, pid, parte)
         with ctx.paso("esperar salud"):
             nombres = list(nombres_contenedores(pid).values())
             self._salud_o_error(ctx, pid, nombres)
@@ -3271,8 +3412,11 @@ class Orquestador:
             except (ValueError, TypeError):
                 continue
             if otros == campos:
-                ctx.mensaje = "sustituida por una orden posterior (%s)" % f["op_id"]
-                return {"recreado": [], "sustituida_por": f["op_id"]}
+                # A4: esta orden no aplica nada; si la posterior falla (p. ej. no cabe en RAM),
+                # el punto queda como estaba: el resultado de esta depende de aquella
+                ctx.mensaje = ("sustituida por la orden posterior %s: no aplica nada y el resultado "
+                               "depende de esa orden" % f["op_id"])
+                return {"recreado": [], "sustituida_por": f["op_id"], "depende_de": f["op_id"]}
         cfg = config()
         nuevo = dict(p)
         if "redes_abonados" in prm:
@@ -3367,6 +3511,119 @@ class Orquestador:
         ctx.mensaje = "ajustado: " + (", ".join(recreado) or "solo configuración")
         return datos
 
+    # ficheros que reescribe punto.reconfigurar: (ruta dentro de puntos/<pid>, modo)
+    FICHEROS_RECONFIGURAR = (("server.conf", "vpn/server.conf", 0o644),
+                             ("suricata.yaml", "suricata/suricata.yaml", 0o644),
+                             ("compose.yml", "compose.yml", 0o600))
+
+    def o_reconfigurar(self, ctx, prm):
+        """punto.reconfigurar (revisión O3/R1): lleva un punto creado con plantillas o imágenes
+        anteriores a lo de ahora. Reescribe server.conf, suricata.yaml y compose.yml con las
+        plantillas ACTUALES (los datos del punto no cambian), lo pasa a las imágenes vpn y
+        suricata de imagenes.json, recrea los dos contenedores y espera la salud (la tolerante del
+        apartado A). Antes guarda lo que había (en puntos/<pid>/reconfigurar.anterior/ y en
+        memoria); si algo falla, vuelve a esos ficheros e imágenes, recrea y deja el motivo en el
+        mensaje (REVERTIDA). Si todo está ya al día no toca nada y lo dice. Un punto parado solo
+        recibe los ficheros: se aplican al arrancar."""
+        p = self._p_o_noexiste(prm["pid"])
+        pid = p["pid"]
+        if p["estado"] in ("creando", "borrando"):
+            raise ErrorOrden("CONFLICTO", "%s está en %s" % (pid, p["estado"]))
+        cfg = config()
+        imgs = imagenes()
+        base = ruta("/srv/ids/puntos/%s" % pid)
+        nombres = list(nombres_contenedores(pid).values())
+        activo = p["deseado"] == "activo"
+        ctx.total = 1
+        with ctx.paso("comparar"):
+            faltan = imagenes_ausentes(imgs)
+            if faltan:
+                raise ErrorOrden("FALLO", "falta la imagen %s: «docker pull %s» (o vuelve a ejecutar install.sh)"
+                                 % (", ".join(faltan), faltan[0]))
+            nuevo = dict(p, imagen_vpn=imgs["vpn"], imagen_suricata=imgs["suricata"])
+            info_tmpl = plantilla_suricata(imgs["suricata"])
+            textos = {"server.conf": render_server_conf(pid, p["tun_red"], p["ros_version"], p["compat_v6"]),
+                      "suricata.yaml": self.render_yaml(nuevo, imgs["suricata"], info_tmpl),
+                      "compose.yml": render_compose(nuevo, imgs, cfg.version, ncpu(), raiz_host=raiz())}
+            actuales = {}
+            for nombre, rel, _ in self.FICHEROS_RECONFIGURAR:
+                try:
+                    actuales[nombre] = (base / rel).read_text(encoding="utf-8")
+                except OSError:
+                    actuales[nombre] = None
+            cambios = [nombre for nombre, _, _ in self.FICHEROS_RECONFIGURAR if textos[nombre] != actuales[nombre]]
+            cambios += ["imagen %s" % parte for parte in ("vpn", "suricata")
+                        if (p.get("imagen_%s" % parte) or "") != imgs[parte]]
+        if not cambios:
+            ctx.mensaje = "ya al día: la configuración y las imágenes del punto son las actuales"
+            return {"recreado": [], "cambios": []}
+        validar = "suricata.yaml" in cambios or "imagen suricata" in cambios
+        ctx.total = 1 + (1 if validar else 0) + 2 + (2 if activo else 0)
+        ctx.registrar("cambia: " + ", ".join(cambios))
+        dur_T = None
+        if validar:
+            # la imagen nueva con las reglas actuales, antes de tocar nada
+            with ctx.paso("suricata -T"):
+                t0 = time.monotonic()
+                self.validar_T(imgs["suricata"], "/reglas/current/%s" % PERFILES[p["perfil"]]["reglas"],
+                               p["perfil"], info_tmpl, self.reserva_T(), pid)
+                dur_T = time.monotonic() - t0
+        anteriores = {"vpn": p.get("imagen_vpn"), "suricata": p.get("imagen_suricata")}
+        with ctx.paso("respaldo"):
+            guarda = base / "reconfigurar.anterior"
+            if guarda.exists():
+                borrar_arbol(guarda)
+            asegurar_dir(guarda, 0o700)
+            for nombre, txt in actuales.items():
+                if txt is not None:
+                    escribir_atomico(guarda / nombre, txt, modo=0o600)
+            escribir_atomico(guarda / "imagenes.json", canon(anteriores) + "\n", modo=0o600)
+            ctx.registrar("respaldo de lo anterior en %s" % guarda)
+
+        def deshacer():
+            for nombre, rel, modo in self.FICHEROS_RECONFIGURAR:
+                if actuales[nombre] is None:
+                    if (base / rel).exists():
+                        (base / rel).unlink()
+                else:
+                    escribir_atomico(base / rel, actuales[nombre], modo=modo)
+            self.x("UPDATE punto SET imagen_vpn=?, imagen_suricata=?, actualizado=? WHERE pid=?",
+                   (anteriores["vpn"], anteriores["suricata"], ahora(), pid))
+            ctx.registrar("vuelta atrás: ficheros e imágenes de antes")
+            if not activo:
+                return
+            try:
+                ejecutar_ok(compose_args(pid, "up", "-d", "--pull", "never", "--force-recreate"), timeout=600)
+                self._esperar_tolerante(ctx, nombres, limite_salud(None))
+            except ErrorOrden as e:
+                self._volcar_logs(ctx, pid)
+                self._marcar_error(pid, "reconfigurar: falló y lo anterior tampoco quedó sano: %s" % e.mensaje)
+                raise
+            ctx.registrar("lo anterior vuelve a estar en marcha")
+        ctx.deshacer = deshacer
+        with ctx.paso("escribir"):
+            for nombre, rel, modo in self.FICHEROS_RECONFIGURAR:
+                if nombre in cambios:
+                    escribir_atomico(base / rel, textos[nombre], modo=modo)
+            self.x("UPDATE punto SET imagen_vpn=?, imagen_suricata=?, actualizado=? WHERE pid=?",
+                   (imgs["vpn"], imgs["suricata"], ahora(), pid))
+        recreado = []
+        if activo:
+            # --force-recreate: server.conf y suricata.yaml van montados y un `up -d` sin cambios en
+            # el compose no reiniciaría nada; la vpn y suricata juntos (comparten netns)
+            with ctx.paso("recrear"), self._logs_si_falla(ctx, pid):
+                ejecutar_ok(compose_args(pid, "up", "-d", "--pull", "never", "--force-recreate"), timeout=600)
+            with ctx.paso("esperar salud"), self._logs_si_falla(ctx, pid):
+                self._esperar_tolerante(ctx, nombres, limite_salud(dur_T))
+            recreado = ["vpn", "suricata"]
+            self._marcar_activo(pid)
+        ctx.deshacer = None
+        if activo:
+            self.comprobar_netns(pid)
+        ctx.mensaje = "reconfigurado (%s)%s" % (", ".join(cambios), "" if activo else
+                                                 "; el punto está parado: se aplica al arrancar")
+        return {"recreado": recreado, "cambios": cambios}
+
     def o_regenerar(self, ctx, prm):
         """Clave VPN nueva. Si el certificado de servidor del punto es de antes de VPN-01 (sin
         NOMBRE_DNS), se renueva también y se reinicia OpenVPN para que lo cargue: el script nuevo
@@ -3374,12 +3631,16 @@ class Orquestador:
         p = self._p_o_noexiste(prm["pid"])
         pid = p["pid"]
         cfg = config()
+        # C4: antes de tocar el certificado o la clave: con una CA que no sirve para el script, la
+        # orden fallaba al final con la clave nueva ya escrita y sin entregar
+        self._validar_ca(si_existe=True)
         clave = nueva_clave()
         renovar = not cert_lleva_nombre(ruta("/srv/ids/puntos/%s/vpn/server.crt" % pid), cfg.nombre_dns)
         ctx.total = 3 if renovar else 2
         if renovar:
             with ctx.paso("certificado"):
                 self.instalar_cert(pid, cfg.nombre_dns)
+                self._validar_ca()
         with ctx.paso("usuarios"):
             usuario = p["usuario"] or nuevo_usuario()
             self.escribir_usuarios(p, usuario, clave)
@@ -3876,6 +4137,9 @@ def construir_parser():
     for nombre in ("ovpn-client", "vpn-regenerar", "api-huella", "medir"):
         x = ps.add_parser(nombre, parents=[comun])
         x.add_argument("pid")
+    x = ps.add_parser("reconfigurar", parents=[comun],
+                      help="pasa el punto a las plantillas e imágenes actuales (recrea y, si falla, vuelve atrás)")
+    x.add_argument("pid")
     lg = ps.add_parser("logs", parents=[comun])
     lg.add_argument("pid")
     lg.add_argument("--parte", choices=("vpn", "suricata"), default="vpn")
@@ -3951,6 +4215,8 @@ def orden_desde_args(a):
             return "punto.api.huella", {"pid": a.pid}
         if s == "medir":
             return "punto.medir", {"pid": a.pid}
+        if s == "reconfigurar":
+            return "punto.reconfigurar", {"pid": a.pid}
         if s == "logs":
             return "punto.logs", {"pid": a.pid, "parte": a.parte, "lineas": a.lineas}
     if a.cmd == "reglas":

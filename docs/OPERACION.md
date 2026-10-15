@@ -64,9 +64,7 @@ add name=ids-promax common-name=ids-promax \
 /ip route add dst-address=100.64.3.0/24 blackhole distance=250 comment="IDS ids-maat:p003"
 /user group add name=ids-api policy=read,write,api
 /user add name=ids-api group=ids-api address=100.64.3.1/32 password=<CLAVE-API>
-# ids-vpn aislada: por ella solo entra la API desde el sensor (el orden de estas cinco da igual).
-# Router configurado antes: quita primero las reglas viejas del alta con
-#   /ip firewall filter remove [find comment="IDS ids-maat:p003"]
+# ids-vpn aislada: solo la API desde el sensor (bloque de aislamiento, §1.5)
 /ip firewall filter add chain=input in-interface=ids-vpn src-address=!100.64.3.1 action=drop \
     comment="IDS ids-maat:p003"
 /ip firewall filter add chain=input in-interface=ids-vpn protocol=!tcp action=drop \
@@ -75,13 +73,16 @@ add name=ids-promax common-name=ids-promax \
     comment="IDS ids-maat:p003"
 /ip firewall filter add chain=input in-interface=ids-vpn src-address=100.64.3.1 protocol=tcp \
     dst-port=8729 action=accept comment="IDS ids-maat:p003"
-/ip firewall filter add chain=forward in-interface=ids-vpn action=drop \
-    comment="IDS ids-maat:p003"
-# arriba del todo (con la lista vacía no hay nada que mover y no pasa nada):
+/ip firewall filter add chain=forward in-interface=ids-vpn action=drop comment="IDS ids-maat:p003"
 :do {/ip firewall filter move [/ip firewall filter find comment="IDS ids-maat:p003"] destination=[:pick [/ip firewall filter find dynamic=no] 0]} on-error={}
 ```
 
-- Si el servidor del punto no tiene GCM habilitado, se usa `cipher=aes256-cbc`.
+- **El cifrado del bloque v7 sale de la versión declarada del punto.** Con el punto declarado
+  RouterOS 7, el bloque v7 lleva `cipher=aes256-gcm`. Con el punto declarado RouterOS 6, el servidor
+  solo ofrece CBC como respaldo y por eso el bloque v7 sale con `cipher=aes256-cbc` (la cabecera del
+  script avisa: «El bloque v7 solo conecta tras: ids-orq punto ajustar p003 --ros 7»). Si el router
+  es v7, lo correcto es `ids-orq punto ajustar p003 --ros 7` (o RouterOS en la ficha) y volver a
+  copiar el bloque v7, que entonces sale con GCM.
 - El contenido de `/file set` es el `ca.crt` del VPS (`/srv/ids/pki/ca.crt`) con cada salto de línea
   escrito como `\n`. El panel y `ids-orq punto ovpn-client <pid>` lo dan ya puesto.
 
@@ -95,7 +96,7 @@ add name=ids-promax common-name=ids-promax \
 /ip route add dst-address=100.64.3.0/24 type=blackhole distance=250 comment="IDS ids-maat:p003"
 /user group add name=ids-api policy=read,write,api
 /user add name=ids-api group=ids-api address=100.64.3.1/32 password=<CLAVE-API>
-# (las mismas 5 reglas de /ip firewall filter y el move que en v7)
+# (el mismo bloque de aislamiento que en v7: 5 reglas y la línea move)
 ```
 
 v6 solo admite TCP, así que no lleva `protocol=`, y no tiene `use-peer-dns`. Si el handshake TLS
@@ -115,6 +116,12 @@ con la clave VPN y haría de «sensor» para el router.
   ([help.mikrotik.com, OpenVPN](https://help.mikrotik.com/docs/spaces/ROS/pages/2031655/OpenVPN)).
   El certificado de cada punto lleva `CN=<NOMBRE_DNS>` y `subjectAltName=DNS:<NOMBRE_DNS>` (o `IP:` si
   el nombre es una IP) e EKU `serverAuth`.
+- **El reloj del router cuenta.** Con la verificación activa, un router con la fecha atrasada ve el
+  certificado del servidor «todavía no válido» y no conecta. El certificado de cada punto vale desde
+  **2 días antes** de emitirse, para cubrir un reloj algo atrasado, pero un router que arranca sin
+  hora (sin batería de reloj, en 1970 o en la fecha de fábrica) sigue fallando. **Antes de pegar el
+  script:** activar el cliente NTP del router (`/system ntp client`, con un servidor que alcance) y
+  comprobar la fecha con `/system clock print`.
 - **La CA es una por VPS y es pública.** Nunca va una clave privada en el script. El certificado
   importado se llama `ids-maat-ca-<pid>.txt_0` (6.49 no admite `name=` en `/certificate import`) y se
   quita en la baja por ese prefijo (§2.1).
@@ -140,18 +147,54 @@ con la clave VPN y haría de «sensor» para el router.
   espejo no se ve afectado: `sniff-tzsp` lo genera el propio router (sale por `output`), y el sensor
   no envía nada más al router (su netns solo deja salir la API, [RED-Y-FIREWALL.md](RED-Y-FIREWALL.md)
   §8).
-- **El orden entre las cinco da igual.** Los `drop` de `input` van negados (lo que no viene del
-  sensor, lo que no es TCP, lo que no va al puerto de la API), así que ninguno tapa al `accept`. No se
-  usa `place-before=0`: en RouterOS los números son los del último `print` de la sesión, y en un
-  script pegado tres `place-before=0` seguidos dejaban el `accept` debajo del `drop` de `input` (el
-  panel se quedaba sin API). La última línea sube las cinco, por su comentario, por encima de la
-  primera regla no dinámica (la dinámica del fasttrack se salta); con la lista vacía no hay nada que
-  mover y el `on-error` lo deja pasar.
-- **Routers ya desplegados** (con las tres reglas de antes): quitar las del alta con
-  `/ip firewall filter remove [find comment="IDS ids-maat:p003"]` y pegar las cinco y el `move`.
+- **El bloque de aislamiento no depende del orden de sus reglas.** Son cinco reglas, todas con el
+  comentario `IDS ids-maat:<pid>` y añadidas al final de la lista:
+  - `input` desde `ids-vpn` con origen distinto del sensor → `drop`;
+  - `input` desde `ids-vpn` que no es TCP → `drop`;
+  - `input` desde `ids-vpn` TCP a un puerto distinto del de la API → `drop`;
+  - `input` desde `ids-vpn`, origen el sensor, TCP al puerto de la API → `accept`;
+  - `forward` desde `ids-vpn` → `drop`.
+
+  Los tres `drop` de `input` están negados, así que ninguno casa con lo que acepta el `accept`: da
+  igual en qué orden queden entre ellas. La última línea (`:do {… move …} on-error={}`) las sube
+  todas juntas por encima de la primera regla no dinámica del router, sin usar números (en la
+  terminal de RouterOS los números son los del último `print` de esa sesión, y con varios
+  `place-before=0` seguidos el orden salía al revés y el `drop` de `input` tapaba la API). La regla
+  dinámica del contador de FastTrack, si existe, queda donde está.
+- **Si el `move` falla** (lo absorbe el `on-error`), las cinco reglas se quedan al final de la lista:
+  el aislamiento vale igual, pero una regla del operador que esté antes puede decidir antes que
+  ellas (por ejemplo, un `drop` de `input` general taparía la API). Se comprueba con
+  `/ip firewall filter print where comment="IDS ids-maat:p003"` y, si no están arriba, se suben a
+  mano con `move`.
+- **Routers ya desplegados** (dados de alta con el script anterior, de tres reglas con
+  `place-before=0`): primero se quitan las reglas viejas del alta,
+  `/ip firewall filter remove [find comment="IDS ids-maat:p003"]`, y después se pega el bloque de
+  aislamiento **entero**, con la línea `move`. Ese `remove` solo toca `/ip firewall filter` y el
+  comentario exacto del alta: no alcanza al espejo (`IDS ids-maat:p003:espejo`), ni a la ruta
+  blackhole, ni a las cuarentenas. El bloque actual se copia de la ficha del punto («Ver comando»)
+  o de `ids-orq punto ovpn-client p003`. **No** sirve lo que se indicaba antes (pegar solo las dos
+  reglas `drop` del script anterior con `place-before=0`): quedan encima del `accept` viejo y
+  **cortan la API**. Si un router ya está así (el panel no conecta con su API desde entonces), el
+  arreglo es el mismo: `remove` y el bloque entero.
 - **El blackhole va siempre como /24** ([RED-Y-FIREWALL.md](RED-Y-FIREWALL.md) §3.1).
-- **Puerto 8728 en claro.** Solo como excepción por punto, con aviso permanente. Hay que cambiar
-  `dst-port` y el servicio `api` en consecuencia.
+- **Puerto 8728 (API en claro): el panel no conecta.** El orquestador acepta `api_puerto=8728` y el
+  script lo pone en `dst-port`, pero el panel habla **siempre** TLS con el router: contra el servicio
+  `api` en claro el saludo TLS falla y no hay conexión (la ficha del punto lo dice así). Para que el
+  panel llegue a la API, el punto tiene que usar 8729 (`api-ssl`).
+
+### 1.6 Llevar una corrección a lo ya desplegado
+
+Una corrección en el código **no llega sola** a lo que ya está funcionando. Cada parte se actualiza
+por su camino:
+
+| Parte | Qué recibe | Cómo |
+|---|---|---|
+| Host (fail2ban, journald, sysctl, firewall del host) y el orquestador | filtros y jaulas de fail2ban, `journald.conf.d/90-ids.conf`, `ids_orq.py` y sus plantillas, unidades systemd | volver a ejecutar `install.sh` con las mismas opciones (`--nombre`, `--gestion`, `--proxy`…); es idempotente y respalda antes de tocar nada (§3.1). El panel no actualiza el orquestador |
+| Cada punto (contenedores `vpn` y `suricata`) | `server.conf` (p. ej. `max-clients 16`, `hand-window 20`), `suricata.yaml`, `compose.yml` (p. ej. `NET_RAW` sin `NET_ADMIN`, `start_interval`) y las imágenes actuales de `imagenes.json` (p. ej. `ovpn-auth` y `salud-vpn` nuevos) | ficha del punto → **«Aplicar la configuración actual»** (solo administradores) o `ids-orq punto reconfigurar p003`. Va por la cola: reescribe los tres ficheros con las plantillas actuales, pasa el punto a las imágenes actuales, recrea los contenedores y espera la salud; si no queda sano, vuelve a los ficheros y a las imágenes de antes y deja el motivo. Devuelve qué se recreó y qué cambió (`recreado`, `cambios`). Mientras se recrean los contenedores, ese punto no captura y su VPN se corta (el MikroTik reconecta solo) |
+| Cada MikroTik | lo que va en el script del router (p. ej. el bloque de aislamiento de §1.5, la CA y la verificación de §1.4) | a mano en el router: no se puede hacer desde el VPS. Para el aislamiento, `remove` de las reglas viejas y el bloque entero (§1.5); para la verificación del servidor, §1.4 |
+
+Orden recomendado tras una corrección: `install.sh` (host y orquestador) → «Aplicar la configuración
+actual» punto por punto, empezando por uno y comprobando que vuelve a `activo` → los routers.
 
 ## 2. Espejo
 
@@ -170,9 +213,9 @@ Es equivalente a:
 /ip firewall mangle add chain=forward dst-address-list=ids-vigilados connection-bytes=0-10000     action=sniff-tzsp sniff-target=100.64.3.1 sniff-target-port=37008 comment="IDS ids-maat:p003:espejo"
 ```
 
-**Comentario propio del espejo: `IDS ids-maat:<pid>:espejo`.** Lo del alta (§1.2/§1.3: la regla
-`chain=input` que acepta la API-SSL desde el sensor, los dos `drop` que aíslan `ids-vpn` y el
-blackhole del túnel) lleva
+**Comentario propio del espejo: `IDS ids-maat:<pid>:espejo`.** Lo del alta (§1.2/§1.3: el bloque
+de aislamiento de `ids-vpn`, con el `accept` de la API-SSL desde el sensor, §1.5, y el blackhole
+del túnel) lleva
 `IDS ids-maat:<pid>` y **el espejo no lo toca nunca**: ni al aplicar, ni al pausar, ni al retirar.
 Sin esa regla, en un router con la cadena `input` en `drop`, el panel se quedaría sin API en ese
 punto. Un espejo montado por una versión anterior (con el comentario del alta) se reconoce solo
@@ -209,15 +252,42 @@ que deciden qué conexiones se aceleran y nunca qué tráfico pasa:
 - **Pausa**: deshabilita los dos mangle del espejo (`disabled=yes`, por comentario). El fasttrack queda como está.
 - **Retirada**: borra lo que lleva el comentario del espejo y devuelve a `<id-ft>` sus valores originales de
   `src-address-list`/`dst-address-list` (del respaldo). Nunca borra reglas sin ese comentario, ni las del
-  alta (`IDS ids-maat:<pid>`: API-SSL y blackhole), que solo se quitan en la baja (§2.1).
+  alta (`IDS ids-maat:<pid>`: aislamiento de `ids-vpn` con la API-SSL, y blackhole), que se quitan
+  a mano al terminar la baja (§2.1).
 - **Prueba de aceptación** (laboratorio, con un MikroTik real de cada versión): mismo resultado antes y
   después en tráfico permitido, bloqueado y en cuarentena; espejo en las dos direcciones; aceleración
   pasados los 10 KB; aplicar dos veces sin duplicar; retirar sin tocar reglas ajenas.
 
 ### 2.1 Quitar todo lo del IDS de un router
 
-Sirve para una baja sin API, o para terminar una baja con API (`ovpn-client` y usuario). El
-certificado `ids-promax` no se borra.
+**Qué quita el panel en una baja con API, y qué no.** Antes de encolar la baja, el panel limpia el
+router por la API: saca de las address-lists las IPs que puso él (cuarentenas, destinos
+bloqueados) y **retira el espejo** (address-list `ids-vigilados`, los dos mangle, los fasttrack de
+los vigilados, y devuelve la regla fasttrack del operador a sus valores originales; con el respaldo
+previo de §2). **Nada más.** Lo del alta se queda en el router porque es el camino por el que el
+panel habla con él: el bloque de aislamiento de `filter` (con el `accept` de la API), la ruta
+blackhole, la interfaz `ids-vpn`, el usuario y el grupo `ids-api`, y la CA del VPS con su fichero.
+Eso se quita a mano, después de la baja, con el bloque de **terminar una baja con API** de abajo
+(todo menos el espejo, que ya no está). El certificado `ids-promax` no se borra en ningún caso:
+puede usarlo otro servicio del router.
+
+**Terminar una baja con API** (el panel ya quitó el espejo y las IPs):
+
+```
+/ip firewall filter remove [find comment="IDS ids-maat:p003"]
+/ip route remove [find comment="IDS ids-maat:p003"]
+/interface ovpn-client remove [find name=ids-vpn]
+/user remove [find name=ids-api]
+/user group remove [find name=ids-api]
+/certificate remove [find name~"^ids-maat-ca-p003"]
+/file remove [find name~"^ids-maat-ca-p003"]
+```
+
+Conviene hacerlo antes de 7 días: pasado el enfriamiento, el `N` del punto (y su puerto) se puede
+dar a un alta nueva, y un router viejo que siga llamando a ese puerto con su usuario de antes acaba
+con su IP pública baneada por fail2ban (VPN-12; §5).
+
+**Baja sin API** (o router que el panel no alcanza): todo, espejo incluido.
 
 La expresión `ids-maat:p003(:|\$)` casa lo del alta (`IDS ids-maat:p003`), lo del espejo
 (`IDS ids-maat:p003:espejo`) y las cuarentenas `ids-maat:p003:<id>`, pero no `ids-maat:p0031` ni otro
@@ -239,8 +309,9 @@ expresiones: borra solo lo que lleva exactamente su comentario.
 /file remove [find name~"^ids-maat-ca-p003"]
 ```
 
-Las dos reglas `drop` de `ids-vpn` llevan el comentario del alta, así que la línea de `filter`
-también las quita.
+Las cinco reglas del bloque de aislamiento de `ids-vpn` (§1.5) llevan el comentario del alta, así
+que la línea de `filter` también las quita (y, en un router del script anterior, las tres reglas
+viejas).
 
 ## 3. Respaldos y recuperación
 
@@ -252,7 +323,7 @@ también las quita.
 
 | Respaldo | Cuándo | Contenido | Dónde |
 |---|---|---|---|
-| Instalación | cada `install.sh` (también al reinstalar), antes de tocar nada | `etc/ssh`, `etc/docker`, `etc/fail2ban`, `/srv/ids/fw`, `/etc/ids-maat` **sin `master.key`**, `/srv/ids/panel`, `/srv/ids/estado` (`orq.db`), `/srv/ids/pki`, `/srv/ids/puntos` | `/root/backups/ids-maat-install-<ts>.tar.gz`, 0600 |
+| Instalación | cada `install.sh` (también al reinstalar), antes de tocar nada | `etc/ssh`, `etc/docker`, `etc/fail2ban`, `etc/systemd/journald.conf.d` (el `90-ids.conf` de journald), `/srv/ids/fw`, `/etc/ids-maat` **sin `master.key`**, `/srv/ids/panel`, `/srv/ids/estado` (`orq.db`), `/srv/ids/pki`, `/srv/ids/puntos` | `/root/backups/ids-maat-install-<ts>.tar.gz`, 0600 |
 | Laboratorio | cada `scripts/lab-actualizar.sh` (solo el VPS de laboratorio) | `/etc/ids-maat` **sin `master.key`**, el orquestador instalado y sus unidades, `/srv/ids/panel`, `estado`, `pki`, `puntos`, `fw` | `/root/backups/ids-maat-lab-<ts>.tar.gz`, 0600 |
 | Firewall del host | cada vez que el orquestador regenera `ids_host.nft` | el `ids_host.nft` anterior | `/root/backups/ids-maat-fw-<ts>.nft` (los 20 últimos) |
 | Firewall del router | antes de aplicar, pausar o retirar el espejo | `/export` en el router (fichero `ids-maat-<pid>-<ts>.rsc` del propio MikroTik) y copia JSON de las tablas | `/srv/ids/panel/respaldos/espejo/<pid>/` |
@@ -337,11 +408,21 @@ rsync -a --chmod=F600 'root@ids.empresa.example:/root/backups/ids-maat-install-*
   - Los navegadores tratan `localhost` como contexto seguro, y la cookie `__Host-` funciona.
 - **Si las redes de gestión dejan fuera al dueño** (y, con ellas, el SSH):
   1. Entrar por la consola del proveedor del VPS.
-  2. Ejecutar `/root/ids-maat/acceso-emergencia.sh` (restaura el ruleset anterior) o
-     `/root/ids-maat/acceso-emergencia.sh 203.0.113.20` (abre esa IP para SSH). Con
-     `--proxy 203.0.113.50` abre el panel a esa IP de proxy.
-  3. Revisar `/root/backups/` y la bitácora.
-- **Una red más ancha que /16 solo se puede abrir así**, desde la consola.
+  2. Si el problema lo trajo la **última ejecución de `install.sh`**:
+     `bash /root/ids-maat/revertir-acceso.sh`. Es el mismo script que el modo seguro ejecuta solo si
+     nadie confirma a tiempo: devuelve el firewall del host (`ids_host.nft`) y el `10-ids.conf` de
+     sshd a como estaban antes de esa ejecución. No admite parámetros (ni IP ni `--proxy`). Solo
+     existe si esa ejecución fue con modo seguro: con `--sin-reversion` no se genera (y queda el de
+     una ejecución anterior, que devolvería un estado más viejo).
+  3. Si no, **abrir una IP o red concreta**: editar `/etc/ids-maat/ids.conf` (`REDES_GESTION` para
+     SSH, separadas por comas; `IPS_PROXY` para el panel) y aplicar con
+     `ids-orq fw-render --aplicar` (genera `ids_host.nft`, lo prueba con `nft -c` y lo carga). Si se
+     cambió `IPS_PROXY`, además `ids-orq panel aplicar` (el panel lee esa lista al arrancar). La
+     próxima ejecución de `install.sh` vuelve a escribir `ids.conf` con sus `--gestion`/`--proxy`:
+     hay que pasárselos ya corregidos.
+  4. Revisar `/root/backups/` y la bitácora.
+- **Una red más ancha que /16 solo se puede abrir así**, editando `ids.conf` desde la consola:
+  `install.sh --gestion` la rechaza.
 
 ### 4.1 Primer acceso al panel y clave olvidada
 
@@ -372,7 +453,9 @@ rsync -a --chmod=F600 'root@ids.empresa.example:/root/backups/ids-maat-install-*
 | Estado de los puntos | `ids-orq punto estado '*'` o `cat /srv/ids/run/estado.json` |
 | Rotar la clave maestra | todavía no existe (no hay `kid`; [DATOS.md](DATOS.md) §6): cambiarla exige volver a guardar cada secreto |
 | Cambiar la IP del VPS | restaurar o mover y cambiar el registro DNS `ids.empresa.example`; los MikroTik no se tocan |
-| Actualizar el orquestador | `/root/ids-maat/actualizar-orquestador.sh <version>` |
+| Actualizar el orquestador y el host | volver a ejecutar `install.sh` con la versión nueva y las mismas opciones (§1.6). No hay script aparte ni actualización desde el panel |
+| Llevar un punto a la configuración y las imágenes actuales | ficha del punto → «Aplicar la configuración actual» (admin) o `ids-orq punto reconfigurar <pid>` (§1.6) |
+| Ver los logs de un punto | `ids-orq punto logs <pid>` (OpenVPN) o `ids-orq punto logs <pid> --parte suricata`; `--lineas N` (≤ 500) |
 
 **Cuándo banea `ids-vpn` y cómo desbanear.** La jaula cuenta solo las líneas
 `<ip>:<puerto> ovpn-auth: rechazado … motivo=formato` y `… motivo=usuario`, una por intento fallido de
@@ -388,18 +471,22 @@ el panel). No cuentan:
 
 Con `maxretry = 5` y `findtime = 10m`, una IP queda baneada al 5.º intento fallido en 10 minutos,
 durante 1 h la primera vez y más en las siguientes (`bantime.increment`, hasta 1 semana). El ban se
-aplica en el hook `forward`, así que corta todos los puertos de esa IP hacia los contenedores (también
-otros puntos detrás de esa misma IP).
+aplica en el hook `forward`, así que corta a esa IP todo lo que publica Docker: la VPN de **todos**
+los puntos (también otros puntos detrás de esa misma IP) y el panel. El SSH del host no pasa por
+`forward` y no lo corta (ese lo vigila la jaula `sshd`).
 
 Si una IP legítima queda baneada (p. ej. un router de un punto dado de baja que sigue llamando con su
 usuario viejo, detrás de la misma IP pública que otro punto):
 
-1. Ver qué IP está baneada: `fail2ban-client status ids-vpn`.
+1. Ver qué IP está baneada: `fail2ban-client status ids-vpn`. Es la IP **pública** desde la que el
+   router llega al VPS, no la del túnel (`100.64.N.2`).
 2. Quitar la causa (en ese ejemplo, `/interface ovpn-client remove [find name=ids-vpn]` en el router
    viejo). Si no, vuelve a banearse.
 3. Desbanear: `ids-orq vpn desbanear <ip>`. Hace `fail2ban-client set ids-vpn unbanip <ip>` solo con
-   una IP validada y deja la orden en `orq.jsonl` (quién la pidió, sin la IP en claro). En el panel:
-   ficha del punto → Servicio → «Desbanear IP del MikroTik» (solo administradores; propone la IP del
-   túnel o la última conocida y deja una línea en el Registro).
+   una IP validada y deja la orden en `orq.jsonl` (quién la pidió y el sha256 de los parámetros, no
+   la IP escrita; ese hash **no la oculta**: con una IPv4 se recupera probando todas las
+   direcciones). En el panel: ficha del punto → Servicio → «Desbanear IP del MikroTik» (solo
+   administradores). Propone la IP pública desde la que el router está conectado o, si ya no
+   conecta, la última que se le conoció; se puede cambiar. Deja una línea en el Registro.
 4. Si la IP es fija y del dueño, puede ir en `--dueno-ip` (es el `ignoreip` de fail2ban). Las redes
    de gestión nunca van en `ignoreip`.

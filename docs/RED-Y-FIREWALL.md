@@ -25,9 +25,14 @@ Ejemplos: VPS `203.0.113.10` (nombre `ids.empresa.example`), redes de gestión `
   "no-new-privileges": true,
   "log-driver": "local",
   "log-opts": { "max-size": "10m", "max-file": "3" },
-  "default-address-pools": [ { "base": "10.210.0.0/16", "size": 28 } ]
+  "default-address-pools": [ { "base": "10.210.0.0/16", "size": 28 } ],
+  "bip": "10.210.254.1/24"
 }
 ```
+
+- **`bip`.** El `docker0` por defecto queda fijo en `10.210.254.1/24`, fuera de las /28 de los
+  puntos (que son deterministas, §2.1) y de la red `ids-core` (`10.210.255.0/24`): ni `docker0` ni
+  una red automática pueden quitarle su /28 a un punto.
 
 - **`userland-proxy: false`.** El DNAT de Docker conserva la IP de origen en cualquier caso. Lo
   que cambia con `false` es que no hay `docker-proxy`. Eso importa en dos casos:
@@ -71,8 +76,10 @@ Ejemplos: VPS `203.0.113.10` (nombre `ids.empresa.example`), redes de gestión `
 - **OpenVPN** escucha `1194/tcp` dentro de cada contenedor. El orquestador lo publica en
   `1194+N-1`.
 - **Los MikroTik apuntan a un nombre DNS de la empresa** (`connect-to=ids.empresa.example`), no a
-  la IP. Si el VPS cambia de IP o se restaura en otro, basta con cambiar el registro DNS (ver
-  [OPERACION.md](OPERACION.md) §5).
+  la IP. Si el VPS cambia de IP o se restaura en otro, basta con cambiar el registro DNS
+  ([OPERACION.md](OPERACION.md) §3.3 y §5), siempre que el VPS nuevo conserve el **mismo
+  `NOMBRE_DNS`** (`--nombre`) y se restaure `/srv/ids/pki`: el router verifica al servidor con la CA
+  del VPS y con ese nombre (§4); con otra CA u otro nombre, no conecta.
 
 ### 2.1 Asignación por punto
 
@@ -82,7 +89,7 @@ Ejemplos: VPS `203.0.113.10` (nombre `ids.empresa.example`), redes de gestión `
 | Puerto público | `1194 + N − 1` | 1196 |
 | Red de túnel | `<base>.N.0/24`; base `100.64` por defecto o `198.18` si hay CGNAT en `100.64/10` (decisión a de ARQUITECTURA §10) | `100.64.3.0/24` |
 | Sensor / MikroTik | `.1` / `.2` | `100.64.3.1` / `.2` |
-| Red Docker | la siguiente /28 libre del pool | `10.210.0.48/28` |
+| Red Docker | /28 fija derivada de `N`: `10.210.0.0 + 16·N` dentro del pool | `10.210.0.48/28` |
 | `cluster-id` | `100 + N` (solo por legibilidad: el fanout es por netns) | 103 |
 
 ## 3. Flujo del espejo
@@ -163,8 +170,14 @@ socat UNIX-LISTEN:/run/ids/api.sock,fork,unlink-early,mode=660,max-children=4 \
   - la 8728 en claro;
   - la API-SSL con ADH (sin certificado).
 
-  Solo se admiten como excepción por punto, con un aviso permanente en la ficha. En ese caso el
-  orquestador genera el relé hacia 8728 y la tabla del netns abre solo ese puerto.
+  **8728:** el orquestador la admite por punto (`api_puerto`) y entonces genera el relé hacia 8728
+  y la tabla del netns abre solo ese puerto, pero **el panel no conecta**: habla siempre TLS, y
+  contra la API en claro el saludo falla. La ficha lo dice así.
+
+  **ADH heredado:** una huella **vacía** guardada por una versión anterior del panel (API-SSL sin
+  certificado, negociada con ADH) se sigue aceptando con ADH para no cortar ese punto. La ficha
+  avisa de que la API-SSL no tiene certificado: lo correcto es crear `ids-promax`
+  ([OPERACION.md](OPERACION.md) §1.1), pulsar «Olvidar la huella» y confirmar la nueva.
 - **Permisos del socket:**
   - el directorio del host `/srv/ids/run/<pid>` pertenece a `root:10500` con modo `2770`
     (setgid), así que el socket hereda el grupo 10500;
@@ -176,9 +189,11 @@ socat UNIX-LISTEN:/run/ids/api.sock,fork,unlink-early,mode=660,max-children=4 \
   handshake sin certificado).
 - **Del lado del router**, el origen es `100.64.N.1`:
   - usuario API exclusivo del IDS, con `address=100.64.N.1/32`;
-  - regla de entrada en `chain=input` desde `ids-vpn` **solo** para `100.64.N.1` al puerto de la
-    API, y debajo dos `drop`: el resto de `input` y todo `forward` desde `ids-vpn`
-    ([OPERACION.md](OPERACION.md) §1.5). El router no depende de que el sensor se porte bien;
+  - un bloque de aislamiento de `ids-vpn` en `/ip firewall filter`: en `input` solo se acepta
+    `100.64.N.1` al puerto de la API, con tres `drop` negados (otro origen, no TCP, otro puerto) que
+    no dependen del orden, y todo `forward` desde `ids-vpn` se descarta; una línea `move` sube las
+    cinco reglas por encima de las del router ([OPERACION.md](OPERACION.md) §1.5). El router no
+    depende de que el sensor se porte bien;
   - **no se toca `/ip service … address=`**, porque esa lista es del servicio entero y puede
     usarla otro sistema de la empresa, como la facturación.
 - **El router verifica al servidor:** importa la CA del VPS y conecta con
@@ -272,8 +287,11 @@ Por qué cada pieza:
 - **Origen fijo opcional por punto.** Si el punto declara la IP pública de su MikroTik, se añade
   una regla de descarte para ese puerto con `ip saddr != <IP>`.
 - **Dos listas distintas.** `@gestion` abre el SSH y `@proxy` abre el panel. El panel habla HTTP:
-  el TLS lo termina el proxy inverso externo y en el VPS no hay certificados. Las dos listas solo
-  cambian con el modo seguro (§10).
+  el TLS lo termina el proxy inverso externo y en el VPS no hay certificados. Las dos listas salen
+  de `ids.conf` (`REDES_GESTION`, `IPS_PROXY`) y hoy se cambian volviendo a ejecutar `install.sh`
+  con `--gestion`/`--proxy` (con su modo seguro) o, desde la consola, editando `ids.conf` y
+  `ids-orq fw-render --aplicar` ([OPERACION.md](OPERACION.md) §4). La orden `acceso.aplicar` de §10
+  es un diseño sin implementar.
 - **El túnel SSH de emergencia no pasa por `forward`.** `ssh -L` hacia la IP fija del panel en la
   red `ids-core` (`10.210.255.2`) sale del propio host por la cadena `output`, así que la regla
   `@proxy` no lo bloquea. Solo puede abrirlo quien ya entró por SSH desde una red de gestión.
@@ -312,7 +330,7 @@ table inet ids_punto {
     type filter hook output priority filter; policy drop;
     oif lo accept
     ct state established,related accept
-    oifname "tun0" ip daddr 100.64.3.2 tcp dport 8729 accept comment "API-SSL via rele"
+    oifname "tun0" ip daddr 100.64.3.2 tcp dport 8729 accept comment "API via rele"
     counter comment "resto"
   }
   chain forward { type filter hook forward priority filter; policy drop; }
@@ -338,7 +356,7 @@ table netdev ids_mon {
 backend    = systemd
 banaction  = nftables[type=multiport]
 banaction_allports = nftables[type=allports]
-ignoreip   = 127.0.0.1/8 ::1 203.0.113.20      # como mucho 1-2 IP fijas del dueño; NUNCA las redes de gestión
+ignoreip   = 127.0.0.1/8 ::1 203.0.113.20      # una sola IPv4 fija del dueño (--dueno-ip); NUNCA las redes de gestión
 bantime    = 1h
 bantime.increment = true
 bantime.maxtime   = 1w
@@ -355,6 +373,8 @@ enabled      = true
 filter       = ids-vpn
 journalmatch = CONTAINER_TAG=ids-vpn
 banaction    = nftables[type=allports, chain_hook=forward]
+# cadena propia: la de sshd (f2b-chain) ya existe en la tabla f2b-table con el hook input
+chain        = f2b-ids-vpn
 ```
 
 ```ini
@@ -385,13 +405,17 @@ ignoreregex =
   cambia el `journalmatch`. El instalador lo comprueba con `fail2ban-regex`.
 
 **Redes de gestión fuera de `ignoreip`.** Un equipo comprometido dentro de la red del ISP también
-se bloquea. Solo se exceptúan 1 o 2 IP fijas del dueño, para no perder el acceso.
+se bloquea. Solo se exceptúa **una** IPv4 fija del dueño, para no perder el acceso: `install.sh
+--dueno-ip` admite una sola dirección (es el `IGNOREIP_DUENO` de `ids.conf`).
 
 **OpenVPN:**
 
 - Los contenedores `vpn` usan `logging: {driver: journald, options: {tag: ids-vpn}}`.
 - El DNAT conserva la IP de origen, así que la jaula banea en el hook `forward`, en su propia tabla
-  `f2b-table`, con prioridad anterior a la de Docker.
+  `f2b-table`, con prioridad anterior a la de Docker, en una cadena propia (`f2b-ids-vpn`), porque
+  la de sshd (`f2b-chain`) ya está en esa tabla con el hook `input`.
+- Corta a la IP baneada todo lo que publica Docker (la VPN de todos los puntos y el panel), no el SSH
+  del host, que no pasa por `forward`.
 - Con `allports` no importa que el DNAT haya cambiado el puerto.
 - Un MikroTik que sigue reintentando con una clave vieja **no** se banea (ver el filtro); sí un router
   que llama con un usuario que ya no existe (p. ej. el de un punto dado de baja). Desbanear:
@@ -401,7 +425,12 @@ se bloquea. Solo se exceptúan 1 o 2 IP fijas del dueño, para no perder el acce
   30 s, para que una avalancha no tire las líneas que lee fail2ban, y fija el tamaño en 2 GB.
 - **Conexiones a medio negociar** (cualquiera puede abrir el puerto): no llegan a `ovpn-auth` ni a
   fail2ban. Las acotan `hand-window 20` y `max-clients 16` del `server.conf`
-  ([INSTANCIA.md](INSTANCIA.md) §7.2) junto al freno de conexiones nuevas del §7 (10/min por IP).
+  ([INSTANCIA.md](INSTANCIA.md) §7.2) junto al freno de conexiones nuevas del §7 (10/min por IP de
+  origen, sumando todos los puertos VPN). **Mitigado, no cerrado (VPN-03):** con 10 conexiones
+  nuevas por minuto y 20 s de `hand-window`, una IP mantiene unas 3 conexiones colgadas a la vez, así
+  que 5 o 6 IP llenan las 16 plazas de un punto. Contra eso, la defensa fuerte es el origen fijo
+  (`--origen-ip`) del punto. No hay límite de conexiones simultáneas por IP (`ct count`): necesitaría
+  el módulo `nft_connlimit` en el **host** y no está validado.
 
 **Panel:** fail2ban no lo cubre, porque todas sus conexiones llegan desde la IP del proxy y banearla
 cortaría a todo el mundo. El panel tiene su propio freno de login por **IP real del cliente**,
@@ -410,8 +439,16 @@ tomada de `X-Forwarded-For` solo cuando la conexión viene del proxy (ver
 
 ## 10. Modo seguro para cambiar el acceso
 
-Las redes de gestión (SSH), las IP del proxy (panel) y el origen permitido de cada puerto VPN solo
-se cambian con la orden `acceso.aplicar` del orquestador.
+> **Estado real:** `acceso.aplicar` y `acceso.confirmar` son órdenes **reservadas** del orquestador
+> (contestan «no disponible»). Lo que existe hoy es el modo seguro de `install.sh`: antes de cambiar
+> el firewall del host y sshd guarda los anteriores en `/root/ids-maat/acceso-anterior-<ts>/`, genera
+> `/root/ids-maat/revertir-acceso.sh` y lo programa con `systemd-run` a los 5 min; desde una sesión
+> SSH **nueva**, `install.sh --confirmar` lo anula. Con `--sin-reversion` (instalación desde la
+> consola) no hay modo seguro. El origen fijo de cada puerto VPN se cambia con
+> `ids-orq punto ajustar <pid> --origen-ip …`. Lo de abajo es el diseño pendiente de la orden.
+
+Las redes de gestión (SSH), las IP del proxy (panel) y el origen permitido de cada puerto VPN se
+cambiarían con la orden `acceso.aplicar` del orquestador.
 
 ### Validaciones (las hace el orquestador; el panel solo las adelanta)
 
@@ -421,8 +458,8 @@ se cambian con la orden `acceso.aplicar` del orquestador.
   por otro proxy».
 - **IP del proxy:** solo direcciones concretas o redes pequeñas (hasta /28). Un proxy no es una
   red de clientes.
-- **No se aceptan redes de gestión más anchas que /16.** Para eso hace falta la consola, con
-  `acceso-emergencia.sh`.
+- **No se aceptan redes de gestión más anchas que /16.** Para eso hace falta la consola, editando
+  `ids.conf` y `ids-orq fw-render --aplicar` ([OPERACION.md](OPERACION.md) §4).
 - No puede haber solape con la base de túneles ni con el pool de Docker: por la VPN solo pasan
   datos.
 - `sshd -T` tiene que mostrar `passwordauthentication no`. El instalador lo deja así y, si alguien
@@ -445,5 +482,6 @@ se cambian con la orden `acceso.aplicar` del orquestador.
 - **Un reinicio del VPS durante la ventana equivale a revertir.** `ids-host-fw.service` carga el
   fichero persistente, que no ha cambiado.
 
-**Recuperación:** la consola del proveedor y `/root/ids-maat/acceso-emergencia.sh`
+**Recuperación:** la consola del proveedor y `/root/ids-maat/revertir-acceso.sh` (vuelve a como
+estaba antes de la última ejecución de `install.sh`) o `ids.conf` + `ids-orq fw-render --aplicar`
 ([OPERACION.md](OPERACION.md) §4).

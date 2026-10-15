@@ -911,7 +911,8 @@ def lista(h, consulta):
            filas, RETENCION_OBJETIVO_DIAS))
     # sin <meta refresh>: recargaria la pagina con el modal de Eliminar a medio escribir. Se recarga
     # cada 30 s solo si no hay ningun modal abierto.
-    return h._html(pagina(d, "Puntos", cuerpo + _MODAL_BAJA + _RECARGA_LISTA, en_lista=True))
+    return h._html(pagina(d, "Puntos", cuerpo + _MODAL_BAJA + _RECARGA_LISTA + _retomar_lista_html(d),
+                          en_lista=True))
 
 
 def _acciones_fila(p):
@@ -958,10 +959,28 @@ _MODAL_BAJA = (
     "function pbajano(){document.getElementById('pbajaov').style.display='none';}"
     "document.addEventListener('keydown',function(e){if(e.key==='Escape')pbajano();});</script>")
 
+# tampoco con el modal de un trabajo abierto (pjov): la baja desde la lista sigue su avance ahi y
+# recargar se llevaba el avance y el resultado
 _RECARGA_LISTA = (
     "<script>setInterval(function(){function abierto(id){var m=document.getElementById(id);"
     "return m&&m.style.display&&m.style.display!=='none';}"
-    "if(!abierto('pbajaov')&&!abierto('askov'))location.reload();},30000);</script>")
+    "if(!abierto('pbajaov')&&!abierto('askov')&&!abierto('pjov'))location.reload();},30000);</script>")
+
+
+def _retomar_lista_html(d):
+    """La baja (panel.baja) que esta persona pidio desde la lista y no llego a ver terminar (cerro la
+    pestaña o recargo): la lista la retoma al abrir, el avance si sigue o el resultado UNA vez."""
+    usuario, ahora = _usuario(d), time.time()
+    ultima = None
+    for op_id, rec in sorted(ops().listar().items(), key=lambda kv: kv[1].get("creada") or 0):
+        if rec.get("usuario") != usuario or rec.get("orden") != "panel.baja":
+            continue
+        if ahora - (rec.get("creada") or 0) > RETOMAR_S or (rec.get("terminada") and rec.get("vista")):
+            continue
+        ultima = {"id": op_id, "orden": "panel.baja"}
+    if not ultima:
+        return ""
+    return "<div id=pjretomar hidden data-ops='%s'></div>" % esc(json.dumps([ultima]))
 
 
 # --------------------------------------------------------------------------------------------
@@ -1635,20 +1654,46 @@ def lanzar_trabajo(d, pid, orden, usuario, ip, fn, nombre=None):
 
     `fn` devuelve {"ok", "mensaje", "resultado": {"html", "titulo_fin", "siguiente"}}; `avance`
     acepta `avance(etapa="orden 2/6")`: cada etapa nueva cierra la anterior con su duracion y una
-    cuenta «i/N» da la barra."""
+    cuenta «i/N» da la barra.
+
+    El trabajo en marcha de OTRO usuario no se comparte: (None, False) y quien llama responde 409
+    («otro administrador está usando el router»); engancharse a el acababa en un 404 confuso,
+    porque solo quien pidio una operacion puede ver su avance."""
     with _TRAB_LOCK:
         previo = _TRAB_EN_CURSO.get(pid)
         rec = ops().obtener(previo) if previo else None
         if rec and not rec.get("terminada"):
+            if rec.get("usuario") != usuario:
+                return None, False
             return previo, False
         op_id = str(uuid.uuid4())
         ops().registrar(op_id, usuario, orden, pid=pid,
                         nombre=nombre or (nodos.punto(pid) or {}).get("nombre") or pid,
                         extra={"proceso": ARRANQUE, "ip": ip, "etapa": "en cola"})
         _TRAB_EN_CURSO[pid] = op_id
-    threading.Thread(target=_correr_trabajo, args=(d, op_id, pid, usuario, ip, fn), daemon=True,
-                     name="panel-%s-%s" % (orden, pid)).start()
+    try:
+        threading.Thread(target=_correr_trabajo, args=(d, op_id, pid, usuario, ip, fn), daemon=True,
+                         name="panel-%s-%s" % (orden, pid)).start()
+    except Exception as e:
+        # sin hilo (sin memoria, demasiados hilos): la operacion se cierra y el router queda libre;
+        # si no, _TRAB_EN_CURSO apuntaria para siempre a un trabajo que nunca corre
+        ops().terminar(op_id, codigo="FALLO", mensaje=("el panel no pudo arrancar el trabajo (%s): "
+                                                      "vuelve a intentarlo" % (str(e)[:120] or type(e).__name__)),
+                       etapa=None, avance=None)
+        with _TRAB_LOCK:
+            if _TRAB_EN_CURSO.get(pid) == op_id:
+                _TRAB_EN_CURSO.pop(pid, None)
     return op_id, True
+
+
+MSG_ROUTER_OCUPADO = ("Otro administrador está usando el router de este punto (%s). Espera a que "
+                      "termine y vuelve a intentarlo.")
+
+
+def _router_ocupado(pid):
+    """Texto del 409 cuando el router del punto lo esta usando otro administrador."""
+    _op, rec = trabajo_en_curso(pid)
+    return MSG_ROUTER_OCUPADO % ORDENES.get((rec or {}).get("orden"), (rec or {}).get("orden") or "otra orden")
 
 
 def _correr_trabajo(d, op_id, pid, usuario, ip, fn):
@@ -2338,7 +2383,9 @@ def huella_caja(d, pid, p, rt, presentada="", error="", pedir=False):
                                    "Confirmas que comparaste esta huella con la del router y es la misma. Desde "
                                    "ahora el panel le manda la clave de ids-api."))
         elif pedir:
-            out += "<p>Huella que presenta el router: <code id=phuella>comprobando…</code></p>"
+            # sin JavaScript nadie la pide: el enlace la lee en el servidor y trae el boton de confirmar
+            out += ("<p>Huella que presenta el router: <code id=phuella>comprobando…</code><noscript> "
+                    "<a href='/puntos/%s/huella?ver=1'>Leer la huella ahora</a></noscript></p>" % esc(pid))
         elif error:
             out += "<p>Huella que presenta el router: <code>no se pudo leer</code></p>" + aviso(error, "amb")
         else:
@@ -2346,7 +2393,8 @@ def huella_caja(d, pid, p, rt, presentada="", error="", pedir=False):
     if fijada and presentada == fijada:
         out += "<p class=hint>El router presenta ahora esta misma huella.</p>"
     elif fijada and pedir:
-        out += "<p class=hint>Huella que presenta ahora el router: <code id=phuella>comprobando…</code></p>"
+        out += ("<p class=hint>Huella que presenta ahora el router: <code id=phuella>comprobando…</code>"
+                "<noscript> <a href='/puntos/%s/huella?ver=1'>Leer la huella ahora</a></noscript></p>" % esc(pid))
     if fijada:
         out += ("<form method=post action='/puntos/%s/api' onsubmit=\"return ask(this,'Olvidar la huella',"
                 "'El panel dejará de mandar la clave de ids-api a este router hasta que confirmes la huella "
@@ -2356,24 +2404,32 @@ def huella_caja(d, pid, p, rt, presentada="", error="", pedir=False):
     return "<div id=phuellabox data-pid='%s'%s>%s</div>" % (esc(pid), " data-pedir=1" if pedir else "", out)
 
 
-def huella_json(h, pid):
+def huella_json(h, pid, consulta=None):
     """GET /puntos/<pid>/huella: la huella que presenta el certificado API-SSL del router, leida por
     el panel con el mismo TLS que usa para conectar y sin login (hasta 8 s por el tunel), con cache
-    de 10 min por punto. {"texto": huella o motivo, "html": la caja de la huella de la ficha}."""
+    de 10 min por punto. {"texto": huella o motivo, "html": la caja de la huella de la ficha}.
+    Con ?ver=1 (el enlace <noscript> de la ficha, sin JavaScript) la misma caja en una pagina, con
+    el boton de confirmar si el router presento la huella."""
     d = _dash(h)
     p = nodos.punto(pid) or {}
     rt = _router(d, pid) or {}
     if situacion_vpn(p)["clave"] != "conectada":
-        return h._json({"texto": "se comprobará cuando el MikroTik conecte", "html": huella_caja(d, pid, p, rt)})
-    sha, error = huella_cacheada(d, pid), ""
-    leer = getattr(d, "mk_huella_presentada", None)
-    if not sha and leer is not None:
-        try:
-            v = leer(pid)
-            sha = v if isinstance(v, str) and RE_HUELLA_API.fullmatch(v) else ""
-        except Exception as e:
-            error = "No se pudo leer la huella del router: %s" % str(e)[:200]
-    return h._json({"texto": sha or "sin dato", "html": huella_caja(d, pid, p, rt, sha, error)})
+        texto, caja = "se comprobará cuando el MikroTik conecte", huella_caja(d, pid, p, rt)
+    else:
+        sha, error = huella_cacheada(d, pid), ""
+        leer = getattr(d, "mk_huella_presentada", None)
+        if not sha and leer is not None:
+            try:
+                v = leer(pid)
+                sha = v if isinstance(v, str) and RE_HUELLA_API.fullmatch(v) else ""
+            except Exception as e:
+                error = "No se pudo leer la huella del router: %s" % str(e)[:200]
+        texto, caja = sha or "sin dato", huella_caja(d, pid, p, rt, sha, error)
+    if (consulta or {}).get("ver"):
+        return h._html(pagina(d, "Huella", "<div class=ptit><h1>Huella de %s</h1><a class='btn sec' "
+                                           "href='/puntos/%s'>Volver a la ficha</a></div><div class=card>%s</div>"
+                              % (esc(nodos.nombre(pid)), esc(pid), caja)))
+    return h._json({"texto": texto, "html": caja})
 
 
 def logs(h, pid, consulta):
@@ -2786,6 +2842,8 @@ def _espejo_en_trabajo(h, d, pid, acc, huella, form, usuario, ip):
             _cerrar_token(tok, op_id)
         else:
             _soltar_token(tok)            # no se hizo nada con el: vale para repetirlo despues
+    if op_id is None:
+        return h._json({"error": _router_ocupado(pid), "titulo": "Router ocupado", "token": nuevo_tok}, 409)
     rec = ops().obtener(op_id) or {}
     nota = "" if nuevo else ("Ya había otra orden de este punto hablando con el MikroTik (%s): se muestra la "
                              "suya. Cuando termine, vuelve a pedir lo que querías."
@@ -2893,6 +2951,8 @@ def _baja_en_trabajo(h, d, pid, confirmar, limpiar_pedido, tok):
         return {"ok": False, "mensaje": nota + msg,
                 "resultado": {"titulo_fin": "No se dio de baja", "html": aviso(nota + msg)}}
     op_id, nuevo = lanzar_trabajo(d, pid, "panel.baja", usuario, ip, trabajo, nombre=confirmar)
+    if op_id is None:                         # la marca de prebaja la pone el trabajo: no hay nada que soltar
+        return h._json({"error": _router_ocupado(pid), "titulo": "Router ocupado"}, 409)
     rec = ops().obtener(op_id) or {}
     nota = "" if nuevo else ("Ya había otra orden de este punto hablando con el MikroTik (%s): se muestra la "
                              "suya. Cuando termine, vuelve a pedir la baja."
@@ -2937,7 +2997,7 @@ def get(h, ruta, consulta):
     if m.group(2) == "logs":
         logs(h, pid, consulta)
     elif m.group(2) == "huella":
-        huella_json(h, pid)
+        huella_json(h, pid, consulta)
     else:
         ficha(h, pid)
     return True

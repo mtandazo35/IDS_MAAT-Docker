@@ -92,34 +92,49 @@ def es_dns_sospechoso(sig, cat):
     return any(k in s for k in DNS_MAL) or "c2" in c or "command and control" in c
 
 # --- Allowlist "nunca bloquear": IPs/CIDR que JAMAS entran a cuarentena (infra, clientes
-# criticos). El panel las gestiona; aqui solo se excluyen de las listas de candidatos. ---
+# criticos). El panel las gestiona; aqui solo se excluyen de las listas de candidatos.
+# Una linea `pNNN|IP` o `pNNN|CIDR` vale solo para ese punto (la IP privada de un abonado se
+# repite entre puntos); sin `pNNN|`, para todos. Mismo formato que dashboard.nunca_bloquear. ---
 import ipaddress as _ipm
 NUNCA_FILE = os.path.join(nodos.CONF, "nunca-bloquear.lst")
-_NUNCA_IPS = set(); _NUNCA_NETS = []
+_NUNCA_IPS = set(); _NUNCA_NETS = []        # (pid o "", IP normalizada) / (pid o "", red)
 try:
     for _l in open(NUNCA_FILE, encoding="utf-8"):
         _l = _l.split("#", 1)[0].strip()
         if not _l:
             continue
+        _p, _sep, _red = _l.partition("|")
+        if not _sep:
+            _p, _red = "", _l
+        elif not nodos.pid_valido(_p):
+            continue                        # punto mal escrito: la linea no vale
+        _red = _red.strip()
         try:
-            if "/" in _l:
-                _NUNCA_NETS.append(_ipm.ip_network(_l, strict=False))
+            if "/" in _red:
+                _NUNCA_NETS.append((_p, _ipm.ip_network(_red, strict=False)))
             else:
-                _NUNCA_IPS.add(_l)
+                _NUNCA_IPS.add((_p, str(_ipm.ip_address(_red))))
         except ValueError:
             pass
 except OSError:
     pass
-def nunca_bloquear(ip):
-    if ip in _NUNCA_IPS:
+def nunca_bloquear(ip, pid=None):
+    """¿Esta en «nunca bloquear»? `ip` puede ser la identidad `pid|ip` (lo normal: el
+    generador trabaja con claves) o la IP pelada; sin punto en la clave vale `pid` o, en el
+    informe de un solo punto, ese punto. En --todos sin punto solo cuentan las globales."""
+    if "|" in (ip or ""):
+        pid, ip = ip.split("|", 1)
+    if not pid and NODO != nodos.TODOS:
+        pid = NODO
+    pid = pid or ""
+    try:
+        a = _ipm.ip_address(ip)
+    except ValueError:
+        return False
+    if ("", str(a)) in _NUNCA_IPS or (pid and (pid, str(a)) in _NUNCA_IPS):
         return True
-    if _NUNCA_NETS:
-        try:
-            a = _ipm.ip_address(ip)
-            return any(a in n for n in _NUNCA_NETS)
-        except ValueError:
-            pass
-    return False
+    return any(a.version == n.version and a in n
+               for p, n in _NUNCA_NETS if p == "" or (pid and p == pid))
 
 DASH_CONF = os.path.join(nodos.CONF, "panel.conf")
 
@@ -2267,7 +2282,7 @@ try:
     for src in inf_hits:
         if not es_mi_cpe(src):
             continue            # atacante de internet, no un abonado: va al apartado de entrantes
-        if nunca_bloquear(ip_de(src)):
+        if nunca_bloquear(src):
             continue                                    # allowlist: nunca a cuarentena
         # gatillo minimo para siquiera considerarlo (repeticion o >=2 firmas)
         if not (inf_hits[src] >= UMBRAL_INFECTADO or len(inf_sids[src]) >= 2):
@@ -2317,7 +2332,7 @@ try:
     for src in dns_hits:
         if not es_mi_cpe(src):
             continue            # solo tus abonados consultan "tu" DNS; lo de fuera no se cuarentena
-        if nunca_bloquear(ip_de(src)):
+        if nunca_bloquear(src):
             continue                                    # allowlist: nunca a cuarentena
         if dns_hits[src] >= UMBRAL_DNS or len(dns_sids[src]) >= 2:
             n_ev, evid = _evidencias_dns(src)
@@ -2346,7 +2361,7 @@ try:
     for _s, _t in by_src.most_common(80):
         if not es_mi_cpe(_s):
             continue            # el ranking de riesgo es de TUS CPEs; lo de fuera no se cuarentena
-        if nunca_bloquear(ip_de(_s)):
+        if nunca_bloquear(_s):
             continue                                    # allowlist: fuera del motor de politicas
         _sc, _bd, _c2, _d2 = riesgo(_s)
         # Se guarda tambien POR QUE puntua asi: las politicas envian a cuarentena desde
