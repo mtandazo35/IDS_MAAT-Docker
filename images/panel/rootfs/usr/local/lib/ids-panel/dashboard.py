@@ -16028,15 +16028,18 @@ def conducta_page(q="", msg="", pag=1, por=None, es_operador=True):
     esc = html.escape
     rep_ = cargar_conducta()
     if not rep_:
-        cuerpo = ("<div class=card><h2>Informe de %d días</h2>"
-                  "<p class=sub2>Todavía no se ha generado. Se arma solo cada %d horas; "
+        # dentro de .inf, como el informe ya generado: ahi viven el relleno de la tarjeta
+        # y el estilo del boton (fuera, .card del CSS base no lleva padding y el texto
+        # quedaba pegado al borde)
+        cuerpo = ("<div class=inf><div class=card><h2>Informe de %d días</h2>"
+                  "<p class=per>Todavía no se ha generado. Se arma solo cada %d horas; "
                   "<b>Generar ahora</b> lo adelanta. Recorre los logs de los últimos %d "
                   "días, incluidos los rotados, así que puede tardar unos minutos.</p>"
-                  "%s</div>"
+                  "%s</div></div>"
                   % (CONDUCTA_DIAS, CONDUCTA_CADA // 3600, CONDUCTA_DIAS,
                      # lanza trabajo de fondo: es de operador; lectura no ve el boton (B-18)
                      "<form method=post action='/conducta/refrescar'>"
-                     "<button class=b>Generar ahora</button></form>" if es_operador else ""))
+                     "<button class='b pri'>Generar ahora</button></form>" if es_operador else ""))
         return _cd_doc(cuerpo)
 
     filas = rep_.get("filas", [])
