@@ -67,7 +67,8 @@ def main():
     check("los temas estan agrupados en categorias", len(cats) >= 5, cats)
     # (adaptada) la guia se reordeno en 7 categorias y «Operacion diaria» se reparte entre
     # Pantallas, Cuarentena y MikroTik y Ajustes: se exigen las 7 y en este orden.
-    NUEVAS = ("Primeros pasos", "Deteccion", "Pantallas", "Cuarentena y MikroTik",
+    # (adaptada) los textos de la guia llevan tildes: «Deteccion» pasa a «Detección».
+    NUEVAS = ("Primeros pasos", "Detección", "Pantallas", "Cuarentena y MikroTik",
               "Puntos y VPN", "Ajustes", "Mantenimiento")
     check("las categorias salen en este orden y sin repetirse",
           [c for c in cats if c != "Todo"] == list(NUEVAS), cats)
@@ -101,6 +102,28 @@ def main():
     # el ancla de cada tema se conserva (los avisos enlazan a #reglas, #cuarentena...)
     check("cada tema conserva su ancla",
           all(('id="%s"' % t) in render(t) for t in temas[:6]), temas[:6])
+
+    # --- slugs sin tildes: una letra con tilde no puede partir la palabra ---
+    # Antes «menú» daba «men-» y «pestañas» «pesta-as». _slug quita los diacriticos, asi
+    # poner tildes en un titulo no cambia su enlace ?p=.
+    check("los slugs son solo [a-z0-9-]", all(re.fullmatch(r"[a-z0-9]+(-[a-z0-9]+)*", t) for t in temas),
+          [t for t in temas if not re.fullmatch(r"[a-z0-9]+(-[a-z0-9]+)*", t)])
+    check("«Las pestañas del menú» da las-pestanas-del-menu (no men-, no pesta-as)",
+          "las-pestanas-del-menu" in temas
+          and not [t for t in temas if re.search(r"(^|-)(men|pesta-as)(-|$)", t)],
+          temas[:3])
+    # los dos slugs que cambiaron (sus titulos ya llevaban ñ) siguen abriendo su tema
+    for viejo, titulo in (("las-pesta-as-del-menu", "Las pestañas del menú"),
+                          ("abuso-saliente-el-numero-que-hay-que-poder-ense-ar",
+                           "Abuso saliente: el número que hay que poder enseñar")):
+        check("el enlace viejo ?p=%s abre su tema" % viejo, "<h1>%s</h1>" % titulo in render(viejo))
+    # ?p=reglas lleva al tema de reglas (destino del boton de actualizar reglas; el ancla
+    # #reglas de antes no llevaba a ningun tema)
+    check("?p=reglas abre el tema de las reglas",
+          "<h1>De dónde saca Suricata para confirmar (reglas) y cómo se actualiza</h1>" in render("reglas"))
+    check("nadie enlaza ya a /documentacion#reglas", "/documentacion#reglas" not in DASH)
+    # el buscador ignora las tildes (si no, «menu» o «deteccion» dejarian de encontrar nada)
+    check("el buscador compara sin tildes", "normalize('NFD')" in portada)
 
     # --- dentro del modal de Ajustes (iframe /documentacion?embed=1) ---
     # Es el camino que usa el boton "Documentacion" del panel y no se probaba.

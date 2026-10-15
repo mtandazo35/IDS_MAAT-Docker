@@ -201,7 +201,7 @@ def main():
     # (adaptada: la lista inicial de resolutores la sembraba el instalador, que ya no existe;
     #  sin fichero, el generador y el panel usan RESOLUTORES_DEFECTO, que se prueba arriba)
     check("la documentacion lo explica y lo distingue de excluir destino",
-          "Resolutores DNS: el DNS no es la victima" in DASH and "Es distinto de <i>excluir destino</i>" in DASH, "")
+          "Resolutores DNS: el DNS no es la víctima" in DASH and "Es distinto de <i>excluir destino</i>" in DASH, "")
 
     print("\n" + ("TODO OK" if not fallos else "%d fallo(s)" % fallos))
     return 1 if fallos else 0

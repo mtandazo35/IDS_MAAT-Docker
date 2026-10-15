@@ -177,7 +177,7 @@ def main():
     check("la ficha nombra 'por su puerto de C2' y el contexto",
           "por su puerto de C2" in DASH and "contexto: no suma al riesgo" in DASH, "")
     check("la documentacion explica fuentes, pesos y por que no esta SSLBL",
-          "Fuentes y que pesa cada una" in DASH and "SSLBL" in DASH and "tor-exit" in DASH, "")
+          "Fuentes y qué pesa cada una" in DASH and "SSLBL" in DASH and "tor-exit" in DASH, "")
 
     print("\n" + ("TODO OK" if not fallos else "%d fallo(s)" % fallos))
     return 1 if fallos else 0

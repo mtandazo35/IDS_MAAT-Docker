@@ -198,7 +198,7 @@ def main():
           '_v in POL_CLASE_VALORES' in ruta and 'm["POL_" + _cat.upper()] = _v' in ruta
           and 'm["POL_ALTO"] =' not in ruta, "")
     check("la documentacion explica el por que",
-          "politicas por clase de abuso" in DASH and "el riesgo mide <i>cuanto</i>, no <i>que</i>" in DASH, "")
+          "políticas por clase de abuso" in DASH and "el riesgo mide <i>cuánto</i>, no <i>qué</i>" in DASH, "")
 
     print("\n" + ("TODO OK" if not fallos else "%d fallo(s)" % fallos))
     return 1 if fallos else 0
