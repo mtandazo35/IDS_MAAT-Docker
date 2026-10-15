@@ -213,17 +213,28 @@ class APIporRele(Base):
         self.d.guardar_routers([{"id": "p001", "USER": "ids-api", "PASS": "c1", "ENABLED": "1"},
                                 {"id": "p002", "USER": "ids-api", "PASS": "c2", "ENABLED": "1"}])
 
-    def test_tls_sobre_el_rele_del_punto_y_tofu_por_punto(self):
+    def test_tls_sobre_el_rele_del_punto_y_huella_confirmada_por_punto(self):
         """Tipo: capacidad nueva + corrección de defecto (inv_A §10: la huella iba al MK_CONF
-        global y no se fijaba nunca). La conexion abre el api.sock DEL PUNTO, hace TLS encima,
-        hace login, y la huella queda fijada en routers.json SOLO para ese punto."""
+        global y no se fijaba nunca). La conexion abre el api.sock DEL PUNTO y hace TLS encima.
+        (Adaptada, 2026-10-14, VPN-06: antes la primera conexion fijaba sola la huella y mandaba
+        la clave en esa misma conexion.) Sin huella confirmada NO hay login ni se guarda nada;
+        confirmada, hay login y la huella queda en routers.json SOLO para ese punto."""
+        import hashlib
+        fp = hashlib.sha256(self.der).hexdigest()
+        with self.assertRaises(self.d.HuellaNoConfirmada):
+            self.d.mk_conectar(self.d.cargar_mk_de(self.d.router_por_id("p002")))
+        self.assertEqual(set(self.abiertas), {self.n.api_sock("p002")})
+        self.assertFalse(any(w and w[0] == "/login" for w in self.srv.recibido))
+        g = json.load(open(self.d.ROUTERS_CONF, encoding="utf-8"))["routers"]
+        self.assertFalse(g["p002"].get("CERT_FP"))
+        self.assertEqual(self.d.huella_vista("p002"), fp)
+        self.d.confirmar_huella("p002", fp, "ana")
         s = self.d.mk_conectar(self.d.cargar_mk_de(self.d.router_por_id("p002")))
         s.close()
-        self.assertEqual(set(self.abiertas), {self.n.api_sock("p002")})
         self.assertIn(["/login", "=name=ids-api", "=password=c2"], self.srv.recibido)
-        import hashlib
         g = json.load(open(self.d.ROUTERS_CONF, encoding="utf-8"))["routers"]
-        self.assertEqual(g["p002"]["CERT_FP"], hashlib.sha256(self.der).hexdigest())
+        self.assertEqual(g["p002"]["CERT_FP"], fp)
+        self.assertEqual(g["p002"]["CERT_FP_QUIEN"], "ana")
         self.assertFalse(g["p001"].get("CERT_FP"))
         self.assertNotIn("CERT_FP", open(self.d.MK_CONF, encoding="utf-8").read() if os.path.exists(self.d.MK_CONF) else "")
 
@@ -237,7 +248,10 @@ class APIporRele(Base):
 
     def test_mk_add_por_el_rele(self):
         """Tipo: capacidad nueva. Una accion completa (mk_add) sobre p002|10.0.0.5 viaja por
-        el rele de p002 con TLS y llega al router como address-list/add."""
+        el rele de p002 con TLS y llega al router como address-list/add. (Adaptada, VPN-06: con
+        la huella de p002 confirmada antes, como en producción.)"""
+        import hashlib
+        self.d.confirmar_huella("p002", hashlib.sha256(self.der).hexdigest(), "ana")
         r = self.d.router_de_clave("p002|" + _dash.IP)
         ok, err = self.d.mk_add(_dash.IP, lista="clientes-botnet", ttl="", router=r)
         self.assertTrue(ok, err)
@@ -247,7 +261,10 @@ class APIporRele(Base):
 
     @unittest.skipUnless(hasattr(socket, "AF_UNIX"), "AF_UNIX no existe en esta plataforma")
     def test_af_unix_real(self):
-        """Tipo: capacidad nueva. Con un socket AF_UNIX de verdad en run/<pid>/api.sock."""
+        """Tipo: capacidad nueva. Con un socket AF_UNIX de verdad en run/<pid>/api.sock. (Adaptada,
+        VPN-06: con la huella de p001 confirmada antes.)"""
+        import hashlib
+        self.d.confirmar_huella("p001", hashlib.sha256(self.der).hexdigest(), "ana")
         self.d._mk_abrir_unix = self._abrir_real   # el de verdad
         ruta = self.n.api_sock("p001")
         os.makedirs(os.path.dirname(ruta), exist_ok=True)

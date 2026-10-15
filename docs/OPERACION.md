@@ -37,13 +37,15 @@ add name=ids-promax common-name=ids-promax \
 - **`sign` tarda unos segundos, sobre todo en v6.** Antes del `set`, hay que esperar a que
   `/certificate print` lo muestre con los flags **K** (tiene clave privada) y **T** (de confianza).
 - Si el servicio está deshabilitado: `/ip service enable api-ssl`.
-- **Huella fijada (TOFU).** En la primera conexión del alta, el panel muestra la huella SHA-256
-  del certificado. Se compara con la que da `/certificate print detail where name=ids-promax` y, al
-  confirmar, queda fijada. **Hoy el panel la fija sola en esa primera conexión, sin preguntar**: la
-  confirmación antes de mandar la clave de `ids-api` está pendiente (auditoría VPN-06). Desde
-  entonces el panel rechaza cualquier otro certificado. Si se
-  regenera `ids-promax`, hay que volver a fijar la huella desde la ficha del punto (admin, queda en
-  la bitácora).
+- **Huella confirmada (VPN-06).** Mientras la huella no esté confirmada, el panel no manda la clave
+  de `ids-api`: conecta, lee la huella SHA-256 del certificado y corta. La ficha del punto (API) la
+  enseña en bloques; se compara con el `fingerprint` de `/certificate print detail where
+  name~"ids-promax"` y se pulsa «La huella coincide: confirmar» (el panel la vuelve a leer y solo la
+  guarda si sigue siendo esa; queda en la bitácora quién la confirmó). Desde entonces el panel
+  rechaza cualquier otro certificado sin mandar la clave, con aviso rojo en la ficha y una línea en el
+  Registro. Si se regenera `ids-promax`, «Volver a confirmar» en la ficha (admin). Las huellas que
+  una versión anterior del panel fijó solas se siguen usando y la ficha las marca «fijada
+  automáticamente» para revisarlas.
 - **En una baja no se borra:** el certificado puede usarlo otro servicio del router.
 
 ### 1.2 RouterOS v7
@@ -385,7 +387,8 @@ usuario viejo, detrás de la misma IP pública que otro punto):
 2. Quitar la causa (en ese ejemplo, `/interface ovpn-client remove [find name=ids-vpn]` en el router
    viejo). Si no, vuelve a banearse.
 3. Desbanear: `ids-orq vpn desbanear <ip>`. Hace `fail2ban-client set ids-vpn unbanip <ip>` solo con
-   una IP validada y deja la orden en `orq.jsonl` (quién la pidió, sin la IP en claro). El panel la
-   ofrecerá en la ficha del punto, solo para administradores.
+   una IP validada y deja la orden en `orq.jsonl` (quién la pidió, sin la IP en claro). En el panel:
+   ficha del punto → Servicio → «Desbanear IP del MikroTik» (solo administradores; propone la IP del
+   túnel o la última conocida y deja una línea en el Registro).
 4. Si la IP es fija y del dueño, puede ir en `--dueno-ip` (es el `ignoreip` de fail2ban). Las redes
    de gestión nunca van en `ignoreip`.

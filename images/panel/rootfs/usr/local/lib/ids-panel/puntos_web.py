@@ -21,10 +21,12 @@ Rutas (h = manejador H del dashboard; consulta/form = dict con un valor por camp
                                         sin recargar; al terminar trae el cuerpo del resultado)
   GET  /puntos/<pid>                    ficha (Resumen, VPN, API, Espejo, Prefijos, Logs, Baja)
   GET  /puntos/<pid>/logs?parte=vpn|suricata
-  GET  /puntos/<pid>/huella             huella del certificado API del router (JSON, cache 10 min)
-  POST /puntos/<pid>/{borrar,regenerar,arrancar,parar,reiniciar,ajustar,api,espejo}
+  GET  /puntos/<pid>/huella             huella que presenta el certificado API-SSL del router y la caja
+                                        de la ficha que la confirma (JSON, cache 10 min; VPN-06)
+  POST /puntos/<pid>/{borrar,regenerar,arrancar,parar,reiniciar,ajustar,api,espejo,desbanear}
        con ajax=1: espejo y baja devuelven {trabajo} (un hilo del panel habla con el router),
-       ajustar {op_id} y api {ok, mensaje}; sin ajax, la pagina de siempre.
+       ajustar {op_id}, api (guardar, probar, confirmar u olvidar la huella) y desbanear
+       {ok, mensaje}; sin ajax, la pagina de siempre.
 """
 
 import hashlib
@@ -619,6 +621,10 @@ _CSS = (
     ".pjest{font-size:13.5px;margin:6px 0}.pjpasos{font-size:13px;margin:8px 0;padding-left:20px}"
     ".pjcaja{border:1px solid #cfe0f6;background:#f6f9fe;border-radius:9px;padding:10px 13px;margin:10px 0}"
     "#pjov .pbajabox{max-width:820px;max-height:88vh;overflow:auto}"
+    # huella del certificado API-SSL en bloques (VPN-06) y el desbaneo de la ficha
+    "code.phue{display:inline-block;font-size:13px;letter-spacing:.4px;line-height:1.7;padding:3px 7px}"
+    ".pdesban{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin:4px 0 0}"
+    ".pdesban input.t{width:auto;min-width:200px;flex:0 1 240px}"
 )
 
 _JS = ("<script>function pcopiar(id,b){var e=document.getElementById(id);if(!e)return;"
@@ -689,16 +695,23 @@ function ppref(f){var c=document.getElementById('pprog');if(c){c.style.display='
  pjPost(f,{},function(j){if(j.op_id){pjOrq(j.op_id,'punto.ajustar');return;}if(c)c.style.display='none';aviso('No se cambiaron los prefijos',j.error||'Sin respuesta del panel.');},
   function(m){if(c)c.style.display='none';aviso('No se pudo',m);});return false;}
 function papiProbar(b){var f=b.form;pjAbrir('Probar la conexión',pjEspera('Probando la API del MikroTik por el túnel (hasta 35 s si el router no responde)…'),' ','');
- pjPost(f,{accion:'probar'},function(j){pjAbrir(j.ok?'Conexión correcta':'La conexión falló','<p>'+pjEsc(j.mensaje||j.error||'')+'</p>');},
+ pjPost(f,{accion:'probar'},function(j){pjAbrir(j.ok?'Conexión correcta':'La conexión falló','<p>'+pjEsc(j.mensaje||j.error||'')+'</p>');pjHuella(1);},
+  function(m){pjAbrir('No se pudo','<p>'+pjEsc(m)+'</p>');});return false;}
+function phueConf(f){pjAbrir('Confirmar la huella',pjEspera('Volviendo a leer la huella que presenta el router…'),' ','');
+ pjPost(f,{},function(j){pjAbrir(j.ok?'Huella confirmada':'No se confirmó la huella','<p>'+pjEsc(j.mensaje||j.error||'')+'</p>');pjHuella(1);},
+  function(m){pjAbrir('No se pudo','<p>'+pjEsc(m)+'</p>');});return false;}
+function pdesban(f){pjAbrir('Desbanear IP del MikroTik',pjEspera('Pidiendo el desbaneo al servidor…'),' ','');
+ pjPost(f,{},function(j){pjAbrir(j.ok?'Desbanear IP del MikroTik':'No se desbaneó','<p>'+pjEsc(j.mensaje||j.error||'')+'</p>');},
   function(m){pjAbrir('No se pudo','<p>'+pjEsc(m)+'</p>');});return false;}
 function pbajaAjax(f){if(typeof pbajano==='function')pbajano();pjAbrir('Dar de baja el punto',pjEspera('Empezando la baja…'),' ','');
  pjPost(f,{},function(j){if(j.trabajo){pjTrabajo(j.trabajo,'panel.baja',j.nota);return;}pjAbrir(j.titulo||'No se dio de baja','<p>'+pjEsc(j.error||'Sin respuesta del panel.')+'</p>');},
   function(m){pjAbrir('No se pudo','<p>'+pjEsc(m)+'</p>');});return false;}
 function popSeguir(id){pjSeguir(id,function(j){var v=document.getElementById('opvivo');if(v)v.innerHTML=pjProgreso(j);},
  function(j){var c=document.getElementById('opcuerpo');if(c)c.innerHTML=j.html||('<p>'+pjEsc(j.mensaje)+'</p>');if(!j.ok)aviso(j.titulo_fin||'La operación no terminó bien',j.mensaje||'');});}
-function pjHuella(){var e=document.getElementById('phuella');if(!e)return;
+function pjHuella(forzar){var e=document.getElementById('phuellabox');if(!e||(!forzar&&!e.hasAttribute('data-pedir')))return;
  fetch('/puntos/'+e.getAttribute('data-pid')+'/huella',{credentials:'same-origin',cache:'no-store'})
- .then(function(r){return r.json();}).then(function(j){e.textContent=j.texto||'sin dato';}).catch(function(){e.textContent='no se pudo leer';});}
+ .then(function(r){return r.json();}).then(function(j){if(j.html){e.outerHTML=j.html;}else{var c=document.getElementById('phuella');if(c)c.textContent=j.texto||'sin dato';}})
+ .catch(function(){var c=document.getElementById('phuella');if(c)c.textContent='no se pudo leer';});}
 function pjRetomar(){pjHuella();var e=document.getElementById('pjretomar');if(!e)return;var L=[];
  try{L=JSON.parse(e.getAttribute('data-ops')||'[]');}catch(x){L=[];}
  L.forEach(function(o){if(String(o.orden).indexOf('panel.')===0){pjTrabajo(o.id,o.orden);}else{pjOrq(o.id,o.orden);}});}
@@ -739,17 +752,28 @@ def _bloque(ide, titulo, texto):
             % (esc(titulo), esc(ide), esc(ide), esc(texto)))
 
 
+def avisos_script(texto):
+    """Las lineas «# AVISO: …» del script del orquestador (p. ej. certificado del servidor de antes
+    de la verificacion), juntas en un aviso rojo encima de los bloques: dentro del <pre> se perdian."""
+    lineas = [x[len("# AVISO:"):].strip() for x in str(texto or "").splitlines() if x.startswith("# AVISO:")]
+    if not lineas:
+        return ""
+    return ("<div class='aviso err'><b>Aviso del servidor sobre este script:</b> %s</div>"
+            % esc(" ".join(x for x in lineas if x)))
+
+
 def comandos_html(texto, ros_version, prefijo):
-    """Bloques v7/v6 (el declarado primero) y el del certificado API-SSL, cada uno con Copiar."""
+    """Bloques v7/v6 (el declarado primero) y el del certificado API-SSL, cada uno con Copiar. Las
+    lineas «# AVISO:» salen ademas destacadas arriba."""
     partes = _orq.partir_comandos(texto)
     if "todo" in partes:
-        return _bloque(prefijo + "-todo", "Comandos para el MikroTik", partes["todo"])
+        return avisos_script(texto) + _bloque(prefijo + "-todo", "Comandos para el MikroTik", partes["todo"])
     try:
         ros = int(ros_version)
     except (TypeError, ValueError):
         ros = 7
     orden = ["v7", "v6"] if ros != 6 else ["v6", "v7"]
-    out = ""
+    out = avisos_script(partes.get("cabecera", ""))
     if partes.get("cabecera"):
         out += "<pre class=cmd>%s</pre>" % esc(partes["cabecera"])
     for i, k in enumerate(orden):
@@ -813,6 +837,7 @@ def lista(h, consulta):
     fn = getattr(d, "salud_punto", None)
     for p in nodos.puntos():
         pid = p["pid"]
+        ip_mikrotik(p)               # apunta la IP del MikroTik conectado (la ficha la ofrece al desbanear)
         sal = salud(fn, pid)
         pps, ultimo = espejo_pps(pid)
         n24, completo = alertas_24h(pid, ahora)
@@ -1395,9 +1420,12 @@ def _cuerpo_fin(d, vm):
     if vm.get("orden") == "punto.borrar":
         cuerpo += aviso("Punto borrado: se quitaron su VPN, su Suricata y sus datos del servidor y del panel.", "ok")
         cuerpo += ("<p class=hint>En el MikroTik quedan la interfaz <code>ids-vpn</code>, la ruta, el usuario "
-                   "<code>ids-api</code> y lo que lleve el comentario <code>IDS ids-maat:%s</code>: "
-                   "quitalos a mano (Documentacion &rarr; Puntos).</p>"
-                   "<p><a class=btn href='/puntos'>Volver a Puntos</a></p>" % esc(pid))
+                   "<code>ids-api</code>, lo que lleve el comentario <code>IDS ids-maat:%s</code> (también las "
+                   "reglas que aíslan <code>ids-vpn</code> en <code>input</code> y <code>forward</code>) y la CA "
+                   "del VPS que importó el alta. Quítalos a mano (Documentación &rarr; Puntos); la CA, con:</p>"
+                   "<pre class=cmd>/certificate remove [find name~\"^ids-maat-ca-%s\"]\n"
+                   "/file remove [find name~\"^ids-maat-ca-%s\"]</pre>"
+                   "<p><a class=btn href='/puntos'>Volver a Puntos</a></p>" % (esc(pid), esc(pid), esc(pid)))
         return cuerpo
     r = vm.get("resultado") or {}
     if r.get("clave"):
@@ -1410,6 +1438,16 @@ def _cuerpo_fin(d, vm):
                    "<code id=cred-clave>%s</code> <button type=button class='btn sec' "
                    "onclick=\"pcopiar('cred-clave',this)\">Copiar</button></div></div>"
                    % (esc(r.get("usuario")), esc(r.get("clave"))))
+        if vm.get("orden") == "punto.vpn.regenerar":
+            # el router ya tiene ids-vpn: no se vuelve a crear, se le cambia la clave. Si el servidor
+            # renovo su certificado (punto de antes de VPN-01), el router necesita ademas la CA del VPS
+            # y la verificacion, que traen los bloques de abajo.
+            renovado = "certificado del servidor renovado" in str(vm.get("mensaje") or "")
+            cuerpo += aviso("En el router ya existe la VPN: pon la clave nueva con /interface ovpn-client set "
+                            "[find name=ids-vpn] password=<la clave de arriba> verify-server-certificate=yes."
+                            + (" El servidor renovó además su certificado: antes, pega en el router las líneas "
+                               "de la CA del VPS del bloque de abajo (y, si no las tiene, las dos reglas drop de "
+                               "ids-vpn)." if renovado else ""), "amb" if renovado else "info")
         cuerpo += ("<h2>Comandos para el MikroTik</h2><p class=hint>Ya llevan la clave de la VPN. "
                    "<code>&lt;CLAVE-API&gt;</code> es la clave que elijas para el usuario de la API del router; "
                    "despues ponla en la ficha del punto (API).</p>")
@@ -2099,17 +2137,12 @@ def ficha(h, pid, mensaje="", codigo=200, ok=False, extra_espejo=""):
                       "amb"))
     # API
     rt = _router(d, pid) or {}
-    # la huella se lee por el tunel: sin el MikroTik conectado (lo normal tras el alta) la orden
+    # la huella se lee por el tunel: sin el MikroTik conectado (lo normal tras el alta) la lectura
     # esperaba hasta 15 s y la ficha tardaba eso en abrir. Solo se pide con el router conectado, y
     # ni asi frena la ficha: se pide por fetch despues de pintarla (GET /puntos/<pid>/huella) y se
-    # guarda 10 min por punto (P4).
-    if sit["clave"] == "conectada":
-        hc = huella_cacheada(pid)
-        huella_html = (("<code>%s</code>" % esc(hc)) if hc else
-                       "<code id=phuella data-pid='%s'>comprobando…</code>" % esc(pid))
-    else:
-        huella_html = "<code>se comprobará cuando el MikroTik conecte</code>"
-    fijada = (rt.get("CERT_FP") or "").lower().replace(":", "")
+    # guarda 10 min por punto (P4). Sin huella confirmada no se manda la clave (VPN-06).
+    hc = huella_cacheada(d, pid)
+    caja_huella = huella_caja(d, pid, p, rt, hc, pedir=sit["clave"] == "conectada" and not hc)
     api_html = (
         "<form method=post action='/puntos/%s/api'><input type=hidden name=accion value=guardar>%s"
         "<div class=datos><div><label class=l>Usuario de la API</label>"
@@ -2122,18 +2155,12 @@ def ficha(h, pid, mensaje="", codigo=200, ok=False, extra_espejo=""):
         "<button class='btn sec' type=submit name=accion value=probar onclick='return papiProbar(this)'>"
         "Probar la conexion</button></div></form>"
         "<p class=hint>La conexion va por el relé del tunel del punto (API-SSL, puerto %s del router) con TLS "
-        "extremo a extremo. La clave se guarda cifrada con la clave maestra y no se vuelve a mostrar.</p>"
-        "<p class=hint>Huella del certificado que ve el servidor: %s<br>Huella fijada en el panel: "
-        "<code>%s</code></p>%s"
+        "extremo a extremo. La clave se guarda cifrada con la clave maestra y no se vuelve a mostrar; solo "
+        "se manda al router cuya huella confirmaste.</p>%s"
         % (esc(pid), campo_token(), esc(rt.get("USER", "")), "(guardada)" if rt.get("PASS") else "",
            "dejar vacio para conservar" if rt.get("PASS") else "clave del usuario ids-api",
            " checked" if rt.get("ENABLED") == "1" else "", esc(p.get("api_puerto") or 8729),
-           huella_html, esc(fijada or "ninguna (se fija en la primera conexion)"),
-           ("<form method=post action='/puntos/%s/api' onsubmit=\"return ask(this,'Olvidar la huella',"
-            "'La proxima conexion fijara la huella que presente el router. Hazlo solo si cambiaste su "
-            "certificado.','Olvidar','danger')\"><input type=hidden name=accion value=olvidar_huella>%s"
-            "<button class='btn sec' type=submit>Olvidar la huella fijada</button></form>" % (esc(pid), campo_token()))
-           if fijada else ""))
+           caja_huella))
     # Espejo
     espejo_html = (
         "<p class=sub>Copia hacia el sensor del trafico de los prefijos elegidos (primeros 10 KB de cada "
@@ -2169,6 +2196,16 @@ def ficha(h, pid, mensaje="", codigo=200, ok=False, extra_espejo=""):
         "Guardar prefijos</button></div></form><div id=pprog class=pjcaja style='display:none'></div>"
         % (esc(pid), campo_token(), esc("\n".join(p.get("redes") or []))))
     # Servicio
+    # «Regenerar»: el router que reintenta con la clave vieja ya no acaba baneado (fail2ban solo cuenta
+    # usuarios desconocidos, VPN-04); un punto de antes de VPN-01 (el script lo avisa con «# AVISO:»)
+    # renueva ademas el certificado del servidor y el router necesita la CA y la verificacion.
+    txt_regenerar = ("Se crea una clave nueva, que se muestra una sola vez con los comandos. La VPN actual del "
+                     "MikroTik se corta hasta que pongas la nueva en el router; mientras tanto el router no queda "
+                     "baneado por reintentar con la vieja.")
+    if cmds and "# AVISO:" in cmds:
+        txt_regenerar += (" Este punto tiene el certificado del servidor de antes de la verificación: también se "
+                          "renueva, y en el router hay que pegar las líneas de la CA del VPS y activar "
+                          "verify-server-certificate=yes además de poner la clave nueva.")
     serv = "".join(
         "<form method=post action='/puntos/%s/%s' onsubmit=\"return ask(this,'%s','%s','%s'%s)\">%s"
         "<button class='btn sec' type=submit>%s</button></form>"
@@ -2177,8 +2214,7 @@ def ficha(h, pid, mensaje="", codigo=200, ok=False, extra_espejo=""):
             ("arrancar", "Arrancar", "Arranca la VPN y el Suricata del punto."),
             ("reiniciar", "Reiniciar", "Reinicia la VPN y el Suricata del punto: el espejo se corta unos segundos."),
             ("parar", "Parar", "Para la VPN y el Suricata del punto: deja de vigilarse hasta que lo arranques."),
-            ("regenerar", "Regenerar la clave VPN", "Se crea una clave nueva y la VPN actual del MikroTik se corta "
-                                                    "hasta que pongas la nueva en el router.")))
+            ("regenerar", "Regenerar la clave VPN", txt_regenerar)))
     baja = (
         "<div class=card style='border-color:#f3c4c4'><h2>Dar de baja el punto</h2>"
         "<p>Quita del servidor su VPN, su Suricata y <b>todos sus datos</b>, y del panel sus salidas, su "
@@ -2202,7 +2238,7 @@ def ficha(h, pid, mensaje="", codigo=200, ok=False, extra_espejo=""):
         "<a href='#baja'>Baja</a></nav>"
         "<section class=card id=resumen><h2>Resumen</h2><div class=datos>%s</div>"
         "<h3 style='font-size:14px'>Salud por etapas</h3>%s</section>"
-        "<section class=card><h2>Servicio</h2><div class=acciones>%s</div></section>"
+        "<section class=card><h2>Servicio</h2><div class=acciones>%s</div>%s</section>"
         "<section class=card id=vpn><h2>VPN: comandos para el MikroTik</h2><p class=hint>Sin la clave: donde dice "
         "<code>&lt;CLAVE-VPN&gt;</code> va la que se mostro al crear el punto.</p>%s</section>"
         "<section class=card id=api><h2>API del MikroTik</h2>%s</section>"
@@ -2211,37 +2247,133 @@ def ficha(h, pid, mensaje="", codigo=200, ok=False, extra_espejo=""):
         "<div id=baja>%s</div>%s"
         % (esc(nombre), esc(pid), aviso(mensaje, "ok" if ok else "err"), caja_error,
            "" if p else aviso("El punto aun no aparece en el estado del orquestador (se actualiza cada 15 s).", "info"),
-           esc(pid), datos, salud_etapas_html(sal), serv, vpn_html, api_html, espejo_html, pref_html, baja,
+           esc(pid), datos, salud_etapas_html(sal), serv, desbanear_html(p, pid), vpn_html, api_html, espejo_html,
+           pref_html, baja,
            _retomar_html(d, pid)))
     return h._html(pagina(d, nombre, cuerpo), codigo)
 
 
 HUELLA_CACHE_S = 600
-RE_HUELLA_API = re.compile(r"[0-9A-Fa-f:]{16,128}")
-_HUELLAS = {}                # pid -> (instante, sha256 del certificado que presenta el router)
+RE_HUELLA_API = re.compile(r"[0-9a-f]{64}")
+# El comando de RouterOS (6.49 y v7) que da la huella del certificado de la API-SSL: el campo
+# `fingerprint` es el SHA-256 del certificado, en hexadecimal seguido.
+CMD_HUELLA_ROUTER = '/certificate print detail where name~"ids-promax"'
 
 
-def huella_cacheada(pid):
-    c = _HUELLAS.get(pid)
-    if c and 0 <= time.time() - c[0] < HUELLA_CACHE_S:
-        return c[1]
-    return ""
+def huella_cacheada(d, pid):
+    """La huella que presento el router al panel hace menos de 10 min ("" si no hay): la apuntan
+    la lectura de la ficha y cada conexion del panel, acepte o no (dashboard.huella_vista)."""
+    f = getattr(d, "huella_vista", None)
+    v = f(pid, HUELLA_CACHE_S) if f is not None else ""
+    return v if isinstance(v, str) and RE_HUELLA_API.fullmatch(v) else ""
+
+
+def huella_bloques(fp):
+    """La huella en bloques de 4 (dos lineas de 8), para compararla a ojo con el `fingerprint`
+    del router, que la da seguida."""
+    fp = str(fp or "")
+    b = [fp[i:i + 4] for i in range(0, len(fp), 4)]
+    return "<code class=phue>%s<br>%s</code>" % (esc(" ".join(b[:8])), esc(" ".join(b[8:])))
+
+
+def _huella_form(pid, fp, boton, titulo, texto, tono=""):
+    """«La huella coincide: confirmar» (o «Volver a confirmar»): por fetch y con ask(); el servidor
+    vuelve a leer la huella del router y solo guarda si sigue siendo ESTA."""
+    return ("<form method=post action='/puntos/%s/api'><input type=hidden name=accion value=confirmar_huella>"
+            "%s<input type=hidden name=huella value='%s'><button class='btn%s' type=submit "
+            "onclick=\"if(ask(this,'%s','%s','Confirmar'%s))phueConf(this.form);return false;\">%s</button></form>"
+            % (esc(pid), campo_token(), esc(fp), " peligro" if tono else "", esc(titulo), esc(texto),
+               ",'danger'" if tono else "", esc(boton)))
+
+
+def huella_caja(d, pid, p, rt, presentada="", error="", pedir=False):
+    """El estado de la huella del certificado API-SSL del router en la ficha (solo admin, VPN-06):
+    confirmada, fijada automaticamente (de antes: se usa y se puede revisar), sin confirmar (con la
+    que presenta el router y «La huella coincide: confirmar») o distinta (aviso rojo y «Volver a
+    confirmar»). `presentada`: la que presenta ahora el router, si se sabe; `pedir`: la ficha la
+    trae por fetch (GET /puntos/<pid>/huella) y sustituye esta caja."""
+    if str(p.get("api_puerto") or "") == "8728":
+        return ("<p class=hint>Este punto usa la API sin TLS (puerto 8728): no hay certificado ni huella que "
+                "comprobar y la clave de <code>ids-api</code> va protegida solo por el túnel. Se recomienda "
+                "API-SSL (puerto 8729, con el certificado <code>ids-promax</code>).</p>")
+    fijada = d.normalizar_huella(rt.get("CERT_FP")) if hasattr(d, "normalizar_huella") else \
+        str(rt.get("CERT_FP") or "").lower().replace(":", "")
+    est = d.huella_estado(rt) if hasattr(d, "huella_estado") else ("confirmada" if fijada else "sin")
+    comparar = ("<p class=hint>Compárala en el router con <code>%s</code> (el campo <code>fingerprint</code>; "
+                "si la API-SSL usa otro certificado, <code>/ip service print detail where name=api-ssl</code> "
+                "dice cuál).</p>" % esc(CMD_HUELLA_ROUTER))
+    out = "<h3 style='font-size:14px;margin:14px 0 6px'>Huella del certificado API-SSL</h3>"
+    if fijada and presentada and presentada != fijada:
+        out += ("<div class='aviso err'><b>El MikroTik presenta un certificado distinto del confirmado.</b> Puede "
+                "ser una suplantación (alguien en medio) o que se cambió el certificado del router. El panel "
+                "<b>no le manda la clave</b> de <code>ids-api</code> hasta que lo revises.</div>"
+                "<p>Confirmada:<br>%s</p><p>Presenta ahora:<br>%s</p>%s"
+                % (huella_bloques(fijada), huella_bloques(presentada), comparar))
+        out += _huella_form(pid, presentada, "Volver a confirmar", "Volver a confirmar la huella",
+                            "Solo si comparaste en el router la huella nueva y es la suya: el panel la fijará "
+                            "y volverá a mandarle la clave de ids-api.", tono="danger")
+        return "<div id=phuellabox data-pid='%s'>%s</div>" % (esc(pid), out)
+    if est == "confirmada":
+        cuando = rt.get("CERT_FP_CUANDO") or ""
+        try:
+            cuando = time.strftime("%d/%m/%Y %H:%M", time.localtime(int(cuando)))
+        except (TypeError, ValueError):
+            cuando = ""
+        out += ("<p>Confirmada por <b>%s</b>%s:<br>%s</p>"
+                % (esc(rt.get("CERT_FP_QUIEN")), (" el " + esc(cuando)) if cuando else "", huella_bloques(fijada)))
+    elif est == "automatica":
+        out += ("<div class='aviso amb'><b>Fijada automáticamente</b> en la primera conexión, antes de que el "
+                "panel pidiera confirmarla. Se sigue usando; conviene revisarla.</div><p>%s</p>"
+                "<details><summary>Revisar la huella</summary>%s%s</details>"
+                % (huella_bloques(fijada), comparar,
+                   _huella_form(pid, fijada, "La huella coincide: confirmar", "Confirmar la huella",
+                                "Confirmas que comparaste esta huella con la del router y es la misma.")))
+    else:
+        out += ("<div class='aviso info'>Sin huella confirmada: el panel <b>no manda la clave</b> de "
+                "<code>ids-api</code> al router hasta que compruebes que la huella que presenta es la de tu "
+                "MikroTik.</div>")
+        if presentada:
+            out += ("<p>Huella que presenta el router:<br>%s</p>%s" % (huella_bloques(presentada), comparar)
+                    + _huella_form(pid, presentada, "La huella coincide: confirmar", "Confirmar la huella",
+                                   "Confirmas que comparaste esta huella con la del router y es la misma. Desde "
+                                   "ahora el panel le manda la clave de ids-api."))
+        elif pedir:
+            out += "<p>Huella que presenta el router: <code id=phuella>comprobando…</code></p>"
+        elif error:
+            out += "<p>Huella que presenta el router: <code>no se pudo leer</code></p>" + aviso(error, "amb")
+        else:
+            out += "<p>Huella que presenta el router: <code>se comprobará cuando el MikroTik conecte</code></p>"
+    if fijada and presentada == fijada:
+        out += "<p class=hint>El router presenta ahora esta misma huella.</p>"
+    elif fijada and pedir:
+        out += "<p class=hint>Huella que presenta ahora el router: <code id=phuella>comprobando…</code></p>"
+    if fijada:
+        out += ("<form method=post action='/puntos/%s/api' onsubmit=\"return ask(this,'Olvidar la huella',"
+                "'El panel dejará de mandar la clave de ids-api a este router hasta que confirmes la huella "
+                "que presente. Hazlo solo si cambiaste su certificado.','Olvidar','danger')\">"
+                "<input type=hidden name=accion value=olvidar_huella>%s"
+                "<button class='btn sec' type=submit>Olvidar la huella</button></form>" % (esc(pid), campo_token()))
+    return "<div id=phuellabox data-pid='%s'%s>%s</div>" % (esc(pid), " data-pedir=1" if pedir else "", out)
 
 
 def huella_json(h, pid):
-    """GET /puntos/<pid>/huella: la huella del certificado API-SSL que ve el servidor (orden
-    punto.api.huella, hasta 15 s por el tunel), con cache de 10 min por punto."""
+    """GET /puntos/<pid>/huella: la huella que presenta el certificado API-SSL del router, leida por
+    el panel con el mismo TLS que usa para conectar y sin login (hasta 8 s por el tunel), con cache
+    de 10 min por punto. {"texto": huella o motivo, "html": la caja de la huella de la ficha}."""
     d = _dash(h)
-    if situacion_vpn(nodos.punto(pid) or {})["clave"] != "conectada":
-        return h._json({"texto": "se comprobará cuando el MikroTik conecte"})
-    sha = huella_cacheada(pid)
-    if not sha:
-        hu = cliente().pedir("punto.api.huella", {"pid": pid}, quien="panel:%s" % _usuario(d), ip=_ip(d))
-        v = (hu.get("datos") or {}).get("sha256") if hu.get("codigo") == "OK" else ""
-        sha = v if isinstance(v, str) and RE_HUELLA_API.fullmatch(v) else ""
-        if sha:
-            _HUELLAS[pid] = (time.time(), sha)
-    return h._json({"texto": sha or "sin dato"})
+    p = nodos.punto(pid) or {}
+    rt = _router(d, pid) or {}
+    if situacion_vpn(p)["clave"] != "conectada":
+        return h._json({"texto": "se comprobará cuando el MikroTik conecte", "html": huella_caja(d, pid, p, rt)})
+    sha, error = huella_cacheada(d, pid), ""
+    leer = getattr(d, "mk_huella_presentada", None)
+    if not sha and leer is not None:
+        try:
+            v = leer(pid)
+            sha = v if isinstance(v, str) and RE_HUELLA_API.fullmatch(v) else ""
+        except Exception as e:
+            error = "No se pudo leer la huella del router: %s" % str(e)[:200]
+    return h._json({"texto": sha or "sin dato", "html": huella_caja(d, pid, p, rt, sha, error)})
 
 
 def logs(h, pid, consulta):
@@ -2269,29 +2401,35 @@ def accion_api(h, pid, form, ajax=False):
     prueba tarda 20-35 s con el router caido y la ficha no se queda en blanco."""
     d = _dash(h)
     acc = form.get("accion") or "guardar"
-    if acc not in ("guardar", "probar", "olvidar_huella"):
+    if acc not in ("guardar", "probar", "olvidar_huella", "confirmar_huella"):
         return _responder(h, pid, ("Accion de la API desconocida.", 400, False, ""), ajax)
     user = (form.get("user") or "").strip()[:64]
+    huella = (form.get("huella") or "").strip().lower()
 
     def validar():
         if not any(x.get("id") == pid for x in d.cargar_routers()):
             return ("Ese punto todavia no tiene router en el panel (espera a que aparezca en el "
                     "estado del orquestador).", 409, False, "")
-        if acc != "olvidar_huella" and user and not re.match(r"^[A-Za-z0-9._@-]+\Z", user):
+        if acc in ("guardar", "probar") and user and not re.match(r"^[A-Za-z0-9._@-]+\Z", user):
             return "El usuario de la API tiene caracteres no validos.", 400, False, ""
+        if acc == "confirmar_huella" and not RE_HUELLA_API.fullmatch(huella):
+            return "Falta la huella que comparaste (64 caracteres hexadecimales).", 400, False, ""
         return None
 
     def hacer():
+        if acc == "confirmar_huella":
+            return confirmar_huella(d, pid, huella)
         rs = d.cargar_routers()
         r = next((x for x in rs if x.get("id") == pid), None)
         if r is None:
             return ("Ese punto todavia no tiene router en el panel (espera a que aparezca en el "
                     "estado del orquestador).", 409, False, "")
         if acc == "olvidar_huella":
-            r["CERT_FP"] = ""
+            r.update({"CERT_FP": "", "CERT_FP_QUIEN": "", "CERT_FP_CUANDO": ""})
             d.guardar_routers(rs)
             _bit(d, "PUNTO-API", pid=pid, objetivo="huella", resultado="olvidada")
-            return "Huella olvidada: la proxima conexion fijara la del router.", 200, True, ""
+            return ("Huella olvidada: el panel no manda la clave de ids-api a este router hasta que confirmes "
+                    "la huella que presente.", 200, True, "")
         r["USER"] = user
         if form.get("pass"):
             r["PASS"] = form["pass"]             # guardar_routers la cifra (router:<pid>:PASS)
@@ -2308,6 +2446,131 @@ def accion_api(h, pid, form, ajax=False):
         _bit(d, "PUNTO-API", pid=pid, objetivo="probar", resultado="ok" if ok else "fallo")
         return "Prueba: " + msg, 200 if ok else 502, ok, ""
     return _con_token(h, pid, "api-" + acc, form, hacer, validar, ajax=ajax)
+
+
+def confirmar_huella(d, pid, huella):
+    """«La huella coincide: confirmar» / «Volver a confirmar» (VPN-06): se vuelve a leer la huella que
+    presenta el router (sin login) y solo se fija si sigue siendo la que el administrador comparo.
+    (mensaje, codigo, ok, extra). Queda en el Registro quien la confirmo y cual (sus 16 primeros)."""
+    leer = getattr(d, "mk_huella_presentada", None)
+    if leer is None or getattr(d, "confirmar_huella", None) is None:
+        return "Este panel no puede confirmar huellas (núcleo viejo).", 501, False, ""
+    try:
+        ahora = leer(pid)
+    except Exception as e:
+        _bit(d, "PUNTO-API", pid=pid, objetivo="huella", resultado="sin-leer")
+        return ("No se pudo leer la huella del router, así que no se confirmó nada: %s" % str(e)[:200],
+                502, False, "")
+    if ahora != huella:
+        _bit(d, "PUNTO-API", pid=pid, objetivo="huella", resultado="cambio-al-confirmar",
+             extra="vista=%s… ahora=%s…" % (huella[:16], str(ahora)[:16]))
+        return ("El router presenta ahora otra huella (%s…), no la que comparaste: no se confirmó nada. "
+                "Vuelve a compararla con la del router." % str(ahora)[:16], 409, False, "")
+    try:
+        antes = d.confirmar_huella(pid, huella, _usuario(d))
+    except (OSError, ValueError) as e:
+        return "No se pudo guardar la huella: %s" % str(e)[:160], 500, False, ""
+    _bit(d, "PUNTO-API", pid=pid, objetivo="huella", resultado="reconfirmada" if antes else "confirmada",
+         extra="sha256=%s…%s" % (huella[:16], (" antes=%s…" % antes[:16]) if antes and antes != huella else ""))
+    return ("Huella confirmada: desde ahora el panel habla con la API de este MikroTik y le manda la clave de "
+            "ids-api solo si presenta esta huella.", 200, True, "")
+
+
+# --------------------------------------------------------------------------------------------
+# Desbanear la IP del MikroTik (VPN-04)
+# --------------------------------------------------------------------------------------------
+# fail2ban (jaula ids-vpn) banea en todos los puertos del servidor. Cuando el router esta baneado
+# su tunel esta caido y estado.json ya no trae su IP: por eso el panel apunta la ultima IP desde la
+# que conecto (nodos/<pid>/mk-ip.json, que la baja borra con el resto de nodos/<pid>/).
+def _ruta_ip_mk(pid):
+    return os.path.join(nodos.NODOS, pid, "mk-ip.json")
+
+
+def _ip_valida(v):
+    try:
+        return str(ipaddress.ip_address(str(v or "").strip()))
+    except ValueError:
+        return ""
+
+
+def ip_mikrotik(p):
+    """(ip, instante) de la IP publica del MikroTik del punto: la del tunel conectado (y se apunta)
+    o la ultima apuntada; ("", None) si nunca se vio."""
+    pid = (p or {}).get("pid") or ""
+    if not nodos.pid_valido(pid):
+        return "", None
+    ruta = _ruta_ip_mk(pid)
+    try:
+        previa = _leer_json_pequeno(ruta, 4096)
+    except (OSError, ValueError, RecursionError):
+        previa = None
+    previa = previa if isinstance(previa, dict) else {}
+    vc = (p or {}).get("vpn_cliente") or {}
+    ip = _ip_valida(vc.get("ip_real")) if vc.get("conectado") else ""
+    if ip:
+        if previa.get("ip") != ip:
+            try:
+                os.makedirs(os.path.dirname(ruta), mode=0o700, exist_ok=True)
+                tmp = "%s.%d.tmp" % (ruta, threading.get_ident())
+                with open(tmp, "w", encoding="utf-8") as f:
+                    json.dump({"ip": ip, "ts": int(time.time())}, f)
+                os.replace(tmp, ruta)
+            except OSError:
+                pass
+        return ip, time.time()
+    ip = _ip_valida(previa.get("ip"))
+    return (ip, previa.get("ts") if isinstance(previa.get("ts"), (int, float)) else None) if ip else ("", None)
+
+
+def desbanear_html(p, pid):
+    """El formulario «Desbanear IP del MikroTik» de la ficha (solo admin): la IP por defecto es la
+    del tunel o la ultima conocida, editable; ask() y el resultado en un modal."""
+    ip, cuando = ip_mikrotik(p)
+    if ip and cuando and not mk_conectado(p):
+        de = "la última desde la que conectó el MikroTik (%s)" % time.strftime("%d/%m/%Y %H:%M", time.localtime(cuando))
+    elif ip:
+        de = "desde la que está conectado ahora el MikroTik"
+    else:
+        de = ""
+    return ("<form method=post action='/puntos/%s/desbanear' class=pdesban>%s"
+            "<input class=t name=ip value='%s' maxlength=45 autocomplete=off placeholder='IP pública del MikroTik' "
+            "aria-label='IP pública del MikroTik'>"
+            "<button class='btn sec' type=submit onclick=\"if(ask(this,'Desbanear IP del MikroTik','Se quita el ban "
+            "de fail2ban (jaula ids-vpn) a '+this.form.ip.value+' en todos los puertos del servidor. Si desde esa "
+            "IP algo sigue llamando con un usuario VPN que no existe, vuelve a banearse.','Desbanear'))"
+            "pdesban(this.form);return false;\">Desbanear IP del MikroTik</button></form>"
+            "<p class=hint>Si la IP del MikroTik quedó baneada por fail2ban (por ejemplo, porque detrás de la misma "
+            "IP pública un router viejo sigue llamando con un usuario que ya no existe), no conecta a ninguna VPN "
+            "de este servidor.%s</p>"
+            % (esc(pid), campo_token(), esc(ip),
+               (" La IP propuesta es %s." % esc(de)) if de else " Escribe su IP pública."))
+
+
+def accion_desbanear(h, pid, form, ajax=False):
+    """POST /puntos/<pid>/desbanear: orden inmediata vpn.desbanear del orquestador (fail2ban-client set
+    ids-vpn unbanip). Un solo uso por formulario; queda en el Registro con la IP y el resultado."""
+    d = _dash(h)
+    ip = _ip_valida(form.get("ip"))
+
+    def validar():
+        if not ip:
+            return "Escribe una dirección IP válida (la IP pública del MikroTik).", 400, False, ""
+        return None
+
+    def hacer():
+        r = cliente().pedir("vpn.desbanear", {"ip": ip}, quien="panel:%s" % _usuario(d), ip=_ip(d))
+        dd = r.get("datos") or {}
+        if r.get("codigo") != "OK":
+            _bit(d, "PUNTO-VPN-DESBANEAR", pid=pid, objetivo=ip, resultado=r.get("codigo") or "FALLO")
+            return _orq.traducir(r.get("codigo"), r.get("mensaje"), dd), 502, False, ""
+        if dd.get("desbaneada"):
+            _bit(d, "PUNTO-VPN-DESBANEAR", pid=pid, objetivo=ip, resultado="desbaneada")
+            return ("%s desbaneada: el MikroTik puede volver a conectar. Si sigue con una clave mal puesta, "
+                    "fail2ban no lo vuelve a banear por eso (solo frena los intentos)." % ip, 200, True, "")
+        _bit(d, "PUNTO-VPN-DESBANEAR", pid=pid, objetivo=ip, resultado="no-estaba")
+        return ("%s no estaba baneada en la VPN (jaula ids-vpn): si el MikroTik no conecta, la causa es otra "
+                "(mira los logs de la VPN del punto)." % ip, 200, True, "")
+    return _con_token(h, pid, "desbanear", form, hacer, validar, ajax=ajax)
 
 
 def probar_api(d, pid):
@@ -2691,7 +2954,7 @@ def post(h, ruta, form):
         crear(h, form)
         return True
     m = RE_RUTA_PID.match(ruta)
-    acciones = ("borrar", "regenerar", "arrancar", "parar", "reiniciar", "ajustar", "api", "espejo")
+    acciones = ("borrar", "regenerar", "arrancar", "parar", "reiniciar", "ajustar", "api", "espejo", "desbanear")
     if not m or m.group(2) not in acciones:
         h._html("<h1>No encontrado</h1>", 404)
         return True
@@ -2763,6 +3026,8 @@ def post(h, ruta, form):
         _encolar(h, pid, "punto.ajustar", {"pid": pid, "redes_abonados": redes}, token=tok, ajax=ajax)
     elif acc == "api":
         accion_api(h, pid, form, ajax=ajax)
+    elif acc == "desbanear":
+        accion_desbanear(h, pid, form, ajax=ajax)
     else:
         accion_espejo(h, pid, form, ajax=ajax)
     return True

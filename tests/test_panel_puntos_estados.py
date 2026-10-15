@@ -272,17 +272,31 @@ class Huella(_Base):
         """p002 (MikroTik sin conectar): la ficha no pide punto.api.huella y dice cuándo se hará.
         p001 (conectado): desde el apartado B tampoco la espera la ficha: la pinta «comprobando…» y
         la pide por fetch (GET /puntos/p001/huella), que la guarda 10 min; la ficha siguiente ya la
-        trae sin preguntar otra vez (tests/test_panel_puntos_fondo.py, Ficha)."""
+        trae sin preguntar otra vez (tests/test_panel_puntos_fondo.py, Ficha).
+
+        (Adaptada, 2026-10-14, VPN-06: la huella la lee el panel con el mismo TLS con el que conecta,
+        sin login (dashboard.mk_huella_presentada), no el orquestador; el JSON trae además la caja de
+        la ficha que la confirma.)"""
+        leidas = []
+
+        def leer(pid, timeout=8):
+            leidas.append(pid)
+            self.p.d._ver_huella(pid, "ab" * 32)       # como la de verdad: queda vista 10 min
+            return "ab" * 32
+        self.p.d.mk_huella_presentada = leer
         h = self.get("/puntos/p002")
-        self.assertEqual([x for x in self.p.orq.ordenes("punto.api.huella")], [])
+        self.assertEqual(leidas, [])
         self.assertIn("se comprobará cuando el MikroTik conecte", h)
         h = self.get("/puntos/p001")
+        self.assertEqual(leidas, [])
+        self.assertIn("<div id=phuellabox data-pid='p001' data-pedir=1>", h)
+        self.assertIn("<code id=phuella>comprobando…</code>", h)
+        j = json.loads(self.get("/puntos/p001/huella"))
+        self.assertEqual(j["texto"], "ab" * 32)
+        self.assertIn("abab abab", j["html"])
+        self.assertIn("abab abab", self.get("/puntos/p001"))
+        self.assertEqual(leidas, ["p001"])
         self.assertEqual(self.p.orq.ordenes("punto.api.huella"), [])
-        self.assertIn("<code id=phuella data-pid='p001'>comprobando…</code>", h)
-        self.assertEqual(json.loads(self.get("/puntos/p001/huella")), {"texto": "ab" * 32})
-        self.assertIn("<code>%s</code>" % ("ab" * 32), self.get("/puntos/p001"))
-        pet = self.p.orq.ordenes("punto.api.huella")
-        self.assertEqual([x["params"] for x in pet], [{"pid": "p001"}])
 
 
 if __name__ == "__main__":

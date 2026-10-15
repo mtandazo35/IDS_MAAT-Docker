@@ -153,10 +153,12 @@ socat UNIX-LISTEN:/run/ids/api.sock,fork,unlink-early,mode=660,max-children=4 \
 
 - **Un solo relé por punto, hacia 8729 (API-SSL).** La API-SSL es obligatoria, con el certificado
   autofirmado `ids-promax` del router (formato del dueño, válido en 6.49 y v7; comandos en
-  [OPERACION.md](OPERACION.md) §1.1). **Huella SHA-256 fijada en la primera conexión del alta
-  (TOFU):** el panel la muestra para compararla con `/certificate print detail` y, desde entonces,
-  rechaza cualquier otro certificado (hoy la fija sola en esa primera conexión; la confirmación
-  antes de mandar la clave está pendiente, auditoría VPN-06). Cambiarla es una acción explícita del admin en la ficha del
+  [OPERACION.md](OPERACION.md) §1.1). **Huella SHA-256 confirmada por un administrador (VPN-06):**
+  sin huella confirmada el panel lee la huella, corta y **no hace `/login`**; la ficha la muestra para
+  compararla con `/certificate print detail where name~"ids-promax"` (`fingerprint`) y, al confirmar,
+  la fija. Desde entonces rechaza cualquier otro certificado, también sin mandar la clave. Las huellas
+  que una versión anterior fijó sola se siguen usando y la ficha las marca «fijada automáticamente».
+  Cambiarla («Volver a confirmar», «Olvidar») es una acción explícita del admin en la ficha del
   punto, con bitácora. Se descartan las dos alternativas:
   - la 8728 en claro;
   - la API-SSL con ADH (sin certificado).
@@ -170,7 +172,8 @@ socat UNIX-LISTEN:/run/ids/api.sock,fork,unlink-early,mode=660,max-children=4 \
   - el panel monta el padre `/srv/ids/run` en solo lectura. `connect()` a un socket UNIX funciona
     sobre un bind mount de solo lectura.
 - **Del lado del panel**, el cliente RouterOS actual solo cambia la fábrica de sockets: abre un
-  `AF_UNIX` y aplica el mismo `wrap_socket`, con la huella fijada.
+  `AF_UNIX` y aplica el mismo `wrap_socket`, con la huella confirmada (sin probar ADH ni aceptar un
+  handshake sin certificado).
 - **Del lado del router**, el origen es `100.64.N.1`:
   - usuario API exclusivo del IDS, con `address=100.64.N.1/32`;
   - regla de entrada en `chain=input` desde `ids-vpn` **solo** para `100.64.N.1` al puerto de la
