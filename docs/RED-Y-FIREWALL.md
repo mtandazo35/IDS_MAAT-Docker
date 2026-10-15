@@ -160,26 +160,32 @@ socat UNIX-LISTEN:/run/ids/api.sock,fork,unlink-early,mode=660,max-children=4 \
       TCP:100.64.${N}.2:${API_PUERTO:-8729},connect-timeout=5
 ```
 
-- **Un solo relé por punto, hacia 8729 (API-SSL).** La API-SSL es obligatoria, con el certificado
-  autofirmado `ids-promax` del router (formato del dueño, válido en 6.49 y v7; comandos en
-  [OPERACION.md](OPERACION.md) §1.1). **Huella SHA-256 confirmada por un administrador (VPN-06):**
-  sin huella confirmada el panel lee la huella, corta y **no hace `/login`**; la ficha la muestra para
-  compararla con `/certificate print detail where name~"ids-promax"` (`fingerprint`) y, al confirmar,
-  la fija. Desde entonces rechaza cualquier otro certificado, también sin mandar la clave. Las huellas
-  que una versión anterior fijó sola se siguen usando y la ficha las marca «fijada automáticamente».
-  Cambiarla («Volver a confirmar», «Olvidar») es una acción explícita del admin en la ficha del
-  punto, con bitácora. Se descartan las dos alternativas:
-  - la 8728 en claro;
-  - la API-SSL con ADH (sin certificado).
+- **Un solo relé por punto, hacia 8729 (API-SSL), sin certificado.** El panel habla siempre TLS con
+  la API-SSL del router, que se usa tal como esté: el script no crea ningún certificado ni toca
+  `/ip service api-ssl` ([OPERACION.md](OPERACION.md) §1.1). Lo normal es `certificate=none`, con
+  el que RouterOS negocia un cifrado anónimo (ADH): el panel prueba primero `ADH:@SECLEVEL=0` y
+  después los cifrados normales (router con certificado). **Sin huella fijada hace `/login` con lo
+  que presente el router**, con certificado o sin él. Es la decisión del dueño (2026-10-15), como en
+  el proyecto original: la clave de `ids-api` la protegen el túnel OpenVPN, en el que el MikroTik
+  verifica el certificado del servidor con la CA del VPS, y el netns del sensor, que hacia el router
+  solo deja salir la API (§8). Hasta entonces (VPN-06) el panel exigía un certificado (el `ids-promax`
+  que creaba el script anterior) y una huella confirmada antes de mandar la clave; lo que hay que
+  revisar en esos routers está en [OPERACION.md](OPERACION.md) §1.1.
 
-  **8728:** el orquestador la admite por punto (`api_puerto`) y entonces genera el relé hacia 8728
-  y la tabla del netns abre solo ese puerto, pero **el panel no conecta**: habla siempre TLS, y
-  contra la API en claro el saludo falla. La ficha lo dice así.
+  **Huella opcional (fijar el certificado):** si el router presenta un certificado, la ficha
+  muestra su huella SHA-256 para compararla con el `fingerprint` de `/certificate print detail` y,
+  al confirmar, la fija. Desde entonces el panel exige ese certificado: ya no prueba ADH, para que
+  nadie pueda rebajar la conexión, y si el router presenta otro **no hace `/login`** (aviso rojo en
+  la ficha y `MK-HUELLA-DISTINTA` en el Registro). Cambiarla («Volver a confirmar», «Olvidar la
+  huella») es una acción explícita del admin en la ficha del punto, con bitácora; «Olvidar» vuelve
+  a conectar sin exigir certificado. Sin certificado no hay huella que fijar. Las huellas que una
+  versión anterior fijó sola se siguen exigiendo igual que una confirmada (la ficha las marca
+  «fijada automáticamente»), y una huella **vacía** guardada antes (el sha256 de nada, de un
+  API-SSL sin certificado) cuenta como sin huella.
 
-  **ADH heredado:** una huella **vacía** guardada por una versión anterior del panel (API-SSL sin
-  certificado, negociada con ADH) se sigue aceptando con ADH para no cortar ese punto. La ficha
-  avisa de que la API-SSL no tiene certificado: lo correcto es crear `ids-promax`
-  ([OPERACION.md](OPERACION.md) §1.1), pulsar «Olvidar la huella» y confirmar la nueva.
+  **8728 (en claro): se descarta.** El orquestador la admite por punto (`api_puerto`) y entonces
+  genera el relé hacia 8728 y la tabla del netns abre solo ese puerto, pero **el panel no conecta**:
+  habla siempre TLS, y contra la API en claro el saludo falla. La ficha lo dice así.
 - **Permisos del socket:**
   - el directorio del host `/srv/ids/run/<pid>` pertenece a `root:10500` con modo `2770`
     (setgid), así que el socket hereda el grupo 10500;
@@ -187,8 +193,8 @@ socat UNIX-LISTEN:/run/ids/api.sock,fork,unlink-early,mode=660,max-children=4 \
   - el panel monta el padre `/srv/ids/run` en solo lectura. `connect()` a un socket UNIX funciona
     sobre un bind mount de solo lectura.
 - **Del lado del panel**, el cliente RouterOS actual solo cambia la fábrica de sockets: abre un
-  `AF_UNIX` y aplica el mismo `wrap_socket`, con la huella confirmada (sin probar ADH ni aceptar un
-  handshake sin certificado).
+  `AF_UNIX` y aplica el mismo `wrap_socket`: sin huella fijada, primero ADH y después los cifrados
+  normales; con la huella fijada, solo los normales y exigiendo ese certificado.
 - **Del lado del router**, el origen es `100.64.N.1`:
   - usuario API exclusivo del IDS, con `address=100.64.N.1/32`;
   - el script no pone reglas de firewall: lo que entra por `ids-vpn` lo decide el firewall del

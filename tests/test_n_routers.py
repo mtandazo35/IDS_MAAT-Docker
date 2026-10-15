@@ -217,17 +217,18 @@ class APIporRele(Base):
         """Tipo: capacidad nueva + corrección de defecto (inv_A §10: la huella iba al MK_CONF
         global y no se fijaba nunca). La conexion abre el api.sock DEL PUNTO y hace TLS encima.
         (Adaptada, 2026-10-14, VPN-06: antes la primera conexion fijaba sola la huella y mandaba
-        la clave en esa misma conexion.) Sin huella confirmada NO hay login ni se guarda nada;
-        confirmada, hay login y la huella queda en routers.json SOLO para ese punto."""
+        la clave en esa misma conexion. Adaptada otra vez, 2026-10-15, decision del dueno: la
+        API-SSL va sin certificado.) Sin huella fijada hay login y NO se guarda nada; la huella
+        solo la fija un administrador y queda en routers.json SOLO para ese punto."""
         import hashlib
         fp = hashlib.sha256(self.der).hexdigest()
-        with self.assertRaises(self.d.HuellaNoConfirmada):
-            self.d.mk_conectar(self.d.cargar_mk_de(self.d.router_por_id("p002")))
+        self.d.mk_conectar(self.d.cargar_mk_de(self.d.router_por_id("p002"))).close()
         self.assertEqual(set(self.abiertas), {self.n.api_sock("p002")})
-        self.assertFalse(any(w and w[0] == "/login" for w in self.srv.recibido))
+        self.assertIn(["/login", "=name=ids-api", "=password=c2"], self.srv.recibido)
         g = json.load(open(self.d.ROUTERS_CONF, encoding="utf-8"))["routers"]
         self.assertFalse(g["p002"].get("CERT_FP"))
         self.assertEqual(self.d.huella_vista("p002"), fp)
+        self.srv.recibido.clear()
         self.d.confirmar_huella("p002", fp, "ana")
         s = self.d.mk_conectar(self.d.cargar_mk_de(self.d.router_por_id("p002")))
         s.close()

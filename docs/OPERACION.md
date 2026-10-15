@@ -17,36 +17,58 @@ solo se muestran como referencia.
 
 Versiones soportadas: **RouterOS 6.49 o superior** en v6, y v7. Anteriores a 6.49, no.
 
-### 1.1 Certificado de la API-SSL: `ids-promax` (6.49 y v7)
+### 1.1 La API-SSL del router (sin certificado)
 
-Es el formato del dueño y vale igual en 6.49 y en v7:
+El script no crea ningún certificado ni toca `/ip service api-ssl` (ni el certificado ni
+`address=`, §1.5): el panel usa la API-SSL (8729) del router tal como esté. Es como trabaja el
+proyecto original (decisión del dueño, 2026-10-15) y vale igual en 6.49 y en v7.
 
-```
-/certificate
-add name=ids-promax common-name=ids-promax \
-    key-usage=key-cert-sign,crl-sign,digital-signature,tls-server,tls-client,data-encipherment,key-encipherment \
-    days-valid=4576 trusted=yes
-/certificate sign ids-promax
-/certificate set ids-promax trusted=yes
-/ip service set api-ssl certificate=ids-promax
-```
-
-- **Si `ids-promax` ya existe en el router, se reutiliza.** No se vuelve a crear y basta con la
-  última línea.
-- **Sin `ca-crl-host`:** no se usa CRL.
-- **`sign` tarda unos segundos, sobre todo en v6.** Antes del `set`, hay que esperar a que
-  `/certificate print` lo muestre con los flags **K** (tiene clave privada) y **T** (de confianza).
+- **Lo normal es `certificate=none`.** Con él, RouterOS negocia un cifrado anónimo (ADH). El panel
+  prueba primero ese cifrado (`ADH:@SECLEVEL=0`) y después los normales, por si el router tiene un
+  certificado asignado.
 - Si el servicio está deshabilitado: `/ip service enable api-ssl`.
-- **Huella confirmada (VPN-06).** Mientras la huella no esté confirmada, el panel no manda la clave
-  de `ids-api`: conecta, lee la huella SHA-256 del certificado y corta. La ficha del punto (API) la
-  enseña en bloques; se compara con el `fingerprint` de `/certificate print detail where
-  name~"ids-promax"` y se pulsa «La huella coincide: confirmar» (el panel la vuelve a leer y solo la
-  guarda si sigue siendo esa; queda en la bitácora quién la confirmó). Desde entonces el panel
-  rechaza cualquier otro certificado sin mandar la clave, con aviso rojo en la ficha y una línea en el
-  Registro. Si se regenera `ids-promax`, «Volver a confirmar» en la ficha (admin). Las huellas que
-  una versión anterior del panel fijó solas se siguen usando y la ficha las marca «fijada
-  automáticamente» para revisarlas.
-- **En una baja no se borra:** el certificado puede usarlo otro servicio del router.
+- **La clave de `ids-api` la protege el túnel.** Sin huella fijada, el panel hace `/login` con lo
+  que presente el router, con certificado o sin él. La clave va por el túnel OpenVPN, en el que el
+  MikroTik verifica el certificado del servidor con la CA del VPS (§1.4), y sale del netns del
+  sensor, que hacia el router solo deja salir la API y la respuesta al ping
+  ([RED-Y-FIREWALL.md](RED-Y-FIREWALL.md) §8).
+- **Fijar el certificado (opcional).** Si el router presenta un certificado, la ficha del punto (API)
+  enseña su huella SHA-256 en bloques. Se compara con la del router (`/ip service print detail
+  where name=api-ssl` dice qué certificado usa la API-SSL, y `/certificate print detail
+  where name=<certificado>` da su `fingerprint`) y se pulsa «La huella coincide: confirmar» (el
+  panel la vuelve a leer y solo la guarda si sigue siendo esa; queda en la bitácora quién la
+  confirmó). Desde
+  entonces el panel exige ese certificado: ya no prueba el cifrado anónimo, para que nadie pueda
+  rebajar la conexión, y si el router presenta otro no le manda la clave, con aviso rojo en la ficha
+  y una línea `MK-HUELLA-DISTINTA` en el Registro. Si el certificado del router cambia a propósito,
+  «Volver a confirmar» en la ficha (admin). «Olvidar la huella» vuelve a conectar sin exigir
+  certificado.
+- **Sin certificado no hay huella que fijar.** La ficha lo dice: la API-SSL no tiene certificado, no
+  hay huella que fijar y la clave de `ids-api` va protegida por el túnel. Una huella vacía guardada
+  por una versión anterior del panel (el sha256 de nada, de un API-SSL sin certificado) cuenta como
+  sin huella.
+- **Huellas de antes de VPN-06.** Las que una versión anterior del panel fijó solas se siguen
+  exigiendo igual que una confirmada; la ficha las marca «fijada automáticamente» para revisarlas.
+- **Routers dados de alta con el script anterior** (el que creaba el certificado `ids-promax` y lo
+  asignaba a `api-ssl`): si la API-SSL corta la conexión nada más conectar («TLS handshake falló …
+  EOF» en «Probar la conexión»), revisar el servicio en el router:
+
+  ```
+  /ip service print detail where name=api-ssl
+  ```
+
+  Que esté habilitado, que `address` incluya al sensor (`100.64.3.1`) o esté vacía y, si tiene un
+  certificado asignado, dejarlo sin él:
+
+  ```
+  /ip service set api-ssl certificate=none
+  ```
+
+  El certificado `ids-promax` puede quedarse (no estorba) o borrarse con
+  `/certificate remove [find name=ids-promax]` si ningún otro servicio del router lo usa. Si el
+  punto tenía fijada la huella de ese certificado, el panel la sigue exigiendo: tras dejar la
+  API-SSL sin certificado, «Olvidar la huella» en la ficha.
+- **La baja no toca la API-SSL** ni ningún certificado del router (§2.1).
 
 ### 1.2 RouterOS v7
 
@@ -93,7 +115,8 @@ v6 solo admite TCP, así que no lleva `protocol=`, y no tiene `use-peer-dns`. Si
 falla en 6.49, se activa la «compatibilidad v6» del punto desde su ficha
 ([INSTANCIA.md](INSTANCIA.md) §7.2).
 
-En los dos bloques, el certificado de la API-SSL es el de §1.1.
+En los dos bloques, la API-SSL del router se usa tal como esté (§1.1): el script no crea ningún
+certificado.
 
 ### 1.4 El MikroTik verifica al servidor
 
@@ -129,9 +152,9 @@ con la clave VPN y haría de «sensor» para el router.
 
 ### 1.5 Notas
 
-- **La lista de `/ip service api-ssl address=` no se toca.** Si ya tiene direcciones y no incluye
-  `100.64.3.1`, el paso API del asistente lo detecta y muestra el comando para **añadirla**
-  conservando las demás. Lo aplica el operador.
+- **`/ip service api-ssl` no se toca** (ni la lista `address=` ni el certificado, §1.1). Si la
+  lista ya tiene direcciones y no incluye `100.64.3.1`, el paso API del asistente lo detecta y
+  muestra el comando para **añadirla** conservando las demás. Lo aplica el operador.
 - **El script no toca el firewall ni las rutas del router** (decisión del dueño). Lo que entra
   por `ids-vpn` y adónde llega lo decide el firewall del operador: sin reglas propias del IDS, desde
   el túnel se alcanza lo que ese firewall permita. Para que el panel hable con el router, el `input`
@@ -156,7 +179,8 @@ con la clave VPN y haría de «sensor» para el router.
   Las dos líneas buscan el comentario **exacto** del alta: no tocan el espejo
   (`IDS ids-maat:p003:espejo`) ni las cuarentenas. Antes de quitarlas, si la cadena `input` del
   router acaba en `drop`, el operador deja puesto su propio `accept` de la API desde el sensor (el
-  del bloque viejo se va con el `remove`).
+  del bloque viejo se va con el `remove`). Si ese script dejó además el certificado `ids-promax`
+  asignado a `api-ssl`, lo que se revisa está en §1.1.
 - **El ping necesita también el sensor nuevo.** En un punto creado antes de este cambio, la regla
   del ping de la tabla `inet ids_punto` ([RED-Y-FIREWALL.md](RED-Y-FIREWALL.md) §8) entra al recrear
   su contenedor `vpn` con la imagen nueva: `ids-orq punto reconfigurar p003` (§1.6). Hasta entonces
@@ -175,7 +199,7 @@ por su camino:
 |---|---|---|
 | Host (fail2ban, journald, sysctl, firewall del host) y el orquestador | filtros y jaulas de fail2ban, `journald.conf.d/90-ids.conf`, `ids_orq.py` y sus plantillas, unidades systemd | volver a ejecutar `install.sh` con las mismas opciones (`--nombre`, `--gestion`, `--proxy`…); es idempotente y respalda antes de tocar nada (§3.1). El panel no actualiza el orquestador |
 | Cada punto (contenedores `vpn` y `suricata`) | `server.conf` (p. ej. `max-clients 16`, `hand-window 20`), `suricata.yaml`, `compose.yml` (p. ej. `NET_RAW` sin `NET_ADMIN`, `start_interval`) y las imágenes actuales de `imagenes.json` (p. ej. `ovpn-auth` y `salud-vpn` nuevos) | `ids-orq punto reconfigurar p003` (en el servidor, como root; el botón del panel «Aplicar la configuración actual» está pendiente). Va por la cola: reescribe los tres ficheros con las plantillas actuales, pasa el punto a las imágenes actuales, recrea los contenedores y espera la salud; si no queda sano, vuelve a los ficheros y a las imágenes de antes y deja el motivo. Devuelve qué se recreó y qué cambió (`recreado`, `cambios`). Mientras se recrean los contenedores, ese punto no captura y su VPN se corta (el MikroTik reconecta solo) |
-| Cada MikroTik | lo que va en el script del router (p. ej. la CA y la verificación de §1.4) | a mano en el router: no se puede hacer desde el VPS. Para la verificación del servidor, §1.4; para quitar la ruta y las reglas del script anterior, §1.5 |
+| Cada MikroTik | lo que va en el script del router (p. ej. la CA y la verificación de §1.4) | a mano en el router: no se puede hacer desde el VPS. Para la verificación del servidor, §1.4; para quitar la ruta y las reglas del script anterior, §1.5; para la API-SSL con el certificado del script anterior, §1.1 |
 
 Orden recomendado tras una corrección: `install.sh` (host y orquestador) → «Aplicar la configuración
 actual» punto por punto, empezando por uno y comprobando que vuelve a `activo` → los routers.
@@ -250,8 +274,9 @@ panel habla con él: la interfaz `ids-vpn`, el usuario y el grupo `ids-api`, y l
 fichero (y, en un router dado de alta con el script anterior, la ruta blackhole y el bloque de
 aislamiento de `ids-vpn` en `filter`).
 Eso se quita a mano, después de la baja, con el bloque de **terminar una baja con API** de abajo
-(todo menos el espejo, que ya no está). El certificado `ids-promax` no se borra en ningún caso:
-puede usarlo otro servicio del router.
+(todo menos el espejo, que ya no está). La API-SSL del router no se toca: el script actual no
+crea ningún certificado, y el `ids-promax` de un router dado de alta con el script anterior no se
+borra en la baja (puede usarlo otro servicio del router); si ninguno lo usa, se quita a mano (§1.1).
 
 **Terminar una baja con API** (el panel ya quitó el espejo y las IPs):
 

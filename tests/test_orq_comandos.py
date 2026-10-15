@@ -16,8 +16,9 @@ CA_PRUEBA = "-----BEGIN CERTIFICATE-----\nMIIBszCCAVmgAwIBAgIU\nAbC+/9==\n-----E
 # Cambiado a propósito (auditoría VPN-01): la CA del VPS entra en el router y el ovpn-client
 # verifica al servidor. La cabecera pide el reloj en hora (el certificado del servidor vale desde
 # 2 días antes de emitirse). Decisión del dueño (2026-10-15): el script NO lleva reglas de
-# firewall ni rutas (ni el aislamiento de ids-vpn ni la ruta blackhole); solo el certificado
-# API-SSL, la CA, el ovpn-client y el usuario de la API limitado al sensor.
+# firewall ni rutas (ni el aislamiento de ids-vpn ni la ruta blackhole); solo la CA, el ovpn-client
+# y el usuario de la API limitado al sensor. Decisión del dueño (2026-10-15): tampoco el certificado
+# API-SSL ids-promax; la API-SSL va sin certificado y el script no toca /ip service api-ssl.
 _CA_P003 = r"""# CA del VPS (pública): con ella el MikroTik verifica al servidor (verify-server-certificate)
 /file print file=ids-maat-ca-p003
 :delay 2s
@@ -33,15 +34,6 @@ V7_CONTRATO = r"""# ids-maat p003 (norte) · N=3 · puerto 1196 · túnel 100.64
 # El bloque v6 solo conecta tras: ids-orq punto ajustar p003 --ros 6
 # Antes de pegar: el reloj del router en hora (/system ntp client). El certificado del
 # servidor vale desde 2 días antes de emitirse; con el reloj más atrasado, el MikroTik lo rechaza.
-#
-# --- Certificado API-SSL ids-promax (6.49 y v7; si ya existe, solo la última línea) ---
-/certificate
-add name=ids-promax common-name=ids-promax \
-    key-usage=key-cert-sign,crl-sign,digital-signature,tls-server,tls-client,data-encipherment,key-encipherment \
-    days-valid=4576 trusted=yes
-/certificate sign ids-promax
-/certificate set ids-promax trusted=yes
-/ip service set api-ssl certificate=ids-promax
 #
 # --- RouterOS v7 ---
 """ + _CA_P003 + r"""/interface ovpn-client add name=ids-vpn connect-to=ids.empresa.example port=1196 protocol=tcp mode=ip \
@@ -111,6 +103,17 @@ class OvpnClient(unittest.TestCase):
                 self.assertIn("password=%s " % ("X" * 24), b)
                 self.assertNotIn("tls-crypt", b)
             self.assertNotIn("<CLAVE-VPN>", txt)
+
+    def test_sin_certificado_api_ssl(self):
+        """Decisión del dueño (2026-10-15): el script no crea certificados para la API-SSL ni toca
+        /ip service (ni el certificado ni address=); el único certificado es la CA del VPS."""
+        for ros in (6, 7):
+            txt = comandos(self.mod, punto3(self.mod, ros_version=ros))
+            self.assertNotIn("ids-promax", txt)
+            self.assertNotIn("/ip service", txt)
+            self.assertNotIn("/certificate sign", txt)
+            self.assertNotIn("Certificado API-SSL", txt)
+            self.assertEqual(txt.count("/certificate import"), 2)
 
     def test_api_8728(self):
         """Sin reglas de firewall, el puerto de la API no sale en el script: con 8728 es el mismo

@@ -1,17 +1,23 @@
 """Apartado C de Puntos, parte del panel (2026-10-14): VPN-06, VPN-04 y los textos de la VPN.
 
-- H1 Sin huella confirmada, el panel NO manda la clave de ids-api: conecta TLS por el relé del punto,
-  lee la huella, cierra y lo dice (antes la fijaba sola y hacía /login en esa misma conexión). Con la
-  huella confirmada, conecta como siempre; con otra distinta, tampoco hay login y el Registro lo apunta
-  una vez. Una huella fijada sola por una versión de antes se sigue usando (no rompe producción).
+Cambiado a propósito (decisión del dueño 2026-10-15): la API-SSL va SIN certificado, como en el
+proyecto original. La huella pasa a ser opcional: sin huella fijada el panel hace /login con lo que
+presente el router (anónimo o con certificado), protegido por el túnel; nunca la fija solo.
+
+- H1 Sin huella fijada, el panel conecta TLS por el relé del punto y hace /login, sin guardar nada; la
+  huella que presenta queda vista para la ficha. Con la huella confirmada, conecta como siempre; con otra
+  distinta, NO hay login y el Registro lo apunta una vez. Una huella fijada sola por una versión de
+  antes se sigue exigiendo (no rompe producción).
 - H2 Todo camino que hace login pasa por esa comprobación (cuarentena, quitar, probar, tandas de fondo,
-  espejo, reglas, diagnóstico, abonados, baja): con la huella sin confirmar ninguno manda /login.
-- H3 Sin certificado (API-SSL anónima) no hay huella que confirmar: ni se prueba ADH ni hay login; una
-  huella vieja de ese caso (sha256 de nada) se respeta como estaba.
-- H4 La ficha (solo admin) enseña la huella en bloques con el comando de RouterOS y «La huella coincide:
+  espejo, reglas, diagnóstico, abonados, baja): con una huella distinta ninguno manda /login.
+- H3 Sin certificado (API-SSL anónima) se prueba primero ADH y hay login; no hay huella que fijar. Con una
+  huella fijada no se baja a ADH (nadie en medio se salta la huella). Una huella vieja de API anónima
+  (sha256 de nada) cuenta como ninguna. Si el router cierra sin contestar, el mensaje dice primero qué
+  revisar en el router (certificate=none) y «Probar» no lo recorta.
+- H4 La ficha (solo admin) enseña la huella en bloques con los comandos de RouterOS y «La huella coincide:
   confirmar»; al confirmar se vuelve a leer la del router y solo se guarda si sigue siendo esa; con una
   distinta, aviso rojo y «Volver a confirmar»; una fijada sola sale «Fijada automáticamente» con
-  «Revisar la huella»; con 8728, un aviso discreto.
+  «Revisar la huella»; sin certificado, que no hay huella que fijar; con 8728, un aviso discreto.
 - D1 «Desbanear IP del MikroTik» (VPN-04): IP del túnel o la última conocida, orden inmediata
   vpn.desbanear del orquestador, resultado en JSON para el modal y línea en el Registro.
 - T1 Textos: lo que queda en el MikroTik tras la baja (CA y, si es de antes, ruta y reglas), el «# AVISO:» del
@@ -88,17 +94,12 @@ class _Nucleo(unittest.TestCase):
 
 
 class HuellaNucleo(_Nucleo):
-    def test_sin_huella_no_manda_la_clave_ni_la_fija(self):
-        """Antes: la primera conexión fijaba la huella sola y mandaba /login con la clave en esa misma
-        conexión (TOFU sin confirmar). Ahora: lee la huella, cierra, lanza HuellaNoConfirmada y no
-        guarda nada; la huella vista queda para la ficha."""
-        with self.assertRaises(self.d.HuellaNoConfirmada) as cm:
-            self.conectar()
-        self.assertEqual(cm.exception.motivo, "sin_confirmar")
-        self.assertEqual(cm.exception.presentada, self.fp)
-        self.assertIn("sin confirmar", str(cm.exception))
-        self.assertEqual(_logins(self.srv), [])
-        self.assertFalse(any("clave-api-1" in " ".join(w) for w in self.srv.recibido))
+    def test_sin_huella_conecta_y_no_la_fija(self):
+        """Cambiado a propósito (2026-10-15, API-SSL sin certificado): sin huella fijada hay /login con
+        lo que presente el router (antes: HuellaNoConfirmada y ninguna clave). La huella NO se fija sola
+        (VPN-06): queda vista para la ficha y nada en routers.json."""
+        self.conectar().close()
+        self.assertEqual(_logins(self.srv), [["/login", "=name=ids-api", "=password=clave-api-1"]])
         self.assertFalse(self.guardados()["p001"].get("CERT_FP"))
         self.assertEqual(self.d.huella_vista("p001"), self.fp)
         self.assertEqual(self.d.huella_estado(self.d.router_por_id("p001")), "sin")
@@ -143,7 +144,8 @@ class HuellaNucleo(_Nucleo):
         self.assertEqual(len(_logins(self.srv)), 1)
 
     def test_no_es_un_fallo_de_conexion_para_la_pausa(self):
-        """Una huella sin confirmar no es un router caído: las tareas de fondo no lo ponen en pausa."""
+        """Una huella distinta no es un router caído: las tareas de fondo no lo ponen en pausa."""
+        self.d.confirmar_huella("p001", "00" * 32, "ana")
         r = self.d.router_por_id("p001")
         for _ in range(self.d.MK_PAUSA_FALLOS + 1):
             self.assertFalse(self.d._mk_tanda(r, lambda s, d: None))
@@ -152,12 +154,13 @@ class HuellaNucleo(_Nucleo):
 
 
 class TodosLosCaminos(_Nucleo):
-    def test_ningun_camino_manda_login_sin_huella_confirmada(self):
+    def test_ningun_camino_manda_login_con_huella_distinta(self):
         """Cuarentena (añadir/quitar), sesión de tandas, probar (núcleo y ficha), espejo, reglas,
         diagnóstico, abonados y la limpieza de la baja: todos pasan por mk_conectar y ninguno manda
-        /login con la huella sin confirmar."""
+        /login si el router presenta otro certificado que el de la huella fijada."""
         import puntos_web
         d = self.d
+        d.confirmar_huella("p001", "00" * 32, "ana")
         r = d.router_por_id("p001")
         llamadas = {
             "mk_add": lambda: d.mk_add("10.0.0.5", router=r),
@@ -182,7 +185,7 @@ class TodosLosCaminos(_Nucleo):
             self.assertGreater(self.aperturas, antes, (nombre, textos[nombre]))   # llegó al router
             self.assertEqual(_logins(self.srv), [], nombre)
         for nombre in ("mk_probar", "probar_api", "espejo_plan"):
-            self.assertIn("sin confirmar", textos[nombre], (nombre, textos[nombre]))
+            self.assertIn("distinto del confirmado", textos[nombre], (nombre, textos[nombre]))
 
     def test_solo_mk_conectar_hace_login(self):
         """Guarda estructural: en el panel solo mk_conectar manda "/login" a un router y solo
@@ -204,8 +207,9 @@ class TodosLosCaminos(_Nucleo):
 
 
 class SinCertificado(_Nucleo):
-    def ssl_falso(self, der=None):
-        """TLS de mentira: todo handshake vale y el router presenta `der` (None = sin certificado)."""
+    def ssl_falso(self, der=None, falla=None):
+        """TLS de mentira: todo handshake vale y el router presenta `der` (None = sin certificado).
+        Con `falla`, todo handshake lanza esa excepción (el router cierra sin contestar)."""
         probados, enviado = [], []
         resp = bytearray()
         for _ in range(4):
@@ -237,6 +241,8 @@ class SinCertificado(_Nucleo):
 
             def wrap_socket(self, raw, server_hostname=None):
                 probados.append(self.c)
+                if falla is not None:
+                    raise falla
                 return Sk()
 
         viejo = self.d._ssl
@@ -247,16 +253,55 @@ class SinCertificado(_Nucleo):
         self.d._MK_TLS_OK.clear()
         return probados, enviado
 
-    def test_sin_certificado_ni_adh_ni_login(self):
+    def test_sin_certificado_conecta_por_adh(self):
+        """Cambiado a propósito (2026-10-15): la API-SSL sin certificado es lo normal. Se prueba primero
+        el cifrado anónimo y hay login (antes: ni ADH ni login, y pedía pegar ids-promax). No hay huella
+        que fijar: la lectura da la de «nada» y confirmarla se rechaza."""
+        probados, enviado = self.ssl_falso(None)
+        self.conectar().close()
+        self.assertEqual(probados[0], "ADH:@SECLEVEL=0")
+        self.assertTrue(any(b"/login" in x for x in enviado))
+        vacio = hashlib.sha256(b"").hexdigest()
+        self.assertEqual(self.d.huella_vista("p001"), vacio)
+        self.assertEqual(self.d.mk_huella_presentada("p001"), vacio)
+        with self.assertRaises(ValueError):
+            self.d.confirmar_huella("p001", vacio, "ana")
+        self.assertFalse(self.guardados()["p001"].get("CERT_FP"))
+
+    def test_con_huella_fijada_no_baja_a_adh(self):
+        """Con la huella de un certificado fijada, un router que contesta sin certificado (alguien en
+        medio, o le quitaron el certificado) no recibe la clave: ni se prueba ADH ni hay login, y el
+        mensaje dice que se olvide la huella si se quitó el certificado."""
+        self.d.confirmar_huella("p001", self.fp, "ana")
         probados, enviado = self.ssl_falso(None)
         with self.assertRaises(IOError) as cm:
             self.conectar()
         self.assertIn("no presentó certificado", str(cm.exception))
-        self.assertIn("ids-promax", str(cm.exception))
+        self.assertIn("olvida la huella", str(cm.exception))
         self.assertNotIn("ADH:@SECLEVEL=0", probados)
         self.assertEqual(enviado, [])
         with self.assertRaises(IOError):
             self.d.mk_huella_presentada("p001")
+
+    def test_router_que_cierra_dice_que_revisar_y_probar_no_lo_corta(self):
+        """Corrección de defecto (lab 2026-10-15): el MikroTik cerraba la API-SSL sin contestar y
+        «Probar» enseñaba «TLS handshake falló con los 2 cifrados probados (… UNEXPECTED_E» cortado a 200
+        caracteres, sin decir qué hacer. Ahora el mensaje empieza por lo que hay que revisar en el router
+        y la ficha no lo recorta."""
+        import puntos_web
+        eof = OSError("[SSL: UNEXPECTED_EOF_WHILE_READING] EOF occurred in violation of protocol (_ssl.c:1029)")
+        probados, enviado = self.ssl_falso(None, falla=eof)
+        with self.assertRaises(IOError) as cm:
+            self.conectar()
+        txt = str(cm.exception)
+        self.assertTrue(txt.startswith("el MikroTik cerró la API-SSL sin contestar al saludo TLS"), txt)
+        self.assertLess(txt.index("certificate=none"), txt.index("UNEXPECTED_EOF"))
+        self.assertIn("Detalle de los 3 cifrados probados", txt)
+        self.assertEqual(probados, ["ADH:@SECLEVEL=0", "DEFAULT:@SECLEVEL=0", None])
+        self.assertEqual(enviado, [])
+        ok, msg = puntos_web.probar_api(self.d, "p001")
+        self.assertFalse(ok)
+        self.assertIn("/ip service set api-ssl certificate=none", msg)
 
     def test_huella_vieja_de_api_anonima_se_respeta(self):
         """Conservación: un router que se fijó sin certificado (sha256 de nada) sigue conectando."""
@@ -345,13 +390,16 @@ class FichaHuella(_Panel):
         """La ficha la pide por fetch; el JSON trae la huella en bloques, el comando de RouterOS y
         «La huella coincide: confirmar»; confirmar vuelve a leerla y la guarda con quién."""
         h = self.get("/puntos/p001")
-        self.assertIn("Sin huella confirmada", h)
+        self.assertIn("Sin huella fijada: el panel conecta", h)
         self.assertIn("data-pedir=1", h)
         j = json.loads(self.get("/puntos/p001/huella"))
         self.assertEqual(j["texto"], self.presenta)
         caja = j["html"]
         self.assertIn("c3c3 c3c3 c3c3 c3c3 c3c3 c3c3 c3c3 c3c3<br>c3c3", caja)
-        self.assertIn('/certificate print detail where name~&quot;ids-promax&quot;', caja)
+        self.assertIn("El router presenta un certificado", caja)
+        self.assertIn("/ip service print detail where name=api-ssl", caja)
+        self.assertIn("/certificate print detail where name=&lt;certificado&gt;", caja)
+        self.assertNotIn("ids-promax", caja)
         self.assertIn("fingerprint", caja)
         self.assertIn("La huella coincide: confirmar", caja)
         self.assertIn("name=huella value='%s'" % self.presenta, caja)
@@ -370,6 +418,22 @@ class FichaHuella(_Panel):
         # el mismo formulario otra vez no repite nada
         r, jj = self.ajax("/puntos/p001/api", {"accion": "confirmar_huella", "huella": self.presenta, "op": tok})
         self.assertEqual(self.leidas, ["p001", "p001"])
+
+    def test_sin_certificado_no_hay_huella_que_fijar(self):
+        """Capacidad nueva (2026-10-15): con la API-SSL sin certificado la ficha lo dice, sin botón de
+        confirmar, y una «huella» de nada no se puede confirmar a mano."""
+        self.presenta = hashlib.sha256(b"").hexdigest()
+        j = json.loads(self.get("/puntos/p001/huella"))
+        self.assertEqual(j["texto"], "sin certificado")
+        self.assertIn("El router no presenta certificado (cifrado anónimo): no hay huella que fijar", j["html"])
+        self.assertNotIn("La huella coincide: confirmar", j["html"])
+        tok = self.token_de(self.get("/puntos/p001"), "papiProbar")
+        n = len(self.leidas)
+        r, jj = self.ajax("/puntos/p001/api", {"accion": "confirmar_huella", "huella": self.presenta, "op": tok})
+        self.assertEqual(r.status, 400)
+        self.assertIn("no hay huella que fijar", jj["mensaje"])
+        self.assertEqual(len(self.leidas), n)
+        self.assertFalse(self.guardados().get("p001", {}).get("CERT_FP"))
 
     def test_si_cambio_al_confirmar_no_se_guarda(self):
         caja = json.loads(self.get("/puntos/p001/huella"))["html"]
@@ -432,10 +496,12 @@ class FichaHuella(_Panel):
         self.assertEqual(self.p.pedir("GET", "/puntos/p001/huella", cookie=olga).status, 403)
         self.assertFalse(self.guardados().get("p001", {}).get("CERT_FP"))
 
-    def test_probar_sin_huella_dice_por_que_y_no_manda_la_clave(self):
-        """«Probar la conexión» con la huella sin confirmar: el modal dice que falta confirmarla."""
+    def test_probar_con_huella_distinta_dice_por_que_y_no_manda_la_clave(self):
+        """«Probar la conexión» con una huella fijada y otro certificado en el router: el modal dice que
+        es distinto del confirmado y la clave no sale."""
         enviado = []
         d = self.p.d
+        d.confirmar_huella("p001", "ab" * 32, "ana")
 
         class Sk:
             def getpeercert(self, binary_form=False):
@@ -452,7 +518,7 @@ class FichaHuella(_Panel):
         tok = self.token_de(h, "papiProbar")
         r, j = self.ajax("/puntos/p001/api", {"accion": "probar", "user": "ids-api", "pass": "clave-api", "op": tok})
         self.assertEqual(r.status, 502)
-        self.assertIn("sin confirmar", j["mensaje"])
+        self.assertIn("distinto del confirmado", j["mensaje"])
         self.assertEqual(enviado, [])
 
 
@@ -556,6 +622,8 @@ class Textos(_Panel):
     def test_documentacion(self):
         doc = self.p.d.documentacion_page(pagina="todo")
         for txt in ("La huella coincide: confirmar", "Fijada automáticamente", "Desbanear IP del MikroTik",
+                    # la API-SSL va sin certificado (2026-10-15) y la doc dice qué revisar en el router
+                    "API-SSL sin certificado", "/ip service set api-ssl certificate=none",
                     "verify-server-certificate", "ids-maat-ca-",
                     # el script no lleva firewall ni rutas (2026-10-15): lo dice y explica la limpieza
                     "Firewall y rutas del router: los gestionas tú", "no lleva reglas de firewall ni rutas",

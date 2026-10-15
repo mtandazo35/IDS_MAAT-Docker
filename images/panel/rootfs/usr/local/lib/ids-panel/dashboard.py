@@ -1177,10 +1177,11 @@ def olvidar_router(pid):
     return True
 
 # --- Huella del certificado API-SSL de cada router (VPN-06) ---------------------------------------
-# Antes la primera conexion fijaba sola la huella (TOFU sin preguntar) y en esa MISMA conexion
-# mandaba la clave de ids-api: si esa primera vez habia alguien en medio, se llevaba la clave.
-# Ahora sin huella confirmada no hay /login: mk_conectar lee la huella, cierra y lo dice; un
-# administrador la compara con la del router y la confirma en la ficha del punto (API).
+# La API-SSL va SIN certificado (decision del dueno 2026-10-15, como en el proyecto original): el
+# panel negocia el cifrado anonimo (ADH) y hace /login protegido por el tunel OpenVPN del punto.
+# La huella es opcional: si el router presenta un certificado, un administrador puede fijar su
+# huella en la ficha (API) y desde entonces el panel exige ESE certificado (sin ADH, para que nadie
+# rebaje la conexion) y con otro no manda la clave. Nunca se fija sola (VPN-06).
 RE_HUELLA_SHA256 = re.compile(r"^[0-9a-f]{64}\Z")
 SHA256_VACIO = _hashlib.sha256(b"").hexdigest()   # API-SSL sin certificado (cifrado anonimo)
 HUELLA_VISTA_S = 600
@@ -1192,10 +1193,17 @@ def normalizar_huella(v):
     return str(v or "").strip().lower().replace(":", "").replace(" ", "")
 
 
+def huella_fijada(r):
+    """La huella que el panel exige a ese router ("" si ninguna). Una vieja de un API-SSL sin
+    certificado (sha256 de nada) no identifica a nadie: cuenta como ninguna."""
+    fp = normalizar_huella((r or {}).get("CERT_FP"))
+    return "" if fp == SHA256_VACIO else fp
+
+
 def huella_estado(r):
     """"confirmada" (la confirmo un administrador), "automatica" (la fijo sola una conexion de
-    antes de VPN-06: se sigue usando) o "sin" (no hay: no se manda la clave)."""
-    if not normalizar_huella((r or {}).get("CERT_FP")):
+    antes de VPN-06: se sigue exigiendo) o "sin" (no hay: el panel conecta sin exigir certificado)."""
+    if not huella_fijada(r):
         return "sin"
     return "confirmada" if (r or {}).get("CERT_FP_QUIEN") else "automatica"
 
@@ -1219,6 +1227,8 @@ def confirmar_huella(pid, fp, quien):
     fp = normalizar_huella(fp)
     if not RE_HUELLA_SHA256.match(fp):
         raise ValueError("huella SHA-256 no válida")
+    if fp == SHA256_VACIO:
+        raise ValueError("el router no presenta certificado: no hay huella que fijar")
     with _ROUTERS_LOCK:
         if pid not in nodos.pids():
             raise ValueError("el punto %s no existe" % pid)
@@ -1238,22 +1248,18 @@ def confirmar_huella(pid, fp, quien):
 
 
 class HuellaNoConfirmada(RuntimeError):
-    """mk_conectar no hizo /login: la huella del certificado API-SSL del router no esta confirmada
-    (`motivo` "sin_confirmar") o no es la confirmada ("distinta"). La clave de ids-api no salio.
-    No es un OSError: no cuenta como router caido para la pausa de las tareas de fondo."""
+    """mk_conectar no hizo /login: el router presenta un certificado API-SSL distinto del de la
+    huella fijada (`motivo` "distinta"). La clave de ids-api no salio. Sin huella fijada ya no se
+    lanza (2026-10-15: se conecta sin exigir certificado). No es un OSError: no cuenta como router
+    caido para la pausa de las tareas de fondo."""
 
     def __init__(self, pid, motivo, presentada, esperada=""):
         self.pid, self.motivo, self.presentada, self.esperada = pid, motivo, presentada, esperada
-        if motivo == "distinta":
-            txt = ("el MikroTik de %s presenta un certificado API-SSL distinto del confirmado (confirmada "
-                   "%s…, presenta %s…): puede ser alguien en medio o un certificado cambiado en el router. "
-                   "No se le mandó la clave de ids-api. Revísalo en el router y, si es correcto, vuelve a "
-                   "confirmar la huella en Puntos → ficha del punto → API"
-                   % (pid, esperada[:16], presentada[:16]))
-        else:
-            txt = ("la huella del certificado API-SSL del MikroTik de %s está sin confirmar (presenta "
-                   "%s…): no se le mandó la clave de ids-api. Un administrador tiene que compararla con la "
-                   "del router y confirmarla en Puntos → ficha del punto → API" % (pid, presentada[:16]))
+        txt = ("el MikroTik de %s presenta un certificado API-SSL distinto del confirmado (confirmada "
+               "%s…, presenta %s…): puede ser alguien en medio o un certificado cambiado en el router. "
+               "No se le mandó la clave de ids-api. Revísalo en el router y, si es correcto, vuelve a "
+               "confirmar la huella en Puntos → ficha del punto → API (u olvídala si le quitaste el "
+               "certificado)" % (pid, esperada[:16], (presentada or "sin certificado")[:16]))
         super().__init__(txt)
 
 
@@ -1415,11 +1421,12 @@ def _mk_abrir_unix(ruta, timeout):
 def _mk_tls_wrap(host, port, timeout, con_certificado=False):
     """Envuelve en TLS probando cifrados en orden. RouterOS api-ssl SIN certificado usa
     cifrados ANONIMOS (ADH) -> hay que habilitarlos con @SECLEVEL=0 (Python los desactiva
-    por defecto). Con certificado usa los normales. Se prueban ambos para no exigir cert.
+    por defecto). Con certificado usa los normales. Se prueban ambos para no exigir cert: la
+    API-SSL va sin certificado (decision del dueno 2026-10-15).
 
-    Con `con_certificado` (mk_conectar y la lectura de la huella, VPN-06) no se prueba ADH y un
-    handshake sin certificado no vale: sin certificado la huella no identifica a nadie (seria la
-    misma para cualquier impostor).
+    Con `con_certificado` (un router con la huella de su certificado fijada, VPN-06) no se prueba
+    ADH y un handshake sin certificado no vale: si no, cualquiera en medio contestaria con el
+    cifrado anonimo y se saltaria la huella.
 
     `host` es "unix:<ruta del api.sock del punto>": el TCP lo pone el rele por el tunel y
     aqui solo se abre el socket local y se hace TLS encima, igual que antes contra la IP.
@@ -1466,10 +1473,18 @@ def _mk_tls_wrap(host, port, timeout, con_certificado=False):
         _MK_TLS_OK[(host, port)] = ciphers
         return sk
     _MK_TLS_OK.pop((host, port), None)
-    raise IOError("TLS handshake falló con los %d cifrados probados (%s)%s" % (
-        len(fallos), " | ".join(fallos),
-        (" — el panel exige el certificado ids-promax en API-SSL: pega en el router el bloque "
-         "«Certificado API-SSL» de la ficha del punto") if con_certificado else ""))
+    # Lo que hay que hacer va DELANTE del detalle de cada intento: la ficha recorta el mensaje.
+    if con_certificado:
+        pista = ("este punto tiene fijada la huella de un certificado y el panel lo exige: si le quitaste "
+                 "el certificado a la API-SSL del router, olvida la huella en la ficha del punto (API)")
+    else:
+        pista = ("revisa en el MikroTik /ip service print detail where name=api-ssl: habilitada, address "
+                 "con el sensor o vacía y, si tiene un certificado asignado, /ip service set api-ssl "
+                 "certificate=none (el panel conecta sin certificado)")
+    cerro = fallos and all("EOF" in x for x in fallos)
+    raise IOError("%s — %s. Detalle de los %d cifrados probados: %s" % (
+        "el MikroTik cerró la API-SSL sin contestar al saludo TLS" if cerro else "TLS handshake falló",
+        pista, len(fallos), " | ".join(fallos)))
 
 def mk_conectar(d, timeout=6):
     """Abre el socket y hace login. Devuelve el socket o lanza excepcion.
@@ -1479,20 +1494,18 @@ def mk_conectar(d, timeout=6):
     pid = nodos.exigir_pid(d.get("ROUTER_ID") or "")
     host = "unix:" + nodos.api_sock(pid)
     port = int(d.get("PORT") or 8729)
-    # RouterOS trae un certificado autofirmado: no hay CA que valide la cadena, asi que vale
-    # la huella que un administrador comparo con la del router y confirmo en la ficha (VPN-06).
-    # Sin huella confirmada, o con otra, NO hay /login: cualquiera en medio aceptaria el
-    # handshake y se llevaria la clave de ids-api. La huella es de ESE punto. Una huella vieja
-    # de un API-SSL sin certificado (sha256 de nada, fijada sola antes) se respeta como estaba.
-    esperada = normalizar_huella(d.get("CERT_FP"))
-    sock = _mk_tls_wrap(host, port, timeout, con_certificado=esperada != SHA256_VACIO)
+    # La API-SSL va sin certificado (decision del dueno 2026-10-15): sin huella fijada se hace
+    # /login con lo que presente el router, anonimo (ADH) o con certificado, y la clave de ids-api
+    # va protegida por el tunel OpenVPN del punto. Con la huella de un certificado fijada en la
+    # ficha (VPN-06) se exige ESE certificado: con otro, o sin el, NO hay /login. La huella es de
+    # ESE punto; la que presenta queda vista para la ficha, que ofrece fijarla.
+    esperada = huella_fijada(d)
+    sock = _mk_tls_wrap(host, port, timeout, con_certificado=bool(esperada))
     fp = _hashlib.sha256(sock.getpeercert(binary_form=True) or b"").hexdigest()
     _ver_huella(pid, fp)
-    if fp != esperada:
+    if esperada and fp != esperada:
         try: sock.close()
         except Exception: pass
-        if not esperada:
-            raise HuellaNoConfirmada(pid, "sin_confirmar", fp)
         _avisar_huella_distinta(pid, esperada, fp)
         raise HuellaNoConfirmada(pid, "distinta", fp, esperada)
     sock.settimeout(timeout)
@@ -1519,12 +1532,13 @@ def mk_conectar(d, timeout=6):
 def mk_huella_presentada(pid, timeout=8):
     """SHA-256 (hex) del certificado que presenta AHORA el API-SSL del router del punto: por su
     relé y con el mismo TLS que mk_conectar, SIN /login (no sale ninguna clave). Es lo que la ficha
-    enseña para comparar con el router y lo que se comprueba al confirmar (VPN-06). Lanza IOError
-    si no conecta o el router no presenta certificado."""
+    enseña para comparar con el router y lo que se comprueba al confirmar (VPN-06). SHA256_VACIO si
+    el router no tiene certificado (cifrado anonimo: no hay huella que fijar). Lanza IOError si no
+    conecta, o si tiene una huella fijada y el router no presenta certificado."""
     pid = nodos.exigir_pid(pid)
     d = cargar_mk_de(router_por_id(pid) or _router_vacio(pid))
     sock = _mk_tls_wrap("unix:" + nodos.api_sock(pid), int(d.get("PORT") or 8729), timeout,
-                        con_certificado=True)
+                        con_certificado=bool(huella_fijada(d)))
     try:
         fp = _hashlib.sha256(sock.getpeercert(binary_form=True) or b"").hexdigest()
     finally:
@@ -12970,9 +12984,9 @@ contexto, no por una sola firma). Desde ahí, con un botón, el panel empuja la 
 (8729) a través del túnel de su punto.</p>
 
 <h3>1) La API del router y su usuario</h3>
-<p>Los comandos de la ficha del punto (bloque VPN) ya dejan la <b>API-SSL</b> con el certificado
-<code>ids-promax</code> y el usuario <code>ids-api</code>, que solo puede entrar desde el sensor y por el
-túnel. La API no se abre a internet ni a tu LAN.</p>
+<p>Los comandos de la ficha del punto (bloque VPN) crean el usuario <code>ids-api</code>, que solo puede
+entrar desde el sensor y por el túnel, y no tocan la <b>API-SSL</b> del router: va <b>sin certificado</b>
+(ver «La API del router: API-SSL sin certificado»). El script no abre la API a internet ni a tu LAN.</p>
 
 <h3>2) La clave del usuario API</h3>
 <p>La eliges tú (<code>&lt;CLAVE-API&gt;</code> en los comandos) y la pones en la ficha del punto
@@ -13410,31 +13424,31 @@ conectar, la ficha dice «se comprobará cuando el MikroTik conecte»; conectado
 esperarla (dice «comprobando…» y la trae enseguida) y la recuerda 10 minutos.</p>
 <p>Si el script del router trae una línea <code># AVISO:</code> (por ejemplo, un punto dado de alta antes
 de la verificación del servidor), la ficha la enseña además en un aviso rojo encima de los comandos.</p>
-<h3>La huella del certificado de la API</h3>
-<p>El panel habla con la API del MikroTik por <b>API-SSL</b> y le manda la clave de <code>ids-api</code>
-(que puede escribir en el router). El certificado del router es autofirmado: no hay ninguna autoridad que
-diga que es el tuyo, así que lo identifica su <b>huella SHA-256</b>, y esa huella la confirma una persona.
-<b>Sin huella confirmada, el panel no manda la clave</b>: conecta, lee la huella, corta y lo dice.</p>
-<ol>
-<li>Con el MikroTik conectado, en <b>Puntos &rarr; ficha &rarr; API</b> sale la huella que presenta el
-router, en bloques de 4 caracteres.</li>
-<li>En el router: <code>/certificate print detail where name~"ids-promax"</code> y mira el campo
-<code>fingerprint</code> (la misma huella, seguida). Si la API-SSL usa otro certificado,
-<code>/ip service print detail where name=api-ssl</code> dice cuál.</li>
-<li>Si coinciden, <b>La huella coincide: confirmar</b>. El panel vuelve a leer la huella del router y
-solo la guarda si sigue siendo la que viste; queda en el Registro quién la confirmó. Desde ahí la API
-funciona como siempre (cuarentena, espejo, reglas, baja).</li>
-</ol>
+<h3>La API del router: API-SSL sin certificado</h3>
+<p>El panel habla con la API del MikroTik por <b>API-SSL</b> (8729) a través del túnel del punto y le
+manda la clave de <code>ids-api</code> (que puede escribir en el router). La API-SSL va <b>sin
+certificado</b>: RouterOS negocia entonces un cifrado anónimo y la clave va protegida por el túnel
+OpenVPN, en el que el MikroTik comprueba el certificado del servidor. El script del alta no crea
+certificados ni toca <code>/ip service api-ssl</code>.</p>
 <ul>
-<li><b>Fijada automáticamente.</b> Los puntos de antes de este cambio fijaron la huella solos en su
-primera conexión. Se sigue usando, sin cortar nada; la ficha la marca así y en <b>Revisar la huella</b>
-se compara y se confirma igual.</li>
-<li><b>Huella distinta.</b> Si el router presenta otra, la ficha lo dice en rojo (puede ser una
-suplantación o un certificado cambiado en el router) y el panel no le manda la clave; el Registro lo
-apunta una vez. Si regeneraste tú el certificado, compara la nueva en el router y pulsa <b>Volver a
-confirmar</b>. <b>Olvidar la huella</b> la borra y la API queda parada hasta confirmar otra.</li>
-<li><b>Sin certificado</b> (API-SSL sin <code>ids-promax</code>) no hay nada que confirmar: pega en el
-router el bloque «Certificado API-SSL» de la ficha.</li>
+<li><b>Probar la conexión</b> (ficha &rarr; API) dice si entra. Si contesta «el MikroTik cerró la API-SSL
+sin contestar al saludo TLS», revisa en el router <code>/ip service print detail where name=api-ssl</code>:
+que esté habilitada, que <code>address</code> incluya al sensor o esté vacía y, si tiene un certificado
+asignado (por ejemplo <code>ids-promax</code>, de un alta anterior), déjala sin él:
+<code>/ip service set api-ssl certificate=none</code>.</li>
+<li><b>Fijar la huella (opcional).</b> Si le pones un certificado a la API-SSL del router, la ficha enseña
+su <b>huella SHA-256</b> en bloques de 4 caracteres. Compárala en el router con <code>/certificate print
+detail</code> (el campo <code>fingerprint</code> del certificado que diga <code>/ip service print detail
+where name=api-ssl</code>) y pulsa <b>La huella coincide: confirmar</b>: el panel vuelve a leerla y solo
+la guarda si sigue siendo la que viste; queda en el Registro quién la confirmó. Desde ahí el panel exige
+ese certificado.</li>
+<li><b>Fijada automáticamente.</b> Los puntos de antes fijaron la huella solos en su primera conexión. Se
+sigue exigiendo igual; la ficha la marca así y en <b>Revisar la huella</b> se compara y se confirma.</li>
+<li><b>Huella distinta.</b> Con una huella fijada, si el router presenta otro certificado la ficha lo dice
+en rojo (puede ser una suplantación o un certificado cambiado en el router) y el panel no le manda la
+clave; el Registro lo apunta una vez. Si lo cambiaste tú, compara el nuevo en el router y pulsa
+<b>Volver a confirmar</b>. <b>Olvidar la huella</b> la borra y el panel vuelve a conectar sin exigir
+certificado (hazlo también si le quitaste el certificado al router).</li>
 <li><b>Puerto 8728</b> (API sin TLS): no hay certificado ni huella, y la clave va protegida solo por el
 túnel. La ficha recomienda API-SSL (8729).</li>
 </ul>
@@ -13479,8 +13493,9 @@ alta y lo del espejo:</p>
 /user group remove [find name=ids-api]
 /certificate remove [find name~"^ids-maat-ca-p003"]
 /file remove [find name~"^ids-maat-ca-p003"]</code></pre>
-<p>El certificado <code>ids-promax</code> de la API-SSL no se borra: puede usarlo otro servicio del
-router.</p>
+<p>Si el router tiene el certificado <code>ids-promax</code> de un alta anterior, la baja no lo borra:
+puede usarlo otro servicio del router (si no lo usa nadie: <code>/certificate remove [find
+name=ids-promax]</code>).</p>
 <p>Y devolver a la regla fasttrack sus valores originales (si se retiró el espejo desde el panel antes de
 la baja, ya está hecho).</p>
 <h3>Límites que conviene tener claros</h3>

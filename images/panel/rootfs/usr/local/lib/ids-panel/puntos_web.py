@@ -2594,7 +2594,7 @@ def ficha(h, pid, mensaje="", codigo=200, ok=False, extra_espejo=""):
     # la huella se lee por el tunel: sin el MikroTik conectado (lo normal tras el alta) la lectura
     # esperaba hasta 15 s y la ficha tardaba eso en abrir. Solo se pide con el router conectado, y
     # ni asi frena la ficha: se pide por fetch despues de pintarla (GET /puntos/<pid>/huella) y se
-    # guarda 10 min por punto (P4). Sin huella confirmada no se manda la clave (VPN-06).
+    # guarda 10 min por punto (P4). La huella es opcional: sin certificado no hay (2026-10-15).
     hc = huella_cacheada(d, pid)
     caja_huella = huella_caja(d, pid, p, rt, hc, pedir=sit["clave"] == "conectada" and not hc)
     api_html = (
@@ -2608,9 +2608,9 @@ def ficha(h, pid, mensaje="", codigo=200, ok=False, extra_espejo=""):
         "<div class=acciones><button class=btn type=submit>Guardar</button>"
         "<button class='btn sec' type=submit name=accion value=probar onclick='return papiProbar(this)'>"
         "Probar la conexión</button></div></form>"
-        "<p class=hint>La conexión va por el relé del túnel del punto (API-SSL, puerto %s del router) con TLS "
-        "extremo a extremo. La clave se guarda cifrada con la clave maestra y no se vuelve a mostrar; solo "
-        "se manda al router cuya huella confirmaste.</p>%s"
+        "<p class=hint>La conexión va por el relé del túnel del punto (API-SSL, puerto %s del router), sin "
+        "certificado salvo que fijes uno abajo. La clave se guarda cifrada con la clave maestra y no se "
+        "vuelve a mostrar.</p>%s"
         % (esc(pid), campo_token(), esc(rt.get("USER", "")), "(guardada)" if rt.get("PASS") else "",
            "dejar vacío para conservar" if rt.get("PASS") else "clave del usuario ids-api",
            " checked" if rt.get("ENABLED") == "1" else "", esc(p.get("api_puerto") or 8729),
@@ -2710,9 +2710,12 @@ def ficha(h, pid, mensaje="", codigo=200, ok=False, extra_espejo=""):
 
 HUELLA_CACHE_S = 600
 RE_HUELLA_API = re.compile(r"[0-9a-f]{64}")
-# El comando de RouterOS (6.49 y v7) que da la huella del certificado de la API-SSL: el campo
-# `fingerprint` es el SHA-256 del certificado, en hexadecimal seguido.
-CMD_HUELLA_ROUTER = '/certificate print detail where name~"ids-promax"'
+# Los comandos de RouterOS (6.49 y v7) que dan la huella del certificado de la API-SSL: el primero
+# dice cual usa y el segundo su `fingerprint`, el SHA-256 del certificado en hexadecimal seguido.
+CMD_SERVICIO_API = "/ip service print detail where name=api-ssl"
+CMD_HUELLA_ROUTER = "/certificate print detail where name=<certificado>"
+# lo que «presenta» un router sin certificado (cifrado anonimo): no hay huella que fijar
+SHA256_VACIO = hashlib.sha256(b"").hexdigest()
 
 
 def huella_cacheada(d, pid):
@@ -2742,21 +2745,27 @@ def _huella_form(pid, fp, boton, titulo, texto, tono=""):
 
 
 def huella_caja(d, pid, p, rt, presentada="", error="", pedir=False):
-    """El estado de la huella del certificado API-SSL del router en la ficha (solo admin, VPN-06):
-    confirmada, fijada automaticamente (de antes: se usa y se puede revisar), sin confirmar (con la
-    que presenta el router y «La huella coincide: confirmar») o distinta (aviso rojo y «Volver a
-    confirmar»). `presentada`: la que presenta ahora el router, si se sabe; `pedir`: la ficha la
-    trae por fetch (GET /puntos/<pid>/huella) y sustituye esta caja."""
+    """El estado de la huella del certificado API-SSL del router en la ficha (solo admin, VPN-06).
+    La API-SSL va sin certificado (2026-10-15) y la huella es opcional: sin fijar (el panel conecta
+    sin exigir certificado; si el router presenta uno, su huella y «La huella coincide: confirmar»;
+    sin certificado, que no hay huella que fijar), confirmada, fijada automaticamente (de antes: se
+    exige y se puede revisar) o distinta (aviso rojo y «Volver a confirmar»). `presentada`: la que
+    presenta ahora el router, si se sabe; `pedir`: la ficha la trae por fetch (GET
+    /puntos/<pid>/huella) y sustituye esta caja."""
     if str(p.get("api_puerto") or "") == "8728":
         return ("<p class=hint>Este punto usa la API sin TLS (puerto 8728): no hay certificado ni huella que "
                 "comprobar y la clave de <code>ids-api</code> va protegida solo por el túnel. Se recomienda "
-                "API-SSL (puerto 8729, con el certificado <code>ids-promax</code>).</p>")
-    fijada = d.normalizar_huella(rt.get("CERT_FP")) if hasattr(d, "normalizar_huella") else \
-        str(rt.get("CERT_FP") or "").lower().replace(":", "")
+                "API-SSL (puerto 8729).</p>")
+    if hasattr(d, "huella_fijada"):
+        fijada = d.huella_fijada(rt)
+    else:
+        fijada = str(rt.get("CERT_FP") or "").lower().replace(":", "")
+        fijada = "" if fijada == SHA256_VACIO else fijada
     est = d.huella_estado(rt) if hasattr(d, "huella_estado") else ("confirmada" if fijada else "sin")
-    comparar = ("<p class=hint>Compárala en el router con <code>%s</code> (el campo <code>fingerprint</code>; "
-                "si la API-SSL usa otro certificado, <code>/ip service print detail where name=api-ssl</code> "
-                "dice cuál).</p>" % esc(CMD_HUELLA_ROUTER))
+    sin_cert = presentada == SHA256_VACIO
+    comparar = ("<p class=hint>Compárala en el router: <code>%s</code> dice qué certificado usa la API-SSL y "
+                "<code>%s</code> da su <code>fingerprint</code> (la misma huella, seguida).</p>"
+                % (esc(CMD_SERVICIO_API), esc(CMD_HUELLA_ROUTER)))
     out = "<h3 style='font-size:14px;margin:14px 0 6px'>Huella del certificado API-SSL</h3>"
     if fijada and presentada and presentada != fijada:
         out += ("<div class='aviso err'><b>El MikroTik presenta un certificado distinto del confirmado.</b> Puede "
@@ -2778,20 +2787,24 @@ def huella_caja(d, pid, p, rt, presentada="", error="", pedir=False):
                 % (esc(rt.get("CERT_FP_QUIEN")), (" el " + esc(cuando)) if cuando else "", huella_bloques(fijada)))
     elif est == "automatica":
         out += ("<div class='aviso amb'><b>Fijada automáticamente</b> en la primera conexión, antes de que el "
-                "panel pidiera confirmarla. Se sigue usando; conviene revisarla.</div><p>%s</p>"
+                "panel pidiera confirmarla. Se sigue exigiendo; conviene revisarla.</div><p>%s</p>"
                 "<details><summary>Revisar la huella</summary>%s%s</details>"
                 % (huella_bloques(fijada), comparar,
                    _huella_form(pid, fijada, "La huella coincide: confirmar", "Confirmar la huella",
                                 "Confirmas que comparaste esta huella con la del router y es la misma.")))
     else:
-        out += ("<div class='aviso info'>Sin huella confirmada: el panel <b>no manda la clave</b> de "
-                "<code>ids-api</code> al router hasta que compruebes que la huella que presenta es la de tu "
-                "MikroTik.</div>")
-        if presentada:
-            out += ("<p>Huella que presenta el router:<br>%s</p>%s" % (huella_bloques(presentada), comparar)
+        out += ("<div class='aviso info'>Sin huella fijada: el panel conecta con la API-SSL tal como la tenga "
+                "el router (lo normal, sin certificado) y la clave de <code>ids-api</code> va protegida por el "
+                "túnel.</div>")
+        if sin_cert:
+            out += "<p>El router no presenta certificado (cifrado anónimo): no hay huella que fijar.</p>"
+        elif presentada:
+            out += ("<p>El router presenta un certificado. Si quieres que el panel lo exija, compara su huella "
+                    "y fíjala:<br>%s</p>%s" % (huella_bloques(presentada), comparar)
                     + _huella_form(pid, presentada, "La huella coincide: confirmar", "Confirmar la huella",
                                    "Confirmas que comparaste esta huella con la del router y es la misma. Desde "
-                                   "ahora el panel le manda la clave de ids-api."))
+                                   "ahora el panel solo le manda la clave de ids-api si presenta este "
+                                   "certificado."))
         elif pedir:
             # sin JavaScript nadie la pide: el enlace la lee en el servidor y trae el boton de confirmar
             out += ("<p>Huella que presenta el router: <code id=phuella>comprobando…</code><noscript> "
@@ -2805,10 +2818,12 @@ def huella_caja(d, pid, p, rt, presentada="", error="", pedir=False):
     elif fijada and pedir:
         out += ("<p class=hint>Huella que presenta ahora el router: <code id=phuella>comprobando…</code>"
                 "<noscript> <a href='/puntos/%s/huella?ver=1'>Leer la huella ahora</a></noscript></p>" % esc(pid))
+    elif fijada and error:
+        out += aviso(error, "amb")
     if fijada:
         out += ("<form method=post action='/puntos/%s/api' onsubmit=\"return ask(this,'Olvidar la huella',"
-                "'El panel dejará de mandar la clave de ids-api a este router hasta que confirmes la huella "
-                "que presente. Hazlo solo si cambiaste su certificado.','Olvidar','danger')\">"
+                "'El panel dejará de exigir este certificado y conectará con la API-SSL tal como la tenga el "
+                "router. Hazlo si le quitaste o cambiaste el certificado.','Olvidar','danger')\">"
                 "<input type=hidden name=accion value=olvidar_huella>%s"
                 "<button class='btn sec' type=submit>Olvidar la huella</button></form>" % (esc(pid), campo_token()))
     return "<div id=phuellabox data-pid='%s'%s>%s</div>" % (esc(pid), " data-pedir=1" if pedir else "", out)
@@ -2834,7 +2849,8 @@ def huella_json(h, pid, consulta=None):
                 sha = v if isinstance(v, str) and RE_HUELLA_API.fullmatch(v) else ""
             except Exception as e:
                 error = "No se pudo leer la huella del router: %s" % str(e)[:200]
-        texto, caja = sha or "sin dato", huella_caja(d, pid, p, rt, sha, error)
+        texto = "sin certificado" if sha == SHA256_VACIO else (sha or "sin dato")
+        caja = huella_caja(d, pid, p, rt, sha, error)
     if (consulta or {}).get("ver"):
         return h._html(pagina(d, "Huella", "<div class=ptit><h1>Huella de %s</h1><a class='btn sec' "
                                            "href='/puntos/%s'>Volver a la ficha</a></div><div class=card>%s</div>"
@@ -2880,6 +2896,8 @@ def accion_api(h, pid, form, ajax=False):
             return "El usuario de la API tiene caracteres no válidos.", 400, False, ""
         if acc == "confirmar_huella" and not RE_HUELLA_API.fullmatch(huella):
             return "Falta la huella que comparaste (64 caracteres hexadecimales).", 400, False, ""
+        if acc == "confirmar_huella" and huella == SHA256_VACIO:
+            return "El router no presenta certificado: no hay huella que fijar.", 400, False, ""
         return None
 
     def hacer():
@@ -2894,8 +2912,7 @@ def accion_api(h, pid, form, ajax=False):
             r.update({"CERT_FP": "", "CERT_FP_QUIEN": "", "CERT_FP_CUANDO": ""})
             d.guardar_routers(rs)
             _bit(d, "PUNTO-API", pid=pid, objetivo="huella", resultado="olvidada")
-            return ("Huella olvidada: el panel no manda la clave de ids-api a este router hasta que confirmes "
-                    "la huella que presente.", 200, True, "")
+            return ("Huella olvidada: el panel conecta con este router sin exigir certificado.", 200, True, "")
         r["USER"] = user
         if form.get("pass"):
             r["PASS"] = form["pass"]             # guardar_routers la cifra (router:<pid>:PASS)
@@ -2938,8 +2955,8 @@ def confirmar_huella(d, pid, huella):
         return "No se pudo guardar la huella: %s" % str(e)[:160], 500, False, ""
     _bit(d, "PUNTO-API", pid=pid, objetivo="huella", resultado="reconfirmada" if antes else "confirmada",
          extra="sha256=%s…%s" % (huella[:16], (" antes=%s…" % antes[:16]) if antes and antes != huella else ""))
-    return ("Huella confirmada: desde ahora el panel habla con la API de este MikroTik y le manda la clave de "
-            "ids-api solo si presenta esta huella.", 200, True, "")
+    return ("Huella confirmada: desde ahora el panel solo le manda la clave de ids-api a este MikroTik si "
+            "presenta este certificado.", 200, True, "")
 
 
 # --------------------------------------------------------------------------------------------
@@ -3060,7 +3077,8 @@ def probar_api(d, pid):
                     nombre = a[len("=name="):]
         return (True, "conexión OK con '%s'." % (nombre or pid)) if ok else (False, err or "sin respuesta")
     except Exception as e:
-        return False, "no conectó: %s" % str(e)[:200]
+        # 600: lo que hay que hacer en el router va delante del detalle y con 200 se cortaba
+        return False, "no conectó: %s" % str(e)[:600]
 
 
 def _plan_html(pe, pid, con_boton=False, titulo=""):

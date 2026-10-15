@@ -161,14 +161,16 @@ Petición (una por conexión, JSON + `\n`): `{"v":1,"op_id":"<uuid4>","token":"<
 - El panel genera el `op_id` y lo guarda en `operaciones.json` **antes** de llamar.
 - **Clave:** el orquestador entrega `clave` (y `comandos` con la clave) una sola vez, en el primer
   `op.estado` tras terminar, y guarda solo su hash. El panel la muestra en esa respuesta (usuario,
-  clave y bloques v7/v6 y certificado, cada uno con «Copiar») y desde 2026-10-15 la **guarda cifrada**
+  clave y bloques v7/v6, cada uno con «Copiar») y desde 2026-10-15 la **guarda cifrada**
   con la clave maestra (`conf/vpn-claves.json`, 600) junto a `clave_id`, la huella de la clave vigente
   que dan el resultado y `punto.comandos`. La ficha (solo admin, `Cache-Control: no-store`) pone la
   clave en los comandos solo si `clave_id` coincide; si no (punto anterior, regenerada por la CLI o
   entrega perdida), lo dice y ofrece regenerarla. La baja la borra.
-- Comandos: el bloque de `punto.comandos` se parte por sus marcas (`# --- Certificado API-SSL`,
-  `# --- RouterOS v7`, `# --- RouterOS v6`); el v7 primero y el v6 plegado (con `ros_version` 7, el v7 sale como la versión declarada). Si el
-  formato cambiara, se muestra entero.
+- Comandos: el bloque de `punto.comandos` se parte por sus marcas (`# --- RouterOS v7`,
+  `# --- RouterOS v6`); el v7 primero y el v6 plegado (con `ros_version` 7, el v7 sale como la versión declarada). Si el
+  formato cambiara, se muestra entero. La marca `# --- Certificado API-SSL` ya no viene en el script
+  (decisión del dueño, 2026-10-15: la API-SSL del router va sin certificado, [OPERACION.md](OPERACION.md)
+  §1.1), pero el panel la sigue reconociendo si la trae un orquestador viejo.
 - Errores en lenguaje claro: `INVALIDO` «Los datos no son válidos: …», `CONFLICTO` «No se puede
   hacer ahora: … Caben ahora: …», `CONFLICTO_PUERTO`, `NO_EXISTE`, `REVERTIDA` «falló y se deshizo
   todo», `FALLO`, token inválido, demasiadas peticiones, y sin socket/sin token («No se puede hablar

@@ -65,8 +65,9 @@ Reglas para todas las fases:
   - desde fuera, solo se ve el puerto OpenVPN; desde el túnel, solo el 37008;
   - un CHR o MikroTik con **RouterOS 6.49** conecta con el TLS moderno. Si no lo hace, se prueba la
     «compatibilidad v6» (primero `SECLEVEL=0`, después `legacy`) y se anota el resultado;
-  - el certificado `ids-promax` se crea con el bloque de [OPERACION.md](OPERACION.md) §1.1 en 6.49
-    y en v7, y la API-SSL responde a través del relé.
+  - la API-SSL responde a través del relé en 6.49 y en v7 con `certificate=none` (cifrado anónimo;
+    decisión del dueño, 2026-10-15) y con un certificado asignado ([OPERACION.md](OPERACION.md)
+    §1.1).
 - **Mediciones de capacidad** de §2, anotadas en el repo. **Con ellas se fijan los perfiles y el
   número de puntos por VPS antes de invertir en el panel.**
 - **Hecho cuando:** un MikroTik real o un CHR manda el espejo por la VPN, Suricata alerta y la tabla
@@ -87,7 +88,8 @@ Reglas para todas las fases:
   - una cuarentena contra un CHR de laboratorio aparece con `comment=ids-maat:p001:<id>` y al
     liberarla desaparece;
   - si el CHR cae a mitad del envío, la cuarentena queda en `error` y se reintenta;
-  - la API va por el relé y con la huella fijada; una huella cambiada se rechaza.
+  - la API va por el relé, también con un router sin certificado; con la huella fijada, un
+    certificado cambiado se rechaza sin mandar la clave.
 - **Hecho cuando:** se ven las alertas en el panel, la cuarentena funciona de ida y vuelta, y las
   pruebas pasan en CI (las del CHR, en un job de laboratorio marcado).
 
@@ -253,7 +255,7 @@ El canario es un VPS de pruebas con 2 puntos que **repiten la misma LAN** (dos C
 | 7 | Desperdicio y Mbps reales por punto con el recorte | ancho de banda del VPS |
 | 8 | CPU del router con los vigilados acelerados solo a partir de 10 KB | coste en el MikroTik |
 | 9 | **RouterOS 6.49** (el más antiguo de la flota y la versión mínima): TLS moderno; si falla, `SECLEVEL=0` y luego `legacy` | decisión d de ARQUITECTURA §10 |
-| 10 | `connect-to` por nombre DNS y el certificado `ids-promax` en 6.49 (tiempo del `sign`, flags K/T) | nombre DNS por empresa y alta de la API-SSL |
+| 10 | `connect-to` por nombre DNS | nombre DNS por empresa |
 | 11 | v7 con `cipher=aes256-gcm` y `verify-server-certificate=yes`; **6.49** pegando el bloque tal cual: `/file print file=` + `/file set contents=` (línea de ~1,3 KB) + `/certificate import` dejan `ids-maat-ca-<pid>.txt_0` con flag T, y el túnel conecta con la verificación activa; con un `connect-to` que no está en el certificado, no conecta | el script v6/v7 de [OPERACION.md](OPERACION.md) §1.4 |
 | 11b | Router dado de alta con el script anterior (ruta blackhole y bloque de aislamiento de `ids-vpn`), en 6.49 y v7: `/ip firewall filter remove [find comment="IDS ids-maat:<pid>"]` y `/ip route remove [find comment="IDS ids-maat:<pid>"]` quitan solo eso y no tocan el espejo (`IDS ids-maat:<pid>:espejo`) ni las cuarentenas; con el `accept` de la API del operador en su cadena `input`, la API del panel sigue entrando; el espejo sigue llegando; `/ping 100.64.N.1` desde el router responde (con el `vpn` recreado con la imagen nueva) | [OPERACION.md](OPERACION.md) §1.5 |
 | 12 | Con el túnel caído, por dónde sale el TZSP (sin ruta del IDS en el router) | dato para el operador ([RED-Y-FIREWALL.md](RED-Y-FIREWALL.md) §3.1) |
@@ -281,7 +283,7 @@ El canario es un VPS de pruebas con 2 puntos que **repiten la misma LAN** (dos C
 | 14 | OpenSSL 3 con RouterOS 6.49 | el v6 no conecta | prueba en F1a; `SECLEVEL=0` y después `legacy`, solo en ese punto; nada anterior a 6.49 |
 | 15 | Puertos OpenVPN abiertos a internet | fuerza bruta, CPU por scrypt | `meter` en el host, freno antes de scrypt, jaula `ids-vpn`, origen fijo opcional |
 | 16 | `/ip service … address=` pisa a otros sistemas | facturación sin API | usuario API exclusivo; el panel nunca toca la lista |
-| 17 | API sin certificado (ADH) o en claro | suplantación del router | API-SSL con certificado y huella confirmada por un administrador (VPN-06); una huella vacía heredada (ADH) se sigue aceptando y la ficha avisa para revisarla; con 8728 (en claro) el panel no conecta, porque habla siempre TLS |
+| 17 | API sin certificado (ADH) o en claro | suplantación del router | API-SSL sin certificado (ADH) admitida, y es lo normal, por decisión del dueño (2026-10-15): la clave de `ids-api` la protegen el túnel OpenVPN (el MikroTik verifica al servidor con la CA del VPS) y el netns del sensor; quien ponga certificado en el router puede fijar su huella, y desde entonces se exige ese certificado (sin ADH); una huella vacía heredada cuenta como sin huella; con 8728 (en claro) el panel no conecta, porque habla siempre TLS |
 | 18 | `tzsp-decap` en Python | techo de pps | `SO_RCVBUFFORCE`, comparar rx con tx; receptor en C/Go si hace falta |
 | 19 | Disco lleno | capturas vacías sin error | logrotate cada 30 min (`ids-logrotate.timer`) por tamaño (`maxsize 1G`, `rotate -1`, sin `maxage`); el orquestador comprime los rotados, poda por fecha a los 30 días y, si `/srv/ids` baja del 15 % libre, borra los rotados más viejos y avisa (`DISCO`, `RETENCION-REDUCIDA`; [ORQUESTADOR.md](ORQUESTADOR.md) §8.1) |
 | 20 | Actualización a medias o GHCR caído | instancias mezcladas | digests en `orq.db`, pull antes, serie y reversión |

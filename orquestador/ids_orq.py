@@ -726,17 +726,6 @@ def home_net(redes):
     return "[" + ",".join(redes) + "]"
 
 
-CERT_IDS_PROMAX = """# --- Certificado API-SSL ids-promax (6.49 y v7; si ya existe, solo la última línea) ---
-/certificate
-add name=ids-promax common-name=ids-promax \\
-    key-usage=key-cert-sign,crl-sign,digital-signature,tls-server,tls-client,data-encipherment,key-encipherment \\
-    days-valid=4576 trusted=yes
-/certificate sign ids-promax
-/certificate set ids-promax trusted=yes
-/ip service set api-ssl certificate=ids-promax
-"""
-
-
 # La CA del VPS va en el script del MikroTik (VPN-01): es pública. Solo pasa lo que cabe en una
 # cadena RouterOS sin escapar nada (base64, «-», espacios y saltos de línea): ni comillas, ni «$»,
 # ni «\», ni «[», ni «?» (que la terminal toma por la ayuda). `/file set contents=` admite como
@@ -800,6 +789,8 @@ def comandos_mikrotik(p, nombre_dns, clave=None, ca_pem=None, aviso_cert=None):
     ca = lineas_ca_mikrotik(pid, ca_pem if ca_pem is not None else leer_ca_pem())
     # Sin reglas de firewall ni rutas en el router (el user, 2026-10-15: «eso no va»): el script
     # solo crea la VPN y el usuario de la API. El firewall y las rutas del router son del operador.
+    # Tampoco certificado para la API-SSL (decision del dueno 2026-10-15): el panel habla con ella
+    # sin certificado y el script no toca /ip service api-ssl.
     comun = (
         "/user group add name=ids-api policy=read,write,api\n"
         "/user add name=ids-api group=ids-api address=%s/32 password=<CLAVE-API>\n" % sensor)
@@ -809,8 +800,6 @@ def comandos_mikrotik(p, nombre_dns, clave=None, ca_pem=None, aviso_cert=None):
         "# %s\n"
         "# Antes de pegar: el reloj del router en hora (/system ntp client). El certificado del\n"
         "# servidor vale desde 2 días antes de emitirse; con el reloj más atrasado, el MikroTik lo rechaza.\n"
-        "%s"
-        "#\n"
         "%s"
         "#\n"
         "# --- RouterOS v7 ---\n"
@@ -829,7 +818,6 @@ def comandos_mikrotik(p, nombre_dns, clave=None, ca_pem=None, aviso_cert=None):
         % (pid, p["nombre"], p["n"], p["puerto"], p["tun_net"], version,
            nota,
            cabecera_aviso,
-           CERT_IDS_PROMAX,
            ca,
            nombre_dns, p["puerto"], p["usuario"], pw, cifrado_v7,
            comun,
@@ -2180,10 +2168,15 @@ def huella_api(pid):
         t = ctx.wrap_socket(s, server_hostname=None)
         der = t.getpeercert(binary_form=True)
         t.close()
+    except ssl.SSLError as e:
+        # una API-SSL sin certificado (lo normal desde 2026-10-15) solo habla el cifrado anonimo
+        raise ErrorOrden("FALLO", "no hubo TLS con certificado con el router (%s): con la API-SSL sin "
+                                  "certificado no hay huella que fijar" % e)
     finally:
         s.close()
     if not der:
-        raise ErrorOrden("FALLO", "el router no presentó certificado (¿API-SSL sin ids-promax?)")
+        raise ErrorOrden("FALLO", "el router no presentó certificado (API-SSL sin certificado: no hay huella "
+                                  "que fijar)")
     return hashlib.sha256(der).hexdigest()
 
 

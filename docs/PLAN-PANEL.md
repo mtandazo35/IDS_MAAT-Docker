@@ -31,7 +31,8 @@ unas 17 500 líneas de Python con la stdlib). Tiene estas características:
 
 **Lo que funciona y se conserva:**
 
-- el cliente API de RouterOS en stdlib, con la huella fijada;
+- el cliente API de RouterOS en stdlib, con el cifrado anónimo para la API-SSL sin certificado y la
+  huella fijada para la que lo tiene;
 - el CSRF por `Origin`/`Sec-Fetch-Site`;
 - el respaldo del firewall antes de montar el espejo;
 - el plan del espejo, que coincide con lo que se aplica;
@@ -195,11 +196,13 @@ Los pasos y los errores están en [ORQUESTADOR.md](ORQUESTADOR.md) §11.1. En pa
 3. **Conectar el MikroTik:** pestañas **v7** y **v6** con bloques separados para copiar
    ([OPERACION.md](OPERACION.md) §1) y el indicador «Esperando conexión…».
 4. **API-SSL:** usuario, clave y «Probar».
-   - Se muestran la identidad, la versión y la **huella SHA-256** del certificado `ids-promax`,
-     junto con la instrucción «compárala con `/certificate print detail` en el router».
-   - Al confirmar, la huella queda fijada (TOFU) y cualquier otro certificado se rechaza.
-   - Si falta el certificado, se muestra el bloque de `ids-promax` ([OPERACION.md](OPERACION.md)
-     §1).
+   - Se muestran la identidad y la versión. La API-SSL del router va sin certificado (decisión del
+     dueño, 2026-10-15; [OPERACION.md](OPERACION.md) §1.1): sin huella fijada, el panel entra con
+     el cifrado anónimo y la clave de `ids-api` va protegida por el túnel.
+   - Si el router presenta un certificado, se muestra su **huella SHA-256** junto con la instrucción
+     «compárala con `/certificate print detail` en el router». Fijarla es opcional: al confirmar,
+     la huella queda fijada y cualquier otro certificado se rechaza.
+   - Sin certificado no hay huella que fijar, y la ficha lo dice.
 5. **Espejo:** el plan exacto y el aviso del respaldo, y después «Aplicar».
 6. **Verificación:** paquetes, Mbps, desperdicio y primer evento. Al terminar: «El envío a
    cuarentena está APAGADO: actívalo en la ficha del punto cuando lo decidas».

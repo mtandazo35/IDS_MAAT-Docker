@@ -86,7 +86,8 @@ Reglas del contrato:
 | 24 | §4.4: `max-clients 2`, sin `hand-window` (60 s) | `max-clients 16` y `hand-window 20`, sin `duplicate-cn` | auditoría VPN-03: las conexiones sin autenticar ocupan plaza y no llegan a fail2ban; 2 `nc` colgados dejaban fuera al MikroTik |
 | 25 | §3: certificado de servidor `CN=server-<pid>`; §5.12: el script sin CA ni verificación del servidor | `OU=server-<pid>`, `CN=<NOMBRE_DNS>`, `subjectAltName=DNS:<NOMBRE_DNS>`; el script importa la CA del VPS (`ids-maat-ca-<pid>`) y pone `verify-server-certificate=yes` en v6 y v7; añade `drop` de `input` y `forward` desde `ids-vpn` debajo del `accept` de la API (quitados después, fila 27); `punto.vpn.regenerar` renueva un certificado sin el nombre | auditoría VPN-01/VPN-02: el router no verificaba al servidor y no aislaba `ids-vpn`; RouterOS compara `connect-to` con el CN o el SAN |
 | 26 | §4.3: `suricata` con `cap_add: [NET_RAW, NET_ADMIN]` | `cap_add: [NET_RAW]` | auditoría VPN-05: af-packet no necesita `NET_ADMIN` (promisc y offloads los pone el `vpn`, `disable-offloading: false`) |
-| 27 | §5.12 (y fila 25): el script lleva la ruta blackhole `100.64.N.0/24` de distancia 250 y reglas de `/ip firewall filter` para `ids-vpn` | el script no lleva reglas de firewall ni rutas: certificado `ids-promax`, CA del VPS con `ovpn-client` y `verify-server-certificate=yes`, y usuario y grupo `ids-api` (`address=<sensor>/32`); los routers ya dados de alta quitan lo viejo con `/ip firewall filter remove [find comment="IDS ids-maat:<pid>"]` y `/ip route remove [find comment="IDS ids-maat:<pid>"]` | decisión del dueño (2026-10-15): el firewall y las rutas del router los gestiona el operador. Sin blackhole, si el túnel cae, el espejo sigue la ruta por defecto del router |
+| 27 | §5.12 (y fila 25): el script lleva la ruta blackhole `100.64.N.0/24` de distancia 250 y reglas de `/ip firewall filter` para `ids-vpn` | el script no lleva reglas de firewall ni rutas: certificado `ids-promax` (quitado después, fila 28), CA del VPS con `ovpn-client` y `verify-server-certificate=yes`, y usuario y grupo `ids-api` (`address=<sensor>/32`); los routers ya dados de alta quitan lo viejo con `/ip firewall filter remove [find comment="IDS ids-maat:<pid>"]` y `/ip route remove [find comment="IDS ids-maat:<pid>"]` | decisión del dueño (2026-10-15): el firewall y las rutas del router los gestiona el operador. Sin blackhole, si el túnel cae, el espejo sigue la ruta por defecto del router |
+| 28 | §5.12 (y fila 27): el script lleva el bloque «Certificado API-SSL ids-promax» (`/certificate add`, `sign` y `set trusted=yes`, y `/ip service set api-ssl certificate=ids-promax`) | el script no crea ningún certificado ni toca `/ip service api-ssl` (ni el certificado ni `address=`): la API-SSL del router se usa tal como esté (lo normal, `certificate=none`, con cifrado anónimo). `punto.api.huella` contesta `FALLO` «el router no presentó certificado (API-SSL sin certificado: no hay huella que fijar)» si el router no presenta certificado. Los routers dados de alta con el script anterior revisan `/ip service print detail where name=api-ssl` (OPERACION §1.1) | decisión del dueño (2026-10-15): API-SSL (8729) sin certificado, como el proyecto original; la clave de `ids-api` la protege el túnel. Quien ponga certificado en el router puede fijar su huella en el panel |
 
 ---
 
@@ -880,7 +881,7 @@ código `CANCELADA` y quedan en `orq.jsonl`; nunca se ejecutan (los `pid` no se 
 | `punto.estado` | `pid` o `*` | no | la entrada de `estado.json` |
 | `punto.logs` | `pid`, `parte`, `lineas` ≤ 500 | no | líneas (sin `password`/`key`) |
 | `punto.comandos` | `pid` | no | `comandos` sin la clave |
-| `punto.api.huella` | `pid` | no | `sha256` del certificado del router, vía el relé |
+| `punto.api.huella` | `pid` | no | `sha256` del certificado del router, vía el relé; `FALLO` si el router no presenta certificado (fila 28 de §0.2) |
 | `punto.medir` | `pid` | no | `memoria_actual_mb`, `memoria_pico_mb` (cgroup), `kernel_packets`, `kernel_drops`, `reglas_cargadas`, `tzsp` |
 | `reglas.actualizar` | `sin_descarga?` (revalida y reinicia con la release actual) | sí | `ts`, conteos |
 | `logs.reabrir` | `pid?` | no | por punto, OK/fallo |
@@ -963,15 +964,6 @@ sí, ya sustituida):
 # Antes de pegar: el reloj del router en hora (/system ntp client). El certificado del
 # servidor vale desde 2 días antes de emitirse; con el reloj más atrasado, el MikroTik lo rechaza.
 #
-# --- Certificado API-SSL ids-promax (6.49 y v7; si ya existe, solo la última línea) ---
-/certificate
-add name=ids-promax common-name=ids-promax \
-    key-usage=key-cert-sign,crl-sign,digital-signature,tls-server,tls-client,data-encipherment,key-encipherment \
-    days-valid=4576 trusted=yes
-/certificate sign ids-promax
-/certificate set ids-promax trusted=yes
-/ip service set api-ssl certificate=ids-promax
-#
 # --- RouterOS v7 ---
 # CA del VPS (pública): con ella el MikroTik verifica al servidor (verify-server-certificate)
 /file print file=ids-maat-ca-p003
@@ -1007,6 +999,8 @@ add name=ids-promax common-name=ids-promax \
   credenciales de la API.
 - Sin reglas de firewall ni rutas (fila 27 de §0.2): el firewall y las rutas del router los
   gestiona el operador.
+- Sin certificado de la API-SSL ni nada de `/ip service api-ssl` (fila 28 de §0.2): la API-SSL del
+  router se usa tal como esté.
 
 Salida de `ids-orq estado`:
 

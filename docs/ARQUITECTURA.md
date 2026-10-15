@@ -127,9 +127,9 @@ aprendido en `suricata-ids-lab` y de la auditoría del diseño.
 | **(D)** El panel habla HTTP y solo se expone a las IP de un proxy inverso externo, que termina TLS. Sin certificados en el VPS. | El dueño ya tiene ese proxy. El panel solo cree las cabeceras `X-Forwarded-*` si vienen del proxy. | §6, §10 c |
 | **(D)** Dar de baja un punto lo borra **todo**. Solo queda una línea en la bitácora global. | No mezclar la información de un punto viejo con la de uno nuevo. | §10 b |
 | **(D)** RouterOS 6.49 es la versión mínima soportada. | Es el v6 más antiguo de la flota. | §10 d |
-| **(D)** API-SSL con el certificado autofirmado `ids-promax` del router y la huella SHA-256 fijada en el alta. | Formato del dueño, válido en 6.49 y v7. | [OPERACION](OPERACION.md) §1 |
+| **(D)** API-SSL (8729) del router sin certificado, como el proyecto original: el script no la toca, el panel negocia el cifrado anónimo y la clave de `ids-api` la protegen el túnel OpenVPN y el netns del sensor. Si el router presenta un certificado, su huella SHA-256 se puede fijar en la ficha del punto, y desde entonces se exige. | Decisión del dueño (2026-10-15); vale igual en 6.49 y v7. | [OPERACION](OPERACION.md) §1.1 |
 | **(D)** Migración manual; la importación de datos es opcional y va al final (F6). | El proyecto no depende de ella. | [FASES](FASES-Y-CANARIO.md) |
-| Relé de destino fijo por punto (socket UNIX → `100.64.N.2:8729`), uno solo, con API-SSL obligatoria y huella fijada. | El panel no comparte red con los puntos y el destino es inmutable. | [RED](RED-Y-FIREWALL.md) §4 |
+| Relé de destino fijo por punto (socket UNIX → `100.64.N.2:8729`), uno solo, siempre con TLS (API-SSL; con 8728 en claro el panel no conecta) y huella opcional. | El panel no comparte red con los puntos y el destino es inmutable. | [RED](RED-Y-FIREWALL.md) §4 |
 | Sin `iroute` ni rutas hacia las LAN de abonados. | Las IP repetidas no chocan en la red; un contenedor comprometido no es un puente. | [RED](RED-Y-FIREWALL.md) §5 |
 | Tres SQLite en WAL (`estado.db`, `eventos.db`, `bitacora.db` encadenada y anclada) más el `eve.json` por instancia. | Integridad `(punto_id, ip)` y transacciones, en lugar de unos 40 JSON con cerrojos. | [DATOS](DATOS.md) |
 | El punto de un evento lo da la carpeta; se comprueba con el campo `host` del eve. | Detecta cableados erróneos (`EVE-MEZCLA`). | [DATOS](DATOS.md) §3 |
@@ -275,9 +275,11 @@ Detalle, entidades, retenciones y secretos: [DATOS.md](DATOS.md).
   - `ovpn-auth` frena **antes** de scrypt;
   - `ccd-exclusive`;
   - origen fijo opcional por punto.
-- **API de los MikroTik:** API-SSL con el certificado autofirmado `ids-promax` del router. La
-  huella SHA-256 se fija en la primera conexión del alta: se muestra en pantalla para compararla
-  con `/certificate print detail`, y después se rechaza cualquier otra.
+- **API de los MikroTik:** API-SSL (8729) sin certificado (decisión del dueño, 2026-10-15): el
+  panel negocia el cifrado anónimo, y la clave de `ids-api` va protegida por el túnel OpenVPN (el
+  MikroTik verifica al servidor con la CA del VPS) y por el netns del sensor. Si el router presenta
+  un certificado, un administrador puede fijar su huella SHA-256 desde la ficha, comparándola con
+  `/certificate print detail`, y después se rechaza cualquier otra.
 - **Panel:**
   - sin modo sin autenticación;
   - sesiones con hash;

@@ -80,9 +80,11 @@ está en `inv_A.md` §1 y `inv_C.md` §1; se respeta salvo motivo que se explica
   `id = iface = pid`, `nombre` del punto, `HOST = "unix:" + nodos.api_sock(pid)`, `PORT = api_puerto`,
   `TLS = "1"`, más lo que el usuario guarda por punto en `conf/routers.json` (`USER`, `PASS`, `LIST*`, `TTL*`,
   `ENABLED`, `CERT_FP`). Un pid de `routers.json` que ya no existe se ignora (y se borra al guardar).
-- `mk_conectar` con `HOST` `unix:…`: `socket.AF_UNIX` al relé + **TLS encima** (`wrap_socket`, huella
-  SHA-256 fijada igual que hoy, TOFU). La huella se guarda **por punto** en `routers.json` (corrige el fallo de
-  `inv_A.md` §10). El resto del protocolo no cambia.
+- `mk_conectar` con `HOST` `unix:…`: `socket.AF_UNIX` al relé + **TLS encima** (`wrap_socket`; sin huella
+  fijada, primero el cifrado anónimo y después los normales; con la huella SHA-256 fijada, se exige ese
+  certificado: [RED-Y-FIREWALL.md](RED-Y-FIREWALL.md) §4, decisión del dueño 2026-10-15). La huella, si se
+  fija, se guarda **por punto** en `routers.json` (corrige el fallo de `inv_A.md` §10). El resto del
+  protocolo no cambia.
 - El alta, la VPN y la baja del router son del apartado Puntos (§5). Se quitan `/routers/guardar`,
   `/routers/quitar`, `_card_nodos` y el tope de 8 routers.
 - **Espejo**: «Montar espejo» en la ficha del punto, con vista previa del plan, respaldo (`/export` en el
