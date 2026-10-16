@@ -1864,6 +1864,21 @@ def abrir_db():
 COLUMNAS_NUEVAS = (("punto", "error_desde", "INTEGER"),)
 
 
+def _quitar_privadas(redes):
+    """Los prefijos que no estan dentro de lo privado/CGNAT (lo que queda como adicional)."""
+    privadas = [ipaddress.IPv4Network(r) for r in REDES_POR_DEFECTO]
+    out = []
+    for r in redes:
+        try:
+            n = ipaddress.IPv4Network(str(r), strict=False)
+        except ValueError:
+            out.append(r)
+            continue
+        if not any(n.subnet_of(b) for b in privadas):
+            out.append(r)
+    return out
+
+
 def migrar_db(db):
     """Añade las COLUMNAS_NUEVAS que falten. Dos procesos pueden abrir orq.db a la vez (el
     servicio y el `fw-render` de install.sh, revisión A5): si el otro añadió la columna entre el
@@ -1875,6 +1890,19 @@ def migrar_db(db):
             except sqlite3.OperationalError as e:
                 if "duplicate column" not in str(e).lower():
                     raise
+    # 0.1.7: los prefijos del punto pasan a ser solo los ADICIONALES (lo privado va siempre). Una vez:
+    # de los puntos que ya existen se quita lo privado/CGNAT (la lista por defecto o una mas estrecha);
+    # el HOME_NET no cambia (home_net ya incluia todo lo privado) y el espejo pasa a ser redes_espejo.
+    if db.execute("SELECT 1 FROM secuencia WHERE nombre='prefijos_adicionales'").fetchone() is None:
+        for f in db.execute("SELECT pid, redes FROM punto").fetchall():
+            try:
+                redes = json.loads(f[1] or "[]")
+            except ValueError:
+                continue
+            quedan = _quitar_privadas(redes)
+            if quedan != redes:
+                db.execute("UPDATE punto SET redes=? WHERE pid=?", (json.dumps(quedan), f[0]))
+        db.execute("INSERT OR IGNORE INTO secuencia (nombre, valor) VALUES ('prefijos_adicionales', 1)")
 
 
 def fila_a_punto(f, cfg_base=None):
@@ -2010,8 +2038,9 @@ def desbanear_vpn(ip):
 
 
 def validar_redes(redes, cfg):
-    if not isinstance(redes, list) or not redes:
-        raise _inv("redes_abonados debe ser una lista no vacía")
+    # vacía = sin prefijos adicionales: las privadas y el CGNAT van siempre (redes_espejo)
+    if not isinstance(redes, list):
+        raise _inv("redes_abonados debe ser una lista")
     if len(redes) > 64:
         raise _inv("redes_abonados admite como mucho 64 redes")
     out = []
@@ -2039,10 +2068,11 @@ def validar_redes(redes, cfg):
     return out
 
 
-# Prefijos de un punto creado sin ellos (el alta del panel solo pide el nombre, decision del dueño
-# 2026-10-15): todo el espacio privado y el CGNAT, que es donde estan los abonados de un ISP, menos
-# lo que no puede ser de abonados (base de tuneles, pool de Docker, redes de gestion). Con prefijos
-# demasiado estrechos el punto se queda sano y con 0 alertas (lab, p001); se estrechan en la ficha.
+# Lo que el espejo recibe SIEMPRE (decision del dueño 2026-10-16: «las VPN siempre reciben todos los
+# rangos privados y, si se quiere, otros rangos se cargan en esa lista»): todo el espacio privado y el
+# CGNAT, menos lo que no puede ser de abonados (base de tuneles, pool de Docker, redes de gestion).
+# Los prefijos del punto (`redes`) son solo los ADICIONALES (p. ej. rangos publicos de abonados);
+# vacios por defecto. Antes la lista venia rellena con todo lo privado y parecia que filtraba algo.
 REDES_POR_DEFECTO = ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "100.64.0.0/10")
 
 
@@ -2062,6 +2092,19 @@ def redes_por_defecto(cfg):
     return validar_redes([str(r) for r in sorted(redes)], cfg)
 
 
+def redes_espejo(redes, cfg):
+    """Lo que espeja el MikroTik (address-list ids-vigilados) y lo que el panel trata como abonados:
+    SIEMPRE lo privado y el CGNAT sin lo reservado (redes_por_defecto) y, ademas, los prefijos
+    adicionales del punto. Agrupado: un adicional privado ya cubierto no se repite."""
+    nets = [ipaddress.IPv4Network(r) for r in redes_por_defecto(cfg)]
+    for r in redes or []:
+        try:
+            nets.append(ipaddress.IPv4Network(str(r), strict=False))
+        except ValueError:
+            pass
+    return [str(n) for n in ipaddress.collapse_addresses(nets)]
+
+
 def validar_crear(params, cfg):
     _solo(params, {"nombre", "redes_abonados", "perfil", "hilos", "ros_version", "compat_v6",
                    "api_puerto", "origen_ip", "pid", "n"}, ("nombre",))
@@ -2075,7 +2118,7 @@ def validar_crear(params, cfg):
     if compat not in ("no", "seclevel0", "legacy"):
         raise _inv("compat_v6 debe ser no, seclevel0 o legacy")
     redes = (validar_redes(params["redes_abonados"], cfg) if "redes_abonados" in params
-             else redes_por_defecto(cfg))
+             else [])                      # solo adicionales: lo privado va siempre (redes_espejo)
     out = {"nombre": nombre, "redes_abonados": redes,
            "perfil": perfil, "hilos": _int(params.get("hilos", 1), "hilos", rango=(1, 2)),
            "ros_version": _int(params.get("ros_version", 7), "ros_version", validos=(6, 7)),
@@ -2686,6 +2729,14 @@ class Orquestador:
                 "mem_disponible_mb": mem["disponible"], "caben": caben(vivos, mem)}
 
     # ---- estado.json --------------------------------------------------------------------------
+    def _redes_espejo(self, p, cfg):
+        if cfg is None:
+            return list(p["redes"])
+        try:
+            return redes_espejo(p["redes"], cfg)
+        except ErrorOrden:
+            return list(p["redes"])
+
     def construir_estado(self, con_puntos=True):
         t = ahora()
         try:
@@ -2696,7 +2747,7 @@ class Orquestador:
             cfg = config()
             version, base = cfg.version, cfg.tun_base
         except (ErrorOrden, OSError):
-            version, base = "", None
+            cfg, version, base = None, "", None
         pend = self.q1("SELECT COUNT(*) FROM op WHERE estado='pendiente'")[0]
         en_curso = None
         f = self.q1("SELECT op_id, orden, pid, paso, inicio FROM op WHERE estado='en_curso' LIMIT 1")
@@ -2769,7 +2820,10 @@ class Orquestador:
             "paso_error": p.get("paso_error") if p["estado"] == "error" else None,
             "error_desde": p.get("error_desde") if p["estado"] == "error" else None,
             # lo que necesita el panel para hablar con el MikroTik y montar su espejo
-            "redes": list(p["redes"]), "api_puerto": p["api_puerto"], "sensor": p["sensor"],
+            # redes = prefijos ADICIONALES del punto; redes_espejo = lo que va al MikroTik (siempre lo
+            # privado y el CGNAT sin lo reservado, mas los adicionales)
+            "redes": list(p["redes"]), "redes_espejo": self._redes_espejo(p, cfg),
+            "api_puerto": p["api_puerto"], "sensor": p["sensor"],
             "mk": p["mk"], "tzsp_puerto": TZSP_PUERTO,
             "contenedores": cont, "netns": ns,
             "vpn_cliente": leer_status_openvpn(ruta("/srv/ids/run/%s/openvpn-status.log" % pid)),
@@ -4495,7 +4549,7 @@ def construir_parser():
     ps = pu.add_subparsers(dest="sub", required=True)
     c = ps.add_parser("crear", parents=[comun])
     c.add_argument("--nombre", required=True)
-    c.add_argument("--redes", type=_redes_arg)       # sin ella, redes_por_defecto
+    c.add_argument("--redes", type=_redes_arg)       # prefijos ADICIONALES; lo privado va siempre
     c.add_argument("--perfil", choices=list(PERFILES))
     c.add_argument("--hilos", type=int, choices=(1, 2))
     c.add_argument("--ros", type=int, choices=(6, 7))

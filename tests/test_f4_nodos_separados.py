@@ -638,6 +638,50 @@ class HistPodar(Base):
             c.close()
 
 
+class PrefijosAdicionales(Base):
+    """Decisión del dueño 2026-10-16: las VPN reciben siempre todo lo privado y el CGNAT; los prefijos
+    del punto son solo los adicionales."""
+
+    def test_ficha_vacia_vale(self):
+        """Capacidad nueva: la lista de prefijos de la ficha puede ir vacía (sin adicionales)."""
+        pw = sys.modules["puntos_web"]
+        self.assertEqual(pw.validar_redes(""), ([], ""))
+        self.assertEqual(pw.validar_redes("198.51.100.0/24"), (["198.51.100.0/24"], ""))
+
+    def test_espejo_con_la_lista_efectiva_del_orquestador(self):
+        """Capacidad nueva: al MikroTik va redes_espejo (todo lo privado sin lo reservado + adicionales);
+        con un orquestador anterior que no la publica, sus prefijos de siempre."""
+        efectiva = ["10.0.0.0/9", "172.16.0.0/12", "192.168.0.0/16", "198.51.100.0/24"]
+        self.a.puntos["p001"].update(redes=["198.51.100.0/24"], redes_espejo=efectiva)
+        self.a.puntos["p002"].update(redes=["10.0.0.0/24"])
+        self.a.puntos["p002"].pop("redes_espejo", None)
+        self.a.escribir_estado()
+        self.assertEqual(self.d._espejo_datos("p001")[2], efectiva)
+        self.assertEqual(self.d._espejo_datos("p002")[2], ["10.0.0.0/24"])
+
+
+class FichaPrefijos(unittest.TestCase):
+    def test_la_ficha_pide_solo_adicionales(self):
+        """Capacidad nueva: la ficha dice que lo privado va siempre y pide solo prefijos adicionales."""
+        p = PanelP()
+        self.addCleanup(p.cerrar)
+        r = p.pedir("GET", "/puntos/p001", cookie=p.entrar("ana"))
+        self.assertEqual(r.status, 200)
+        self.assertIn("Prefijos adicionales (opcional, uno por línea)", r.texto)
+        self.assertIn("Siempre incluidas", r.texto)
+
+
+class AbonadosSinAdicionales(Entorno):
+    PUNTOS = {"p001": {"nombre": "Nodo A", "redes": []}}
+
+    def test_privadas_son_abonados_aunque_no_haya_prefijos(self):
+        """Corrección de defecto evitado: con la lista del punto vacía (solo adicionales), los abonados
+        privados siguen siendo abonados en el informe (cuarentena, métricas)."""
+        self.tres_cnc("p001")
+        self.ok("60", "--nodo", "p001")
+        self.assertEqual(self.cpes(self.salida("p001", "cuarentena.json")), [("p001", "10.0.0.5")])
+
+
 class SoloElUltimoReporte(Entorno):
     def test_borra_las_instantaneas_viejas(self):
         """Capacidad nueva (el user quito «Reportes guardados», 2026-10-12): el generador deja solo el

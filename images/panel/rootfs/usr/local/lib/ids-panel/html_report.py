@@ -187,15 +187,16 @@ _MIS_NETS_GLOBAL = _redes_de_texto(_conf_key("MIS_REDES", ""))
 _MIS_NETS_PID = {}
 
 def mis_redes(pid):
-    """Las redes de abonados del punto `pid` (MIS_REDES si esta puesto; si no, las del punto;
-    si no tiene, las privadas)."""
+    """Las redes de abonados del punto `pid`: MIS_REDES si esta puesto; si no, SIEMPRE las privadas y el
+    CGNAT mas los prefijos adicionales del punto (desde 0.1.7 sus `redes` son solo los adicionales)."""
     if _MIS_NETS_GLOBAL:
         return _MIS_NETS_GLOBAL
     r = _MIS_NETS_PID.get(pid)
     if r is None:
         r = _redes_de_texto(",".join(x for x in ((nodos.punto(pid) or {}).get("redes") or [])
                                      if isinstance(x, str))) if pid else []
-        r = r or _REDES_DEFECTO
+        r = list(_REDES_DEFECTO) + [n for n in r if not any(n.version == b.version and n.subnet_of(b)
+                                                          for b in _REDES_DEFECTO)]
         _MIS_NETS_PID[pid] = r
     return r
 

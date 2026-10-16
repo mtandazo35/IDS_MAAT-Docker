@@ -5345,7 +5345,7 @@ def salud_punto(pid):
     if p.get("estado") == "creando":
         _pendiente(et["datos"])
     captura = {"recorte_bytes": (cob or {}).get("recorte_bytes") or 10000,
-               "redes": list(p.get("redes") or []),
+               "redes": list(p.get("redes_espejo") or p.get("redes") or []),
                "alcance": "captura reducida: los primeros 10 KB de cada conexión de los prefijos vigilados"}
     # estado global
     if not fresco or not p:
@@ -10540,7 +10540,9 @@ def _espejo_datos(pid):
     sensor, puerto = sensor_del_punto(pid)
     if not sensor:
         raise ValueError("el orquestador aún no publica la IP del sensor de %s" % pid)
-    return sensor, puerto, list(p.get("redes") or [])
+    # lo que va al MikroTik: siempre lo privado y el CGNAT sin lo reservado mas los adicionales
+    # (redes_espejo, del orquestador); con un orquestador anterior, sus prefijos de siempre
+    return sensor, puerto, list(p.get("redes_espejo") or p.get("redes") or [])
 
 def _avisar_avance(avance, etapa):
     """Cuenta por donde va un trabajo del panel (Puntos lo pinta sin recargar). Nunca falla."""
@@ -12899,14 +12901,12 @@ El Suricata trata como red propia (<code>HOME_NET</code>) <b>todo lo privado y e
 (<code>10/8</code>, <code>172.16/12</code>, <code>192.168/16</code>, <code>100.64/10</code>) más los prefijos
 <b>públicos</b> del punto: cualquier red de abonados que llegue por el espejo da alertas, esté o no en
 los prefijos.</p>
-<p>Los <b>prefijos del punto</b> deciden otras dos cosas:</p>
-<ul>
-<li>qué redes <b>espeja el MikroTik</b> (la address-list <code>ids-vigilados</code>, cuando el espejo lo
-monta el panel);</li>
-<li>qué IPs trata el <b>panel</b> como tus abonados: solo esas entran en la <b>cuarentena</b>, el ranking
-de riesgo y las métricas de tu red. Una IP de abonado fuera de los prefijos sale en las alertas, pero
-el panel no la cuarentena.</li>
-</ul>
+<p>Lo mismo vale para el <b>espejo del MikroTik</b> (la address-list <code>ids-vigilados</code>, cuando el
+espejo lo monta el panel) y para lo que el <b>panel</b> trata como tus abonados (cuarentena, ranking de
+riesgo, métricas): <b>siempre</b> todo lo privado y el CGNAT, menos lo que usa el propio servidor
+(túneles, Docker y gestión). No hace falta escribirlo en ningún sitio.</p>
+<p>Los <b>prefijos del punto</b> son solo los <b>adicionales</b>: rangos que no son privados, como IPs
+públicas de abonados (sensor POST-NAT). Por defecto la lista está vacía.</p>
 <p><b>Síntoma típico:</b> el punto da alertas pero la cuarentena y el Top de tus CPEs se ven casi vacíos.
 Casi siempre es que los prefijos no incluyen las redes de tus clientes.</p>
 <p>El panel lo detecta solo: mira una muestra de los últimos eventos del punto y cuenta las IPs de
@@ -12921,12 +12921,10 @@ prefijos»;</li>
 las que pesan al menos el 1 %). <b>No guarda nada</b>: revisa la lista, quita lo que no sea de
 abonados (servidores, gestión) y pulsa <b>Guardar prefijos</b>.</li>
 </ul>
-<p>Al dar de alta el punto los prefijos se ponen solos: todas las redes privadas y el CGNAT
-(<code>10/8</code>, <code>172.16/12</code>, <code>192.168/16</code>, <code>100.64/10</code>) menos las que
-usa el propio servidor (túneles, Docker, gestión). Se cambian en su ficha (<b>Prefijos</b>):</p>
+<p>Los prefijos adicionales se cambian en la ficha del punto (<b>Prefijos</b>):</p>
 <ul>
-<li>cambiar prefijos <b>privados</b> o CGNAT <b>no reinicia el Suricata</b> (ya los analiza todos): el
-orquestador solo los guarda y el punto no deja de inspeccionar ni un segundo;</li>
+<li>un prefijo <b>privado</b> o CGNAT no hace falta: ya va incluido (si se escribe, se guarda y no
+cambia nada);</li>
 <li>añadir o quitar un prefijo <b>público</b> (sensor POST-NAT) sí cambia el <code>HOME_NET</code>: el
 orquestador reinicia el Suricata del punto (aprox. un minuto sin inspeccionar mientras carga las reglas);</li>
 <li>en los dos casos, después hay que <b>volver a aplicar el espejo</b> para llevarlos a la address-list

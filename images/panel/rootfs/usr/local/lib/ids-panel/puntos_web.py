@@ -185,9 +185,10 @@ def validar_formulario_punto(f):
 
 
 def validar_redes(texto):
+    """Prefijos ADICIONALES (lo privado y el CGNAT van siempre): vacio vale."""
     trozos = [x.strip() for x in re.split(r"[\s,;]+", texto or "") if x.strip()]
     if not trozos:
-        return None, "Escribe al menos una red de abonados (p. ej. 10.0.0.0/24)."
+        return [], ""
     if len(trozos) > MAX_REDES:
         return None, "Como mucho %d redes de abonados por punto." % MAX_REDES
     redes = []
@@ -515,7 +516,7 @@ def cobertura_prefijos(pid, punto=None, ahora=None):
         return c[1]
     p = punto if punto is not None else (nodos.punto(pid) or {})
     redes = []
-    for r in p.get("redes") or []:
+    for r in p.get("redes_espejo") or p.get("redes") or []:
         try:
             redes.append(ipaddress.ip_network(str(r), strict=False))
         except ValueError:
@@ -2562,7 +2563,8 @@ def ficha(h, pid, mensaje="", codigo=200, ok=False, extra_espejo=""):
             ("Retención efectiva", retencion_html(retencion(pid, p), ahora)),
             ("Puerto VPN / red del túnel", esc("%s/tcp · %s" % (p.get("puerto") or "-", p.get("tun_net") or "-"))),
             ("Perfil / RouterOS", esc("%s · %s" % (p.get("perfil") or "-", ros_txt(p.get("ros_version"))))),
-            ("Prefijos espejados", esc(", ".join(p.get("redes") or []) or "-")),
+            ("Prefijos espejados", "todas las redes privadas y el CGNAT" + (
+                " + " + esc(", ".join(p.get("redes") or [])) if p.get("redes") else "")),
         ))
     # VPN: el orquestador da los comandos con <CLAVE-VPN>; el panel pone la clave que guarda cifrada
     # (la del alta o la ultima regenerada). Sin ella, se dice y se ofrece regenerarla.
@@ -2643,17 +2645,19 @@ def ficha(h, pid, mensaje="", codigo=200, ok=False, extra_espejo=""):
     # al terminar sale un modal con «Llevarlos al MikroTik» (la vista previa del espejo)
     pref_html = (
         "<form method=post action='/puntos/%s/ajustar'>%s"
-        "<label class=l>Prefijos de abonados (uno por línea)</label>"
+        "<p class=hint style='margin-top:0'><b>Siempre incluidas</b>, sin escribirlas: todas las redes "
+        "privadas y el CGNAT (<code>10/8</code>, <code>172.16/12</code>, <code>192.168/16</code>, "
+        "<code>100.64/10</code>), menos las que usa el propio servidor (túneles, Docker y gestión).</p>"
+        "<label class=l>Prefijos adicionales (opcional, uno por línea)</label>"
         "<textarea class=t name=redes rows=4>%s</textarea>"
         "<div class=acciones><button class=btn type=submit onclick=\"if(ask(this,'Cambiar los prefijos',"
-        "'Se guardan los prefijos del punto (el avance se ve aquí, sin recargar). El Suricata no se reinicia: "
-        "ya analiza todas las redes privadas y CGNAT; solo lo hace si entra o sale un prefijo público. "
+        "'Se guardan los prefijos adicionales del punto (el avance se ve aquí, sin recargar). El Suricata "
+        "solo se reinicia si entra o sale un prefijo público. "
         "Después se llevan al MikroTik desde la vista previa del espejo.','Cambiar'))ppref(this.form);"
         "return false;\">Guardar prefijos</button></div></form><div id=pprog class=pjcaja style='display:none'></div>"
-        "<p class=hint>Los prefijos dicen qué redes espeja el MikroTik (address-list <code>ids-vigilados</code>) "
-        "y cuáles trata el panel como tus abonados (cuarentena, métricas, Top). El Suricata analiza siempre "
-        "todo lo privado y CGNAT (<code>10/8</code>, <code>172.16/12</code>, <code>192.168/16</code>, "
-        "<code>100.64/10</code>) más los prefijos públicos que pongas aquí.</p>"
+        "<p class=hint>Aquí solo van rangos <b>que no sean privados</b>, p. ej. IPs públicas de abonados. El "
+        "MikroTik espeja (address-list <code>ids-vigilados</code>) y el panel trata como abonados todo lo "
+        "privado y el CGNAT más estos prefijos. Déjalo vacío si no hace falta ninguno.</p>"
         % (esc(pid), campo_token(), esc("\n".join(p.get("redes") or []))))
     # Servicio
     # «Regenerar»: el router que reintenta con la clave vieja ya no acaba baneado (fail2ban solo cuenta
