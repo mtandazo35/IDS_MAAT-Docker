@@ -1,9 +1,9 @@
 #!/bin/bash
 # ids-maat — instalador del VPS (CONTRATO-F1a §7). Debian 13 (trixie), amd64, como root.
 #
-#   curl -fsSL https://raw.githubusercontent.com/mtandazo35/IDS_MAAT-Docker/v0.1.1/install.sh \
+#   curl -fsSL https://raw.githubusercontent.com/mtandazo35/IDS_MAAT-Docker/v0.1.2/install.sh \
 #        -o /root/ids-maat-install.sh \
-#     && bash /root/ids-maat-install.sh --version v0.1.1 --nombre ids.empresa.example \
+#     && bash /root/ids-maat-install.sh --version v0.1.2 --nombre ids.empresa.example \
 #          --gestion 192.0.2.0/25,198.51.100.0/26 --proxy 203.0.113.50 \
 #          [--tun-base 100.64|198.18] [--dueno-ip 203.0.113.20] [--zona America/Guayaquil]
 #
