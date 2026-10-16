@@ -857,8 +857,18 @@ p_puertos_ajenos() {
   }
   local avisos
   avisos=$(comprobar_puertos_ajenos 2>&1) || return 2
-  grep -q "TCP 80 " <<<"$avisos" || return 3                                # 80 avisado; 22 y 631 (local) no
+  grep -q "TCP 80:" <<<"$avisos" || { echo "$avisos"; return 3; }          # 80 avisado; 22 y 631 (local) no
   grep -q "631" <<<"$avisos" && return 4
+  # los que publica el propio IDS (VPN 1194 y panel 5637) tampoco: el firewall no los cierra
+  ss() { printf '%s\n' "LISTEN 0 4096 0.0.0.0:22 0.0.0.0:*" "LISTEN 0 511 0.0.0.0:80 0.0.0.0:*" \
+                       "LISTEN 0 4096 0.0.0.0:1194 0.0.0.0:*" "LISTEN 0 4096 0.0.0.0:5637 0.0.0.0:*" \
+                       "LISTEN 0 4096 0.0.0.0:5355 0.0.0.0:*"; }
+  avisos=$(comprobar_puertos_ajenos 2>&1) || return 5
+  grep -q "TCP 80 5355:" <<<"$avisos" || { echo "$avisos"; return 6; }
+  grep -qE "1194|5637" <<<"$avisos" && { echo "$avisos"; return 7; }
+  # instalación nueva, sin contenedores: con set -e del instalador no puede cortarse ahí
+  docker() { :; }
+  ( set -euo pipefail; comprobar_puertos_ajenos ) >/dev/null 2>&1 || return 8
   return 0
 }
 
