@@ -11,8 +11,8 @@
       lo llama `unittest.loader.ModuleSkipped.<módulo>`, que antes no casaba con ningún patrón);
     - si un patrón obligatorio no casa con NINGUNA prueba descubierta (fichero borrado o
       renombrado: lo obligatorio no puede desaparecer en silencio).
-  Imprime cuántas pruebas se ejecutaron por patrón. `root` (job `imagenes` del CI, como root)
-  aplica los patrones de `todas`, `linux` y `root`.
+  Imprime cuántas pruebas se ejecutaron por patrón. `root` (como root, con --imagenes
+  --integracion en la VPS) aplica los patrones de `todas`, `linux` y `root`.
 - `--resumen`: añade el resumen en Markdown a ese fichero (en GitHub Actions, $GITHUB_STEP_SUMMARY).
 
 Sale con 0 solo si no hay fallos, ni errores, ni obligatorias omitidas o sin prueba.

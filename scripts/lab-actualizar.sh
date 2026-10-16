@@ -63,7 +63,7 @@ if runs:
 exigir_ci() {   # $1 = sha completo, $2 = 1 si --sin-ci
   local estado
   if [ "$2" = 1 ]; then
-    log "AVISO: --sin-ci: se carga $1 SIN comprobar el CI (puede no haber pasado ninguna prueba en Linux)"
+    log "AVISO: --sin-ci: se carga $1 SIN comprobar el CI (el lint de GitHub; las pruebas son de la VPS)"
     install -d -m 0700 "$GUARDA"
     printf '%s %s sin-ci\n' "$TS" "$1" >> "$GUARDA/sin-ci.log"
     return 0

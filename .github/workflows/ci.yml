@@ -1,4 +1,6 @@
 # ids-maat — CI (CONTRATO-F1a §6.4). Acciones fijadas por SHA de commit (Dependabot/Renovate las suben).
+# Solo lint: las pruebas (tests/run.sh, también --imagenes y --integracion) se corren en la VPS
+# (decisión del dueño, 2026-10-15). release.yml exige este CI en verde para el commit etiquetado.
 name: ci
 
 on:
@@ -10,13 +12,8 @@ permissions:
 
 env:
   PYTHONUTF8: "1"
-  # solo para las pruebas (pip, rueda binaria); la imagen del panel usa python3-cryptography de Debian
-  CRYPTOGRAPHY_CI: "44.0.2"
-  # PyYAML real para validar la sintaxis de los workflows y del compose renderizado (auditoría
-  # B-01): sus pruebas son obligatorias (tests/obligatorias.txt), así que aquí no pueden omitirse
+  # PyYAML real para validar la sintaxis de los workflows y del compose renderizado (auditoría B-01)
   PYYAML_CI: "6.0.2"
-  # informe PDF del panel (en la imagen es python3-reportlab de Debian)
-  REPORTLAB_CI: "4.4.4"
 
 jobs:
   lint:
@@ -55,54 +52,3 @@ jobs:
           base=$(sed -n 's/^BASE_IMAGE=//p' images/base.env)
           docker run --rm --cap-add NET_ADMIN -v "$RUNNER_TEMP/nft:/nft:ro" "$base" sh -ec \
             'apt-get update -qq; apt-get install -y -qq --no-install-recommends nftables iproute2 >/dev/null; ip link add ids-mon type dummy; for f in /nft/*.nft; do echo "nft -c $f"; nft -c -f "$f"; done'
-
-  pruebas:
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
-        with:
-          python-version: "3.12"
-      - name: herramientas que las pruebas usan de verdad si están (fail2ban-regex, logrotate, openssl)
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq --no-install-recommends fail2ban logrotate openssl >/dev/null
-      - name: cryptography para secretos.py (en la imagen es python3-cryptography de Debian) y PyYAML
-        run: |
-          python -m pip install --quiet --only-binary=:all: "cryptography==${CRYPTOGRAPHY_CI}" "pyyaml==${PYYAML_CI}" "reportlab==${REPORTLAB_CI}"
-      - name: tests/run.sh (resultados y omisiones con su motivo en el resumen del job)
-        env:
-          IDS_OBLIGATORIAS: linux
-          IDS_SH_OBLIGATORIAS: "1"
-        run: IDS_RESUMEN="$GITHUB_STEP_SUMMARY" bash tests/run.sh
-
-  # Sin job de Windows desde 2026-10-15 (decisión del dueño): el IDS solo corre en Linux y todo
-  # se prueba en la VPS y aquí.
-
-  # En paralelo con pruebas, sin esperarlas: no usa nada suyo y así el CI acaba ~8 min antes.
-  imagenes:
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
-        with:
-          python-version: "3.12"
-      - name: herramientas y paquetes de las pruebas (se repiten como root, con obligatorias)
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq --no-install-recommends fail2ban logrotate openssl >/dev/null
-          python -m pip install --quiet --only-binary=:all: "cryptography==${CRYPTOGRAPHY_CI}" "pyyaml==${PYYAML_CI}" "reportlab==${REPORTLAB_CI}"
-      - name: build de las imágenes (sin publicar)
-        run: |
-          bash images/build.sh vpn ci
-          bash images/build.sh suricata ci
-          bash images/build.sh panel ci
-      - name: pruebas de imagen e integración (root + Docker)
-        env:
-          IDS_IMG_VPN: ids-maat-vpn:ci
-          IDS_IMG_SURICATA: ids-maat-suricata:ci
-          IDS_IMG_PANEL: ids-maat-panel:ci
-          IDS_SH_OBLIGATORIAS: "1"
-          # obligatorias de linux y las que solo corren como root (master.key 0440 root:10500)
-          IDS_OBLIGATORIAS: root
-        run: sudo -E env "PATH=$PATH" "IDS_RESUMEN=$GITHUB_STEP_SUMMARY" bash tests/run.sh --imagenes --integracion

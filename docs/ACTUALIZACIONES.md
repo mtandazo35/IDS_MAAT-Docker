@@ -38,11 +38,9 @@ Las reglas ET y los feeds se actualizan aparte ([INSTANCIA.md](INSTANCIA.md) §1
 
 Hay dos workflows:
 
-- **`ci.yml`**, en cada push y PR:
-  - lint: pyflakes, shellcheck, `bash -n` y la comprobación `eol=lf`;
-  - pruebas de comportamiento;
-  - construcción de las tres imágenes **sin publicarlas**;
-  - `suricata -T` con ET real.
+- **`ci.yml`**, en cada push y PR, **solo lint** (desde 2026-10-15, decisión del dueño):
+  pyflakes, shellcheck, `bash -n`, la comprobación `eol=lf`, `tailwind.css` al día, la sintaxis
+  YAML y `nft -c`. Las pruebas de comportamiento, las de imagen y la integración se corren en la VPS.
 - **`release.yml`**, que **solo se dispara con etiquetas `v*`**:
 
 ```yaml

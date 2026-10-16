@@ -274,20 +274,15 @@ class Workflows(unittest.TestCase):
                     continue
                 self.assertRegex(uso, r"^[\w.-]+/[\w.-]+@[0-9a-f]{40}$", "%s: %s" % (nombre, uso))
 
-    def test_jobs_de_ci(self):
+    def test_ci_solo_lint(self):
+        """Decisión del dueño (2026-10-15): las pruebas se corren en la VPS, no en GitHub. El CI
+        solo hace lint (~30 s) y release.yml lo exige en verde para el commit etiquetado."""
         ci = self.leer("ci.yml")
-        for job in ("lint", "pruebas", "imagenes"):
-            self.assertRegex(ci, r"(?m)^  %s:\n" % re.escape(job))
-        self.assertNotIn("windows-latest", ci)          # sin job de Windows (dueño, 2026-10-15)
-        # imagenes arranca a la vez que pruebas (no las espera): el CI acaba ~8 min antes
-        self.assertNotRegex(ci.split("\n  imagenes:\n", 1)[1], r"(?m)^    needs:")
-        self.assertIn("bash tests/run.sh --imagenes --integracion", ci)
-
-    def test_ci_construye_y_prueba_las_tres_imagenes(self):
-        ci = self.leer("ci.yml")
-        for img in ("vpn", "suricata", "panel"):
-            self.assertIn("bash images/build.sh %s ci" % img, ci)
-            self.assertIn("IDS_IMG_%s: ids-maat-%s:ci" % ("SURICATA" if img == "suricata" else img.upper(), img), ci)
+        self.assertEqual(re.findall(r"(?m)^  ([\w-]+):\n", ci.split("\njobs:\n", 1)[1]), ["lint"])
+        self.assertNotIn("tests/run.sh", ci)
+        self.assertNotIn("windows-latest", ci)
+        for paso in ("pyflakes", "shellcheck", "test_ci_eol.py", "test_f3_ci.YamlReal", "nft -c"):
+            self.assertIn(paso, ci)
 
     def test_release(self):
         rel = self.leer("release.yml")

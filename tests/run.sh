@@ -40,7 +40,7 @@ OMITIDAS=0
 PASADAS=0
 
 echo "== unittest ($PY): tests/test_*.py y tests/legado/test_*.py, con las omisiones y su motivo"
-# IDS_OBLIGATORIAS=linux|root: las de tests/obligatorias.txt no pueden omitirse (CI).
+# IDS_OBLIGATORIAS=linux|root: las de tests/obligatorias.txt no pueden omitirse.
 # IDS_RESUMEN=<fichero>: resumen en Markdown (en GitHub Actions, $GITHUB_STEP_SUMMARY).
 ARGS_PY=()
 [ -n "${IDS_OBLIGATORIAS:-}" ] && ARGS_PY+=(--obligatorias "$IDS_OBLIGATORIAS")

@@ -70,17 +70,13 @@ class CiInstala(unittest.TestCase):
     def setUp(self):
         self.ci = (WF / "ci.yml").read_text(encoding="utf-8")
 
-    def test_pyyaml_fijado_en_los_jobs_de_pruebas(self):
-        """Corrección de defecto (B-01/B-03): PyYAML con versión fijada en los jobs que corren
-        tests/run.sh, para que sus pruebas no se omitan."""
+    def test_pyyaml_fijado_en_el_lint(self):
+        """Corrección de defecto (B-01/B-03): PyYAML con versión fijada para la sintaxis YAML de los
+        workflows y del compose. Desde 2026-10-15 el CI solo hace lint; las obligatorias se
+        comprueban en la VPS (`IDS_OBLIGATORIAS=linux|root bash tests/run.sh`)."""
         self.assertRegex(self.ci, r'PYYAML_CI: "\d+\.\d+\.\d+"')
-        # lint, pruebas e imagenes (pruebas-windows se quitó el 2026-10-15, decisión del dueño)
-        self.assertGreaterEqual(len(re.findall(r'"pyyaml==\$\{PYYAML_CI\}"', self.ci)), 3)
-
-    def test_imagenes_corre_con_obligatorias(self):
-        """Corrección de defecto (B-03): el job `imagenes` (root + Docker) corre con obligatorias
-        (`root`: las de linux y las que solo corren como root)."""
-        self.assertRegex(self.ci, r"IDS_OBLIGATORIAS: root")
+        self.assertEqual(len(re.findall(r'"pyyaml==\$\{PYYAML_CI\}"', self.ci)), 1)
+        self.assertIn("test_f3_ci.YamlReal", self.ci)
 
 
 class Obligatorias(unittest.TestCase):
@@ -123,7 +119,7 @@ class Obligatorias(unittest.TestCase):
             self.assertEqual(sin, [], plataforma)
 
     def test_root_incluye_las_de_linux(self):
-        """Capacidad nueva: `--obligatorias root` (job imagenes) aplica las de linux y las de root."""
+        """Capacidad nueva: `--obligatorias root` (como root en la VPS) aplica las de linux y las de root."""
         root = {p for p, _m in correr.leer_obligatorias("root")}
         linux = {p for p, _m in correr.leer_obligatorias("linux")}
         self.assertTrue(linux <= root)

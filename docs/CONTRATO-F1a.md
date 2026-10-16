@@ -1151,10 +1151,11 @@ Es lo que usan A y B en local y el CI.
 | Job | Runner | Hace |
 |---|---|---|
 | `lint` | ubuntu-24.04 | `pyflakes` sobre todo `*.py` **y** los ficheros con shebang `python3` bajo `images/*/rootfs/`; `shellcheck` y `bash -n` sobre `*.sh` y shebang `sh`/`bash`; `nft -c` de los ficheros `.nft` renderizados dentro de `debian:trixie-slim` con `--cap-add NET_ADMIN` |
-| `pruebas` | ubuntu-24.04, Python 3.12 | `tests/run.sh` |
-| `imagenes` | ubuntu-24.04 | `images/build.sh vpn ci` y `suricata ci`; `IDS_IMG_VPN=ids-maat-vpn:ci IDS_IMG_SURICATA=ids-maat-suricata:ci tests/run.sh --imagenes --integracion` |
 
-`imagenes` arranca a la vez que `pruebas`, sin esperarla (desde 2026-10-15).
+**Solo lint desde 2026-10-15** (decisión del dueño): GitHub ya no corre `tests/run.sh` (jobs
+`pruebas` e `imagenes` retirados). Las pruebas se corren en la VPS, en un checkout aparte del commit
+(`/root/ids-pruebas/<commit>`): `IDS_OBLIGATORIAS=linux bash tests/run.sh`, y como root con
+`--imagenes --integracion` solo fuera de producción (levantan Docker).
 
 `release.yml` (solo etiquetas `v*`): `ci-verde` (exige un `ci.yml` en verde para el commit
 etiquetado y no lo repite; desde 2026-10-15) → `imagen`
@@ -1253,9 +1254,9 @@ tests/run.sh [--imagenes] [--integracion]
 Un .sh que sale con 77 cuenta como OMITIDA. Sale con 1 si falla alguna.
 ```
 
-Se corre en Linux: en la VPS y en el CI. **Sin Windows desde 2026-10-15** (decisión del dueño):
-ni job `pruebas-windows` ni plataforma `windows` en `tests/obligatorias.txt`, y nada se ejecuta en
-el PC de desarrollo.
+Se corre en Linux, en la VPS. **Desde 2026-10-15** (decisión del dueño) no hay Windows (ni job
+`pruebas-windows` ni plataforma `windows` en `tests/obligatorias.txt`), GitHub solo hace lint y
+nada se ejecuta en el PC de desarrollo.
 
 ### 8.2 Qué prueba cada constructor
 
