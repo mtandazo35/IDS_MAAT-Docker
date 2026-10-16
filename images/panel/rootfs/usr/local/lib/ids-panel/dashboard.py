@@ -9994,7 +9994,7 @@ def _act_ultima(av):
         return ("<div class='verlast mal'>&#9888; La actualización empezada el "
                 f"{esc(_act_hora(av.get('inicio')))} no terminó: lleva más de una hora sin avanzar. "
                 "Revisa <code>journalctl -u ids-actualizar</code> en el servidor.</div>")
-    return (f"<div class='verlast mal'>&#9888; La última actualización"
+    return ("<div class='verlast mal'>&#9888; La última actualización"
             + (f" ({esc(cuando)})" if cuando else "") + f" falló: {esc(av.get('mensaje') or '')}</div>")
 
 RE_OP_ACT = re.compile(r"\A[0-9a-f-]{36}\Z")
