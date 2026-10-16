@@ -39,7 +39,7 @@ import uuid
 from contextlib import contextmanager
 from pathlib import Path
 
-ORQ_VERSION = "0.1.0"
+ORQ_VERSION = "0.1.1"
 UID_PANEL = 10500
 GID_PANEL = 10500
 REGISTRO = "ghcr.io/mtandazo35"

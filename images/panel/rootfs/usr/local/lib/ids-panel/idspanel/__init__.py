@@ -15,4 +15,4 @@ retiró en F2 (CONTRATO-F2-panel.md).
 Importable en Windows: nada de AF_UNIX ni fcntl a nivel de módulo.
 """
 
-VERSION = "0.1.0"
+VERSION = "0.1.1"

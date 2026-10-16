@@ -17,7 +17,7 @@ OpenVPN y su propio Suricata.
 En un VPS **Debian 13 (trixie) amd64** recién instalado, como `root`:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/mtandazo35/IDS_MAAT-Docker/v0.1.0/install.sh -o /root/ids-maat-install.sh && bash /root/ids-maat-install.sh --version v0.1.0 --nombre ids.empresa.example --gestion 192.0.2.0/25 --proxy 203.0.113.50 --zona America/Guayaquil
+curl -fsSL https://raw.githubusercontent.com/mtandazo35/IDS_MAAT-Docker/v0.1.1/install.sh -o /root/ids-maat-install.sh && bash /root/ids-maat-install.sh --version v0.1.1 --nombre ids.empresa.example --gestion 192.0.2.0/25 --proxy 203.0.113.50 --zona America/Guayaquil
 ```
 
 Cambia los valores por los tuyos:
@@ -27,7 +27,7 @@ Cambia los valores por los tuyos:
 | `--nombre` | nombre DNS del VPS (va en el certificado del servidor VPN) |
 | `--gestion` | redes desde las que entras por SSH, en CIDR y separadas por comas (como mucho /16). La IP de tu sesión SSH actual tiene que estar dentro |
 | `--proxy` | IP de tu proxy inverso (el que pone HTTPS): el panel solo se abre desde ahí. IPs o redes de hasta /28, separadas por comas |
-| `--zona` | zona horaria con la que el panel muestra las fechas (`Región/Ciudad`; sin ella, UTC) |
+| `--zona` | zona horaria del servidor y de las fechas del panel (`Región/Ciudad`; sin ella, la que ya tuviera la instalación o, en una nueva, `America/Guayaquil`). Los contenedores siguen en UTC por dentro |
 
 Opcionales: `--tun-base 198.18` (si tus abonados ya usan CGNAT `100.64.0.0/10`) y
 `--dueno-ip <tu IP fija>` (fail2ban nunca la banea).
@@ -44,5 +44,5 @@ Opcionales: `--tun-base 198.18` (si tus abonados ya usan CGNAT `100.64.0.0/10`) 
 
 Sucesor en contenedores de [suricata-ids-lab](https://github.com/mtandazo35/suricata-ids-lab).
 
-**Estado:** primera versión publicada (`v0.1.0`). La arquitectura está en
+**Estado:** versión publicada `v0.1.1` (la primera fue `v0.1.0`). La arquitectura está en
 [docs/ARQUITECTURA.md](docs/ARQUITECTURA.md), con sus anexos en docs/.
