@@ -5,7 +5,8 @@ Tipo: corrección de defecto; cada prueba falla sin su arreglo.
   spam salía «DNS de malware: no hace falta dejarlo sin internet» y no contaba en «para cortar».
 - 2: la regla propia de los feeds (sid 9000050, «LOCAL DNS a dominio fichado en feeds de
   reputacion») no tenía categoría: su firma salía cortada como categoría y el abonado que solo
-  tenía esa alerta caía en «Otros».
+  tenía esa alerta caía en «Otros». Sale con su nombre completo, aparte de «DNS sospechoso»,
+  y cuenta como DNS de malware.
 - 3: esa regla no tenía límite: un solo CPE dio 48.257 de las 48.918 alertas del informe.
 Datos RFC 1918 de prueba (10.0.0.x), sin red.
 """
@@ -20,6 +21,7 @@ sys.path.insert(0, os.path.join(AQUI, "fixtures", "panel2"))
 import _dash  # noqa: E402
 
 FEEDS = "LOCAL DNS a dominio fichado en feeds de reputacion"
+FEEDS_ES = "DNS a dominio fichado en feeds de reputación"
 ADB = "LOCAL CPE escanea ADB/router saliente"
 SMTP = "LOCAL SMTP directo saliente desde cliente (posible spambot)"
 CC = "ET DNS Query for .cc TLD"
@@ -84,11 +86,14 @@ class Categorias(unittest.TestCase):
         self.assertRegex(doc, r"botnet, escaneo, fuerza bruta,\s+spam, DNS de malware, criptominado y P2P")
 
     def test_la_regla_de_los_feeds_es_dns_de_malware(self):
-        self.assertEqual(self.d.traducir(FEEDS), "DNS sospechoso")
+        # con su nombre completo y aparte de «DNS sospechoso» (el user, 2026-10-15), pero en la
+        # misma categoria de abonado y en la misma address-list
+        self.assertEqual(self.d.traducir(FEEDS), FEEDS_ES)
+        self.assertEqual(self.d.categoria_de_cats({FEEDS_ES: 9}), "dns")
         d = self.informe()
         dns = next(c for c in d["categorias"] if c["clave"] == "dns")["abonados"]
-        self.assertEqual([(a["ip"], a["repetido"]) for a in dns], [(SOLO_FEEDS, "DNS sospechoso")])
-        self.assertEqual({f[0] for f in dns[0]["firmas"]}, {"DNS sospechoso"})
+        self.assertEqual([(a["ip"], a["repetido"]) for a in dns], [(SOLO_FEEDS, FEEDS_ES)])
+        self.assertEqual({f[0] for f in dns[0]["firmas"]}, {FEEDS_ES})
 
 
 class LimiteDeLaRegla(unittest.TestCase):

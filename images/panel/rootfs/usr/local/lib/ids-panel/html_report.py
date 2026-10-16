@@ -549,6 +549,10 @@ _TRAD = [
     (("stun ",), "STUN (video)"),
     (("snmp",), "Acceso SNMP"),
     (("dyn_dns", "dynamic_dns", "dyndns", "duckdns", "no-ip"), "DNS dinamico"),
+    # la regla propia de los feeds (sid 9000050): faltaba aqui y su firma salia cortada en
+    # «Firmas mas frecuentes» y en el cats_top del reporte (el user, 2026-10-15). Igual que en
+    # dashboard._TRAD: las dos tablas tienen que ser la misma.
+    (("dominio fichado",), "DNS a dominio fichado en feeds de reputación"),
     (("dns query", ".cc tld", ".su tld", ".top domain", " tld", "dns lookup"), "DNS sospechoso"),
     (("adware", "pup"), "Adware / PUP"),
     (("malware", "compromised"), "Trafico de malware"),
@@ -1042,6 +1046,19 @@ def _cardq(tip):
     """Badge '?' con tooltip explicativo para la cabecera de un cuadro."""
     return f'<span class="chq">?<span class="chtip">{esc(tip)}</span></span>' if tip else ""
 
+def _partir_etiqueta(t, n):
+    """(primera, segunda) linea de una etiqueta de barra con como mucho `n` caracteres cada una.
+    Si cabe en una, la segunda va vacia. Se parte por el ultimo espacio que cabe (a los `n` si
+    no hay) y solo la segunda se acota con «…», cuando tampoco cabe en dos."""
+    t = str(t)
+    if len(t) <= n:
+        return t, ""
+    corte = t.rfind(" ", 0, n + 1)
+    if corte <= 0:
+        corte = n
+    a, b = t[:corte].rstrip(), t[corte:].strip()
+    return a, (b if len(b) <= n else b[:n - 1] + "…")
+
 def hbar(titulo, pares, unidad="alertas", fmt=str, lblw=125, barw=470, card_class="card",
          label_above=False, tip="", piso=8, que="valor", izq=False):
     """Barras horizontales rankeadas, un solo tono, etiqueta de valor directa.
@@ -1122,10 +1139,19 @@ def hbar(titulo, pares, unidad="alertas", fmt=str, lblw=125, barw=470, card_clas
                     + f'<rect x="{lblw}" y="{y}" width="{w}" height="{rowh}" rx="4" fill="{heat(v/ref)}"/>'
                     f'<text x="{lblw+w+6}" y="{ty}" class="val">{esc(fmt(v))}</text></g>')
                 continue
-            etq = name if len(name) <= maxch else name[:maxch - 1] + "…"
+            # el nombre que no cabe baja a una segunda linea en vez de cortarse: «LOCAL DNS a
+            # dominio ficha…» no decia que era (el user, 2026-10-15)
+            l1, l2 = _partir_etiqueta(name, maxch)
             pos = 'x="2"' if izq else f'x="{lblw-8}" text-anchor="end"'
+            if l2:
+                lbl = (f'<text {pos} y="{y+rowh*0.68-6.5:.0f}" class="lbl">{esc(l1)}'
+                       f'<tspan x="{2 if izq else lblw-8}" dy="13">{esc(l2)}</tspan></text>')
+                if l2.endswith("…"):
+                    lbl = f'<g><title>{esc(name)}</title>{lbl}</g>'
+            else:
+                lbl = f'<text {pos} y="{ty}" class="lbl">{esc(l1)}</text>'
             rows.append(
-                f'<text {pos} y="{ty}" class="lbl">{esc(etq)}</text>'
+                lbl +
                 f'<rect x="{lblw}" y="{y}" width="{w}" height="{rowh}" rx="4" fill="{heat(v/ref)}"/>'
                 f'<text x="{lblw+w+6}" y="{ty}" class="val">{esc(fmt(v))}</text>')
     # aviso honesto cuando la muestra es plana/pequeña (no hay un dominante real)

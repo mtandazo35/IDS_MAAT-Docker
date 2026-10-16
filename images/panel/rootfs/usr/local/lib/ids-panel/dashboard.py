@@ -525,8 +525,10 @@ _TRAD = [
     (("snmp",), "Acceso SNMP"),
     (("dyn_dns", "dynamic_dns", "dyndns", "duckdns", "no-ip"), "DNS dinamico"),
     # la regla propia de los feeds (sid 9000050, en español): sin esta linea su firma salia cortada
-    # como categoria y el abonado que solo tenia esa alerta caia en «Otros» (informe, 2026-10-15)
-    (("dominio fichado",), "DNS sospechoso"),
+    # como categoria y el abonado que solo tenia esa alerta caia en «Otros» (informe, 2026-10-15).
+    # Fila propia, no sumada a «DNS sospechoso»: se ve cuanto sale de los feeds (el user,
+    # 2026-10-15); cuenta como DNS de malware igual (CAT_CPE). La misma linea en html_report.
+    (("dominio fichado",), "DNS a dominio fichado en feeds de reputación"),
     (("dns query", ".cc tld", ".su tld", ".top domain", " tld", "dns lookup"), "DNS sospechoso"),
     (("adware", "pup"), "Adware / PUP"),
     (("malware", "compromised"), "Trafico de malware"),
@@ -4557,7 +4559,7 @@ CAT_CPE = [
     ("spam", "Spam",
      ["Spam"], "clientes-spam"),
     ("dns", "DNS de malware",
-     ["DNS sospechoso"], "clientes-dns-malware"),
+     ["DNS sospechoso", "DNS a dominio fichado en feeds de reputación"], "clientes-dns-malware"),
     ("minado", "Criptominado",
      ["Criptomineria"], "clientes-minado"),
     ("p2p", "P2P",
@@ -12621,7 +12623,9 @@ def documentacion_page(embed=False, pagina=""):
     art = f"""<!--CAT:Primeros pasos--><h2>Las pestañas del menú</h2>
 <table><tr><th>Pestaña</th><th>Qué hace</th></tr>
 <tr><td><b>En vivo</b></td><td>Vista principal. Arriba, el <b>resumen de las últimas 24h</b>:
-atacantes por puerto (qué IP golpea qué puerto), IPs origen (atacantes), IPs destino (objetivos) y la
+atacantes por puerto (qué IP golpea qué puerto), IPs origen (atacantes), IPs destino (objetivos), las
+firmas más frecuentes (el tipo de ataque, en español y con el nombre entero; la regla propia de los
+feeds sale aparte como «DNS a dominio fichado en feeds de reputación») y la
 línea de tiempo en 48 barras (de 30 minutos con la ventana de 24 h; con una ventana más corta, más
 cortas). Se actualiza sola cada 20 segundos.</td></tr>
 <tr><td><b>Top orígenes</b></td><td>Ranking del <b>Top 5 de CPEs que más alertan</b> (quién ataca más),
@@ -16325,7 +16329,7 @@ CPE_INDICIOS = [
     ("fuerza", "Intentos de contraseña contra terceros",
      ["Fuerza bruta", "RDP/VNC"], ["22", "3389", "5900"]),
     ("dns", "Consultas a dominios de malware",
-     ["DNS sospechoso"], []),
+     ["DNS sospechoso", "DNS a dominio fichado en feeds de reputación"], []),
     ("spam", "Envío de correo en volumen", ["Spam"], ["25", "465", "587"]),
 ]
 # El texto lo lee gente que no es de redes: "Alta confianza" se entiende al reves (un
