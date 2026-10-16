@@ -14,13 +14,30 @@ env:
   COSIGN_SHA256: c3b4f5410e608af03a5eb0aaac84a4313d8da131248e08ff1759ac70c79d1644
 
 jobs:
-  pruebas:
-    uses: ./.github/workflows/ci.yml
+  # El commit etiquetado ya pasó ci.yml entero al subirlo: aquí no se repite (eran ~22 min por
+  # release). Si no tiene un ci.yml en verde (aún corre, falló o nunca se subió a una rama), la
+  # release se para aquí; se vuelve a lanzar cuando el CI esté verde.
+  ci-verde:
+    runs-on: ubuntu-24.04
     permissions:
+      actions: read
       contents: read
+    steps:
+      - name: ci.yml en verde para el commit etiquetado
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          n=$(gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/ci.yml/runs?head_sha=${GITHUB_SHA}&status=success&per_page=1" \
+                --jq '.total_count')
+          if [ "${n:-0}" -lt 1 ]; then
+            echo "::error::${GITHUB_SHA} no tiene un ci.yml en verde: espera a que termine (o arréglalo) y relanza la release"
+            exit 1
+          fi
+          echo "ci.yml en verde para ${GITHUB_SHA}"
 
   imagen:
-    needs: pruebas
+    needs: ci-verde
     runs-on: ubuntu-24.04
     permissions:
       contents: read

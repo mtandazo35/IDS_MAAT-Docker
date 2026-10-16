@@ -49,9 +49,9 @@ Hay dos workflows:
 on: { push: { tags: ["v*"] } }
 permissions: { contents: write, packages: write, id-token: write, attestations: write }
 jobs:
-  pruebas:   # lo mismo que ci.yml
+  ci-verde:  # exige un ci.yml en verde para el commit etiquetado (no lo repite)
   imagen:
-    needs: pruebas
+    needs: ci-verde
     strategy: { matrix: { img: [panel, vpn, suricata] } }
     steps:   # checkout, login GHCR, metadata (semver + sha-), build-push (provenance, sbom),
              # cosign sign --yes ghcr.io/<owner>/ids-maat-<img>@<digest>

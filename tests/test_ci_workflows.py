@@ -278,8 +278,9 @@ class Workflows(unittest.TestCase):
         ci = self.leer("ci.yml")
         for job in ("lint", "pruebas", "imagenes"):
             self.assertRegex(ci, r"(?m)^  %s:\n" % re.escape(job))
-        self.assertIn("workflow_call:", ci)
         self.assertNotIn("windows-latest", ci)          # sin job de Windows (dueño, 2026-10-15)
+        # imagenes arranca a la vez que pruebas (no las espera): el CI acaba ~8 min antes
+        self.assertNotRegex(ci.split("\n  imagenes:\n", 1)[1], r"(?m)^    needs:")
         self.assertIn("bash tests/run.sh --imagenes --integracion", ci)
 
     def test_ci_construye_y_prueba_las_tres_imagenes(self):
@@ -293,7 +294,10 @@ class Workflows(unittest.TestCase):
         self.assertRegex(rel, r'tags: \["v\*"\]')
         matriz = re.search(r"(?m)^\s+img: \[([^\]]*)\]$", rel).group(1)
         self.assertEqual([x.strip() for x in matriz.split(",")], ["panel", "vpn", "suricata"])
-        self.assertIn("uses: ./.github/workflows/ci.yml", rel)
+        # no repite el CI: exige que ci.yml esté en verde para el commit etiquetado
+        self.assertNotIn("uses: ./.github/workflows/ci.yml", rel)
+        self.assertIn("actions/workflows/ci.yml/runs?head_sha=${GITHUB_SHA}&status=success", rel)
+        self.assertIn("needs: ci-verde", rel.split("\n  imagen:\n", 1)[1])
         self.assertIn("id-token: write", rel)
         self.assertIn("sign-blob --yes --bundle release.json.bundle release.json", rel)
         self.assertIn("git archive --format=tar.gz", rel)

@@ -1154,7 +1154,10 @@ Es lo que usan A y B en local y el CI.
 | `pruebas` | ubuntu-24.04, Python 3.12 | `tests/run.sh` |
 | `imagenes` | ubuntu-24.04 | `images/build.sh vpn ci` y `suricata ci`; `IDS_IMG_VPN=ids-maat-vpn:ci IDS_IMG_SURICATA=ids-maat-suricata:ci tests/run.sh --imagenes --integracion` |
 
-`release.yml` (solo etiquetas `v*`): `pruebas` (reutiliza `ci.yml` con `workflow_call`) → `imagen`
+`imagenes` arranca a la vez que `pruebas`, sin esperarla (desde 2026-10-15).
+
+`release.yml` (solo etiquetas `v*`): `ci-verde` (exige un `ci.yml` en verde para el commit
+etiquetado y no lo repite; desde 2026-10-15) → `imagen`
 (matriz `[vpn, suricata]`: login GHCR, metadata semver + `sha-`, build-push con provenance y SBOM,
 `cosign sign --yes …@<digest>`) → `release`: empaqueta `ids-maat-host-<v>.tar.gz` (`orquestador/`,
 `host/`, `install.sh`), escribe
