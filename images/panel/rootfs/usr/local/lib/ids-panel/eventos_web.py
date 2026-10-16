@@ -59,7 +59,8 @@ TAMANOS = (10, 20, 30, 40, 50, 100)  # lo que se puede elegir abajo, ademas de �
 TODOS_MAX = 2000                   # «todos» = hasta esto por pagina: el eve real tiene millones de
                                    # lineas y la busqueda ya tiene topes de bytes y de tiempo
 TOPE_BYTES = 200 * 1024 * 1024     # bytes descomprimidos leidos por consulta (todas las fuentes)
-TOPE_GZ = 150 * 1024 * 1024        # bytes descomprimidos por fichero .gz
+TOPE_GZ = 150 * 1024 * 1024        # bytes descomprimidos por fichero .gz; un rotado tiene que caber
+                                   # (logrotate corta a los 100 MB; lo comprueba test_host_ficheros)
 TOPE_SEGUNDOS = 8.0                # tiempo por consulta
 BLOQUE = 1 << 20                   # lectura hacia atras de los planos
 MAX_LINEA = 1 << 20                # una linea mas larga se salta (y se cuenta)

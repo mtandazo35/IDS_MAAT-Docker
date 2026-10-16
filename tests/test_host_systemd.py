@@ -74,13 +74,13 @@ class Unidades(unittest.TestCase):
                          ("*-*-* 08:15:00 UTC", "10m", "true"))
         self.assertEqual(unidad("ids-reglas.service")["Service"]["ExecStart"], "/usr/local/bin/ids-orq reglas actualizar")
         lr = unidad("ids-logrotate.timer")["Timer"]
-        self.assertEqual(lr["OnCalendar"], "*:0/30")
+        self.assertEqual(lr["OnCalendar"], "*:0/5")          # eve/dns rotan al pasar de 100 MB
         self.assertEqual(unidad("ids-logrotate.service")["Service"]["ExecStart"],
                          "/usr/sbin/logrotate --state /var/lib/logrotate/ids-maat.status /etc/ids-maat/logrotate.conf")
 
     @unittest.skipUnless(sys.platform.startswith("linux") and shutil.which("systemd-analyze"), "sin systemd-analyze")
     def test_calendarios_validos(self):
-        for expr in ("*-*-* 08:15:00 UTC", "*:0/30"):
+        for expr in ("*-*-* 08:15:00 UTC", "*:0/5"):
             r = subprocess.run(["systemd-analyze", "calendar", expr], capture_output=True, text=True)
             self.assertEqual(r.returncode, 0, r.stderr)
 

@@ -190,7 +190,8 @@ disponible» y no hacen nada.
 
 ### 8.1 Retención de los eventos (CONTRATO-F2 §9)
 
-- **Objetivo: 30 días** de `eve.json` y `dns.json` por punto. logrotate rota por tamaño (1 GB) con
+- **Objetivo: 30 días** de `eve.json` y `dns.json` por punto. logrotate rota por tamaño (100 MB,
+  mirado cada 5 min, para que un rotado quepa en lo que Eventos descomprime por fichero) con
   nombre fechado (`eve.json-AAAAMMDD-HHMMSS`) y **sin tope de número** (`rotate -1`, sin `maxage`).
 - **Compresión:** la hace el orquestador (hilo aparte, cada minuto) con los rotados que llevan 2 min
   sin escribirse: `.gz` atómico que **conserva el mtime** (= su último evento), el dueño y el modo.

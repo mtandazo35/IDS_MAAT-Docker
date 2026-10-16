@@ -422,10 +422,12 @@ y además  MemAvailable ≥ mem_limit(nuevo) + 512 MB
 
 ### 10.5 Disco y rotación
 
-- **logrotate del host**, lanzado por un timer cada 15–60 min, para `eve.json`, `dns.json` y
+- **logrotate del host**, lanzado por un timer cada 5 min, para `eve.json`, `dns.json` y
   `orq.jsonl`:
-  - eve/dns: `maxsize 1G`, nombre fechado (`dateext`, `-%Y%m%d-%H%M%S`), `rotate -1` (sin tope de
-    número) y `nocompress` (F2, CONTRATO-F2 §9);
+  - eve/dns: `size 100M` (nunca `maxsize`: sin `size` rota en cada pasada todo lo que pase de 1 MB),
+    nombre fechado (`dateext`, `-%Y%m%d-%H%M%S`), `rotate -1` (sin tope de número) y `nocompress`
+    (F2, CONTRATO-F2 §9). Un rotado (100 MB más lo de 5 min) cabe en lo que Eventos descomprime por
+    fichero (150 MB; CONTRATO-F1a §5.14);
   - **sin `copytruncate`**;
   - `postrotate`: el orquestador pide `reopen-log-files` a cada instancia.
   - `stats.json`: aparte, `size 5M`, `rotate 1` y **con `copytruncate`** (Suricata lo abre en modo

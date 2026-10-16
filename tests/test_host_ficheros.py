@@ -3,6 +3,7 @@
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -16,8 +17,12 @@ import _ayuda_orq as A  # noqa: E402
 REPO = Path(__file__).resolve().parents[1]
 H = REPO / "host"
 
-LOGROTATE_CONTRATO = """/srv/ids/datos/*/eve.json /srv/ids/datos/*/dns.json {
-    maxsize 1G
+LOGROTATE_CONTRATO = """# eve/dns rotan al pasar de 100 MB (ids-logrotate.timer mira cada 5 min): un rotado tiene que caber
+# en lo que Eventos descomprime por fichero (TOPE_GZ, 150 MB); con 1 GB la búsqueda se saltaba las
+# horas anteriores. `size` y no `maxsize`: sin `size`, logrotate rota en cada pasada todo lo que
+# pase de 1 MB (su umbral por defecto).
+/srv/ids/datos/*/eve.json /srv/ids/datos/*/dns.json {
+    size 100M
     rotate -1
     dateext
     dateformat -%Y%m%d-%H%M%S
@@ -68,6 +73,19 @@ class Ficheros(unittest.TestCase):
         self.assertNotIn("copytruncate", eve_dns)
         self.assertEqual(txt.count("copytruncate"), 2)       # el comentario + el de stats.json
 
+    def test_un_rotado_cabe_en_lo_que_lee_eventos(self):
+        """Corrección de defecto (2026-10-15): con `maxsize 1G` y sin `size`, logrotate rotaba en cada
+        pasada todo lo que pasara de 1 MB, y 1 GB de verdad habría dejado cada rotado por encima de
+        lo que Eventos descomprime por fichero (TOPE_GZ): la búsqueda se saltaba las horas
+        anteriores. El umbral deja sitio a lo que entra entre dos pasadas del timer (5 min)."""
+        eve_dns = LOGROTATE_CONTRATO.split("}", 1)[0]
+        self.assertIsNone(re.search(r"^\s*maxsize\b", eve_dns, re.M))
+        m = re.search(r"^\s*size (\d+)M$", eve_dns, re.M)
+        self.assertIsNotNone(m, eve_dns)
+        sys.path.insert(0, str(REPO / "images" / "panel" / "rootfs" / "usr" / "local" / "lib" / "ids-panel"))
+        import eventos_web
+        self.assertLessEqual(int(m.group(1)) * 1024 * 1024, eventos_web.TOPE_GZ * 2 // 3)
+
     def test_modulos_sysctl_ssh(self):
         mods = [x for x in (H / "modules" / "ids.conf").read_text(encoding="utf-8").splitlines()
                 if x and not x.startswith("#")]
@@ -117,6 +135,39 @@ class LogrotateReal(unittest.TestCase):
             self.assertEqual(len(rotados), 1, rotados)
             self.assertRegex(rotados[0], r"^eve\.json-\d{8}-\d{6}$")
             self.assertFalse(eve.exists())                          # nocreate: lo reabre Suricata
+            self.assertEqual(marca.read_text().strip(), "reabrir-logs")
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+
+    def test_rota_por_tamano_y_no_antes(self):
+        """Corrección de defecto (2026-10-15, en producción): con `maxsize 1G` y sin `size`,
+        logrotate rotaba eve/dns en cada pasada del timer (cada 30 min) en cuanto pasaban de 1 MB.
+        Sin -f, como lo lanza el timer: con 99 MB no rota; con 101 MB rota una vez y pide reabrir."""
+        d = Path(tempfile.mkdtemp(prefix="lr-"))
+        try:
+            marca = d / "reabierto"
+            orq = d / "ids-orq"
+            orq.write_text("#!/bin/sh\necho \"$@\" > %s\n" % marca, encoding="utf-8")
+            orq.chmod(0o755)
+            conf = LOGROTATE_CONTRATO.replace("/srv/ids", str(d / "srv/ids")).replace("/usr/local/bin/ids-orq", str(orq))
+            (d / "lr.conf").write_text(conf, encoding="utf-8")
+            eve = d / "srv/ids/datos/p001/eve.json"
+            eve.parent.mkdir(parents=True)
+
+            def pasada(mb):
+                with open(eve, "ab") as f:
+                    f.truncate(mb * 1024 * 1024)        # disperso: no ocupa disco
+                r = subprocess.run(["logrotate", "-s", str(d / "estado"), str(d / "lr.conf")],
+                                   capture_output=True, text=True)
+                self.assertEqual(r.returncode, 0, r.stderr)
+                return sorted(f.name for f in eve.parent.iterdir())
+
+            self.assertEqual(pasada(2), ["eve.json"])          # el umbral por defecto (1 MB) ya no manda
+            self.assertEqual(pasada(99), ["eve.json"])
+            self.assertFalse(marca.exists())
+            rotados = pasada(101)
+            self.assertEqual(len(rotados), 1, rotados)
+            self.assertRegex(rotados[0], r"^eve\.json-\d{8}-\d{6}$")
             self.assertEqual(marca.read_text().strip(), "reabrir-logs")
         finally:
             shutil.rmtree(d, ignore_errors=True)

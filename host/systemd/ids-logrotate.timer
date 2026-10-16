@@ -1,9 +1,11 @@
-# ids-maat: logrotate cada 30 min (el maxsize 1G solo se mira cuando corre).
+# ids-maat: logrotate cada 5 min. eve/dns rotan al pasar de 100 MB; mirar a menudo deja cada rotado
+# cerca de ese tamaño (cada 30 min, un punto con mucho espejo pasaría de los 150 MB que Eventos
+# descomprime por fichero).
 [Unit]
-Description=IDS-MAAT: logrotate cada 30 min
+Description=IDS-MAAT: logrotate cada 5 min
 
 [Timer]
-OnCalendar=*:0/30
+OnCalendar=*:0/5
 AccuracySec=1min
 Persistent=true
 

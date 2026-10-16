@@ -143,7 +143,7 @@ trate un CPE recibe `CpeRef(punto_id, ip)`:
 
 | Dato | Retención | Mecanismo |
 |---|---|---|
-| `eve.json`, `dns.json` | **30 días por fecha** (CONTRATO-F2 §9); antes si `/srv/ids` baja del 15 % libre, empezando por los rotados más viejos de cualquier punto, con cada borrado registrado y la retención efectiva publicada por punto | logrotate del host (rotación por tamaño, fechada y sin tope de número) + poda del orquestador ([ORQUESTADOR.md](ORQUESTADOR.md) §8.1) |
+| `eve.json`, `dns.json` | **30 días por fecha** (CONTRATO-F2 §9); antes si `/srv/ids` baja del 15 % libre, empezando por los rotados más viejos de cualquier punto, con cada borrado registrado y la retención efectiva publicada por punto | logrotate del host (rotación por tamaño, a los 100 MB, fechada y sin tope de número) + poda del orquestador ([ORQUESTADOR.md](ORQUESTADOR.md) §8.1) |
 | `stats.json` | el vivo y el anterior (`stats.json.1`, hasta 5 MB) | logrotate del host con `copytruncate` |
 | `alerta` | 90 días | borrado por lotes de 5 000 |
 | `resumen_hora` | 180 días | igual |

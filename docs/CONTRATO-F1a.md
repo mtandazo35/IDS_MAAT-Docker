@@ -1047,12 +1047,13 @@ canario con líneas reales (medición 13).
 
 ### 5.14 logrotate
 
-`/etc/ids-maat/logrotate.conf` (C), lanzado por `ids-logrotate.timer` cada 30 min con
-`logrotate --state /var/lib/logrotate/ids-maat.status /etc/ids-maat/logrotate.conf`:
+`/etc/ids-maat/logrotate.conf` (C), lanzado por `ids-logrotate.timer` cada 5 min con
+`logrotate --state /var/lib/logrotate/ids-maat.status /etc/ids-maat/logrotate.conf`
+(comentarios del fichero aparte):
 
 ```
 /srv/ids/datos/*/eve.json /srv/ids/datos/*/dns.json {
-    maxsize 1G
+    size 100M
     rotate -1
     dateext
     dateformat -%Y%m%d-%H%M%S
@@ -1065,6 +1066,14 @@ canario con líneas reales (medición 13).
         /usr/local/bin/ids-orq reabrir-logs >/dev/null 2>&1 || true
     endscript
 }
+/srv/ids/datos/*/stats.json {
+    size 5M
+    rotate 1
+    copytruncate
+    nocompress
+    missingok
+    notifempty
+}
 /srv/ids/estado/orq.jsonl {
     monthly
     rotate 24
@@ -1075,10 +1084,17 @@ canario con líneas reales (medición 13).
 }
 ```
 
-Sin `copytruncate`. El orquestador abre `orq.jsonl` en modo append en cada escritura, así que no
-necesita reapertura. **F2 (§0.2 fila 19):** los eve/dns rotan con nombre fechado y sin tope de número;
-la compresión (conservando el mtime) y la poda por fecha (30 días) y por disco (< 15 % libre) son del
-orquestador.
+eve/dns sin `copytruncate` (se reabren con `reopen-log-files`); solo `stats.json` lo lleva, porque
+Suricata lo abre en modo añadir. El orquestador abre `orq.jsonl` en modo append en cada escritura, así
+que no necesita reapertura. **F2 (§0.2 fila 19):** los eve/dns rotan con nombre fechado y sin tope de
+número; la compresión (conservando el mtime) y la poda por fecha (30 días) y por disco (< 15 % libre)
+son del orquestador.
+
+**Por tamaño: `size 100M`, nunca `maxsize`.** Sin `size`, logrotate aplica su umbral por defecto
+(1 MB) y rota en cada pasada del timer. Pasaba con `maxsize 1G`: en producción, cada 30 min (2026-10-15).
+Un rotado tiene que caber en lo que Eventos descomprime por fichero (`TOPE_GZ`, 150 MB). Con 1 GB
+de verdad, la búsqueda se saltaría las horas anteriores. Con el timer cada 5 min, un rotado queda en
+100 MB más lo que entra en 5 min (unos 125 MB en el punto con más espejo medido).
 
 ### 5.15 Unidades systemd (C)
 
@@ -1087,7 +1103,7 @@ orquestador.
 | `ids-host-fw.service` | `Type=oneshot`, `RemainAfterExit=yes`, `Before=docker.service`, `ExecStart=/usr/sbin/nft -f /srv/ids/fw/ids_host.nft`, `WantedBy=multi-user.target` |
 | `ids-orq.service` | `After=docker.service ids-host-fw.service`, `Requires=docker.service`, `ExecStart=/usr/local/bin/ids-orq servicio`, `Restart=always`, `RuntimeDirectory=ids-orq`, encierro de ORQUESTADOR §1.1 |
 | `ids-reglas.service` / `.timer` | `ExecStart=/usr/local/bin/ids-orq reglas actualizar`; `OnCalendar=*-*-* 08:15:00 UTC` (03:15 en UTC−5), `RandomizedDelaySec=10m`, `Persistent=true` |
-| `ids-logrotate.service` / `.timer` | §5.14; `OnCalendar=*:0/30` |
+| `ids-logrotate.service` / `.timer` | §5.14; `OnCalendar=*:0/5` |
 
 ---
 

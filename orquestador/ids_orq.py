@@ -3054,7 +3054,7 @@ class Orquestador:
             self._parar.wait(INTERVALO_ESTADO_S)
 
     def bucle_compresion(self):
-        """Hilo aparte: comprimir un rotado de 1 GB tarda y no puede retrasar estado.json."""
+        """Hilo aparte: comprimir un rotado de 100 MB tarda y no puede retrasar estado.json."""
         while not self._parar.is_set():
             try:
                 comprimir_rotados(self._pids_datos(), time.time())
