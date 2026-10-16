@@ -524,6 +524,9 @@ _TRAD = [
     (("stun ",), "STUN (video)"),
     (("snmp",), "Acceso SNMP"),
     (("dyn_dns", "dynamic_dns", "dyndns", "duckdns", "no-ip"), "DNS dinamico"),
+    # la regla propia de los feeds (sid 9000050, en español): sin esta linea su firma salia cortada
+    # como categoria y el abonado que solo tenia esa alerta caia en «Otros» (informe, 2026-10-15)
+    (("dominio fichado",), "DNS sospechoso"),
     (("dns query", ".cc tld", ".su tld", ".top domain", " tld", "dns lookup"), "DNS sospechoso"),
     (("adware", "pup"), "Adware / PUP"),
     (("malware", "compromised"), "Trafico de malware"),
@@ -4533,13 +4536,13 @@ def excluir_destino(d):
 # --- Una address-list por CATEGORIA de abuso ---------------------------------------
 # (clave, nombre visible, categorias de firma que la disparan, lista por defecto)
 # El orden MANDA: se clasifica por la primera que casa, de lo mas grave a lo mas leve.
-# Un CPE con botnet Y P2P es un CPE con botnet.
+# Un CPE con botnet Y P2P es un CPE con botnet. Escaneo, fuerza bruta y spam van ANTES que el
+# DNS de malware (el user, 2026-10-15): un CPE que escaneaba y mandaba spam salia en el informe
+# como «DNS de malware: no hace falta dejarlo sin internet» y no contaba en «para cortar».
 CAT_CPE = [
     ("botnet", "Botnet / CnC",
      ["Botnet CnC", "Botnet", "Botnet Mirai", "Botnet Katana", "Troyano", "Ransomware",
       "Trafico de malware"], "clientes-botnet"),
-    ("dns", "DNS de malware",
-     ["DNS sospechoso"], "clientes-dns-malware"),
     ("escaneo", "Escaneo",
      ["Escaneo de puertos", "Escaneo SSH", "Escaneo Telnet", "Escaneo TR-069",
       "Escaneo saliente"], "clientes-escaneo"),
@@ -4547,6 +4550,8 @@ CAT_CPE = [
      ["Fuerza bruta", "RDP/VNC"], "clientes-fuerza-bruta"),
     ("spam", "Spam",
      ["Spam"], "clientes-spam"),
+    ("dns", "DNS de malware",
+     ["DNS sospechoso"], "clientes-dns-malware"),
     ("minado", "Criptominado",
      ["Criptomineria"], "clientes-minado"),
     ("p2p", "P2P",
@@ -13184,7 +13189,9 @@ para DNS de malware, <b>Frenar escaneo</b> para escaneo, <b>Cortar todo</b> para
 correo saliente</b> para spam y <b>Nada</b> para criptominado, P2P y otros.</p>
 <p>La clasificación va de <b>lo más grave a lo más leve</b> y manda la primera que casa: quien tiene
 una botnet <b>y además</b> usa BitTorrent es, a efectos de qué hacer con él, un CPE con botnet
-&mdash; aunque el P2P tenga diez veces más alertas.</p>
+&mdash; aunque el P2P tenga diez veces más alertas. El orden es: botnet, escaneo, fuerza bruta,
+spam, DNS de malware, criptominado y P2P. Un CPE que escanea o manda spam <b>y además</b> consulta
+dominios de malware va a la lista de escaneo o de spam, no a la de DNS.</p>
 <p><b>Encolar no es poner una cola.</b> Lo que de verdad limita son <b>tres</b> piezas
 encadenadas: <code>mark-connection</code> &rarr; <code>mark-packet</code> &rarr; una
 <code>/queue tree</code> que consuma esa marca. Faltando cualquiera de las tres <b>no se limita
@@ -16056,8 +16063,8 @@ def informe_datos(dias, usuario=""):
                 "No cuenta como alerta el ruido informativo (firmas ET INFO) ni lo que no es abuso: "
                 "videollamadas, chequeos de conectividad, anomalías de protocolo, User-Agents raros. "
                 "El P2P sí cuenta, en su propia categoría. Un abonado sin alertas reales no aparece.",
-                "Cada abonado va en UNA categoría: la más grave que tenga (botnet, DNS de malware, "
-                "escaneo, fuerza bruta, spam, minado, P2P). «Cayó en la categoría» es la primera "
+                "Cada abonado va en UNA categoría: la más grave que tenga (botnet, escaneo, fuerza "
+                "bruta, spam, DNS de malware, minado, P2P). «Cayó en la categoría» es la primera "
                 "alerta de esa categoría dentro del período; «Última vez», la última.",
                 "Cuando solo se conoce el día (datos guardados antes de que el panel registrara la "
                 "hora), la fecha sale marcada como aproximada.",
