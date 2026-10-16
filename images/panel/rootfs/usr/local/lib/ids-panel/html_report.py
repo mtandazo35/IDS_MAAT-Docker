@@ -979,7 +979,12 @@ for _pid, p in files:
                 patron_src[(sig, dport)].add(src)
             _sl = sig.lower()
             _es_cnc = any(k in _sl for k in CNC_KW)
-            _es_dns = es_dns_sospechoso(sig, cat)
+            # La regla propia de los feeds (sid 9000050) no casa con ninguna palabra de DNS_MAL:
+            # sin esto sus alertas no contaban como DNS sospechoso y, con los feeds de dominios sin
+            # clave en el panel (sin Camino B), quien solo consultaba dominios fichados no salia
+            # nunca de candidato (el user, 2026-10-15). Por el sid, no por el texto del msg.
+            _feeds = g("sid") == SID_FEEDS_DOMINIOS
+            _es_dns = _feeds or es_dns_sospechoso(sig, cat)
             if _es_cnc:                           # firma de infeccion (CnC/botnet/troyano)
                 inf_hits[src] += 1
                 inf_sids[src].add(g("sid") or sig)
@@ -987,14 +992,22 @@ for _pid, p in files:
                     inf_sig[src] = sig
                     inf_sig_ts[src] = ts or 0
             if _es_dns:                            # consulta DNS a dominio malicioso
-                dns_hits[src] += 1
-                dns_sids[src].add(g("sid") or sig)
                 _rr = (g("rrname") or "").lower().rstrip(".")
-                if _rr:
-                    _apuntar_dominio(_rr, src, dst, "firma: " + sig[:70])
-                if (ts or 0) >= dns_sig_ts.get(src, 0):
-                    dns_sig[src] = sig
-                    dns_sig_ts[src] = ts or 0
+                # La regla de los feeds mira lo mismo que el Camino B (dominio en la lista de los
+                # feeds): si el panel tiene ese dominio en domains.lst, la consulta ya la conto el
+                # Camino B desde dns.json y aqui no se suma otra vez. Si no lo tiene, esta alerta
+                # es la unica via, y cuenta con la misma clave «dom:» que el Camino B.
+                if not (_feeds and _rr and DOM_OK and dominio_malo(_rr)):
+                    dns_hits[src] += 1
+                    if not (_feeds and _rr):
+                        dns_sids[src].add(g("sid") or sig)
+                    elif len(dns_sids[src]) < MAX_CARD:
+                        dns_sids[src].add("dom:" + _rr[:80])
+                    if _rr:
+                        _apuntar_dominio(_rr, src, dst, "firma: " + sig[:70])
+                    if (ts or 0) >= dns_sig_ts.get(src, 0):
+                        dns_sig[src] = ("DNS a dominio malo: " + _rr[:60]) if (_feeds and _rr) else sig
+                        dns_sig_ts[src] = ts or 0
             # evidencia por alerta (para la ficha): guardar hasta 8 registros por CPE
             if (_es_cnc or _es_dns) and len(pruebas_by_src[src]) < 8:
                 pruebas_by_src[src].append({
