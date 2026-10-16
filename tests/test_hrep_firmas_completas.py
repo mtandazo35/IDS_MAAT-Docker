@@ -74,8 +74,9 @@ class FirmasCompletas(Entorno):
     def test_lo_que_no_cabe_en_dos_lineas_lleva_el_nombre_entero_al_pasar_el_raton(self):
         largo = "LOCAL " + "x" * 38
         self.eventos("p001", "eve.json",
+                     # con la categoria por defecto: «Misc activity» es ruido y no sale en la grafica
                      [alerta("10.0.0.5", "192.0.2.10", sig=largo, sid=9000999, dport=80,
-                             cat="Misc activity", flow_id=300 + i) for i in range(2)])
+                             flow_id=300 + i) for i in range(2)])
         self.ok("60", "--nodo", "p001")
         t = tarjeta(self.html("p001"), TITULO)
         filas = etiquetas(t)
