@@ -101,7 +101,12 @@ networks:
   que crea dockerd, y fallan `tun0`, el veth y nft.
 - `cap_drop: ALL`, `read_only`, `no-new-privileges` y los perfiles por defecto de seccomp y
   AppArmor (`docker-default` permite `AF_PACKET`).
-- `mem_limit == memswap_limit`: sin swap. Un OOM mata solo a ese Suricata.
+- **Memoria compartida** (decisión del dueño, 2026-10-16; antes `mem_limit == memswap_limit`): ningún
+  contenedor tiene tope duro. Todos compiten por la memoria del VPS con una **reserva blanda**
+  (`mem_reservation`, la cifra de la admisión) y una prioridad ante el OOM del host (`oom_score_adj`):
+  `suricata` +500 (cae el primero), panel −500, `vpn` −800 (sin ella el punto queda ciego). El freno de
+  cada Suricata son sus memcaps. Motivo: con 900 MiB fijos, el Suricata de un punto con tráfico real
+  moría por OOM de su cgroup cada ~5 min teniendo el host 6 GB libres (205.235.2.157).
 - **Suricata con `read_only`** corre sin `--pidfile`, o con el pidfile en el tmpfs `/run`.
 
 ## 3. Sysctls del netns
@@ -377,7 +382,7 @@ Las cifras son orientativas para Suricata 7.0.x de Debian. **Se miden en el cana
 | Memcaps | ~0,4 GB como máximo | fijos |
 | Anillo af-packet | 1024 × 32 KB × 2 hilos ≈ 64 MB | probablemente **fuera del cgroup**: se cuenta aparte |
 | Datasets | unos MB | por instancia |
-| `vpn` | < 192 MB | `mem_limit` |
+| `vpn` | < 192 MB | `mem_reservation` (reserva blanda) |
 
 **No hay recarga en caliente** (`reload-rules`), así que no existe el pico de doble motor (§11).
 
@@ -402,6 +407,15 @@ Reservas fijas: ~1 GB para el host y Docker, ~1 GB para el panel, y **una sola r
   exacta se fija tras F1a.
 
 ### 10.3 Control de admisión
+
+Desde 2026-10-16 las cifras de abajo son **reservas** (`reserva_mb` del perfil), no topes: la admisión
+reparte la memoria con ellas, pero un contenedor puede usar más si el VPS la tiene libre.
+
+**Espejo de 10 KB y memoria de Suricata (medido el 2026-10-16 en 205.235.2.157).** El MikroTik solo manda
+los primeros 10 KB de cada conexión, así que Suricata casi nunca ve el cierre. Con
+`flow-timeouts.*.established: 300` había **124 692 flujos activos a ~3 800 paq/s**, y el reensamblado
+llegaba a 227 de 256 MB en 5 min. La plantilla usa por eso `established: 60`, `tcp.closed: 10` y
+`reassembly.depth: 64kb`, y los perfiles `reassembly 128mb`.
 
 ```
 mem_limit(suricata) = (motor medido del perfil + memcaps) × 1,2
