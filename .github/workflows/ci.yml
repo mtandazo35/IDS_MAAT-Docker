@@ -77,23 +77,8 @@ jobs:
           IDS_SH_OBLIGATORIAS: "1"
         run: IDS_RESUMEN="$GITHUB_STEP_SUMMARY" bash tests/run.sh
 
-  pruebas-windows:
-    runs-on: windows-latest
-    defaults:
-      run:
-        shell: bash
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
-        with:
-          python-version: "3.12"
-      - name: cryptography para secretos.py y PyYAML
-        run: |
-          python -m pip install --quiet --only-binary=:all: "cryptography==${CRYPTOGRAPHY_CI}" "pyyaml==${PYYAML_CI}" "reportlab==${REPORTLAB_CI}"
-      - name: tests/run.sh (Git Bash; resultados y omisiones con su motivo en el resumen del job)
-        env:
-          IDS_OBLIGATORIAS: windows
-        run: IDS_RESUMEN="$GITHUB_STEP_SUMMARY" bash tests/run.sh
+  # Sin job de Windows desde 2026-10-15 (decisión del dueño): el IDS solo corre en Linux y todo
+  # se prueba en la VPS y aquí.
 
   imagenes:
     runs-on: ubuntu-24.04

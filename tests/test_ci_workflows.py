@@ -276,10 +276,10 @@ class Workflows(unittest.TestCase):
 
     def test_jobs_de_ci(self):
         ci = self.leer("ci.yml")
-        for job in ("lint", "pruebas", "pruebas-windows", "imagenes"):
+        for job in ("lint", "pruebas", "imagenes"):
             self.assertRegex(ci, r"(?m)^  %s:\n" % re.escape(job))
         self.assertIn("workflow_call:", ci)
-        self.assertIn("runs-on: windows-latest", ci)
+        self.assertNotIn("windows-latest", ci)          # sin job de Windows (dueño, 2026-10-15)
         self.assertIn("bash tests/run.sh --imagenes --integracion", ci)
 
     def test_ci_construye_y_prueba_las_tres_imagenes(self):

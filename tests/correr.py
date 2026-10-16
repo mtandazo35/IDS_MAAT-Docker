@@ -1,6 +1,6 @@
 """Corre las pruebas unittest de tests/ y publica el resultado con cada omisión y su motivo.
 
-  python tests/correr.py [--obligatorias linux|windows|root] [--resumen FICHERO]
+  python tests/correr.py [--obligatorias linux|root] [--resumen FICHERO]
 
 - Descubre `tests/test_*.py` y `tests/legado/test_*.py` (paquete `legado`).
 - Imprime al final: pasadas, fallos, errores y la lista de OMITIDAS con su motivo.
@@ -25,9 +25,9 @@ import sys
 import unittest
 
 TESTS = os.path.dirname(os.path.abspath(__file__))
-PLATAFORMAS = ("linux", "windows", "root")
+PLATAFORMAS = ("linux", "root")       # sin Windows desde 2026-10-15 (decisión del dueño)
 # qué columnas de obligatorias.txt aplica cada plataforma («todas» siempre)
-INCLUYE = {"linux": ("linux",), "windows": ("windows",), "root": ("linux", "root")}
+INCLUYE = {"linux": ("linux",), "root": ("linux", "root")}
 MODULO_OMITIDO = "unittest.loader.ModuleSkipped."
 
 

@@ -178,7 +178,7 @@ Petición (una por conexión, JSON + `\n`): `{"v":1,"op_id":"<uuid4>","token":"<
 
 ### P.8 Pruebas (P)
 
-`tests/test_panel_*.py` (unittest, stdlib, Windows y Linux; ayuda en
+`tests/test_panel_*.py` (unittest, stdlib, Linux; ayuda en
 `tests/fixtures/panel/_ayuda_panel.py`, con un servidor real del panel en `127.0.0.1:<libre>` y un
 orquestador falso que valida con el `validar_params` real y genera los comandos con el
 `comandos_mikrotik` real de `ids_orq.py`, que solo se importa):

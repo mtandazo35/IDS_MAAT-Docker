@@ -148,7 +148,8 @@ IDS_MAAT-Docker/
 - **Bits de ejecución** (decidido en el contrato): se desarrolla en Windows y git no guarda el bit
   `+x` de forma fiable. Cada Dockerfile hace `chmod 0755` explícito de sus scripts y de los
   `run`/`up` de s6; `install.sh` hace lo mismo con lo que copia. Nadie depende del modo del índice.
-- **Python importable en Windows** (decidido en el contrato): todo script Python del repo (también
+- **Python importable en Windows** (decidido en el contrato; desde 2026-10-15 el CI ya no lo
+  comprueba, porque no hay job de Windows): todo script Python del repo (también
   los que no llevan `.py`, como `tzsp-decap` u `ovpn-auth`) se puede importar en Windows con
   Python 3.12 sin error: nada de `import fcntl`, `pwd`, `grp` ni `AF_UNIX` a nivel de módulo (se
   importan dentro de la función o con `try/except ImportError`), y el programa arranca en
@@ -1151,7 +1152,6 @@ Es lo que usan A y B en local y el CI.
 |---|---|---|
 | `lint` | ubuntu-24.04 | `pyflakes` sobre todo `*.py` **y** los ficheros con shebang `python3` bajo `images/*/rootfs/`; `shellcheck` y `bash -n` sobre `*.sh` y shebang `sh`/`bash`; `nft -c` de los ficheros `.nft` renderizados dentro de `debian:trixie-slim` con `--cap-add NET_ADMIN` |
 | `pruebas` | ubuntu-24.04, Python 3.12 | `tests/run.sh` |
-| `pruebas-windows` | windows-latest, Python 3.12 | `bash tests/run.sh` (Git Bash) — garantiza que todo se prueba en Windows (decidido en el contrato) |
 | `imagenes` | ubuntu-24.04 | `images/build.sh vpn ci` y `suricata ci`; `IDS_IMG_VPN=ids-maat-vpn:ci IDS_IMG_SURICATA=ids-maat-suricata:ci tests/run.sh --imagenes --integracion` |
 
 `release.yml` (solo etiquetas `v*`): `pruebas` (reutiliza `ci.yml` con `workflow_call`) → `imagen`
@@ -1250,7 +1250,9 @@ tests/run.sh [--imagenes] [--integracion]
 Un .sh que sale con 77 cuenta como OMITIDA. Sale con 1 si falla alguna.
 ```
 
-Funciona en Windows (Git Bash + Python 3.12) y en Linux.
+Se corre en Linux: en la VPS y en el CI. **Sin Windows desde 2026-10-15** (decisión del dueño):
+ni job `pruebas-windows` ni plataforma `windows` en `tests/obligatorias.txt`, y nada se ejecuta en
+el PC de desarrollo.
 
 ### 8.2 Qué prueba cada constructor
 

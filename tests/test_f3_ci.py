@@ -74,7 +74,8 @@ class CiInstala(unittest.TestCase):
         """Corrección de defecto (B-01/B-03): PyYAML con versión fijada en los jobs que corren
         tests/run.sh, para que sus pruebas no se omitan."""
         self.assertRegex(self.ci, r'PYYAML_CI: "\d+\.\d+\.\d+"')
-        self.assertGreaterEqual(len(re.findall(r'"pyyaml==\$\{PYYAML_CI\}"', self.ci)), 4)
+        # lint, pruebas e imagenes (pruebas-windows se quitó el 2026-10-15, decisión del dueño)
+        self.assertGreaterEqual(len(re.findall(r'"pyyaml==\$\{PYYAML_CI\}"', self.ci)), 3)
 
     def test_imagenes_corre_con_obligatorias(self):
         """Corrección de defecto (B-03): el job `imagenes` (root + Docker) corre con obligatorias
