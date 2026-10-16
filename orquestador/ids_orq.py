@@ -137,7 +137,8 @@ PASOS_CREAR = ["validar", "asignar", "admisión de RAM", "directorios", "certifi
 
 ORDENES_COLA = {"punto.crear", "punto.borrar", "punto.arrancar", "punto.parar",
                 "punto.reiniciar", "punto.ajustar", "punto.vpn.regenerar", "punto.threshold",
-                "punto.reconfigurar", "reglas.actualizar", "sistema.reconciliar"}
+                "punto.reconfigurar", "reglas.actualizar", "sistema.reconciliar",
+                "sistema.actualizar"}
 ORDENES_LECTURA = {"punto.estado", "punto.logs", "punto.comandos", "punto.api.huella",
                    "punto.medir", "logs.reabrir", "sistema.estado", "sistema.capacidad",
                    "op.estado"}
@@ -146,8 +147,18 @@ ORDENES_LECTURA = {"punto.estado", "punto.logs", "punto.comandos", "punto.api.hu
 ORDENES_INMEDIATAS = {"vpn.desbanear"}
 JAULA_VPN = "ids-vpn"
 ORDENES_RESERVADAS = {"acceso.aplicar", "acceso.confirmar",
-                      "sistema.buscar_actualizacion", "sistema.actualizar", "sistema.revertir",
+                      "sistema.buscar_actualizacion", "sistema.revertir",
                       "sistema.respaldar", "bitacora.anclar"}
+
+# Botón «Actualizar» del panel (ACTUALIZACIONES.md §4): sistema.actualizar arranca esta unidad, que
+# lleva el panel y el orquestador a un commit de main y reinicia los dos (por eso corre fuera de
+# ids-orq). Mientras corre, la cola no empieza ninguna orden: un reinicio la cortaría a medias.
+ACTUALIZAR_UNIDAD = "ids-actualizar.service"
+ACTUALIZAR_SCRIPT = "/usr/local/lib/ids-orq/ids-actualizar.sh"
+ACTUALIZAR_PEDIDO = "/srv/ids/estado/actualizar-pedido.json"
+ACTUALIZAR_ARRANQUE_S = 30          # lo que puede tardar la unidad en pasar a «activating»
+ACTUALIZAR_MAX_S = 3600             # una actualización colgada no para la cola más que esto
+RE_COMMIT = re.compile(r"\A[0-9a-f]{7,40}\Z")
 
 CODIGOS_SALIDA = {"OK": 0, "ACEPTADA": 0, "FALLO": 1, "REVERTIDA": 1, "INVALIDO": 2,
                   "CONFLICTO": 3, "CONFLICTO_PUERTO": 3, "NO_EXISTE": 4, "CANCELADA": 1}
@@ -346,6 +357,14 @@ def ejecutar_ok(args, entrada=None, timeout=600):
     return r
 
 
+def unidad_en_marcha(nombre):
+    """¿La unidad systemd está corriendo? Una oneshot que trabaja está en «activating»
+    (`systemctl is-active` da distinto de 0 en ese estado: por eso se mira ActiveState). Sin
+    systemd, o si no contesta, se da por parada: así nunca deja la cola en pausa para siempre."""
+    r = ejecutar(["systemctl", "show", "-p", "ActiveState", "--value", nombre], timeout=15)
+    return r.rc == 0 and r.out.strip() in ("activating", "active", "reloading", "deactivating")
+
+
 def ncpu():
     try:
         return len(os.sched_getaffinity(0))
@@ -432,8 +451,10 @@ def imagenes():
             if not m or m.group(1) != parte:
                 raise ErrorOrden("FALLO", "imagenes.json: %s no es ghcr.io/mtandazo35/ids-maat-%s@sha256:…"
                                  % (parte, parte))
+    # commit: el de main que puso ids-actualizar (o lab-actualizar); una release no lo trae
+    commit = d.get("commit") if isinstance(d.get("commit"), str) and RE_COMMIT.match(d["commit"]) else ""
     return {"dev": dev, "version": d.get("version", ""), "vpn": imgs["vpn"],
-            "suricata": imgs["suricata"], "panel": imgs.get("panel")}
+            "suricata": imgs["suricata"], "panel": imgs.get("panel"), "commit": commit}
 
 
 def leer_token():
@@ -2124,6 +2145,11 @@ def validar_params(orden, params, cfg_fn):
     if orden in ("sistema.reconciliar", "sistema.estado", "sistema.capacidad"):
         _solo(params, set())
         return {}
+    if orden == "sistema.actualizar":
+        _solo(params, {"commit"}, ("commit",))
+        if not isinstance(params["commit"], str) or not RE_COMMIT.match(params["commit"]):
+            raise _inv("commit debe ser el hash de un commit de main (7 a 40 caracteres hex en minúsculas)")
+        return {"commit": params["commit"]}
     if orden == "op.estado":
         _solo(params, {"op_id"}, ("op_id",))
         if not isinstance(params["op_id"], str) or not RE_OPID.match(params["op_id"]):
@@ -2251,6 +2277,8 @@ class Orquestador:
         self._alertas_cache = None       # alertas.json en memoria (se carga al primer uso, ver _alertas)
         self._alertas_marca = None       # cuándo (t) se guardó alertas.json por última vez
         self._alertas_lock = threading.Lock()    # estado.json se arma desde varios hilos
+        self._actualizando = None        # desde cuándo (t) corre ids-actualizar: la cola espera
+        self._actualizando_visto = 0.0   # última vez que se preguntó a systemd por la unidad
 
     # ---- base de datos -----------------------------------------------------------------------
     def q(self, sql, args=()):
@@ -2418,8 +2446,33 @@ class Orquestador:
                (ctx.paso_actual, json.dumps(ctx.pasos, ensure_ascii=False), ctx.total,
                 json.dumps(ctx.log[-MAX_LOG_OP:], ensure_ascii=False), ctx.op_id))
 
+    def _cola_en_pausa(self):
+        """True mientras corre ids-actualizar.service (sistema.actualizar): va a reiniciar este
+        servicio y el panel, y una orden empezada ahora se cortaría a medias. Las órdenes que
+        lleguen esperan en la cola y las ejecuta el orquestador nuevo."""
+        t0 = self._actualizando
+        if t0 is None:
+            return False
+        t = ahora()
+        if t - t0 < ACTUALIZAR_ARRANQUE_S:
+            return True
+        if t - t0 > ACTUALIZAR_MAX_S:
+            log("ids-actualizar lleva más de %d s: la cola sigue sin esperarla" % ACTUALIZAR_MAX_S)
+            self._actualizando = None
+            return False
+        if t - self._actualizando_visto < 5:
+            return True
+        self._actualizando_visto = t
+        if unidad_en_marcha(ACTUALIZAR_UNIDAD):
+            return True
+        self._actualizando = None
+        return False
+
     def procesar_una(self):
-        """Ejecuta la siguiente orden pendiente. Devuelve False si la cola está vacía."""
+        """Ejecuta la siguiente orden pendiente. Devuelve False si la cola está vacía (o en pausa
+        por una actualización)."""
+        if self._cola_en_pausa():
+            return False
         with self.tx() as db:
             f = db.execute("SELECT * FROM op WHERE estado='pendiente' ORDER BY seq LIMIT 1").fetchone()
             if f is None:
@@ -2514,6 +2567,7 @@ class Orquestador:
             "punto.reconfigurar": self.o_reconfigurar,
             "reglas.actualizar": self.o_reglas,
             "sistema.reconciliar": self.o_reconciliar,
+            "sistema.actualizar": self.o_actualizar,
         }
         r = manejadores[orden](ctx, params)
         if isinstance(r, tuple):
@@ -2644,7 +2698,7 @@ class Orquestador:
                    "caben": {}}
         libre = disco_libre_pct()
         est = {"v": 1, "ts": t, "orq_version": ORQ_VERSION, "version": version,
-               "dev": bool(imgs.get("dev")), "tun_base": base,
+               "dev": bool(imgs.get("dev")), "commit": imgs.get("commit") or "", "tun_base": base,
                "cola": {"en_curso": en_curso, "pendientes": pend}, "capacidad": cap,
                "reglas": leer_reglas(), "disco": {"srv_ids_libre_pct": libre}, "puntos": {}}
         if not con_puntos:
@@ -3135,6 +3189,11 @@ class Orquestador:
             except Exception as e:  # noqa: BLE001
                 log("%s: no se pudo deshacer: %r" % (p["pid"], e))
         self.x("DELETE FROM op WHERE estado='terminada' AND fin<?", (ahora() - RETENCION_OPS_S,))
+        # arranque a mitad de una actualización (la reinicia ids-actualizar): la cola sigue en pausa
+        # hasta que la unidad acabe, porque aún recrea el panel y, si falla, vuelve atrás y reinicia
+        # otra vez este servicio
+        if unidad_en_marcha(ACTUALIZAR_UNIDAD):
+            self._actualizando = ahora() - ACTUALIZAR_ARRANQUE_S
         self.encolar_interno("sistema.reconciliar", {}, "orq:arranque")
 
     # ---- piezas comunes -----------------------------------------------------------------------
@@ -4108,6 +4167,37 @@ class Orquestador:
         ctx.mensaje = "reglas %s" % ts
         return {"ts": ts, "reglas": conteos}
 
+    def o_actualizar(self, ctx, prm):
+        """sistema.actualizar (botón «Actualizar» del panel, ACTUALIZACIONES.md §4): deja el pedido
+        en ACTUALIZAR_PEDIDO y arranca ids-actualizar.service, que trae ese commit de main,
+        construye la imagen del panel, instala el orquestador y reinicia los dos, con respaldo y
+        vuelta atrás. Los puntos no se tocan. La orden acaba al lanzar la unidad; el avance lo
+        escribe la unidad en /srv/ids/run/actualizacion.json (con el op_id de esta orden) y,
+        mientras corre, la cola no empieza nada (_cola_en_pausa)."""
+        ctx.total = 2
+        with ctx.paso("validar"):
+            for f in (ACTUALIZAR_SCRIPT, "/etc/systemd/system/" + ACTUALIZAR_UNIDAD):
+                if not ruta(f).is_file():
+                    raise ErrorOrden("FALLO", "falta %s: este servidor no tiene el actualizador; "
+                                     "instálalo desde la consola (install.sh)" % f)
+            if unidad_en_marcha(ACTUALIZAR_UNIDAD):
+                raise ErrorOrden("CONFLICTO", "ya hay una actualización en curso")
+        with ctx.paso("lanzar la actualización"):
+            asegurar_dir(ruta("/srv/ids/estado"), 0o700)
+            escribir_atomico(ruta(ACTUALIZAR_PEDIDO),
+                             json.dumps({"commit": prm["commit"], "quien": ctx.quien, "op_id": ctx.op_id,
+                                         "ts": ahora()}) + "\n", modo=0o600)
+            self._actualizando = ahora()
+            try:
+                ejecutar_ok(["systemctl", "start", "--no-block", ACTUALIZAR_UNIDAD], timeout=60)
+            except FalloCmd:
+                self._actualizando = None
+                raise
+            ctx.registrar("%s arrancada para %s" % (ACTUALIZAR_UNIDAD, prm["commit"]))
+        ctx.mensaje = ("actualización lanzada: el panel y el orquestador se reinician en unos "
+                       "minutos; los puntos siguen igual")
+        return {"commit": prm["commit"], "unidad": ACTUALIZAR_UNIDAD}
+
     def o_reconciliar(self, ctx, prm):
         levantados, huerfanos = [], []
         for p in self.puntos():
@@ -4443,6 +4533,9 @@ def construir_parser():
                         help="quita el ban de la jaula ids-vpn a una IP (p. ej. el MikroTik tras regenerar)")
     vd.add_argument("ip")
     sub.add_parser("reconciliar", parents=[comun])
+    ac = sub.add_parser("actualizar", parents=[comun],
+                        help="lleva el panel y el orquestador a un commit de main (botón Actualizar)")
+    ac.add_argument("commit")
     sub.add_parser("estado", parents=[comun])
     op = sub.add_parser("op", parents=[comun])
     op.add_argument("op_id")
@@ -4515,6 +4608,8 @@ def orden_desde_args(a):
         return "vpn.desbanear", {"ip": a.ip}
     if a.cmd == "reconciliar":
         return "sistema.reconciliar", {}
+    if a.cmd == "actualizar":
+        return "sistema.actualizar", {"commit": a.commit}
     if a.cmd == "estado":
         return "sistema.estado", {}
     if a.cmd == "op":

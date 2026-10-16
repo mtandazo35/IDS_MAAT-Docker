@@ -1,0 +1,18 @@
+# ids-maat: actualización desde el panel (botón «Actualizar», docs/ACTUALIZACIONES.md §4). La
+# arranca ids-orq (orden sistema.actualizar) con `systemctl start --no-block`, después de dejar el
+# pedido en /srv/ids/estado/actualizar-pedido.json. Corre fuera de ids-orq porque lo reinicia, y sin
+# [Install]: solo se arranca cuando alguien pide una actualización.
+[Unit]
+Description=IDS-MAAT: actualización del panel y del orquestador (ids-actualizar)
+Documentation=https://github.com/mtandazo35/IDS_MAAT-Docker/blob/main/docs/ACTUALIZACIONES.md
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/lib/ids-orq/ids-actualizar.sh --pedido
+# descarga, construcción de la imagen del panel (varios minutos en un VPS pequeño) y vuelta atrás
+TimeoutStartSec=50min
+# con 0077 el checkout saldría 0600/0700 y la imagen heredaría esos permisos: el panel no arranca
+UMask=0022
+Environment=PYTHONUNBUFFERED=1

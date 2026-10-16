@@ -11,7 +11,7 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[1]
 SD = REPO / "host" / "systemd"
 UNIDADES = ["ids-host-fw.service", "ids-orq.service", "ids-reglas.service", "ids-reglas.timer",
-            "ids-logrotate.service", "ids-logrotate.timer"]
+            "ids-logrotate.service", "ids-logrotate.timer", "ids-actualizar.service"]
 
 
 def unidad(nombre):
@@ -77,6 +77,18 @@ class Unidades(unittest.TestCase):
         self.assertEqual(lr["OnCalendar"], "*:0/5")          # eve/dns rotan al pasar de 100 MB
         self.assertEqual(unidad("ids-logrotate.service")["Service"]["ExecStart"],
                          "/usr/sbin/logrotate --state /var/lib/logrotate/ids-maat.status /etc/ids-maat/logrotate.conf")
+
+    def test_actualizador(self):
+        """Capacidad nueva (botón «Actualizar», ACTUALIZACIONES §4): oneshot que arranca ids-orq
+        (sistema.actualizar) y lee el pedido; sin [Install] (solo bajo demanda), fuera del encierro
+        de ids-orq (lo reinicia) y con umask 0022 (con 0077 la imagen del panel sale sin permisos)."""
+        u = unidad("ids-actualizar.service")
+        s = u["Service"]
+        self.assertEqual((s["Type"], s["ExecStart"]), ("oneshot", "/usr/local/lib/ids-orq/ids-actualizar.sh --pedido"))
+        self.assertEqual(s["UMask"], "0022")
+        self.assertNotIn("Install", u.sections())
+        self.assertIn("docker.service", lista(u, "Unit", "After"))
+        self.assertIn("min", s["TimeoutStartSec"])
 
     @unittest.skipUnless(sys.platform.startswith("linux") and shutil.which("systemd-analyze"), "sin systemd-analyze")
     def test_calendarios_validos(self):

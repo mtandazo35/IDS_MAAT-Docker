@@ -698,11 +698,15 @@ p_instalar_orquestador() {
   [ "$(ls "$IDS_RAIZ/usr/local/lib/ids-orq/plantillas" | wc -l)" -eq 4 ] || return 3
   cmp -s "$CHECKOUT/orquestador/plantillas/core.yml.tmpl" "$IDS_RAIZ/usr/local/lib/ids-orq/plantillas/core.yml.tmpl" || return 3
   grep -qx 'exec python3 /usr/local/lib/ids-orq/ids_orq.py "$@"' "$IDS_RAIZ/usr/local/bin/ids-orq" || return 4
-  for u in ids-host-fw.service ids-orq.service ids-reglas.service ids-reglas.timer ids-logrotate.service ids-logrotate.timer; do
+  for u in ids-host-fw.service ids-orq.service ids-reglas.service ids-reglas.timer ids-logrotate.service ids-logrotate.timer \
+           ids-actualizar.service; do
     [ -f "$IDS_RAIZ/etc/systemd/system/$u" ] || { echo "falta $u"; return 5; }
   done
   cmp -s "$CHECKOUT/host/logrotate/ids-maat.conf" "$IDS_RAIZ/etc/ids-maat/logrotate.conf" || return 6
   grep -q "systemctl daemon-reload" "$LLAMADAS" || return 7
+  # el script del botón «Actualizar» del panel (lo arranca ids-actualizar.service)
+  cmp -s "$CHECKOUT/orquestador/ids-actualizar.sh" "$IDS_RAIZ/usr/local/lib/ids-orq/ids-actualizar.sh" || return 8
+  [ -x "$IDS_RAIZ/usr/local/lib/ids-orq/ids-actualizar.sh" ] || return 8
   return 0
 }
 

@@ -48,7 +48,7 @@ class Estado(unittest.TestCase):
         disco = json.loads(self.e.ruta("/srv/ids/run/estado.json").read_text(encoding="utf-8"))
         self.assertEqual(disco["v"], 1)
         self.assertEqual(disco["puntos"].keys(), est["puntos"].keys())
-        self.assertEqual(set(disco), {"v", "ts", "orq_version", "version", "dev", "tun_base", "cola", "capacidad",
+        self.assertEqual(set(disco), {"v", "ts", "orq_version", "version", "dev", "commit", "tun_base", "cola", "capacidad",
                                       "reglas", "disco", "puntos"})
         self.assertEqual(set(disco["cola"]), {"en_curso", "pendientes"})
         self.assertEqual(set(disco["capacidad"]), {"mem_total_mb", "mem_comprometida_mb", "mem_disponible_mb",

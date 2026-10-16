@@ -437,8 +437,9 @@ paquetes() {
   log "paquetes del sistema"
   export DEBIAN_FRONTEND=noninteractive
   apt-get update -qq
+  # git: el botón «Actualizar» del panel (ids-actualizar) descarga el commit de main con él
   apt-get install -y -qq --no-install-recommends nftables fail2ban python3 python3-systemd openssl \
-    logrotate curl ca-certificates systemd-timesyncd tzdata >/dev/null
+    logrotate curl ca-certificates systemd-timesyncd tzdata git >/dev/null
   # nftables.service hace «flush ruleset» al parar o recargar: se desactiva y se enmascara SIN pararlo
   systemctl disable nftables.service >/dev/null 2>&1 || true
   systemctl mask nftables.service >/dev/null 2>&1 || true
@@ -738,6 +739,8 @@ instalar_orquestador() {
   log "orquestador y unidades systemd"
   install -d -m 0755 "$lib" "$lib/plantillas" "${R}/usr/local/bin" "${R}/etc/systemd/system"
   install -m 0755 "$HOST_DIR/orquestador/ids_orq.py" "$lib/ids_orq.py"
+  # el de la unidad ids-actualizar.service (botón «Actualizar» del panel, ACTUALIZACIONES §4)
+  install -m 0755 "$HOST_DIR/orquestador/ids-actualizar.sh" "$lib/ids-actualizar.sh"
   install -m 0644 "$HOST_DIR"/orquestador/plantillas/*.tmpl "$lib/plantillas/"
   printf '#!/bin/sh\nexec python3 /usr/local/lib/ids-orq/ids_orq.py "$@"\n' > "${R}/usr/local/bin/ids-orq"
   chmod 0755 "${R}/usr/local/bin/ids-orq"

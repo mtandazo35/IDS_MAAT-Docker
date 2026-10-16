@@ -465,7 +465,8 @@ rsync -a --chmod=F600 'root@ids.empresa.example:/root/backups/ids-maat-install-*
 | Estado de los puntos | `ids-orq punto estado '*'` o `cat /srv/ids/run/estado.json` |
 | Rotar la clave maestra | todavía no existe (no hay `kid`; [DATOS.md](DATOS.md) §6): cambiarla exige volver a guardar cada secreto |
 | Cambiar la IP del VPS | restaurar o mover y cambiar el registro DNS `ids.empresa.example`; los MikroTik no se tocan |
-| Actualizar el orquestador y el host | volver a ejecutar `install.sh` con la versión nueva y las mismas opciones (§1.6). No hay script aparte ni actualización desde el panel |
+| Actualizar el panel y el orquestador a lo último de `main` | botón **Actualización** de la barra o **Ajustes → Versión → Actualizar** (solo admin), o `ids-orq actualizar <commit>` en el servidor. Construye el panel en el servidor (sin firma), con respaldo en `/root/backups/ids-maat-actualizar-<ts>.tar.gz` y vuelta atrás automática; no toca los puntos. Avance: `/srv/ids/run/actualizacion.json` y `journalctl -u ids-actualizar` ([ACTUALIZACIONES.md](ACTUALIZACIONES.md) §4.1) |
+| Actualizar el orquestador y el host a una release | volver a ejecutar `install.sh` con la versión nueva y las mismas opciones (§1.6); deja otra vez las imágenes firmadas de esa release |
 | Llevar un punto a la configuración y las imágenes actuales | `ids-orq punto reconfigurar <pid>` en el servidor (§1.6; el botón del panel está pendiente) |
 | Ver los logs de un punto | `ids-orq punto logs <pid>` (OpenVPN) o `ids-orq punto logs <pid> --parte suricata`; `--lineas N` (≤ 500) |
 

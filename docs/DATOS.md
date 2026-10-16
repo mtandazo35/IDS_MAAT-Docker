@@ -17,6 +17,9 @@ Anexo de [ARQUITECTURA.md](ARQUITECTURA.md). Este anexo cubre:
 | `eve.json` / `dns.json` por instancia | eventos crudos | fuente de verdad del crudo; solo se agrega lo que el panel consulta |
 | Ficheros de intercambio | `threshold.config` por punto, exportaciones, respaldos `.rsc` de los routers | los consumen procesos que no leen SQLite |
 | `orq.db` (host) | asignaciones, digests, cola de órdenes, `op_id` | estado propio del orquestador ([ORQUESTADOR.md](ORQUESTADOR.md)) |
+| `actualizar-pedido.json` (host, `/srv/ids/estado/`, 0600) | el commit, quién y el `op_id` de la última `sistema.actualizar` | lo deja el orquestador y lo borra `ids-actualizar.sh` al leerlo ([ACTUALIZACIONES.md](ACTUALIZACIONES.md) §4.1) |
+| `actualizacion.json` (host, `/srv/ids/run/`, 0640 root:ids-panel) | avance y resultado de la última actualización del panel y el orquestador: pasos, de qué commit a cuál, quién, `ok`/`revertida`/`fallo` | lo escribe `ids-actualizar.sh`; el panel lo lee para la página «Actualizando…» y Ajustes → Versión. Perderlo solo borra el «última actualización» de la tarjeta |
+| `actualizacion-busqueda.json` (panel, `/srv/ids/panel/estado/`, 0600) | lo último que contestó GitHub: commits nuevos de `main`, historial y error | caché del botón «Actualizar»; se rehace sola cada 30 min |
 | `alertas.json` (host, `/srv/ids/estado/`, 0600) | por punto: el último contador de alertas de Suricata (`detect.alert`) y las alertas de las últimas 24 h en cubos de 5 min | de él sale `alertas_24h` de `estado.json`; se reescribe como mucho cada minuto y, si se pierde, el recuento vuelve a empezar |
 
 Ubicación:

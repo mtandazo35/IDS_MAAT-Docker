@@ -8865,8 +8865,9 @@ def cargar_empresa():
         pass
     return {"nombre": (os.environ.get("IDS_EMPRESA") or "").strip()[:80], "logo": ""}
 
-# La version es la de la imagen del contenedor (la actualizacion la hace el orquestador, no
-# el panel: ya no hay actualizador por git ni chequeo contra GitHub).
+# La version es la de la imagen del contenedor. El boton «Actualizar» (Ajustes -> Version y la
+# barra) busca en GitHub lo nuevo de main, pero la actualizacion la hace el orquestador
+# (sistema.actualizar): el panel no puede tocar el servidor.
 PANEL_VERSION = (os.environ.get("IDS_MAAT_VERSION") or "dev").strip() or "dev"
 
 def version_panel():
@@ -9201,6 +9202,7 @@ def refrescador():
     `nodos.contexto(pid)`; los reportes se generan de uno en uno, y despues una pasada
     de «Todos» para la vista acumulada."""
     threading.Thread(target=_geo_hilo, daemon=True).start()   # base GeoIP (reintenta cada hora si falta)
+    threading.Thread(target=_act_hilo, daemon=True).start()   # ¿hay algo nuevo en main? (cada 30 min)
     publicar_routers_map()   # nombres de los puntos para el generador
     publicar_flags()         # y si las denuncias a AbuseIPDB estan activadas
     try:
@@ -9418,6 +9420,8 @@ def informe_diario_hilo():
 import puntos_web   # noqa: E402  (apartado Puntos; importa nodos y idspanel, no el dashboard)
 import eventos_web  # noqa: E402  (pagina Eventos; tampoco importa el dashboard)
 import duenos       # noqa: E402  (dueño de las IP del Top: PTR/RDAP bajo demanda, con cache)
+from idspanel import actualizaciones   # noqa: E402  (boton «Actualizar»: que hay nuevo en main y el avance)
+from idspanel import orq as orq_textos   # noqa: E402  (textos claros de las respuestas del orquestador)
 try:
     import informe_pdf  # noqa: E402  (informe PDF del Reporte; reportlab va en la imagen)
 except ImportError:     # sin reportlab el resto del panel sigue: /informe.pdf lo dice
@@ -9487,6 +9491,24 @@ font-size:15px;font-weight:500;transition:background .15s,color .15s}
 .nav .out{margin-left:14px;color:#f3b0b0;text-decoration:none;font-weight:600;padding:9px 17px;border-radius:8px;font-size:15px;
 border:1px solid rgba(243,176,176,.35);transition:background .15s,color .15s,border-color .15s}
 .nav .out:hover{background:#e34948;color:#fff;border-color:#e34948}
+/* boton «Actualizacion» (solo admin, cuando hay commits nuevos en main) y su ventana: los del
+   panel original */
+.nav .updbtn{flex:0 0 auto;display:inline-flex;align-items:center;gap:7px;margin-left:14px;cursor:pointer;background:#e67e22;
+color:#fff;border:0;padding:9px 15px;border-radius:8px;font:600 14px system-ui;box-shadow:0 2px 8px rgba(230,126,34,.4);
+text-decoration:none;white-space:nowrap}
+.nav .updbtn:hover{background:#d3691a}
+.nav .updbtn .uddot{width:9px;height:9px;border-radius:50%;background:#fff;animation:udpulse 1.6s infinite}
+@keyframes udpulse{0%{box-shadow:0 0 0 0 rgba(255,255,255,.6)}70%{box-shadow:0 0 0 8px rgba(255,255,255,0)}100%{box-shadow:0 0 0 0 rgba(255,255,255,0)}}
+.updov{display:none;position:fixed;inset:0;background:rgba(11,11,11,.5);z-index:120;align-items:center;justify-content:center;padding:24px}
+.updov .updbox{position:relative;background:#fff;color:#0b0b0b;border-radius:14px;max-width:560px;width:100%;max-height:calc(100vh - 48px);overflow:auto;padding:22px 24px;box-shadow:0 14px 50px rgba(0,0,0,.4)}
+.updov .updx{position:absolute;top:8px;right:8px;border:0;background:#eceae6;width:30px;height:30px;border-radius:50%;font-size:19px;line-height:1;cursor:pointer;z-index:3}
+.updov .updx:hover{background:#e34948;color:#fff}
+.updov h3{margin:2px 0 6px;font-size:20px}
+.updov .updsub{color:#52514e;margin:0 0 14px;font-size:14px;line-height:1.5}
+.updov .updlist{margin:0 0 18px;padding-left:20px;max-height:44vh;overflow:auto}
+.updov .updlist li{margin:5px 0;font-size:14px;line-height:1.45}
+.updgo{background:#2a78d6;color:#fff;border:0;padding:11px 18px;border-radius:9px;font:600 15px system-ui;cursor:pointer}
+.updgo:hover{background:#1c5cab}
 /* menu del usuario (sustituye al boton Salir): foto + nombre + flecha; abre Mi cuenta, Cambiar
    contrasena, Cerrar sesion y el tiempo que le queda a la sesion */
 .nav .ubtn{flex:0 0 auto;display:flex;align-items:center;gap:8px;margin-left:10px;padding:4px 8px 4px 4px;border-radius:999px;
@@ -9538,7 +9560,8 @@ min-height:30px}
        font-weight:600;white-space:nowrap}
  .nav .out{margin-left:8px;padding:7px 12px;font-size:14px}
  .nav .ubtn{margin-left:8px}
- .askov{padding:14px}
+ .nav .updbtn{margin-left:8px;padding:7px 11px;font-size:13px}
+ .askov,.updov{padding:14px}
  .empbar .empwrap{padding:6px 14px}
  /* base compartida: margen lateral comodo en movil para TODOS los apartados
     (_NAV_CSS se inyecta despues del <style> de cada pagina, asi que manda) */
@@ -9664,7 +9687,8 @@ html[data-theme=dark] .nav img{filter:none}
 /* velos de modales: son oscuros de diseno; al invertir quedarian claros y lavarian la pagina */
 html[data-theme=dark] .aptmodal,html[data-theme=dark] .askov,html[data-theme=dark] .pbajaov,
 html[data-theme=dark] .masov,html[data-theme=dark] .mkwait,html[data-theme=dark] .ovl,
-html[data-theme=dark] .exmodal,html[data-theme=dark] .fichaov,html[data-theme=dark] .avm{background:rgba(244,244,244,.6)}
+html[data-theme=dark] .exmodal,html[data-theme=dark] .fichaov,html[data-theme=dark] .avm,
+html[data-theme=dark] .updov{background:rgba(244,244,244,.6)}
 /* bloques de comandos: oscuros de diseno, se quedan oscuros */
 html[data-theme=dark] pre.cmd{filter:invert(1) hue-rotate(180deg)}
 @media print{html[data-theme=dark]{filter:none}}
@@ -9828,6 +9852,324 @@ _THEME_BTN = ('<button type=button class=themebtn onclick="idsTema()" title="Cam
               'd="M12 7a5 5 0 1 0 0 10 5 5 0 0 0 0-10zM2 13h2a1 1 0 0 0 0-2H2a1 1 0 0 0 0 2zm18 0h2a1 1 0 0 0 0-2h-2a1 1 0 0 0 0 2zM11 2v2a1 1 0 0 0 2 0V2a1 1 0 0 0-2 0zm0 18v2a1 1 0 0 0 2 0v-2a1 1 0 0 0-2 0zM5.6 7a1 1 0 0 0 1.4-1.4L5.6 4.2A1 1 0 0 0 4.2 5.6zm12.8 12.8a1 1 0 0 0 1.4-1.4L18.4 17A1 1 0 0 0 17 18.4zM18.4 7l1.4-1.4A1 1 0 0 0 18.4 4.2L17 5.6A1 1 0 0 0 18.4 7zM5.6 17 4.2 18.4a1 1 0 0 0 1.4 1.4L7 18.4A1 1 0 0 0 5.6 17z"/></svg>'
               '</button>')
 
+# --- boton «Actualizar» (como el del panel original): panel + orquestador desde la rama main ----
+# Que hay nuevo lo pregunta el panel a la API publica de GitHub (actualizaciones.buscar); la
+# actualizacion la hace el orquestador (orden sistema.actualizar -> ids-actualizar.service) y su
+# avance llega en RUN/actualizacion.json. Los puntos no se tocan.
+_ACT = {"buscando": False}
+_ACT_LOCK = threading.Lock()
+
+def act_busqueda():
+    return actualizaciones.leer_busqueda(nodos.ESTADO)
+
+def act_avance():
+    return actualizaciones.avance(nodos.RUN)
+
+def act_buscar_ahora():
+    """Pregunta ya a GitHub (boton «Buscar actualizaciones») y guarda el resultado."""
+    d = actualizaciones.buscar(nodos.leer_estado(), PANEL_VERSION)
+    try:
+        actualizaciones.guardar_busqueda(nodos.ESTADO, d)
+    except OSError:
+        pass
+    return d
+
+def _act_hilo():
+    """Hilo de fondo (lo arranca el refrescador, como el de la GeoIP): pregunta a GitHub como
+    mucho cada 30 min si hay algo nuevo en main, para que el boton de la barra salga solo. En el
+    original lo disparaba la navegacion de un admin; aqui no va en la pagina, que no espera."""
+    while not _PARAR.is_set():
+        try:
+            if actualizaciones.toca_buscar(act_busqueda()):
+                with _ACT_LOCK:
+                    libre = not _ACT["buscando"]
+                    _ACT["buscando"] = True
+                if libre:
+                    try:
+                        act_buscar_ahora()
+                    finally:
+                        _ACT["buscando"] = False
+        except Exception as e:
+            sys.stderr.write("actualizaciones: %s\n" % e)
+        _PARAR.wait(300)
+
+def _act_form(objetivo, fid, etiqueta="&#8681; Actualizar ahora", clase="updgo"):
+    """Formulario que pide la actualizacion a `objetivo` (sha de main), con la confirmacion del
+    panel (_ASK) en lugar del dialogo del navegador."""
+    return (f"<form id={fid} method=post action='/actualizar-panel' style='margin:0' "
+            "onsubmit=\"return ask(this,'Actualizar el panel y el orquestador',"
+            "'Se descarga la última versión de GitHub, se construye el panel en el servidor (unos minutos) "
+            "y se reinician el panel y el orquestador. Los puntos (VPN y Suricata) siguen funcionando. "
+            "Si algo falla, vuelve solo a la versión de ahora.','Actualizar')\">"
+            f"<input type=hidden name=commit value='{html.escape(objetivo)}'>"
+            f"<button class={clase} type=submit>{etiqueta}</button></form>")
+
+def _actualizacion_nav():
+    """(boton, ventana) de la barra para el admin, como en el original: «Actualizacion» con el
+    punto que late cuando hay commits nuevos en main, y su ventana con las novedades. Mientras se
+    actualiza, «Actualizando…» lleva al avance."""
+    try:
+        if actualizaciones.en_curso(act_avance()):
+            return ("<a class=updbtn href='/actualizando'><span class=uddot></span>Actualizando&hellip;</a>", "")
+        b = act_busqueda()
+    except Exception:
+        return "", ""
+    if not b.get("disponible") or not b.get("objetivo"):
+        return "", ""
+    mej = b.get("mejoras") or []
+    items = "".join(f"<li>{html.escape(m)}</li>" for m in mej) or "<li>Varias mejoras del panel y del orquestador.</li>"
+    try:
+        resto = max(0, int(b.get("n") or 0) - len(mej))
+    except (TypeError, ValueError):
+        resto = 0
+    if resto:
+        items += f"<li>y {resto} cambio(s) más.</li>"
+    boton = ("<button type=button class=updbtn "
+             "onclick=\"document.getElementById('updov').style.display='flex'\">"
+             "<span class=uddot></span>Actualizaci&oacute;n</button>")
+    ventana = (
+        "<div id=updov class=updov onmousedown=\"this._dn=event.target\" onclick=\"if(event.target===this&&this._dn===this){this.style.display='none'}\">"
+        "<div class=updbox role=dialog aria-modal=true aria-labelledby=updtit>"
+        "<button type=button class=updx onclick=\"document.getElementById('updov').style.display='none'\" title=Cerrar>&times;</button>"
+        "<h3 id=updtit>Actualizaci&oacute;n disponible</h3>"
+        f"<p class=updsub>Hay una versi&oacute;n nueva en GitHub (instalada: <b>{html.escape(b.get('instalada') or '?')}</b>, "
+        f"nueva: <b>{html.escape(str(b.get('objetivo'))[:7])}</b>). Se actualizan el panel y el orquestador; los puntos "
+        "(VPN y Suricata) no se tocan. Mejoras incluidas:</p>"
+        f"<ul class=updlist>{items}</ul>"
+        + _act_form(b["objetivo"], "updform_nav") + "</div></div>")
+    return boton, ventana
+
+def _act_hora(ts):
+    try:
+        return datetime.fromtimestamp(int(ts), TZ_EC).strftime("%d/%m/%Y %H:%M")
+    except (TypeError, ValueError, OverflowError, OSError):
+        return ""
+
+_VER_CSS = ("<style>"
+            ".verhead{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin:2px 0 12px}"
+            ".verlbl{font-size:12px;color:#6b6a66;text-transform:uppercase;letter-spacing:.05em}"
+            ".versha{font:700 22px ui-monospace,Consolas,monospace;color:#0b0b0b}"
+            ".verbuild{font:12px ui-monospace,Consolas,monospace;color:#8a8a86;margin-top:3px}"
+            ".verbadge{display:inline-block;padding:4px 10px;border-radius:999px;font-size:12px;font-weight:700;white-space:nowrap}"
+            ".verbadge.new{background:#1a7f37;color:#fff}.verbadge.ok{background:#e8ece9;color:#4a4a46}"
+            ".verbadge.warn{background:#fdf1dc;color:#8a5a00}"
+            ".verblk{margin:0 0 12px}.vermsg{font-size:14px;color:#33322f;margin-top:3px}"
+            ".versep{border:0;border-top:1px solid #ececea;margin:14px 0}"
+            ".verstatus{display:flex;align-items:center;justify-content:center;gap:8px;font-weight:700;font-size:15px;margin:2px 0 14px;text-align:center}"
+            ".verstatus.new{color:#1a7f37}.verstatus.ok{color:#52514e}.verstatus.warn{color:#b06a00}"
+            ".vermej{list-style:none;margin:0 auto 14px;padding:0;max-width:640px;display:flex;flex-direction:column;gap:6px}"
+            ".vermej li{background:#eef7f1;border:1px solid #cfe8d9;border-radius:8px;padding:8px 12px 8px 32px;position:relative;font-size:13.5px;color:#245c3c;line-height:1.4}"
+            ".vermej li::before{content:'\\2713';position:absolute;left:12px;top:8px;color:#1a7f37;font-weight:700}"
+            ".veractions{display:flex;gap:10px;justify-content:center;flex-wrap:wrap;margin-bottom:12px}.veractions form{margin:0}"
+            ".verbtn2{background:#eef0f2;color:#33322f;border:1px solid #d7d6d2;padding:11px 16px;border-radius:9px;font:600 14px system-ui;cursor:pointer;text-decoration:none;display:inline-block}"
+            ".verbtn2:hover{background:#e2e5e8}"
+            ".verlast{text-align:center;font-size:13px;margin:0 0 14px;line-height:1.5}"
+            ".verlast.ok{color:#3f7d55}.verlast.mal{color:#b52a2a}.verlast.aviso{color:#8a5a00}"
+            ".verchg{border:1px solid #e7e6e2;border-radius:10px;overflow:hidden}"
+            ".verchgh{background:#12161c;color:#fff;text-align:center;font-weight:700;font-size:13.5px;padding:8px}"
+            ".verchgt{width:100%;border-collapse:collapse;font-size:13.5px}"
+            ".verchgt td{padding:9px 12px;border-top:1px solid #f0efec;vertical-align:top}"
+            ".verchgt td.c1{width:66px}.verchgt td.c2{width:70px;font:12px ui-monospace,Consolas,monospace;color:#6b6a66}"
+            ".verchgt td.c3{width:94px;color:#8a8a86;white-space:nowrap;text-align:right}"
+            ".vnew{color:#1a7f37;font-weight:700}"
+            "</style>")
+
+def _act_ultima(av):
+    """La línea de la última actualización (de X a Y, quién y cuándo), o la del fallo."""
+    if not av or av.get("estado") == "en_curso":
+        return ""
+    esc = html.escape
+    desde, a = str(av.get("desde") or "?"), str(av.get("a") or "?")
+    desde = desde[:7] if actualizaciones.RE_SHA.match(desde) else desde
+    cuando = _act_hora(av.get("fin") or av.get("ts"))
+    quien = str(av.get("quien") or "").split(":", 1)[-1]
+    if av.get("estado") == "ok":
+        return (f"<div class='verlast ok'>&#10003; Actualizado de <b>{esc(desde)}</b> a <b>{esc(a[:7])}</b>"
+                + (f" por {esc(quien)}" if quien else "") + (f" el <b>{esc(cuando)}</b>" if cuando else "") + ".</div>")
+    if av.get("estado") == "revertida":
+        return (f"<div class='verlast aviso'>&#9888; La actualización a <b>{esc(a[:7])}</b>"
+                + (f" del {esc(cuando)}" if cuando else "") + f" falló y se volvió a la versión anterior. "
+                f"{esc(av.get('mensaje') or '')}</div>")
+    if av.get("estado") == "colgada":
+        return ("<div class='verlast mal'>&#9888; La actualización empezada el "
+                f"{esc(_act_hora(av.get('inicio')))} no terminó: lleva más de una hora sin avanzar. "
+                "Revisa <code>journalctl -u ids-actualizar</code> en el servidor.</div>")
+    return (f"<div class='verlast mal'>&#9888; La última actualización"
+            + (f" ({esc(cuando)})" if cuando else "") + f" falló: {esc(av.get('mensaje') or '')}</div>")
+
+RE_OP_ACT = re.compile(r"\A[0-9a-f-]{36}\Z")
+
+def act_pedir(commit):
+    """(op_id, respuesta) de pedir sistema.actualizar al orquestador; queda en la bitacora."""
+    import uuid as _uuid
+    op = str(_uuid.uuid4())
+    r = puntos_web.cliente().pedir("sistema.actualizar", {"commit": commit},
+                                   quien="panel:%s" % (getattr(CTX, "user", "?") or "?"),
+                                   ip=getattr(CTX, "ip", "") or "", op_id=op)
+    bitacora("ACTUALIZAR-PANEL", "a=%s resultado=%s op=%s" % (commit[:7], r.get("codigo"), op))
+    return op, r
+
+def act_estado_json(op=""):
+    """GET /actualizacion.json: el avance (RUN/actualizacion.json) y, con ?op=, como va la orden
+    sistema.actualizar en la cola del orquestador (espera detras de otra orden, o la rechazo)."""
+    out = {"avance": act_avance()}
+    if op and RE_OP_ACT.match(op):
+        r = puntos_web.cliente().pedir("op.estado", {"op_id": op},
+                                       quien="panel:%s" % (getattr(CTX, "user", "?") or "?"),
+                                       ip=getattr(CTX, "ip", "") or "")
+        d = r.get("datos") or {}
+        if r.get("codigo") == "OK":
+            out["op"] = {"estado": d.get("estado"), "codigo": d.get("codigo"), "delante": d.get("delante"),
+                         "mensaje": (orq_textos.traducir(d.get("codigo"), d.get("mensaje"))
+                                     if d.get("estado") == "terminada" and d.get("codigo") != "OK" else "")}
+        else:
+            out["op"] = {"estado": "sin_respuesta"}
+    return out
+
+def actualizando_page(op=""):
+    """Avance de la actualizacion, como la pagina «Actualizando el panel…» del original. Se queda
+    preguntando /actualizacion.json cada 2 s: mientras el panel se recrea no contesta (es lo
+    esperado) y la pagina lo dice; cuando vuelve, enseña como acabo."""
+    return (
+        "<!doctype html><html lang=es><head><meta charset=utf-8><title>Actualizando el panel</title>"
+        "<meta name=viewport content='width=device-width,initial-scale=1'>"
+        "<link rel=icon type=image/png href=/favicon.ico>" + _THEME_JS +
+        "<style>"
+        "body{margin:0;background:#fcfcfb;font:15px system-ui,-apple-system,Segoe UI,sans-serif;color:#0b0b0b}"
+        "html[data-theme=dark]{filter:invert(1) hue-rotate(180deg) brightness(.9) contrast(.92);background:#f4f6f9}"
+        ".wrap{max-width:600px;margin:56px auto;padding:28px 26px;border:1px solid #e7e6e2;border-radius:14px;background:#fff}"
+        "@media(max-width:640px){.wrap{margin:16px;padding:20px 16px}}"
+        ".wrap h2{margin:0 0 6px;font-size:21px;text-align:center}"
+        ".spin{width:34px;height:34px;margin:2px auto 14px;border:3px solid #e7e6e2;border-top-color:#2a78d6;"
+        "border-radius:50%;animation:sp .8s linear infinite}@keyframes sp{to{transform:rotate(360deg)}}"
+        ".sub{color:#52514e;margin:0 0 18px;line-height:1.5;text-align:center}"
+        ".pasos{list-style:none;margin:0 0 18px;padding:0;display:flex;flex-direction:column;gap:6px}"
+        ".pasos li{display:flex;gap:10px;align-items:center;padding:8px 12px;border:1px solid #ecebe7;border-radius:8px;font-size:14px}"
+        ".pasos .ic{width:20px;text-align:center;font-weight:700}"
+        ".pasos .ok .ic{color:#1a7f37}.pasos .fallo .ic{color:#c0392b}.pasos .en_curso{border-color:#9cc3f0;background:#f3f8fe}"
+        ".pasos .en_curso .ic{color:#2a78d6}.pasos .pendiente{color:#8a8a86}.pasos .revertido{color:#8a5a00}"
+        ".fin{padding:12px 14px;border-radius:10px;margin:0 0 16px;line-height:1.5;font-size:14px}"
+        ".fin.ok{background:#e6f4ea;color:#1a5c2e}.fin.mal{background:#fdecea;color:#8c1f17}.fin.aviso{background:#fff6e5;color:#7a4f00}"
+        ".acts{display:flex;justify-content:center;gap:10px}"
+        ".acts a{background:#2a78d6;color:#fff;text-decoration:none;padding:10px 18px;border-radius:9px;font-weight:600}"
+        "</style></head><body><div class=wrap>"
+        "<div class=spin id=spin></div><h2 id=tit>Actualizando el panel&hellip;</h2>"
+        "<p class=sub id=sub>Se descarga la versión nueva, se construye el panel y se reinician el panel y "
+        "el orquestador. Los puntos siguen funcionando. Puedes cerrar esta página: la actualización sigue "
+        "en el servidor.</p>"
+        "<ul class=pasos id=pasos></ul><div id=fin></div>"
+        "<div class=acts id=acts hidden><a href='/ajustes#update'>Volver a Ajustes</a></div>"
+        "</div><script>(function(){"
+        "var OP=" + json.dumps(op if RE_OP_ACT.match(op or "") else "") + ",t0=Date.now(),fallos=0,visto=false;"
+        "var IC={ok:'\\u2713',fallo:'\\u2717',en_curso:'\\u25CF',pendiente:'\\u25CB',revertido:'\\u21A9'};"
+        "function $(i){return document.getElementById(i);}"
+        "function txt(e,t){e.textContent=t;}"
+        "function pasos(l){var u=$('pasos');u.innerHTML='';(l||[]).forEach(function(p){var li=document.createElement('li');"
+        "li.className=p.estado;var s=document.createElement('span');s.className='ic';s.textContent=IC[p.estado]||'';"
+        "li.appendChild(s);li.appendChild(document.createTextNode(p.nombre));u.appendChild(li);});}"
+        "function acabar(cls,t,m){$('spin').hidden=true;txt($('tit'),t);txt($('sub'),'');"
+        "var f=$('fin');f.className='fin '+cls;txt(f,m);$('acts').hidden=false;}"
+        "function sub(t){txt($('sub'),t);}"
+        "function mira(){fetch('/actualizacion.json'+(OP?'?op='+OP:''),{credentials:'same-origin',cache:'no-store'})"
+        ".then(function(r){if(!r.ok)throw 0;return r.json();}).then(function(d){fallos=0;"
+        "var a=d.avance||{},o=d.op||{};"
+        "if(OP&&a.id!==OP){"
+        "if(o.estado==='terminada'&&o.codigo!=='OK'){acabar('mal','No se pudo actualizar',o.mensaje||'El orquestador rechazó la orden.');return;}"
+        "if(o.estado==='pendiente'){sub('Esperando a que el orquestador termine lo que está haciendo'+(o.delante?' ('+o.delante+' orden(es) delante)':'')+'…');}"
+        "else{sub('Arrancando la actualización en el servidor…');}"
+        "if(Date.now()-t0>600000&&!visto){acabar('mal','La actualización no empezó','Pasaron 10 minutos sin noticias del servidor: revisa «journalctl -u ids-actualizar».');return;}"
+        "setTimeout(mira,2000);return;}"
+        "visto=true;pasos(a.pasos);"
+        "if(a.estado==='en_curso'){sub(a.mensaje||'');setTimeout(mira,2000);return;}"
+        "if(a.estado==='ok'){acabar('ok','Panel actualizado',(a.mensaje||'Actualizado.')+' Ya estás en la versión nueva.');"
+        "setTimeout(function(){location.href='/ajustes#update';},6000);return;}"
+        "if(a.estado==='revertida'){acabar('aviso','No se actualizó',a.mensaje||'Falló y se volvió a la versión anterior.');return;}"
+        "if(a.estado==='colgada'){acabar('mal','La actualización no terminó','Lleva más de una hora sin avanzar: revisa «journalctl -u ids-actualizar» en el servidor.');return;}"
+        "if(!a.estado){sub('Arrancando la actualización en el servidor…');setTimeout(mira,2000);return;}"
+        "acabar('mal','No se pudo actualizar',a.mensaje||'Falló.');})"
+        ".catch(function(){fallos++;sub('El panel se está reiniciando con la versión nueva (es lo normal): vuelve en unos segundos…');"
+        "if(fallos>90){acabar('mal','El panel no contesta','Pasaron 3 minutos sin respuesta: recarga la página o revisa el servidor.');return;}"
+        "setTimeout(mira,2000);});}"
+        "mira();})();</script></body></html>")
+
+def tarjeta_version():
+    """Ajustes → Versión, como la del panel original: lo instalado, si hay algo nuevo en main,
+    Actualizar / Buscar actualizaciones / Historial de cambios y la última actualización."""
+    esc = html.escape
+    est = nodos.leer_estado() or {}
+    b = act_busqueda()
+    av = act_avance()
+    disp = bool(b.get("disponible") and b.get("objetivo"))
+    err = b.get("error") or ""
+    if not b:
+        badge = "<span class='verbadge warn'>sin buscar</span>"
+        estado = ("<div class='verstatus warn'>&#9432; Aún no se ha buscado: pulsa <b>Buscar "
+                  "actualizaciones</b>.</div>")
+    elif disp:
+        n = b.get("n") or 0
+        badge = "<span class='verbadge new'>hay una versión nueva</span>"
+        estado = ("<div class='verstatus new'>&#9432; Hay actualizaciones disponibles"
+                  + (f" ({esc(str(n))} cambio(s) en main)" if n else "") + "</div>")
+    elif err:
+        badge = "<span class='verbadge warn'>sin verificar</span>"
+        estado = f"<div class='verstatus warn'>&#9888; No se pudo consultar GitHub: {esc(err)}</div>"
+    else:
+        badge = "<span class='verbadge ok'>estás al día</span>"
+        estado = "<div class='verstatus ok'>&#10003; Estás en la última versión</div>"
+    aviso_err = (f"<p class=hint style='text-align:center;margin:-6px 0 12px'>{esc(err)}</p>"
+                 if disp and err else "")
+    mejoras = b.get("mejoras") or []
+    lista_mej = ("<ul class=vermej>" + "".join(f"<li>{esc(m)}</li>" for m in mejoras) + "</ul>") if disp and mejoras else ""
+    if actualizaciones.en_curso(av):
+        acciones = ("<div class=veractions><a class=updgo style='text-decoration:none' href='/actualizando'>"
+                    "Actualizando&hellip; ver el avance</a></div>")
+    else:
+        # como en el original, el boton esta SIEMPRE (para forzarla): principal si hay algo nuevo y
+        # secundario («de todos modos») si ya se esta al dia
+        btn_upd = ""
+        if b.get("objetivo"):
+            btn_upd = (_act_form(b["objetivo"], "updform_hub") if disp else
+                       _act_form(b["objetivo"], "updform_hub", "&#8681; Actualizar de todos modos", "verbtn2"))
+        acciones = ("<div class=veractions>" + btn_upd
+                    + "<form method=post action='/buscar-actualizacion'>"
+                    "<button class=verbtn2 type=submit>Buscar actualizaciones</button></form>"
+                    "<button type=button class=verbtn2 "
+                    "onclick=\"var e=document.getElementById('histwrap');e.hidden=!e.hidden\">Historial de cambios</button>"
+                    "</div>")
+    hist = b.get("historial") or []
+    if hist:
+        filas = "".join(
+            f"<tr><td class=c1>{'<span class=vnew>Nuevo</span>' if c.get('nuevo') else ''}</td>"
+            f"<td class=c2>{esc(c.get('sha', ''))}</td><td>{esc(c.get('asunto', ''))}</td>"
+            f"<td class=c3>{esc(c.get('fecha', ''))}</td></tr>" for c in hist)
+        cuerpo_hist = f"<table class=verchgt><tbody>{filas}</tbody></table>"
+    else:
+        cuerpo_hist = ("<p class=sub2 style='padding:12px;margin:0'>Sin historial todavía. Pulsa "
+                       "<b>Buscar actualizaciones</b> para traerlo de GitHub.</p>")
+    tabla = ("<div id=histwrap hidden style='margin-top:12px'><div class=verchg>"
+             f"<div class=verchgh>Registro de cambios (rama main)</div>{cuerpo_hist}</div></div>")
+    instalada = b.get("instalada") or (str(est.get("commit") or "")[:7]) or PANEL_VERSION
+    buscada = _act_hora(b.get("checked")) if b else ""
+    return (
+        _VER_CSS + "<section class=card><h2>Versión y actualizaciones</h2>"
+        "<div class=verhead><div><div class=verlbl>Versión instalada</div>"
+        f"<div class=versha>{esc(instalada)}</div>"
+        f"<div class=verbuild>panel {esc(PANEL_VERSION)} &middot; orquestador "
+        f"{esc(str(est.get('orq_version') or 'sin dato'))} &middot; reglas "
+        f"{esc(str((est.get('reglas') or {}).get('current') or 'sin dato'))}</div></div>{badge}</div>"
+        "<div class=verblk><div class=verlbl>Último cambio en GitHub</div>"
+        f"<div class=vermsg>{esc(b.get('ultimo') or '') or 'Pulsa <b>Buscar actualizaciones</b> para consultar GitHub.'}"
+        + (f" <span class=hint>({esc(b.get('fecha'))})</span>" if b.get("fecha") else "") + "</div></div>"
+        "<hr class=versep>" + estado + aviso_err + lista_mej + acciones + _act_ultima(av) + tabla
+        + "<p class=sub2 style='margin-top:14px;color:#8a8a86'>Actualiza el <b>panel</b> y el "
+        "<b>orquestador</b> a la última versión de la rama main de GitHub: el servidor descarga el "
+        "código, construye el panel (unos minutos; sin firma, como el laboratorio) y reinicia los "
+        "dos. Antes deja un respaldo en <code>/root/backups</code> y, si el orquestador o el panel no "
+        "quedan sanos, vuelve solo a la versión anterior. Los <b>puntos</b> (VPN y Suricata) no se "
+        "tocan: siguen con su versión hasta que se recreen en el servidor "
+        "(<code>ids-orq punto reconfigurar &lt;punto&gt;</code>). Tu configuración no depende de la versión."
+        + (f" Última búsqueda: {esc(buscada)}." if buscada else "") + "</p></section>")
+
 def nav(active=""):
     _rl = getattr(CTX, "role", None)
     es_admin_nav = _rl == "admin"   # exclusiones/tuning y Puntos: solo admin (ni operador ni lectura)
@@ -9838,12 +10180,13 @@ def nav(active=""):
         cls = "tab on" if h == active else "tab"
         parts.append(f'<a href="{h}" class="{cls}">{t}</a>')
     brand = '<span class="brand"><img class="applogo" src="/logo.png" alt="Suricata">Estadísticas Suricata</span>'
-    # la version es la de la imagen (Ajustes la ensena): se actualiza desde el servidor, no aqui
     selector = _selector_nodo(active)
     _ubtn, _upanel = _menu_usuario()
+    # «Actualizacion» (solo admin): sale cuando hay commits nuevos en main, como en el original
+    _upd_btn, _upd_ventana = _actualizacion_nav() if es_admin_nav else ("", "")
     navbar = ('<div class="nav"><div class="navwrap">' + brand + '<span class="push"></span>'
               + "".join(parts) + '<span class="push"></span>'
-              + _THEME_BTN + _ubtn + _BURGER_BTN + '</div></div>' + _upanel
+              + _upd_btn + _THEME_BTN + _ubtn + _BURGER_BTN + '</div></div>' + _upanel + _upd_ventana
               # el modal de confirmacion/aviso: sustituye a confirm() y alert() del navegador
               + _ASK)
     # franja de debajo: a la izquierda el selector de nodo; a la derecha la marca de la empresa
@@ -10987,24 +11330,11 @@ def perfil_page(msg="", ok=False, edit_user=None):
             "<div class=mfoot><button class=cancelbtn type=button onclick=closem()>Cancelar</button>"
             "<button class=primary type=submit>Guardar</button></div>"
             "</form></section>")
-    # --- tarjeta: version (la de la imagen, solo lectura) -----------------------------
-    # El panel ya no se actualiza a si mismo: la version es la de la imagen del contenedor y
-    # se cambia en el servidor (instalador / ids-orq), con su respaldo y su vuelta atras.
-    card_update = ""
-    if es_admin and yo:
-        _est_v = nodos.leer_estado() or {}
-        card_update = (
-            "<section class=card><h2>Versión</h2>"
-            "<p class=sub2>Versión de IDS_MAAT que corre en este servidor. El panel no se actualiza "
-            "desde aquí: lo hace el administrador del servidor con el instalador (imágenes nuevas, "
-            "con respaldo y vuelta atrás). Tu configuración no depende de la versión.</p>"
-            "<div class=grid2><div class=field><label>Versión de la imagen del panel</label>"
-            f"<div class=mono>{esc(os.environ.get('IDS_MAAT_VERSION', '') or 'sin dato')}</div></div>"
-            "<div class=field><label>Versión del orquestador</label>"
-            f"<div class=mono>{esc(str(_est_v.get('version') or _est_v.get('orq_version') or 'sin dato'))}</div></div>"
-            "<div class=field><label>Reglas en uso</label>"
-            f"<div class=mono>{esc(str((_est_v.get('reglas') or {}).get('current') or 'sin dato'))}</div></div>"
-            "</div></section>")
+    # --- tarjeta: version y actualizaciones (como la del original) ---------------------
+    # «Buscar actualizaciones» pregunta a GitHub que hay nuevo en main; «Actualizar» lo pide al
+    # orquestador (sistema.actualizar), que lleva el panel y el orquestador a ese commit con
+    # respaldo y vuelta atras. Los puntos no se tocan.
+    card_update = tarjeta_version() if es_admin and yo else ""
     # --- tarjeta: reputacion / feeds (Auth-Key abuse.ch + estado por fuente; solo admin) ---
     card_feeds = ""
     if es_admin and yo:
@@ -13784,11 +14114,44 @@ sin guardar, y para quitarlo se escribe <code>BORRAR</code>. Para que el enlace 
 clicable, el servidor tiene que declarar la URL pública del panel (<code>IDS_PANEL_URL</code>).</p>
 
 <!--CAT:Mantenimiento--><h2>Versión, actualizaciones y recuperación</h2>
-<p>En <b>Ajustes &rarr; Versión</b> se ve la versión instalada (solo lectura). El panel ya no se
-actualiza a sí mismo: lo hace el administrador del servidor con el instalador de IDS_MAAT, que trae
-imágenes nuevas de los contenedores, con respaldo y vuelta atrás. Tu configuración (usuarios,
-exclusiones, empresa, IPs de confianza, conexiones) vive en <code>/srv/ids/panel/</code> y no depende de
-la versión.</p>
+<p>Como en el panel original, el panel avisa solo cuando hay una versión nueva: al administrador le
+sale en la barra el botón naranja <b>Actualización</b>, con un punto que late. Al pulsarlo se ven las
+mejoras que trae (los cambios nuevos de GitHub) y <b>Actualizar ahora</b>.</p>
+<p>En <b>Ajustes &rarr; Versión</b> está todo lo demás:</p>
+<ul>
+<li>la versión instalada, la del orquestador y las reglas en uso;</li>
+<li><b>Buscar actualizaciones</b>, que pregunta a GitHub en ese momento (si no, el panel lo mira solo
+cada 30 minutos);</li>
+<li><b>Actualizar</b>, que está siempre: si ya estás al día sale como «Actualizar de todos modos»;</li>
+<li><b>Historial de cambios</b>, con los últimos cambios de GitHub (los que aún no tienes salen como
+<b>Nuevo</b>);</li>
+<li>la última actualización: de qué versión a cuál, quién la hizo y cuándo, o por qué falló.</li>
+</ul>
+<p><b>Qué actualiza.</b> El <b>panel</b> y el <b>orquestador</b> del servidor, a la última versión de
+la rama <code>main</code> de GitHub. Los <b>puntos</b> (la VPN y el Suricata de cada MikroTik) no se
+tocan: no se cortan ni el túnel ni la captura. Siguen con su versión hasta que se recrean en el
+servidor (<code>ids-orq punto reconfigurar &lt;punto&gt;</code>).</p>
+<p><b>Cómo lo hace.</b> Lo hace el servidor; el panel solo lo pide. Una vez pedida, la actualización
+sigue aunque cierres la página. Pasos:</p>
+<ol>
+<li>descarga ese commit y comprueba que es de <code>main</code>;</li>
+<li>construye la imagen del panel en el propio servidor, sin firma, como el laboratorio (tarda unos
+minutos);</li>
+<li>deja un respaldo en <code>/root/backups/ids-maat-actualizar-&lt;fecha&gt;.tar.gz</code>, sin la clave
+maestra;</li>
+<li>instala el orquestador nuevo y lo reinicia;</li>
+<li>recrea el panel.</li>
+</ol>
+<p>Mientras tanto, la página <b>Actualizando…</b> enseña cada paso. Cuando el panel se reinicia deja
+de contestar unos segundos: es lo normal.</p>
+<p><b>Si algo falla.</b> Si falla antes del respaldo, no se cambia nada. Si el orquestador o el panel
+nuevos no quedan sanos, se vuelve solo a la versión anterior y la tarjeta lo dice. El detalle queda en
+el servidor, en <code>journalctl -u ids-actualizar</code> y en <code>/root/ids-maat/actualizar/</code>.</p>
+<p>Las órdenes que se pidan durante la actualización (altas, cambios de un punto) esperan en la cola
+y las hace el orquestador nuevo.</p>
+<p>Tu configuración (usuarios, exclusiones, empresa, IPs de confianza, conexiones) vive en
+<code>/srv/ids/panel/</code> y no depende de la versión. Volver a ejecutar el instalador con una release
+deja otra vez las imágenes firmadas de esa release.</p>
 <p><b>Respaldos.</b> Basta el respaldo del servidor (<code>/srv/ids</code>) más la <b>clave maestra</b>
 (<code>/etc/ids-maat/master.key</code>), que se guarda aparte: sin ella no se pueden leer las claves
 cifradas (API de los routers, AbuseIPDB, abuse.ch, Groq, Telegram). El panel arranca igual y avisa, pero
@@ -17902,7 +18265,8 @@ _RE_URL_ATTR = re.compile(r"(?<![\w-])((?:href|action|formaction)\s*=\s*)([\"']?
 # lo que no depende del nodo (estaticos y las paginas sin selector: Puntos, operaciones,
 # Ajustes, logs, Documentacion) se deja como esta
 _SIN_NODO = ("/login", "/logout", "/logo.png", "/favicon.ico", "/mi-foto", "/mapa/", "/vendor/",
-             "/puntos", "/operaciones", "/ajustes", "/registro", "/log", "/bitacora", "/documentacion", "/perfil")
+             "/puntos", "/operaciones", "/ajustes", "/registro", "/log", "/bitacora", "/documentacion", "/perfil",
+             "/actualizando", "/actualizacion.json", "/actualizar-panel", "/buscar-actualizacion")
 
 def url_con_nodo(url, nodo=None, amp="&"):
     """`url` (ruta interna) con `nodo=` del nodo que se mira, si no lo lleva ya."""
@@ -18556,6 +18920,14 @@ class H(BaseHTTPRequestHandler):
             return
         if path == "/ajustes":
             return self._html(perfil_page())
+        if path in ("/actualizando", "/actualizacion.json"):
+            if not self._admin():
+                return self._prohibido()   # actualizar el panel es de admin
+            _qa = _up.parse_qs(self.path.split("?", 1)[1]) if "?" in self.path else {}
+            _op = (_qa.get("op", [""])[0] or "").strip()
+            if path == "/actualizacion.json":
+                return self._json(act_estado_json(_op))
+            return self._html(actualizando_page(_op))
         if path == "/exclusiones/export":
             if not self._admin():
                 return self._prohibido()
@@ -18701,6 +19073,31 @@ class H(BaseHTTPRequestHandler):
                                  args=(getattr(CTX, "user", "?") or "?", getattr(CTX, "ip", "") or ""),
                                  daemon=True).start()
             return self._redirect("/documentacion?p=reglas")
+        if ruta == "/buscar-actualizacion":
+            if not self._admin():
+                return self._prohibido()
+            _d = act_buscar_ahora()
+            if _d.get("disponible"):
+                _m, _ok = "Hay una versión nueva disponible: la ves en Ajustes → Versión.", True
+            elif _d.get("error"):
+                _m, _ok = "No se pudo consultar GitHub: %s." % _d["error"], False
+            else:
+                _m, _ok = "Estás en la última versión.", True
+            return self._html(perfil_page(_m, ok=_ok))
+        if ruta == "/actualizar-panel":
+            # boton «Actualizar» (como el del original): lo hace el orquestador (sistema.actualizar)
+            if not self._admin():
+                return self._prohibido()
+            _c = (q.get("commit", [""])[0] or "").strip()
+            if not actualizaciones.RE_SHA.match(_c):
+                return self._html(perfil_page("La versión pedida no es válida.", ok=False))
+            if actualizaciones.en_curso(act_avance()):
+                return self._redirect("/actualizando")
+            _op, _r = act_pedir(_c)
+            if _r.get("codigo") not in ("ACEPTADA", "OK"):
+                return self._html(perfil_page("No se pudo pedir la actualización. " + orq_textos.traducir(
+                    _r.get("codigo"), _r.get("mensaje"), _r.get("datos")), ok=False))
+            return self._redirect("/actualizando?op=" + _op)
         if ruta == "/ventana":
             if not self._admin():
                 return self._prohibido()

@@ -86,6 +86,79 @@ cosign verify --certificate-identity-regexp "$ID" --certificate-oidc-issuer "$IS
 
 ## 4. Botón «Actualizar»
 
+### 4.1 Lo que hay hoy: panel y orquestador desde la rama main
+
+El dueño lo pidió el 2026-10-15: «integrar el botón de actualizaciones como tiene el oficial». Decidió
+que actualice el **panel y el orquestador**, sin tocar los puntos, y que salga de **cada commit de
+`main`** (no de las releases firmadas).
+
+**En el panel** (solo admin), igual que en suricata-ids-lab:
+
+- En la barra sale el botón naranja **Actualización** cuando hay commits nuevos en `main`. Abre
+  una ventana con las novedades (los asuntos de los commits nuevos) y **Actualizar ahora**.
+- **Ajustes → Versión** muestra:
+  - lo instalado;
+  - si hay algo nuevo;
+  - los botones **Actualizar** (siempre; «de todos modos» si se está al día), **Buscar
+    actualizaciones** e **Historial de cambios**;
+  - la última actualización: de qué versión a cuál, quién la hizo y cuándo, o por qué falló.
+- La confirmación es el modal común del panel (`_ASK`).
+- Qué hay nuevo lo pregunta el panel a la API pública de GitHub, sin token:
+  - pide `commits?sha=main` y `compare/<instalado>...<último>`;
+  - en un hilo de fondo, cada 30 min, o al pulsar Buscar;
+  - lo guarda en `/srv/ids/panel/estado/actualizacion-busqueda.json`;
+  - el módulo es `idspanel/actualizaciones.py`.
+- Lo instalado se sabe por el primero de estos que exista:
+  1. el `commit` de `estado.json`;
+  2. la versión de la imagen del panel (`main-<sha>` / `lab-<sha>`);
+  3. la de la release (`v0.1.3`, que GitHub resuelve como etiqueta).
+
+**El flujo:**
+
+1. El panel pide `POST /actualizar-panel` con `commit=<sha>`. Eso manda
+   `sistema.actualizar {commit}` al orquestador y queda en la bitácora como `ACTUALIZAR-PANEL`.
+2. El orquestador pone la orden en su cola, así que espera a las anteriores. Cuando le toca:
+   - deja el pedido en `/srv/ids/estado/actualizar-pedido.json` (0600, con `op_id` y quién);
+   - arranca `ids-actualizar.service` con `systemctl start --no-block`;
+   - da la orden por terminada.
+3. Mientras la unidad corre, la cola **no empieza ninguna orden**. Las que lleguen esperan y las
+   hace el orquestador nuevo:
+   - el orquestador nuevo arranca con la cola en pausa si la unidad sigue viva;
+   - una actualización colgada solo para la cola 1 h.
+4. La unidad ejecuta `/usr/local/lib/ids-orq/ids-actualizar.sh --pedido`. Es oneshot, con
+   `UMask=0022` y fuera del encierro de `ids-orq`, porque lo reinicia. Pasos:
+   1. **descargar**: `git fetch` en `/root/ids-maat/actualizar/src` y comprobación de que el
+      commit es de `main` (`merge-base --is-ancestor`);
+   2. **validar**: están los ficheros que hacen falta, `ids_orq.py --help` arranca y
+      `bash -n` del script;
+   3. **construir** `ids-maat-panel:main-<sha7>` en el servidor, con `images/build.sh` y sin firma;
+   4. **respaldo** en `/root/backups/ids-maat-actualizar-<ts>.tar.gz`:
+      - lleva `/etc/ids-maat` sin `master.key`, el orquestador, `conf/` y `estado/` del panel,
+        `estado`, `pki`, `puntos`, `fw` y las unidades;
+      - quedan los 5 últimos;
+      - además, una copia de lo instalado en `/root/ids-maat/actualizar/anterior`;
+   5. **instalar el orquestador** del commit: `ids_orq.py`, el propio script, las plantillas, las
+      unidades y `logrotate.conf`. Después `imagenes.json` queda con `dev: true`,
+      `version: main-<sha7>`, `commit` y la imagen nueva del panel;
+   6. **reiniciar `ids-orq`** y esperar a que `ids-orq estado` conteste;
+   7. **recrear el panel** (`ids-orq panel aplicar`, que espera a sano).
+5. Si falla un paso antes del respaldo, no se cambia nada. Si fallan 5, 6 o 7, se restaura
+   `anterior`, se reinicia el orquestador y se recrea el panel: queda «revertida». Las imágenes
+   `main-*` que no son la nueva ni la anterior se borran.
+6. Dónde queda el avance:
+   - en `/srv/ids/run/actualizacion.json` (0640 root:ids-panel), con el `op_id`, los pasos, de qué
+     a qué, quién y el resultado;
+   - la página `/actualizando` lo sigue cada 2 s y dice «el panel se está reiniciando» cuando no
+     contesta;
+   - el resultado también va a `orq.jsonl` (`sistema.actualizar`).
+7. Los puntos (vpn y suricata) **no se tocan**. Siguen con sus imágenes de `imagenes.json` y su
+   configuración hasta un `ids-orq punto reconfigurar <pid>`.
+
+A mano, desde la consola: `ids-orq actualizar <commit>` (pasa por la cola). Volver a ejecutar
+`install.sh` con una release deja otra vez las imágenes firmadas de esa release.
+
+### 4.2 Diseño completo (pendiente): release firmada, con canario
+
 `panel → orq: sistema.actualizar {version, canario}`. La orden retiene la cola del orquestador
 mientras dura.
 
@@ -134,7 +207,9 @@ No hay actualización automática: la lanza siempre una persona.
 
 ## 6. El orquestador
 
-El orquestador **no se actualiza desde el panel**. Lo actualiza `/root/ids-maat/actualizar-orquestador.sh`:
+Hoy el orquestador se actualiza junto con el panel desde el botón «Actualizar» (§4.1, commit de
+`main`) o volviendo a ejecutar `install.sh` con una release. Para las releases firmadas, el diseño
+sigue siendo `/root/ids-maat/actualizar-orquestador.sh`:
 
 1. respaldo;
 2. verificación de la firma del fichero de la release;

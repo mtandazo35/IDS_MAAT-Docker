@@ -86,7 +86,12 @@ Respuesta: {"op_id":"…", "ok":true|false,
   `op.estado`.
 - **Van por la cola:** `punto.crear`, `punto.borrar`, `punto.arrancar`, `punto.parar`,
   `punto.reiniciar`, `punto.ajustar`, `punto.reconfigurar`, `punto.vpn.regenerar`,
-  `punto.threshold`, `reglas.actualizar` y `sistema.reconciliar`.
+  `punto.threshold`, `reglas.actualizar`, `sistema.reconciliar` y `sistema.actualizar`.
+- **Mientras corre `ids-actualizar.service`** (lo arranca `sistema.actualizar`), la cola no empieza
+  ninguna orden. Esa unidad reinicia el orquestador y el panel, y las órdenes que lleguen esperan:
+  - las hace el orquestador nuevo;
+  - si arranca con la unidad aún viva, sigue en pausa hasta que acabe;
+  - una actualización colgada solo para la cola 1 h.
 - **Tampoco las órdenes inmediatas** (`vpn.desbanear`): cambian algo, pero un alta de minutos no debe
   retrasar un desbaneo. Se ejecutan al recibirlas y dejan su línea en `orq.jsonl` (§10) como las de
   la cola.
@@ -123,7 +128,8 @@ disponible» y no hacen nada.
 | `sistema.capacidad` | — | RAM, CPU, disco y cuántos puntos caben por perfil |
 | `op.estado` | `op_id` | progreso |
 | *reservada* `acceso.aplicar` / `acceso.confirmar` | (diseño: `redes_gestion[]` (SSH), `ips_proxy[]` (panel), `proxy_actual`, `puertos_vpn[{puerto, origen?}]`, `ventana_s` / `token`) | **sin implementar**: contesta «no disponible». El acceso se cambia volviendo a ejecutar `install.sh` (con su modo seguro) o, desde la consola, `ids.conf` + `ids-orq fw-render --aplicar` ([OPERACION.md](OPERACION.md) §4; diseño en [RED-Y-FIREWALL.md](RED-Y-FIREWALL.md) §10) |
-| *reservada* `sistema.buscar_actualizacion` / `sistema.actualizar` / `sistema.revertir` | (diseño: `version`, `canario` / `objetivo`, `pid?`) | **sin implementar**. Hoy se actualiza volviendo a ejecutar `install.sh` y, punto por punto, `punto.reconfigurar` (diseño en [ACTUALIZACIONES.md](ACTUALIZACIONES.md)) |
+| `sistema.actualizar` | `commit` (7–40 hex en minúsculas, de `main`) | cola. Es el botón «Actualizar» del panel ([ACTUALIZACIONES.md](ACTUALIZACIONES.md) §4.1). Deja el pedido en `/srv/ids/estado/actualizar-pedido.json` (0600: `commit`, `quien`, `op_id`) y arranca `ids-actualizar.service` (`systemctl start --no-block`). Acaba al lanzarla y pausa la cola hasta que la unidad termina. La unidad lleva el panel y el orquestador a ese commit, con respaldo y vuelta atrás, sin tocar los puntos; su avance va a `/srv/ids/run/actualizacion.json`. `FALLO` si el servidor no tiene el script o la unidad; `CONFLICTO` si ya hay una en curso. Devuelve `{commit, unidad}`. CLI: `ids-orq actualizar <commit>` |
+| *reservada* `sistema.buscar_actualizacion` / `sistema.revertir` | (diseño: `version`, `canario` / `objetivo`, `pid?`) | **sin implementar**: lo nuevo de `main` lo busca el panel en GitHub, y la vuelta atrás de `sistema.actualizar` es automática. Para releases firmadas: `install.sh` y, punto por punto, `punto.reconfigurar` (diseño en [ACTUALIZACIONES.md](ACTUALIZACIONES.md) §4.2) |
 | *reservada* `sistema.respaldar` | (diseño: `incluir_eventos`) | **sin implementar** (§11.4; lo que se respalda hoy, [OPERACION.md](OPERACION.md) §3.1) |
 | *reservada* `bitacora.anclar` | (diseño: `cabezas`, global y por punto: hash y número de filas) | **sin implementar** ([DATOS.md](DATOS.md) §7) |
 

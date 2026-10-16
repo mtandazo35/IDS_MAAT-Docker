@@ -596,6 +596,12 @@ POOL_DOCKER=10.210.0.0/16
 Con `"dev": false`, el orquestador **rechaza** cualquier referencia que no sea `@sha256:`. Con
 `"dev": true` (instalación de laboratorio, §7) acepta referencias locales y lo dice en `ids-orq estado`.
 
+`"commit"` (opcional, 40 hex) es el commit de `main` que instaló el botón «Actualizar» del panel
+(`ids-actualizar.sh`, que además pone `"dev": true` y `"version": "main-<sha7>"`) o
+`scripts/lab-actualizar.sh`. Una release no lo trae. El orquestador lo publica en `estado.json`
+(`commit`, vacío si falta o no es válido) y el panel compara desde ahí con GitHub
+([ACTUALIZACIONES.md](ACTUALIZACIONES.md) §4.1).
+
 ---
 
 ## 5. Interfaces internas
@@ -801,7 +807,7 @@ Cada 15 s, atómico. Esquema v1 (decidido en el contrato):
 ```json
 {
   "v": 1, "ts": 1760090000, "orq_version": "0.1.0", "version": "0.1.0", "dev": false,
-  "tun_base": "100.64",
+  "commit": "", "tun_base": "100.64",
   "cola": {"en_curso": {"op_id": "…", "orden": "punto.crear", "pid": "p003", "paso": "compose up", "desde": 1760089990},
            "pendientes": 0},
   "capacidad": {"mem_total_mb": 7962, "mem_comprometida_mb": 4180, "mem_disponible_mb": 3100,
@@ -935,6 +941,7 @@ que encolan, `--no-esperar` (imprime el `op_id` y sale).
 | `ids-orq reglas actualizar [--sin-descarga]` | `reglas.actualizar` |
 | `ids-orq reabrir-logs [<pid>]` | `logs.reabrir` (lo llama logrotate) |
 | `ids-orq reconciliar` | `sistema.reconciliar` |
+| `ids-orq actualizar <commit>` | `sistema.actualizar` (botón «Actualizar» del panel; ACTUALIZACIONES §4.1) |
 | `ids-orq estado` | `sistema.estado` + `punto.estado *` |
 | `ids-orq op <op_id>` | `op.estado` |
 

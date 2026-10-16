@@ -27,6 +27,9 @@ Inventarios de partida (números de línea de `dashboard.py` = los del heredoc `
 - **Todo lo que dependía del servidor viejo** (systemctl, suricatasc, openvpn.sh, EveBox, el actualizador por
   git, tzsp-decap con `TZSP_MAP`, `suricata-ids-fw`, el instalador en /root) **se quita**, o pasa a una orden del
   orquestador, o se lee de `estado.json`. Nada queda a medias: ni rutas, ni botones, ni textos que lo nombren.
+  El botón «Actualizar» del original vuelve (2026-10-15, pedido del dueño) por ese segundo camino: el
+  panel busca en GitHub y la actualización es la orden `sistema.actualizar` del orquestador
+  ([ACTUALIZACIONES.md](ACTUALIZACIONES.md) §4.1).
 - **Sin modo sin autenticación.**
 - Comentarios y textos en el mismo estilo que el código heredado (español, sin tildes donde el original no las
   lleva). Nada de nombres ni IPs reales: RFC 5737 en ejemplos y pruebas.

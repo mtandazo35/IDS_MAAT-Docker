@@ -169,17 +169,20 @@ done
 
 log "orquestador del commit $SHA"
 install -m 0755 "$SRC/orquestador/ids_orq.py" "$LIB/ids_orq.py"
+[ -f "$SRC/orquestador/ids-actualizar.sh" ] && install -m 0755 "$SRC/orquestador/ids-actualizar.sh" "$LIB/ids-actualizar.sh"
 install -m 0644 "$SRC"/orquestador/plantillas/*.tmpl "$LIB/plantillas/"
 for u in "$SRC"/host/systemd/*; do install -m 0644 "$u" /etc/systemd/system/; done
 install -m 0644 "$SRC/host/logrotate/ids-maat.conf" "$ETC/logrotate.conf"
 systemctl daemon-reload
 
-python3 - "$ETC/imagenes.json" "$SHA" "${REFS[panel]:-}" "${REFS[vpn]:-}" "${REFS[suricata]:-}" <<'PY'
+python3 - "$ETC/imagenes.json" "$SHA" "${REFS[panel]:-}" "${REFS[vpn]:-}" "${REFS[suricata]:-}" \
+    "$(git -C "$SRC" rev-parse HEAD)" <<'PY'
 import json, os, sys
-p, sha, panel, vpn, suri = sys.argv[1:6]
+p, sha, panel, vpn, suri, completo = sys.argv[1:7]
 d = json.load(open(p, encoding="utf-8"))
 d["dev"] = True
 d["version"] = "lab-" + sha
+d["commit"] = completo           # el botón «Actualizar» del panel compara desde aquí
 for k, v in (("panel", panel), ("vpn", vpn), ("suricata", suri)):
     if v:
         d["imagenes"][k] = v
