@@ -212,7 +212,9 @@ class Cli(unittest.TestCase):
         rc, out = self.cli("estado")
         self.assertEqual(rc, 0, out)
         lineas = out.splitlines()
-        self.assertTrue(lineas[0].startswith("ids-orq 0.1.0 · versión 0.1.0 · base de túneles 100.64 · reglas "))
+        # la del orquestador sale de ORQ_VERSION (cambia con cada release); la instalada, de ids.conf
+        self.assertTrue(lineas[0].startswith("ids-orq %s · versión 0.1.0 · base de túneles 100.64 · reglas "
+                                             % self.mod.ORQ_VERSION), lineas[0])
         self.assertTrue(lineas[1].startswith("cola: libre"))
         self.assertTrue(lineas[2].startswith("memoria: total 7962 MB"))
         self.assertEqual(lineas[3].split(), ["PID", "NOMBRE", "N", "PUERTO", "PERFIL", "DESEADO", "ESTADO", "VPN",
