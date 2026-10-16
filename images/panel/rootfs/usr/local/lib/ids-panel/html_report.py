@@ -85,6 +85,10 @@ DNS_MAL = ("malware", "trojan", "botnet", "c2 ", "cnc", "command and control", "
            "sinkhole", "hostile", "phishing", "stealer", "ransom", "known bad",
            "observed", "suspicious domain")
 UMBRAL_DNS = 3
+# La regla propia de los feeds (local.rules.tmpl): el dominio de su alerta esta en las listas de
+# dominios que baja ids-reglas. La ficha lo ensena como «fichado»; el panel puede no tener esa
+# lista (sus feeds de dominios piden clave), asi que no se puede buscar ahi.
+SID_FEEDS_DOMINIOS = "9000050"
 def es_dns_sospechoso(sig, cat):
     s = (sig or "").lower(); c = (cat or "").lower()
     if "dns" not in s and "dns" not in c:
@@ -749,6 +753,7 @@ dns_sids = defaultdict(set)        # firmas DNS distintas por CPE
 dns_sig = {}                       # firma DNS mas reciente por CPE
 dns_sig_ts = {}                    # idem: la mas reciente por tiempo, no por orden
 pruebas_by_src = defaultdict(list)  # evidencia por alerta (SID/rev/flow_id/dst/ts) por CPE, tope 8
+dom_feeds_by_src = defaultdict(Counter)  # dominios de la regla de los feeds por CPE (ficha), tope 8
 MAX_CARD = 2500                    # tope por set (el score satura mucho antes; protege RAM)
 # Por DOMINIO (no solo por CPE): que se pregunta, quien lo pregunta y por donde. Es lo que
 # se presenta: el dominio es la prueba, la IP de la red es el culpable, el DNS el canal.
@@ -999,6 +1004,13 @@ for _pid, p in files:
                     "dst": dst, "dport": dport,
                     "rrname": g("rrname") if _es_dns else "",
                 })
+            # el dominio que la regla de los feeds encontro en sus listas: la ficha lo ensena
+            # en «Reputacion del destino» (el resolutor por el que paso no es el destino)
+            if g("sid") == SID_FEEDS_DOMINIOS:
+                _rf = (g("rrname") or "").lower().rstrip(".")
+                _fd = dom_feeds_by_src[src]
+                if _rf and (_rf in _fd or len(_fd) < 8):
+                    _fd[_rf] += 1
             if ts:
                 if ts >= NOW - 300:  n5_by_src[src] += 1
                 if ts >= NOW - 3600: n1h_by_src[src] += 1
@@ -2342,6 +2354,7 @@ try:
             "total_alertas": by_src.get(src, 0),
             "pruebas": pruebas_by_src.get(src, []),
             "reputacion": _reputacion_src(src),
+            "dominios_feeds": dom_feeds_by_src.get(src, Counter()).most_common(8),
         })
     # ordenar: primero los confirmados (2+ pruebas independientes), luego por riesgo
     cand.sort(key=lambda c: (c["confianza"] == "alta", c["riesgo"], c["alertas_cnc"]), reverse=True)
@@ -2385,6 +2398,7 @@ try:
                 "total_alertas": by_src.get(src, 0),
                 "pruebas": pruebas_by_src.get(src, []),
                 "reputacion": _reputacion_src(src),
+                "dominios_feeds": dom_feeds_by_src.get(src, Counter()).most_common(8),
             })
     cand_dns.sort(key=lambda c: (c["confianza"] == "alta", c["alertas_dns"], c["riesgo"]), reverse=True)
     # top con su banda de riesgo, para el motor de politicas del panel (tope 50 CPEs)
@@ -2419,7 +2433,10 @@ try:
     _cq = {"generado": int(time.time()), "ventana_min": VENTANA_MIN,
            "umbral": UMBRAL_INFECTADO, "umbral_dns": UMBRAL_DNS,
            "candidatos": cand, "dns_candidatos": cand_dns, "top_riesgo": top_r,
-           "vigiladas": vigiladas}
+           "vigiladas": vigiladas,
+           # con que listas se cruzaron los destinos: sin ellas, «no esta en las listas» no
+           # se puede decir (la ficha lo avisa en vez de callarlo)
+           "reputacion_listas": {"ok": REP_OK, "info": REP_INFO}}
     _tmpq = os.path.join(OUTDIR, "cuarentena.json.tmp")
     with open(_tmpq, "w", encoding="utf-8") as _f:
         json.dump(_cq, _f)

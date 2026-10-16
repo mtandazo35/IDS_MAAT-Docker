@@ -46,6 +46,8 @@ PIEZAS = ("HIST_DB", "HIST_DIAS", "HIST_TOP", "HIST_CADA", "CONDUCTA_DIAS",
           "CONDUCTA_TOPE", "_cd_abrir", "_CD_TS", "_cd_ts", "_cd_top",
           "_hist_con", "hist_marca", "_hist_huella", "_hist_offsets", "hist_ingerir",
           "hist_podar", "hist_conducta",
+          # el dominio de un evento, en el formato de Suricata que sea (2026-10-15)
+          "dominio_de",
           # el ruido no cuenta (ET INFO y lo no abusivo; el user, 2026-10-13)
           "_TRAD", "_TRAD_CACHE", "_TRAD_CACHE_MAX", "_traducir_lento", "traducir",
           "CD_NO_CUENTA", "cd_es_ruido", "_cd_firmas_reales")

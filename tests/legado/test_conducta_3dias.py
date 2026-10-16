@@ -39,6 +39,7 @@ ARBOL = ast.parse(DASH)
 PIEZAS = ("CONDUCTA_FILE", "CONDUCTA_DIAS", "CONDUCTA_TOPE", "CONDUCTA_MAX",
           "CONDUCTA_CADA", "_CD_TS", "_cd_abrir", "_cd_ts", "_cd_top", "_cd_podar",
           "conducta_recolectar", "conducta_csv", "guardar_conducta", "cargar_conducta",
+          "dominio_de",   # el dominio de un evento, en el formato de Suricata que sea
           "_TRAD", "_TRAD_CACHE", "_TRAD_CACHE_MAX", "_traducir_lento", "traducir", "CAT_CPE", "CAT_OTROS", "nombre_categoria",
           "CONDUCTA_GUIA", "conducta_categoria", "_CD_COLORES", "conducta_barras",
           "CD_NO_CUENTA", "cd_es_ruido", "_cd_firmas_reales", "INFORME_DIAS",

@@ -27,9 +27,11 @@ def dns(src, nombre, hace=30):
 
 
 def alerta_dns(src, firma, dominio, hace=30):
-    """Alerta de una consulta DNS: Suricata la trae con el dominio en `dns.rrname`."""
+    """Alerta de una consulta DNS como la escribe Suricata 7: el dominio en `dns.query[0].rrname`.
+    Antes aqui iba `dns.rrname`, que Suricata no usa en las alertas: el panel no veia ningun
+    dominio y la prueba de abajo pasaba sin mirar nada (tests/test_dominios_dns.py)."""
     ev = json.loads(_dash.alerta(src=src, dst="10.0.0.1", dport=53, firma=firma, hace=hace))
-    ev["dns"] = {"rrname": dominio}
+    ev["dns"] = {"version": 2, "query": [{"type": "query", "id": 1, "rrname": dominio, "rrtype": "A"}]}
     return json.dumps(ev, separators=(",", ":"))
 
 

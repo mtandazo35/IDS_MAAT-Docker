@@ -15270,6 +15270,28 @@ def _cd_abrir(ruta):
         return _io.TextIOWrapper(_gz.open(ruta, "rb"))
     return open(ruta, encoding="utf-8", errors="replace")
 
+def dominio_de(ev):
+    """El dominio consultado de un evento de Suricata, venga en el formato que venga:
+    `dns.rrname` (eventos dns de la version 1 y 2), `dns.query[].rrname` (lo DNS que trae una
+    ALERTA en Suricata 7) o `dns.queries[].rrname` (Suricata 8, version 3). '' si no trae.
+
+    Leerlo solo de `dns.rrname` dejaba vacios los «dominios sospechosos» de Conducta, del
+    historial y del PDF: en Suricata 7 todas las alertas lo traen en `dns.query[0]` (visto en
+    produccion, 2026-10-15)."""
+    d = ev.get("dns")
+    if not isinstance(d, dict):
+        return ""
+    q = d.get("rrname")
+    if not q:
+        for k in ("query", "queries"):
+            for x in (d.get(k) if isinstance(d.get(k), list) else ()):
+                if isinstance(x, dict) and x.get("rrname"):
+                    q = x["rrname"]
+                    break
+            if q:
+                break
+    return q if isinstance(q, str) else ""
+
 _CD_TS = {}
 
 def _cd_ts(s):
@@ -15510,11 +15532,11 @@ def hist_ingerir(pid=None, limite_lineas=4000000):
                                 fts[(dia, ip, fir)] = [ts, ts]
                             else:
                                 pu[0] = min(pu[0], ts); pu[1] = max(pu[1], ts)
-                        mal = ((ev.get("dns") or {}).get("rrname") or "")[:80]
+                        mal = dominio_de(ev)[:80]
                         if mal and not cd_es_ruido(fir):   # el de una ET INFO no es sospechoso
                             det[(dia, ip, "malo", mal)] = det.get((dia, ip, "malo", mal), 0) + 1
                     elif tipo == "dns":
-                        dom = ((ev.get("dns") or {}).get("rrname") or "")[:80]
+                        dom = dominio_de(ev)[:80]
                         if dom:
                             det[(dia, ip, "dominio", dom)] = det.get((dia, ip, "dominio", dom), 0) + 1
                     r[2] += int((ev.get("flow") or {}).get("bytes_toserver") or 0)
@@ -15722,11 +15744,11 @@ def conducta_recolectar(dias=CONDUCTA_DIAS, pid=None):
                     # el dominio que venia en la alerta: ese es el sospechoso, no todo
                     # lo que el abonado consulta. Mezclarlos deja una lista de google y
                     # facebook donde deberia estar el dominio del malware
-                    mal = ((ev.get("dns") or {}).get("rrname") or "")[:80]
+                    mal = dominio_de(ev)[:80]
                     if mal and not cd_es_ruido(fir):
                         d["malos"][mal] = d["malos"].get(mal, 0) + 1
                 elif tipo == "dns":
-                    dom = ((ev.get("dns") or {}).get("rrname") or "")[:80]
+                    dom = dominio_de(ev)[:80]
                     if dom:
                         d["dominios"][dom] = d["dominios"].get(dom, 0) + 1
                 fl = ev.get("flow") or {}
@@ -17215,24 +17237,77 @@ def ficha_page(ip, embed=False):
         al = (f"<table class=fichat><thead><tr><th>Firma</th><th class=num>Veces</th>"
               f"<th>Cuándo</th><th>Destino</th></tr></thead><tbody>{al}</tbody></table>"
               + _tope) if al else "&mdash; (sin alertas guardadas)"
-        # Coincidencia + Vigencia (reputacion)
-        # Reputacion del destino: coincidencia y vigencia en UNA tabla (antes eran dos filas que,
-        # sin coincidencias, salian casi vacias)
+        # Reputacion del destino: TODO lo que se miro, no solo lo que coincide (el user,
+        # 2026-10-15: «por que no salen los destinos si en Destino los saca»). Una fila por
+        # destino: las IPs fichadas con su lista y su vigencia; en las consultas DNS, el DOMINIO
+        # (lo fichado es el dominio; el resolutor por el que paso es el canal); y las IPs de las
+        # alertas que no estan en ninguna lista. Sin listas cargadas no se dice «no esta».
         rep = c.get("reputacion") or []
-        if rep:
-            co = ""
-            for r in rep:
-                co += (f"<tr><td class=mono>{esc(r.get('cidr') or r.get('ip', ''))}</td>"
-                       f"<td>{esc(r.get('fuente', ''))}</td><td>{esc(r.get('categoria', ''))}"
-                       + (" <b>&middot; por su puerto de C2</b>" if r.get("puerto_c2") else "")
-                       + (" <span class=rowmeta>(contexto: no suma al riesgo)</span>" if r.get("contexto") else "")
-                       + f"</td><td class=mono>{_fecha(r.get('fetched_valid', 0))}</td>"
-                       f"<td class=mono>{_fecha(r.get('expira', 0))}</td>"
-                       f"<td>{'vigente' if r.get('vigente') else '<b>CADUCADA</b>'}</td></tr>")
-            reputacion = ("<table class=fichat><thead><tr><th>IP/CIDR</th><th>Fuente</th><th>Categoría</th>"
-                          f"<th>Última válida</th><th>Caduca</th><th>Estado</th></tr></thead><tbody>{co}</tbody></table>")
+        _rl = data.get("reputacion_listas") or {}
+        _rl_ok = _rl.get("ok", True)        # un cuarentena.json de antes no lo trae
+        _rfil = []                          # (destino, que dicen las listas, estado)
+        _rvis = set()
+        for r in rep:
+            _rip = r.get("ip", "")
+            _cidr = r.get("cidr") or ""
+            _rvis.add(_rip)
+            _rfil.append((
+                "<span class=mono>" + esc(_rip or _cidr) + "</span>"
+                + (("<div class=rowmeta>en " + esc(_cidr) + "</div>") if _cidr and _cidr != _rip else ""),
+                "<b>" + esc(r.get("fuente", "")) + "</b>"
+                + ((" &middot; " + esc(r.get("categoria", ""))) if r.get("categoria") else "")
+                + (" <b>&middot; por su puerto de C2</b>" if r.get("puerto_c2") else "")
+                + (" <span class=rowmeta>(contexto: no suma al riesgo)</span>" if r.get("contexto") else ""),
+                ("vigente" if r.get("vigente") else "<b>CADUCADA</b>")
+                + "<div class=rowmeta>última válida " + _fecha(r.get("fetched_valid", 0))
+                + " &middot; caduca " + _fecha(r.get("expira", 0)) + "</div>"))
+        _rfeeds = [d_ for d_, _n in (c.get("dominios_feeds") or [])]
+        _rdoms = []                         # (dominio, firma que lo marco, resolutor)
+        for p in _pr:
+            _rr = (p.get("rrname") or "").strip().lower().rstrip(".")
+            if _rr and _rr not in _rvis:
+                _rvis.add(_rr)
+                _rdoms.append((_rr, p.get("sig", ""), p.get("dst", "")))
+        for d_ in _rfeeds:
+            if d_ not in _rvis:
+                _rvis.add(d_)
+                _rdoms.append((d_, "", ""))
+        for d_, _rsig, _rvia in _rdoms:
+            _rfil.append((
+                "<span class=mono>" + esc(d_) + "</span>"
+                + (("<div class=rowmeta>consultado vía " + esc(_rvia) + "</div>") if _rvia else ""),
+                "<b>Fichado</b> en las listas de dominios (regla de los feeds)" if d_ in _rfeeds
+                else "Lo marcó la firma <span class=rowmeta>" + esc(_rsig[:90]) + "</span>",
+                "&mdash;"))
+        for p in _pr:
+            _rip = p.get("dst", "")
+            if not _rip or _rip == "?" or _rip in _rvis or p.get("rrname"):
+                continue
+            _rvis.add(_rip)
+            if es_via_resolutor(_rip, p.get("dport"), p.get("tipo", "")):
+                _rres = "Resolutor DNS conocido: es el canal de la consulta, no el destino"
+            else:
+                _rres = "No está en las listas" if _rl_ok else "Sin comprobar"
+            _rfil.append(("<span class=mono>" + esc(_rip) + "</span>", _rres, "&mdash;"))
+        _rinfo = (": " + esc(_rl["info"])) if _rl.get("info") else ""
+        _rn = c.get("destinos")
+        if _rl_ok:
+            _rpie = ("Se cruzaron con las listas de reputación "
+                     + (("los %s destinos distintos del abonado" % esc(str(_rn))) if _rn else "sus destinos")
+                     + _rinfo + "."
+                     + (" Arriba, los de sus alertas y los que salen en alguna lista." if _rfil else ""))
         else:
-            reputacion = "<span class=rowmeta>Ningún destino aparece en las listas de reputación.</span>"
+            _rpie = ("<b>Las listas de reputación no estaban cargadas</b> al generar el informe"
+                     + _rinfo + ": no se puede decir si estos destinos están fichados.")
+        if _rfil:
+            reputacion = ("<table class=fichat><thead><tr><th>Destino</th><th>Qué dicen las listas</th>"
+                          "<th>Estado</th></tr></thead><tbody>"
+                          + "".join("<tr><td>%s</td><td>%s</td><td>%s</td></tr>" % f_ for f_ in _rfil)
+                          + "</tbody></table><div class=rowmeta>" + _rpie + "</div>")
+        else:
+            reputacion = ("<span class=rowmeta>"
+                          + ("Ningún destino aparece en las listas de reputación. " if _rl_ok else "")
+                          + _rpie + "</span>")
         # Corroboracion
         evs = c.get("evidencias") or []
         corr = ("<ul class=evlist>" + "".join(f"<li>{esc(e)}</li>" for e in evs) + "</ul>"
