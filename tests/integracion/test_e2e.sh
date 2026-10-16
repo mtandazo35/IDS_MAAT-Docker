@@ -1,7 +1,8 @@
 #!/bin/bash
 # Extremo a extremo (CONTRATO-F1a §8.2), con el orquestador y las imágenes reales y un IDS_RAIZ
 # temporal. Necesita Linux, root, Docker, red (reglas ET) e IDS_IMG_VPN / IDS_IMG_SURICATA; si
-# falta algo sale con 77 (omitida).
+# falta algo sale con 77 (omitida). Solo en una máquina SIN el IDS instalado: si encuentra uno, se
+# omite antes de crear nada (ver «Nunca en un servidor con el IDS instalado», abajo).
 #
 #  1. ids-orq servicio + reglas actualizar + punto crear -> healthy
 #  2. un cliente OpenVPN en contenedor se autentica y envía el pcap de B por TZSP a <sensor>:37008
@@ -27,6 +28,31 @@ omitir() { echo "test_e2e: OMITIDA ($*)"; exit 77; }
 [ "$(uname -s)" = Linux ] || omitir "solo Linux"
 [ "$(id -u)" = 0 ] || omitir "necesita root"
 command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1 || omitir "sin Docker"
+
+# Nunca en un servidor con el IDS instalado (el user, 2026-10-15). IDS_RAIZ solo aparta los ficheros:
+# los proyectos de compose (ids-core, ids-pNNN), los contenedores y las redes se llaman igual que los
+# de verdad, `punto crear` pisaría el p001 real y limpiar() borra todo lo que lleve la etiqueta
+# ids-maat.punto, ids-core-panel y esas redes. Va ANTES del trap: con el trap puesto, omitir() ya
+# limpiaría. IDS_E2E_RAIZ_HOST solo lo usa su prueba (tests/test_e2e_guarda.py).
+ids_instalado() {
+  local n
+  if [ -e "${IDS_E2E_RAIZ_HOST:-}/srv/ids" ]; then echo "existe /srv/ids"; return 0; fi
+  if command -v systemctl >/dev/null 2>&1 && systemctl is-active --quiet ids-orq 2>/dev/null; then
+    echo "ids-orq activo"; return 0
+  fi
+  n=$(docker ps -a --format '{{.Names}}' 2>/dev/null | grep -E '^ids-(core-panel|p[0-9]{3}-(vpn|suricata))$' | head -n 3 | paste -sd, -)
+  if [ -n "$n" ]; then echo "contenedores $n"; return 0; fi
+  if [ -n "$(docker ps -aq --filter label=ids-maat.punto 2>/dev/null)" ]; then
+    echo "contenedores con la etiqueta ids-maat.punto"; return 0
+  fi
+  n=$(docker network ls --format '{{.Name}}' 2>/dev/null | grep -E '^ids-(core|p[0-9]{3})$' | head -n 3 | paste -sd, -)
+  if [ -n "$n" ]; then echo "redes $n"; return 0; fi
+  return 1
+}
+if motivo=$(ids_instalado); then
+  omitir "servidor con el IDS instalado ($motivo): la e2e usa los mismos nombres y borraría lo de verdad; solo en una máquina vacía"
+fi
+
 [ -n "${IDS_IMG_VPN:-}" ] && [ -n "${IDS_IMG_SURICATA:-}" ] || omitir "faltan IDS_IMG_VPN / IDS_IMG_SURICATA"
 docker image inspect "$IDS_IMG_VPN" "$IDS_IMG_SURICATA" >/dev/null 2>&1 || omitir "imágenes no construidas"
 command -v openssl >/dev/null 2>&1 || omitir "sin openssl"
