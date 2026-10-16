@@ -843,14 +843,20 @@ comprobar_puertos_ajenos() {
   # El firewall del IDS descarta todo lo publicado por Docker fuera de @puertos_vpn y del panel, y
   # deja el host con política drop salvo SSH: en un VPS con otros servicios los cortaría.
   # Los del IDS llevan la etiqueta ids-maat.parte (vpn, suricata o panel).
-  local ajenos escuchan
-  ajenos=$(docker ps --format '{{.Names}}|{{.Label "ids-maat.parte"}}|{{.Ports}}' 2>/dev/null \
-           | awk -F'|' '$2 == "" && $3 ~ /->/ {print $1 " (" $3 ")"}')
+  local contenedores ajenos propios p escuchan=""
+  contenedores=$(docker ps --format '{{.Names}}|{{.Label "ids-maat.parte"}}|{{.Ports}}' 2>/dev/null || true)
+  ajenos=$(awk -F'|' '$2 == "" && $3 ~ /->/ {print $1 " (" $3 ")"}' <<<"$contenedores")
   if [ -n "$ajenos" ]; then
     fallar "hay contenedores ajenos al IDS con puertos publicados; el firewall del IDS los cortaría (el VPS debe ser dedicado): $ajenos"
   fi
-  escuchan=$(ss -Hltn 2>/dev/null | awk '{print $4}' | grep -Ev '^(127\.|\[::1\]|::1)' \
-             | sed 's/.*://' | grep -vx 22 | sort -un | tr '\n' ' ' || true)
+  # lo que publican los contenedores del IDS (VPN de los puntos y panel) no es un servicio del host:
+  # en una reinstalación salían 1194 y 5637 como «cerrados» y siguen abiertos
+  propios=" $(awk -F'|' '$2 != "" {print $3}' <<<"$contenedores" | grep -oE ':[0-9]+->' | tr -d ':>-' | sort -u | tr '\n' ' ' || true)"
+  for p in $(ss -Hltn 2>/dev/null | awk '{print $4}' | grep -Ev '^(127\.|\[::1\]|::1)' | sed 's/.*://' | sort -un); do
+    [ "$p" = 22 ] && continue
+    case "$propios" in *" $p "*) continue ;; esac
+    escuchan="${escuchan:+$escuchan }$p"
+  done
   if [ -n "$escuchan" ]; then
     aviso "servicios del host escuchando en TCP $escuchan: el firewall del IDS los cierra (al host solo le deja el 22)"
   fi
@@ -1063,7 +1069,7 @@ resumen_texto() {   # resumen_texto <clave tal como se muestra>
   elif [ "$SIN_REVERSION" = 1 ]; then
     echo "  modo seguro       no (--sin-reversion)"
   else
-    echo "  modo seguro       acceso confirmado; al cambiar --gestion o --proxy se vuelve a pedir"
+    echo "  modo seguro       acceso confirmado; al cambiar --gestion, --panel o --proxy se vuelve a pedir"
     echo "                    (bash /root/ids-maat-install.sh --confirmar desde una sesión SSH NUEVA)"
   fi
   echo "  respaldo          /root/backups/ids-maat-install-${TS}.tar.gz"
