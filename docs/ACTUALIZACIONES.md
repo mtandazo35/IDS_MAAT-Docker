@@ -156,7 +156,9 @@ que actualice el **panel y el orquestador**, sin tocar los puntos, y que salga d
    - en `/srv/ids/run/actualizacion.json` (0640 root:ids-panel), con el `op_id`, los pasos, de qué
      a qué, quién y el resultado;
    - la página `/actualizando` lo sigue cada 2 s y dice «el panel se está reiniciando» cuando no
-     contesta;
+     contesta. Si acaba bien, lleva a «En vivo» (`/`); si falla, se queda con el motivo;
+   - la búsqueda guardada solo vale si se hizo con lo instalado (mismo `ref`). Tras actualizar,
+     el panel la descarta y vuelve a buscar en cuanto arranca, nunca dos veces en menos de 2 min;
    - el resultado también va a `orq.jsonl` (`sistema.actualizar`).
 7. Los puntos (vpn y suricata) **no se tocan**. Siguen con sus imágenes de `imagenes.json` y su
    configuración hasta un `ids-orq punto reconfigurar <pid>`.

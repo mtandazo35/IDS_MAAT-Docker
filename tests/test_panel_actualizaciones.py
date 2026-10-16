@@ -137,6 +137,18 @@ class Panel(unittest.TestCase):
         self.addCleanup(self.p.cerrar)
         self.ana = self.p.entrar("ana")        # admin
         self.olga = self.p.entrar("olga")      # operador
+        self.instalado(VIEJO)                  # la busqueda de las pruebas se hizo con VIEJO instalado
+
+    def instalado(self, commit):
+        """El commit que publica el orquestador en estado.json (lo instalado)."""
+        est = os.path.join(self.p.tmp.name, "run", "estado.json")
+        with open(est, encoding="utf-8") as f:
+            e = json.load(f)
+        e["commit"] = commit
+        with open(est, "w", encoding="utf-8", newline="\n") as f:
+            json.dump(e, f)
+        t = time.time() + int(commit[:6], 16) % 1000 + 5        # otra marca: nodos.leer_estado relee
+        os.utime(est, (t, t))
 
     def busqueda(self, **cambios):
         d = {"v": 1, "checked": int(time.time()), "instalada": VIEJO[:7], "ref": VIEJO, "disponible": True,
@@ -267,19 +279,33 @@ class Panel(unittest.TestCase):
         self.assertIn("Actualizando el panel", t)
         self.assertIn('var OP="%s"' % op, t)
         self.assertIn('var OP=""', self.get("/actualizando?op=%3Cscript%3E"))
+        # si acaba bien lleva a En vivo (el user: «cuando termine, mandar al En vivo»), no a Ajustes
+        # (el panel le pone a cada ruta interna el nodo que se mira: «/?nodo=_todos»)
+        self.assertRegex(t, r"setTimeout\(function\(\)\{location\.href='/(\?nodo=[^']*)?';\},3000\)")
+        self.assertRegex(t, r"l\.href='/(\?nodo=[^']*)?';l\.textContent='Ir a En vivo'")
+        self.assertNotIn("location.href='/ajustes", t)
+
+    def test_tras_actualizar_la_busqueda_vieja_no_vale(self):
+        """La busqueda guardada se hizo con VIEJO; actualizado a NUEVO2 (por el boton o por consola),
+        la tarjeta decia aun «instalada VIEJO, 3 cambios» (el user, captura del .159). Ahora no vale:
+        sin aviso y «Aún no se ha buscado» hasta que el hilo busque otra vez."""
+        self.busqueda()
+        self.assertIn("class=unotif", self.get("/ajustes"))
+        self.instalado(NUEVO2)
+        t = self.get("/ajustes")
+        self.assertNotIn("class=unotif", t)
+        self.assertNotIn('class="unotifdot"', t)
+        self.assertIn("Aún no se ha buscado", t)
+        self.assertIn("<div class=versha>%s</div>" % NUEVO2[:7], t)
+        self.assertNotIn("Hay actualizaciones disponibles", t)
+        self.assertEqual(A.vigente({"ref": VIEJO}, {"commit": VIEJO}), {"ref": VIEJO})
+        self.assertEqual(A.vigente({"ref": VIEJO}, {"commit": NUEVO2}), {})
+        self.assertEqual(A.vigente({}, {"commit": VIEJO}), {})
 
     def test_buscar_ahora(self):
         original = self.p.d.actualizaciones.pedir_github
         self.addCleanup(setattr, self.p.d.actualizaciones, "pedir_github", original)
         self.p.d.actualizaciones.pedir_github = github({"/commits?": LISTA, "/compare/": COMPARA})
-        est = os.path.join(self.p.tmp.name, "run", "estado.json")
-        with open(est, encoding="utf-8") as f:
-            e = json.load(f)
-        e["commit"] = VIEJO
-        with open(est, "w", encoding="utf-8", newline="\n") as f:
-            json.dump(e, f)
-        t = time.time() + 5
-        os.utime(est, (t, t))
         r = self.p.pedir("POST", "/buscar-actualizacion", {}, cookie=self.ana)
         # vuelve a Ajustes → Versión con el aviso (recargar ya no repite la busqueda: el user)
         self.assertEqual(r.status, 303, r.texto[:300])

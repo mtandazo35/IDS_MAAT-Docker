@@ -161,6 +161,16 @@ def guardar_busqueda(dir_estado, datos):
     util.escribir_json(os.path.join(dir_estado, FICHERO_BUSQUEDA), datos)
 
 
+def vigente(busqueda, estado, version_imagen=""):
+    """`busqueda` si se hizo con lo que hay instalado ahora (mismo `ref`); si no, {}: después de
+    una actualización la guardada describe la versión de antes (instalada vieja, mejoras que ya
+    están puestas)."""
+    if not busqueda:
+        return {}
+    ref, _ = instalada(estado, version_imagen)
+    return busqueda if busqueda.get("ref") == ref else {}
+
+
 def toca_buscar(busqueda, ahora=None):
     """¿Ha pasado BUSCAR_CADA_S desde la última búsqueda (o no hay ninguna)?"""
     ahora = ahora if ahora is not None else time.time()

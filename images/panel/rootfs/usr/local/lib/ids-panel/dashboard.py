@@ -9876,7 +9876,11 @@ _ACT = {"buscando": False}
 _ACT_LOCK = threading.Lock()
 
 def act_busqueda():
-    return actualizaciones.leer_busqueda(nodos.ESTADO)
+    """La ultima busqueda, solo si se hizo con lo que hay instalado ahora: tras actualizar (por el
+    boton, install.sh o lab-actualizar) la guardada aun decia «instalada bfd3655, 5 cambios» con el
+    panel ya en 9faec17 (el user). Vacia = sin buscar, y el hilo de fondo busca otra vez enseguida."""
+    return actualizaciones.vigente(actualizaciones.leer_busqueda(nodos.ESTADO),
+                                   nodos.leer_estado(), PANEL_VERSION)
 
 def act_avance():
     return actualizaciones.avance(nodos.RUN)
@@ -9896,7 +9900,14 @@ def _act_hilo():
     original lo disparaba la navegacion de un admin; aqui no va en la pagina, que no espera."""
     while not _PARAR.is_set():
         try:
-            if actualizaciones.toca_buscar(act_busqueda()):
+            crudo = actualizaciones.leer_busqueda(nodos.ESTADO)
+            try:
+                edad = time.time() - int(crudo.get("checked") or 0)
+            except (TypeError, ValueError):
+                edad = actualizaciones.BUSCAR_CADA_S
+            # cada 30 min; y si la guardada no es de lo instalado (recien actualizado), ya, pero
+            # nunca dos busquedas en menos de 2 min (la API sin cuenta da 60 consultas por hora)
+            if edad >= actualizaciones.BUSCAR_CADA_S or (not act_busqueda() and edad >= 120):
                 with _ACT_LOCK:
                     libre = not _ACT["buscando"]
                     _ACT["buscando"] = True
@@ -9907,7 +9918,13 @@ def _act_hilo():
                         _ACT["buscando"] = False
         except Exception as e:
             sys.stderr.write("actualizaciones: %s\n" % e)
-        _PARAR.wait(300)
+        # recien actualizado, el estado.json del orquestador puede llegar despues que este hilo:
+        # mientras la busqueda no sea de lo instalado, se mira otra vez al minuto
+        try:
+            espera = 300 if act_busqueda() else 60
+        except Exception:
+            espera = 300
+        _PARAR.wait(espera)
 
 def _act_form(objetivo, fid, etiqueta="&#8681; Actualizar ahora", clase="updgo"):
     """Formulario que pide la actualizacion a `objetivo` (sha de main), con la confirmacion del
@@ -10110,8 +10127,11 @@ def actualizando_page(op=""):
         "setTimeout(mira,2000);return;}"
         "visto=true;pasos(a.pasos);"
         "if(a.estado==='en_curso'){sub(a.mensaje||'');setTimeout(mira,2000);return;}"
-        "if(a.estado==='ok'){acabar('ok','Panel actualizado',(a.mensaje||'Actualizado.')+' Ya estás en la versión nueva.');"
-        "setTimeout(function(){location.href='/ajustes#update';},6000);return;}"
+        # bien: a «En vivo» (el user, 2026-10-15: «cuando termine, mandar al En vivo»); si falla se
+        # queda aqui con el motivo y el enlace a Ajustes -> Version
+        "if(a.estado==='ok'){acabar('ok','Panel actualizado',(a.mensaje||'Actualizado.')+' Ya estás en la versión nueva: te llevo a En vivo…');"
+        "var l=$('acts').querySelector('a');l.href='/';l.textContent='Ir a En vivo';"
+        "setTimeout(function(){location.href='/';},3000);return;}"
         "if(a.estado==='revertida'){acabar('aviso','No se actualizó',a.mensaje||'Falló y se volvió a la versión anterior.');return;}"
         "if(a.estado==='colgada'){acabar('mal','La actualización no terminó','Lleva más de una hora sin avanzar: revisa «journalctl -u ids-actualizar» en el servidor.');return;}"
         "if(!a.estado){sub('Arrancando la actualización en el servidor…');setTimeout(mira,2000);return;}"
@@ -14182,7 +14202,8 @@ maestra;</li>
 <li>recrea el panel.</li>
 </ol>
 <p>Mientras tanto, la página <b>Actualizando…</b> enseña cada paso. Cuando el panel se reinicia deja
-de contestar unos segundos: es lo normal.</p>
+de contestar unos segundos: es lo normal. Si todo va bien, al terminar te lleva a <b>En vivo</b>; si
+falla, se queda en esa página con el motivo.</p>
 <p><b>Si algo falla.</b> Si falla antes del respaldo, no se cambia nada. Si el orquestador o el panel
 nuevos no quedan sanos, se vuelve solo a la versión anterior y la tarjeta lo dice. El detalle queda en
 el servidor, en <code>journalctl -u ids-actualizar</code> y en <code>/root/ids-maat/actualizar/</code>.</p>
