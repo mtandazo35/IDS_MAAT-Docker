@@ -299,6 +299,10 @@ Por qué cada pieza:
   con `--gestion`/`--proxy` (con su modo seguro) o, desde la consola, editando `ids.conf` y
   `ids-orq fw-render --aplicar` ([OPERACION.md](OPERACION.md) §4). La orden `acceso.aplicar` de §10
   es un diseño sin implementar.
+- **Acceso abierto.** Sin `--gestion` ni `--proxy` el instalador escribe `0.0.0.0/0` en las dos
+  listas: los conjuntos `@gestion` y `@proxy` dejan entrar a cualquier IP. El orquestador no trata
+  `0.0.0.0/0` como red reservada (no quita nada a los prefijos de los abonados) y al panel le pasa
+  `IDS_PROXY` vacío: sin proxy de confianza, ignora las cabeceras `X-Forwarded-*`.
 - **El túnel SSH de emergencia no pasa por `forward`.** `ssh -L` hacia la IP fija del panel en la
   red `ids-core` (`10.210.255.2`) sale del propio host por la cadena `output`, así que la regla
   `@proxy` no lo bloquea. Solo puede abrirlo quien ya entró por SSH desde una red de gestión.

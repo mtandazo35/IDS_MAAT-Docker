@@ -14,35 +14,49 @@ OpenVPN y su propio Suricata.
 
 ## ⚡ Quick install (one-liner)
 
-En un VPS **Debian 13 (trixie) amd64** recién instalado, como `root`:
+En un VPS **Debian 13 (trixie) amd64** recién instalado, como `root` y entrando por SSH con clave:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/mtandazo35/IDS_MAAT-Docker/v0.1.2/install.sh -o /root/ids-maat-install.sh && bash /root/ids-maat-install.sh --version v0.1.2 --nombre ids.empresa.example --gestion 192.0.2.0/25 --proxy 203.0.113.50 --zona America/Guayaquil
+curl -fsSL https://raw.githubusercontent.com/mtandazo35/IDS_MAAT-Docker/v0.1.3/install.sh -o /root/ids-maat-install.sh && bash /root/ids-maat-install.sh
 ```
 
-Cambia los valores por los tuyos:
+Sin opciones instala todo (la release de esa línea, reglas, timers y panel) con:
+
+- **nombre** = la IP pública del VPS (la que reciben los MikroTik para conectar la VPN; si el VPS está
+  detrás de NAT, pásala con `--nombre`);
+- **zona horaria** `America/Guayaquil` (la del servidor y las fechas del panel; los contenedores
+  siguen en UTC por dentro);
+- **acceso abierto**: SSH y panel desde cualquier IP, con fail2ban activo. Sin modo seguro, porque con
+  el SSH abierto no hay nada que revertir.
+
+Para cerrar el acceso, vuelve a ejecutarlo con tus redes (no reinstala nada, solo cambia el firewall):
+
+```bash
+bash /root/ids-maat-install.sh --gestion 192.0.2.0/25 --proxy 203.0.113.50
+```
 
 | Opción | Qué es |
 |---|---|
-| `--nombre` | nombre DNS del VPS (va en el certificado del servidor VPN) |
 | `--gestion` | redes desde las que entras por SSH, en CIDR y separadas por comas (como mucho /16). La IP de tu sesión SSH actual tiene que estar dentro |
 | `--proxy` | IP de tu proxy inverso (el que pone HTTPS): el panel solo se abre desde ahí. IPs o redes de hasta /28, separadas por comas |
-| `--zona` | zona horaria del servidor y de las fechas del panel (`Región/Ciudad`; sin ella, la que ya tuviera la instalación o, en una nueva, `America/Guayaquil`). Los contenedores siguen en UTC por dentro |
+| `--nombre` | nombre DNS o IP del VPS con el que llegan los MikroTik (va en el certificado del servidor VPN) |
+| `--zona` | otra zona horaria (`Región/Ciudad`) |
+| `--version` | otra release `vX.Y.Z` (por defecto, la de esa línea) |
 
-Opcionales: `--tun-base 198.18` (si tus abonados ya usan CGNAT `100.64.0.0/10`) y
-`--dueno-ip <tu IP fija>` (fail2ban nunca la banea).
+En una reinstalación, la opción que no pases conserva lo que ya había: volver a ejecutarlo sin
+opciones no reabre un acceso cerrado. Opcionales: `--tun-base 198.18` (si tus abonados ya usan CGNAT
+`100.64.0.0/10`) y `--dueno-ip <tu IP fija>` (fail2ban nunca la banea).
 
 - **Prueba antes los valores** sin tocar nada: añade `--solo-validar` al final.
-- **Confirma el acceso.** A mitad de la instalación el instalador se para y pide abrir una **sesión
+- **Al cerrar el acceso, confirma.** Con `--gestion` el instalador se para y pide abrir una **sesión
   SSH nueva** desde una red de gestión y ejecutar `bash /root/ids-maat-install.sh --confirmar`. Si no
   llega en 5 minutos, el firewall y sshd vuelven a como estaban, para que no te quedes fuera.
 - Tarda unos 10 minutos: verifica la firma de la release, instala Docker, descarga las reglas ET y las
   imágenes firmadas. Antes de tocar sshd, el firewall, Docker o fail2ban deja un respaldo en `/root/backups/`.
 - Al terminar imprime la URL del panel, el usuario `admin` y su clave **una sola vez** (en el log sale
   enmascarada). Cámbiala desde el panel.
-- Volver a ejecutarlo con otros `--gestion` o `--proxy` los cambia sin reinstalar.
 
 Sucesor en contenedores de [suricata-ids-lab](https://github.com/mtandazo35/suricata-ids-lab).
 
-**Estado:** versión publicada `v0.1.2` (la primera fue `v0.1.0`). La arquitectura está en
+**Estado:** versión publicada `v0.1.3` (la primera fue `v0.1.0`). La arquitectura está en
 [docs/ARQUITECTURA.md](docs/ARQUITECTURA.md), con sus anexos en docs/.

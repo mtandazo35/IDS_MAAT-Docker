@@ -1,25 +1,35 @@
 #!/bin/bash
 # ids-maat — instalador del VPS (CONTRATO-F1a §7). Debian 13 (trixie), amd64, como root.
 #
-#   curl -fsSL https://raw.githubusercontent.com/mtandazo35/IDS_MAAT-Docker/v0.1.2/install.sh \
-#        -o /root/ids-maat-install.sh \
-#     && bash /root/ids-maat-install.sh --version v0.1.2 --nombre ids.empresa.example \
-#          --gestion 192.0.2.0/25,198.51.100.0/26 --proxy 203.0.113.50 \
-#          [--tun-base 100.64|198.18] [--dueno-ip 203.0.113.20] [--zona America/Guayaquil]
+#   curl -fsSL https://raw.githubusercontent.com/mtandazo35/IDS_MAAT-Docker/v0.1.3/install.sh \
+#        -o /root/ids-maat-install.sh && bash /root/ids-maat-install.sh
+#
+# Sin opciones instala todo (la release de este instalador, reglas, timers y panel) con el nombre =
+# la IP pública del VPS, la zona America/Guayaquil y el acceso ABIERTO: SSH y panel desde cualquier
+# IP (fail2ban sigue activo). Para cerrarlo, volver a ejecutarlo con --gestion y --proxy:
+#   bash /root/ids-maat-install.sh --gestion 192.0.2.0/25,198.51.100.0/26 --proxy 203.0.113.50
 #
 # Al terminar imprime la URL del panel, el usuario «admin» y su clave (UNA sola vez; en el log
-# /root/ids-maat/install-<ts>.log sale enmascarada). El panel solo se abre desde --proxy.
+# /root/ids-maat/install-<ts>.log sale enmascarada).
 #
 # Laboratorio (canario antes de la primera release; NO verifica firmas):
 #   bash install.sh --desde-repo /root/IDS_MAAT-Docker \
-#        --imagenes vpn=<ref>,suricata=<ref>,panel=<ref> --nombre … --gestion … --proxy …
+#        --imagenes vpn=<ref>,suricata=<ref>,panel=<ref> [--nombre …] [--gestion …] [--proxy …]
 #
-# Otras opciones:
+# Opciones (todas opcionales; en una reinstalación, la que falta conserva lo que ya había):
+#   --version          release vX.Y.Z; por defecto la de este instalador
+#   --nombre           nombre DNS (o IP) con el que los MikroTik llegan al VPS; por defecto la IP
+#                      pública (la de la ruta por defecto; si es privada, hay que darlo)
+#   --gestion          redes desde las que se entra por SSH (hasta /16); sin ella, abierto
+#   --proxy            IP o /28 del proxy inverso del panel; sin ella, abierto (sin proxy de confianza)
+#   --tun-base         100.64 (por defecto) o 198.18
+#   --dueno-ip         IP que fail2ban nunca banea
 #   --zona             zona horaria del servidor y de lo que se muestra (panel, informes); por defecto
 #                      America/Guayaquil. Los contenedores trabajan en UTC por dentro
 #   --solo-validar     valida los argumentos y sale sin tocar nada
 #   --confirmar        desde una sesión SSH NUEVA: confirma el acceso y anula la reversión
-#   --sin-reversion    sin modo seguro (instalación desde la consola del proveedor)
+#   --sin-reversion    sin modo seguro (instalación desde la consola del proveedor); con el SSH
+#                      abierto no hay modo seguro: nada que revertir
 #   --forzar-acceso    sigue aunque la IP de tu sesión SSH no esté en --gestion o no se pueda
 #                      averiguar
 #
@@ -40,9 +50,12 @@ POOL_DOCKER=10.210.0.0/16
 VENTANA_REVERSION=300
 UNIDAD_REVERSION=ids-maat-revertir-acceso
 ZONA_DEFECTO=America/Guayaquil   # zona del servidor y del panel sin --zona (los clientes son ISP de Ecuador)
+VERSION_DEFECTO=v0.1.3           # la release de este instalador (sin --version); = ORQ_VERSION de su etiqueta
+ABIERTO=0.0.0.0/0                # gestión o proxy sin --gestion/--proxy: cualquier IP
 R="${IDS_RAIZ:-}"            # prefijo de rutas para las pruebas; vacío en producción
 R="${R%/}"
 
+GESTION_ABIERTA=0 PROXY_ABIERTO=0 NOMBRE_AUTO=0
 VERSION="" NOMBRE="" GESTION="" PROXY="" TUN_BASE="100.64" TUN_BASE_DADO=0 DUENO=""
 DESDE_REPO="" IMAGENES="" SOLO_VALIDAR=0 CONFIRMAR=0 SIN_REVERSION=0 FORZAR_ACCESO=0
 HOST_DIR="" IMG_VPN="" IMG_SUR="" IMG_PANEL="" DEV=false TS="" T0_REVERSION="" ZONA=""
@@ -59,8 +72,8 @@ log()    { printf '\033[1;32m==>\033[0m %s\n' "$*"; registrar "==> $*"; }
 aviso()  { printf '\033[1;33m!!\033[0m  %s\n' "$*" >&2; registrar "!!  $*"; }
 fallar() { printf '\033[1;31mERROR:\033[0m %s\n' "$*" >&2; registrar "ERROR: $*"; exit 1; }
 
-uso() {
-  sed -n '2,27p' "$0" | sed 's/^# \{0,1\}//'
+uso() {   # la cabecera: de la línea 2 hasta la primera que no es comentario
+  sed -n '2,/^[^#]/p' "$0" | sed '$d' | sed 's/^# \{0,1\}//'
 }
 
 # ---------------------------------------------------------------------------------------------
@@ -159,34 +172,71 @@ zona_valida() {   # UTC o Región/Ciudad[/Subzona]: lo mismo que acepta ids-orq 
   [[ "$1" =~ ^(UTC|[A-Za-z]+(/[A-Za-z0-9_+-]+){1,2})$ ]]
 }
 
+valor_conf() {   # valor_conf <CLAVE>: su valor en ids.conf (reinstalación), o vacío
+  sed -n "s/^$1=//p" "${R}/etc/ids-maat/ids.conf" 2>/dev/null | head -n1 || true
+}
+
+ip_privada() {   # la IP no la alcanza un MikroTik por internet (privada, CGNAT, loopback, enlace local)
+  ip_en_lista "$1" 10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,100.64.0.0/10,127.0.0.0/8,169.254.0.0/16
+}
+
+texto_acceso() {   # texto_acceso <lista>: «abierto a cualquier IP» o «solo desde <lista>»
+  if [ "$1" = "$ABIERTO" ]; then echo "abierto a cualquier IP"; else echo "solo desde $1"; fi
+}
+
 validar_args() {
   local c norm lista="" lista_proxy="" otro tun
+  # Sin --nombre: el de la instalación anterior y, en una nueva, la IP pública (la del certificado
+  # del servidor OpenVPN y la que reciben los MikroTik en sus órdenes, así que tiene que alcanzarse)
+  [ -n "$NOMBRE" ] || NOMBRE=$(valor_conf NOMBRE_DNS)
+  if [ -z "$NOMBRE" ]; then
+    NOMBRE=$(ip_publica)
+    NOMBRE="${NOMBRE%%$'\n'*}"
+    [ -n "$NOMBRE" ] || fallar "--nombre: no se pudo averiguar la IP pública del VPS (sin ruta por defecto): pasa --nombre"
+    if ip_privada "$NOMBRE"; then
+      fallar "--nombre: la IP de la ruta por defecto es $NOMBRE, privada (VPS detrás de NAT): pasa --nombre con el nombre DNS o la IP pública con la que llegan los MikroTik"
+    fi
+    NOMBRE_AUTO=1
+  fi
   [[ "$NOMBRE" =~ ^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?)+$ ]] \
     || fallar "--nombre debe ser el nombre DNS del VPS (p. ej. ids.empresa.example)"
   case "$TUN_BASE" in 100.64|198.18) ;; *) fallar "--tun-base debe ser 100.64 o 198.18" ;; esac
   tun="$TUN_BASE.0.0/16"
-  [ -n "$GESTION" ] || fallar "--gestion es obligatorio (redes desde las que se entra por SSH)"
-  for c in ${GESTION//,/ }; do
-    norm=$(cidr_norm "$c") || fallar "--gestion: '$c' no es un CIDR IPv4"
-    [ "$(cidr_rango "$c" | cut -d' ' -f3)" -ge 16 ] || fallar "--gestion: '$c' es más ancha que /16 (solo desde la consola)"
-    solapan "$c" "$tun" && fallar "--gestion: '$c' se solapa con la base de túneles $tun"
-    solapan "$c" "$POOL_DOCKER" && fallar "--gestion: '$c' se solapa con el pool de Docker $POOL_DOCKER"
-    for otro in ${lista//,/ }; do
-      solapan "$c" "$otro" && fallar "--gestion: '$c' se solapa con '$otro'"
+  # Sin --gestion ni --proxy (o con 0.0.0.0/0): lo de la instalación anterior y, en una nueva,
+  # abierto. El dueño lo pidió así (2026-10-15): instalar sin preguntas y cerrar después volviendo
+  # a ejecutarlo con --gestion y --proxy. Una reinstalación sin ellas no reabre lo cerrado.
+  [ -n "$GESTION" ] || GESTION=$(valor_conf REDES_GESTION)
+  if [ -z "$GESTION" ] || [ "$GESTION" = "$ABIERTO" ]; then
+    GESTION="$ABIERTO" GESTION_ABIERTA=1
+  else
+    for c in ${GESTION//,/ }; do
+      norm=$(cidr_norm "$c") || fallar "--gestion: '$c' no es un CIDR IPv4"
+      [ "$(cidr_rango "$c" | cut -d' ' -f3)" -ge 16 ] || fallar "--gestion: '$c' es más ancha que /16 (o 0.0.0.0/0: abierto)"
+      solapan "$c" "$tun" && fallar "--gestion: '$c' se solapa con la base de túneles $tun"
+      solapan "$c" "$POOL_DOCKER" && fallar "--gestion: '$c' se solapa con el pool de Docker $POOL_DOCKER"
+      for otro in ${lista//,/ }; do
+        solapan "$c" "$otro" && fallar "--gestion: '$c' se solapa con '$otro'"
+      done
+      lista="${lista:+$lista,}$norm"
     done
-    lista="${lista:+$lista,}$norm"
-  done
-  GESTION="$lista"
-  [ -n "$PROXY" ] || fallar "--proxy es obligatorio (IP del proxy inverso del panel)"
-  for c in ${PROXY//,/ }; do
-    norm=$(cidr_norm "$c") || fallar "--proxy: '$c' no es una IP o CIDR IPv4"
-    [ "$(cidr_rango "$c" | cut -d' ' -f3)" -ge 28 ] || fallar "--proxy: '$c' es más ancha que /28"
-    for otro in ${lista_proxy//,/ }; do
-      solapan "$c" "$otro" && fallar "--proxy: '$c' se solapa con '$otro'"
+    GESTION="$lista"
+  fi
+  # con el SSH abierto el firewall no puede dejar a nadie fuera: no hay nada que revertir
+  if [ "$GESTION_ABIERTA" = 1 ]; then SIN_REVERSION=1; fi
+  [ -n "$PROXY" ] || PROXY=$(valor_conf IPS_PROXY)
+  if [ -z "$PROXY" ] || [ "$PROXY" = "$ABIERTO" ]; then
+    PROXY="$ABIERTO" PROXY_ABIERTO=1
+  else
+    for c in ${PROXY//,/ }; do
+      norm=$(cidr_norm "$c") || fallar "--proxy: '$c' no es una IP o CIDR IPv4"
+      [ "$(cidr_rango "$c" | cut -d' ' -f3)" -ge 28 ] || fallar "--proxy: '$c' es más ancha que /28 (o 0.0.0.0/0: abierto)"
+      for otro in ${lista_proxy//,/ }; do
+        solapan "$c" "$otro" && fallar "--proxy: '$c' se solapa con '$otro'"
+      done
+      lista_proxy="${lista_proxy:+$lista_proxy,}$norm"
     done
-    lista_proxy="${lista_proxy:+$lista_proxy,}$norm"
-  done
-  PROXY="$lista_proxy"
+    PROXY="$lista_proxy"
+  fi
   if [ -n "$DUENO" ]; then
     ip_a_int "$DUENO" >/dev/null || fallar "--dueno-ip debe ser una IPv4"
   fi
@@ -214,6 +264,7 @@ validar_args() {
     DEV=true
   else
     [ -z "$IMAGENES" ] || fallar "--imagenes solo vale con --desde-repo (en producción salen de release.json)"
+    VERSION="${VERSION:-$VERSION_DEFECTO}"
   fi
   [[ "$VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || fallar "--version debe ser vX.Y.Z (p. ej. v0.1.0)"
 }
@@ -700,6 +751,10 @@ instalar_orquestador() {
 
 armar_reversion() {
   local ant="${R}/root/ids-maat/acceso-anterior-${TS}" script="${R}/root/ids-maat/revertir-acceso.sh"
+  if [ "$GESTION_ABIERTA" = 1 ]; then
+    aviso "SSH abierto a cualquier IP (sin --gestion): sin modo seguro, no hay nada que revertir"
+    return 0
+  fi
   [ "$SIN_REVERSION" = 1 ] && { aviso "sin modo seguro (--sin-reversion)"; return 0; }
   install -d -m 0700 "$ant"
   [ -f "${R}/srv/ids/fw/ids_host.nft" ] && cp -p "${R}/srv/ids/fw/ids_host.nft" "$ant/ids_host.nft"
@@ -757,7 +812,7 @@ comprobar_puertos_ajenos() {
 
 firewall() {
   comprobar_puertos_ajenos
-  log "firewall del host (inet ids_host): SSH solo desde $GESTION, panel $PUERTO_PANEL solo desde $PROXY"
+  log "firewall del host (inet ids_host): SSH $(texto_acceso "$GESTION"), panel $PUERTO_PANEL $(texto_acceso "$PROXY")"
   IDS_RAIZ="${R:-/}" "${R}/usr/local/bin/ids-orq" fw-render --aplicar || fallar "el firewall no pasó nft -c"
   systemctl enable ids-host-fw.service >/dev/null
 }
@@ -953,11 +1008,13 @@ resumen_texto() {   # resumen_texto <clave tal como se muestra>
   ip="${ip%%$'\n'*}"
   echo
   echo "==> ids-maat $VERSION instalado$([ "$DEV" = true ] && echo ' (LABORATORIO, sin firmas)')"
-  echo "  nombre DNS        $NOMBRE"
+  echo "  nombre DNS        $NOMBRE$([ "$NOMBRE_AUTO" = 1 ] && echo '   (la IP pública: sin --nombre)')"
   echo "  base de túneles   $TUN_BASE.N.0/24"
-  echo "  SSH (22/tcp)      solo desde $GESTION"
+  echo "  SSH (22/tcp)      $(texto_acceso "$GESTION")"
   echo "  OpenVPN           1194+N-1/tcp, uno por punto, con freno de conexiones nuevas"
-  if [ "$SIN_REVERSION" = 1 ]; then
+  if [ "$GESTION_ABIERTA" = 1 ]; then
+    echo "  modo seguro       no (SSH abierto: no hay nada que revertir)"
+  elif [ "$SIN_REVERSION" = 1 ]; then
     echo "  modo seguro       no (--sin-reversion)"
   else
     echo "  modo seguro       acceso confirmado; al cambiar --gestion o --proxy se vuelve a pedir"
@@ -966,10 +1023,15 @@ resumen_texto() {   # resumen_texto <clave tal como se muestra>
   echo "  respaldo          /root/backups/ids-maat-install-${TS}.tar.gz"
   echo
   echo "PANEL"
+  [ "$ip" = "$NOMBRE" ] && ip=""
   echo "  URL               http://$NOMBRE:$PUERTO_PANEL${ip:+   (o http://$ip:$PUERTO_PANEL)}"
-  echo "                    solo se abre desde las IP de --proxy: $PROXY"
-  echo "                    sin proxy, desde gestión: ssh -L $PUERTO_PANEL:$PANEL_IP:5637 root@$NOMBRE"
-  echo "                    y en el navegador http://localhost:$PUERTO_PANEL"
+  if [ "$PROXY_ABIERTO" = 1 ]; then
+    echo "                    abierto a cualquier IP (sin --proxy)"
+  else
+    echo "                    solo se abre desde las IP de --proxy: $PROXY"
+    echo "                    sin proxy, desde gestión: ssh -L $PUERTO_PANEL:$PANEL_IP:5637 root@$NOMBRE"
+    echo "                    y en el navegador http://localhost:$PUERTO_PANEL"
+  fi
   echo "  usuario           $USUARIO_PANEL"
   if [ "$PANEL_ESTADO" = nuevo ]; then
     echo "  clave             $1"
@@ -978,6 +1040,11 @@ resumen_texto() {   # resumen_texto <clave tal como se muestra>
     echo "  clave             se conserva la existente (reinstalación)"
   fi
   echo "  restablecer       ids-orq panel restablecer $USUARIO_PANEL   (imprime CLAVE=<nueva>)"
+  if [ "$GESTION_ABIERTA" = 1 ] || [ "$PROXY_ABIERTO" = 1 ]; then
+    echo
+    echo "AVISO: acceso ABIERTO ($([ "$GESTION_ABIERTA" = 1 ] && echo 'SSH')$([ "$GESTION_ABIERTA$PROXY_ABIERTO" = 11 ] && echo ' y ')$([ "$PROXY_ABIERTO" = 1 ] && echo 'panel') desde cualquier IP; fail2ban activo). Para cerrarlo:"
+    echo "  bash /root/ids-maat-install.sh --gestion <redes de gestión> --proxy <IP del proxy del panel>"
+  fi
   echo
   echo "Siguiente paso:  entra al panel, o desde SSH: ids-orq punto crear --nombre norte --redes 10.0.0.0/24"
 }

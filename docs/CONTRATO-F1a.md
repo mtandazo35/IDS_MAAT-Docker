@@ -1180,11 +1180,28 @@ Identidad que verifica el instalador: ACTUALIZACIONES §3 con `<owner>` = `mtand
 One-liner (en `/root`, nunca en `/tmp`, y sin `curl | bash`):
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/mtandazo35/IDS_MAAT-Docker/v0.1.0/install.sh -o /root/ids-maat-install.sh \
-  && bash /root/ids-maat-install.sh --version v0.1.0 --nombre ids.empresa.example \
-       --gestion 192.0.2.0/25,198.51.100.0/26 --proxy 203.0.113.50 \
-       [--tun-base 100.64|198.18] [--dueno-ip 203.0.113.20]
+curl -fsSL https://raw.githubusercontent.com/mtandazo35/IDS_MAAT-Docker/v0.1.3/install.sh -o /root/ids-maat-install.sh \
+  && bash /root/ids-maat-install.sh [--version v0.1.3] [--nombre ids.empresa.example] \
+       [--gestion 192.0.2.0/25,198.51.100.0/26] [--proxy 203.0.113.50] \
+       [--tun-base 100.64|198.18] [--dueno-ip 203.0.113.20] [--zona America/Guayaquil]
 ```
+
+**Todas las opciones son opcionales** (decisión del dueño 2026-10-15: «debe ser libre, luego yo pongo
+seguridad»). En una instalación nueva, la que falta vale:
+
+- `--version`: la release de ese `install.sh` (`VERSION_DEFECTO`, igual a `ORQ_VERSION` de su etiqueta).
+- `--nombre`: la IP pública del VPS, la de origen de la ruta por defecto. Va en el certificado del
+  servidor OpenVPN y en las órdenes de los MikroTik, así que si es privada (VPS detrás de NAT) el
+  instalador se para y pide `--nombre`.
+- `--gestion` y `--proxy`: `0.0.0.0/0`, **abierto**. El SSH y el 5637 se abren a cualquier IP
+  (fail2ban sigue activo); no hay modo seguro, porque con el SSH abierto no hay nada que revertir.
+  Al panel le llega `IDS_PROXY` vacío: no se fía del `X-Forwarded-For` de nadie. `--gestion 0.0.0.0/0`
+  dado a mano significa lo mismo.
+- `--zona`: `America/Guayaquil`.
+
+En una reinstalación, la que falta conserva el valor de `ids.conf` (`NOMBRE_DNS`, `REDES_GESTION`,
+`IPS_PROXY`, `ZONA_HORARIA`): volver a ejecutarlo sin opciones no reabre un acceso cerrado. Para
+cerrarlo se ejecuta con `--gestion` y `--proxy`, y entonces sí hay modo seguro.
 
 Modo laboratorio (canario antes de la primera release, decidido en el contrato):
 `--desde-repo /root/IDS_MAAT-Docker --imagenes vpn=<ref>,suricata=<ref>` → usa el checkout local,
@@ -1192,7 +1209,7 @@ escribe `imagenes.json` con `"dev": true` y no verifica firmas (lo avisa en gran
 
 Pasos (idempotente: se puede volver a ejecutar para cambiar gestión/proxy):
 
-1. Comprueba root, Debian 13 y `amd64`. Valida argumentos: gestión obligatoria y ≤ /16; proxy ≤ /28;
+1. Comprueba root, Debian 13 y `amd64`. Valida argumentos: gestión ≤ /16 (o abierta); proxy ≤ /28 (o abierto);
    sin solapes entre gestión, `<tun-base>.0.0/16` y `10.210.0.0/16`. `--tun-base` solo se acepta
    si todavía no hay puntos.
 2. **Respaldo** en `/root/backups/ids-maat-install-<ts>.tar.gz` de `/etc/ssh/sshd_config*`,

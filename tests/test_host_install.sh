@@ -46,10 +46,17 @@ if grep -q "zona horaria del servidor" "$T/salida" && grep -q "ni hace flush rul
 else
   mal "--help: la cabecera sale cortada, de más o sin --zona del servidor"; sed 's/^/        /' "$T/salida"
 fi
-esperar 1 "sin --gestion"                                  bash install.sh --solo-validar --version v0.1.0 --nombre ids.empresa.example --proxy 203.0.113.50
-esperar 1 "sin --proxy"                                    bash install.sh --solo-validar --version v0.1.0 --nombre ids.empresa.example --gestion 192.0.2.0/25
+esperar 0 "sin --gestion: SSH abierto"                     bash install.sh --solo-validar --version v0.1.0 --nombre ids.empresa.example --proxy 203.0.113.50
+esperar 0 "sin --proxy: panel abierto"                     bash install.sh --solo-validar --version v0.1.0 --nombre ids.empresa.example --gestion 192.0.2.0/25
+esperar 0 "sin opciones salvo --nombre: todo abierto"      bash install.sh --solo-validar --nombre ids.empresa.example
+if grep -qF "gestion=0.0.0.0/0 proxy=0.0.0.0/0" "$T/salida" && grep -qF "zona=America/Guayaquil version=v" "$T/salida"; then
+  ok "sin opciones: abierto, Ecuador y la release del instalador"
+else
+  mal "sin opciones: no sale abierto, en Ecuador y con la release del instalador"; sed 's/^/        /' "$T/salida"
+fi
 esperar 1 "gestión más ancha que /16"                      bash install.sh --solo-validar "${V[@]}" --gestion 10.0.0.0/8
-esperar 1 "gestión 0.0.0.0/0"                              bash install.sh --solo-validar "${V[@]}" --gestion 0.0.0.0/0
+esperar 0 "gestión 0.0.0.0/0 = abierto"                    bash install.sh --solo-validar "${V[@]}" --gestion 0.0.0.0/0
+esperar 1 "gestión 0.0.0.0/1 (ancha, no abierta)"          bash install.sh --solo-validar "${V[@]}" --gestion 0.0.0.0/1
 esperar 1 "gestión solapa con la base 100.64"              bash install.sh --solo-validar "${V[@]}" --gestion 100.64.5.0/24
 esperar 1 "gestión solapa con la base 198.18"              bash install.sh --solo-validar "${V[@]}" --gestion 198.18.0.0/24 --tun-base 198.18
 esperar 0 "198.18 en gestión vale con base 100.64"         bash install.sh --solo-validar "${V[@]}" --gestion 198.18.0.0/24
@@ -464,6 +471,80 @@ p_sin_confirmacion_falla() {
     fi
   }
   esperar_confirmacion
+  return 0
+}
+
+p_acceso_abierto() {   # sin --gestion ni --proxy en una instalación nueva: abierto y sin modo seguro
+  parsear_args --nombre ids.empresa.example && validar_args || return 1
+  [ "$GESTION:$PROXY" = "0.0.0.0/0:0.0.0.0/0" ] || { echo "$GESTION:$PROXY"; return 2; }
+  [ "$GESTION_ABIERTA$PROXY_ABIERTO$SIN_REVERSION" = 111 ] || return 3
+  [ "$VERSION" = "$VERSION_DEFECTO" ] || return 4
+  mkdir -p "$IDS_RAIZ/etc/ids-maat"
+  escribir_ids_conf || return 5
+  grep -qx "REDES_GESTION=0.0.0.0/0" "$IDS_RAIZ/etc/ids-maat/ids.conf" || return 6
+  grep -qx "IPS_PROXY=0.0.0.0/0" "$IDS_RAIZ/etc/ids-maat/ids.conf" || return 7
+  grep -qx "ZONA_HORARIA=America/Guayaquil" "$IDS_RAIZ/etc/ids-maat/ids.conf" || return 8
+  [ "$(texto_acceso "$GESTION")" = "abierto a cualquier IP" ] || return 9
+  [ "$(texto_acceso 192.0.2.0/25)" = "solo desde 192.0.2.0/25" ] || return 10
+  return 0
+}
+
+p_reinstalacion_conserva_acceso_y_nombre() {   # sin opciones no reabre lo cerrado ni cambia el nombre
+  mkdir -p "$IDS_RAIZ/etc/ids-maat"
+  printf 'NOMBRE_DNS=ids.empresa.example\nREDES_GESTION=192.0.2.0/25\nIPS_PROXY=203.0.113.50\n' \
+    > "$IDS_RAIZ/etc/ids-maat/ids.conf"
+  ip() { echo "192.0.2.1 via 203.0.113.1 dev eth0 src 203.0.113.10 uid 0"; }
+  parsear_args && validar_args || return 1
+  [ "$NOMBRE:$GESTION:$PROXY" = "ids.empresa.example:192.0.2.0/25:203.0.113.50" ] || { echo "$NOMBRE:$GESTION:$PROXY"; return 2; }
+  [ "$GESTION_ABIERTA$PROXY_ABIERTO$SIN_REVERSION$NOMBRE_AUTO" = 0000 ] || return 3
+  # cerrar una instalación abierta: --gestion nueva, con modo seguro
+  printf 'NOMBRE_DNS=203.0.113.10\nREDES_GESTION=0.0.0.0/0\nIPS_PROXY=0.0.0.0/0\n' > "$IDS_RAIZ/etc/ids-maat/ids.conf"
+  GESTION_ABIERTA=0 PROXY_ABIERTO=0 SIN_REVERSION=0 NOMBRE="" GESTION="" PROXY=""
+  parsear_args --gestion 198.51.100.0/26 && validar_args || return 4
+  [ "$GESTION:$PROXY:$SIN_REVERSION:$PROXY_ABIERTO" = "198.51.100.0/26:0.0.0.0/0:0:1" ] || { echo "$GESTION:$PROXY:$SIN_REVERSION"; return 5; }
+  return 0
+}
+
+p_nombre_por_defecto_ip_publica() {   # sin --nombre: la IP de la ruta por defecto, si es pública
+  ip() { echo "192.0.2.1 via 203.0.113.1 dev eth0 src 203.0.113.10 uid 0"; }
+  parsear_args && validar_args || return 1
+  [ "$NOMBRE:$NOMBRE_AUTO" = "203.0.113.10:1" ] || { echo "$NOMBRE"; return 2; }
+  ip() { echo "192.0.2.1 via 10.0.0.1 dev eth0 src 10.0.0.5 uid 0"; }     # detrás de NAT
+  NOMBRE="" NOMBRE_AUTO=0
+  ( parsear_args && validar_args ) > "$T/nat" 2>&1 && return 3
+  grep -qF "privada" "$T/nat" || { cat "$T/nat"; return 4; }
+  ip() { return 1; }                                                      # sin ruta
+  NOMBRE=""
+  ( parsear_args && validar_args ) >/dev/null 2>&1 && return 5
+  return 0
+}
+
+p_version_del_instalador_es_la_de_la_release() {   # VERSION_DEFECTO = ORQ_VERSION = README = cabecera
+  local orq readme cab
+  orq="v$(sed -n 's/^ORQ_VERSION = "\(.*\)"$/\1/p' orquestador/ids_orq.py)"
+  [ "$VERSION_DEFECTO" = "$orq" ] || { echo "VERSION_DEFECTO=$VERSION_DEFECTO ORQ_VERSION=$orq"; return 1; }
+  readme=$(grep -o 'IDS_MAAT-Docker/v[0-9.]*/install.sh' README.md | sort -u)
+  [ "$readme" = "IDS_MAAT-Docker/$orq/install.sh" ] || { echo "README: $readme"; return 2; }
+  cab=$(sed -n '2,10p' install.sh | grep -o 'IDS_MAAT-Docker/v[0-9.]*/install.sh')
+  [ "$cab" = "IDS_MAAT-Docker/$orq/install.sh" ] || { echo "cabecera: $cab"; return 3; }
+  return 0
+}
+
+p_resumen_abierto() {
+  ip() { echo "192.0.2.1 via 203.0.113.1 dev eth0 src 203.0.113.10 uid 0"; }
+  parsear_args && validar_args || return 1
+  orq_falso
+  TS=20261011T120000Z PANEL_ESTADO=existente
+  resumen_texto "" > "$T/resumen" 2>&1
+  local r="$T/resumen"
+  grep -qx "  nombre DNS        203.0.113.10   (la IP pública: sin --nombre)" "$r" || { cat "$r"; return 2; }
+  grep -qx "  SSH (22/tcp)      abierto a cualquier IP" "$r" || { cat "$r"; return 3; }
+  grep -qF "modo seguro       no (SSH abierto: no hay nada que revertir)" "$r" || return 4
+  grep -qx "  URL               http://203.0.113.10:5637" "$r" || { cat "$r"; return 5; }   # sin «(o …)» repetido
+  grep -qF "abierto a cualquier IP (sin --proxy)" "$r" || return 6
+  grep -qF "AVISO: acceso ABIERTO (SSH y panel desde cualquier IP; fail2ban activo)" "$r" || { cat "$r"; return 7; }
+  grep -qF -- "--gestion <redes de gestión> --proxy <IP del proxy del panel>" "$r" || return 8
+  grep -qF "ssh -L" "$r" && return 9                                       # el túnel solo con proxy
   return 0
 }
 
@@ -898,6 +979,11 @@ esperar 0 "panel nuevo: URL, admin y clave; log sin clave" en_instalador p_panel
 esperar 0 "panel: reinstalación conserva la clave"        en_instalador p_panel_reinstalacion_conserva_la_clave
 esperar 0 "panel: crear-admin dice que ya existía"        en_instalador p_panel_admin_ya_existia
 esperar 0 "panel: si falla, no sigue"                     en_instalador p_panel_falla_no_dice_instalado
+esperar 0 "acceso abierto sin --gestion ni --proxy"      en_instalador p_acceso_abierto
+esperar 0 "reinstalación: conserva acceso y nombre"      en_instalador p_reinstalacion_conserva_acceso_y_nombre
+esperar 0 "sin --nombre: IP pública (y no si es privada)" en_instalador p_nombre_por_defecto_ip_publica
+esperar 0 "versión del instalador = release = README"    en_instalador p_version_del_instalador_es_la_de_la_release
+esperar 0 "resumen con el acceso abierto"                en_instalador p_resumen_abierto
 esperar 0 "resumen sin modo seguro y sin IP de ruta"      en_instalador p_sin_reversion_en_el_resumen
 esperar 0 "principal completo: clave en pantalla, no en el log" en_instalador p_principal_completo_log_sin_clave
 esperar 0 "orquestador y unidades instalados"             en_instalador p_instalar_orquestador

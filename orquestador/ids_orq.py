@@ -39,7 +39,7 @@ import uuid
 from contextlib import contextmanager
 from pathlib import Path
 
-ORQ_VERSION = "0.1.2"
+ORQ_VERSION = "0.1.3"
 UID_PANEL = 10500
 GID_PANEL = 10500
 REGISTRO = "ghcr.io/mtandazo35"
@@ -664,7 +664,10 @@ def entorno_panel(cfg):
     """Entorno del panel (CONTRATO-F1b, interfaz fija). El mismo para el servicio y para las
     órdenes de un solo uso (crear-admin, restablecer). El token va por fichero, nunca en claro."""
     return {
-        "IDS_PROXY": ",".join(str(r.network_address) if r.prefixlen == 32 else str(r) for r in cfg.ips_proxy),
+        # proxy abierto (0.0.0.0/0, instalación sin --proxy): el firewall deja entrar a cualquiera,
+        # pero el panel no se fía del X-Forwarded-For de nadie
+        "IDS_PROXY": ",".join(str(r.network_address) if r.prefixlen == 32 else str(r)
+                              for r in cfg.ips_proxy if r.prefixlen),
         "IDS_EMPRESA": cfg.nombre_dns,
         "IDS_PUERTO": str(PANEL_PUERTO),
         "IDS_TZ": cfg.zona,
@@ -1980,7 +1983,8 @@ def validar_redes(redes, cfg):
         raise _inv("redes_abonados admite como mucho 64 redes")
     out = []
     prohibidas = [(cfg.red_tuneles, "la base de túneles"), (cfg.pool, "el pool de Docker")]
-    prohibidas += [(g, "las redes de gestión") for g in cfg.redes_gestion]
+    # gestión abierta (0.0.0.0/0, sin --gestion) no es una red: no quita nada a los abonados
+    prohibidas += [(g, "las redes de gestión") for g in cfg.redes_gestion if g.prefixlen]
     for r in redes:
         if not isinstance(r, str):
             raise _inv("redes_abonados: cada red es un CIDR IPv4 en texto")
@@ -2011,7 +2015,7 @@ REDES_POR_DEFECTO = ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "100.64.0.
 
 def redes_por_defecto(cfg):
     redes = [ipaddress.IPv4Network(r) for r in REDES_POR_DEFECTO]
-    for fuera in [cfg.red_tuneles, cfg.pool] + list(cfg.redes_gestion):
+    for fuera in [cfg.red_tuneles, cfg.pool] + [g for g in cfg.redes_gestion if g.prefixlen]:
         quedan = []
         for r in redes:
             if not r.overlaps(fuera):
