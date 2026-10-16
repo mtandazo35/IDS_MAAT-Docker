@@ -1204,11 +1204,17 @@ seguridad»). En una instalación nueva, la que falta vale:
   (fail2ban sigue activo); no hay modo seguro, porque con el SSH abierto no hay nada que revertir.
   Al panel le llega `IDS_PROXY` vacío: no se fía del `X-Forwarded-For` de nadie. `--gestion 0.0.0.0/0`
   dado a mano significa lo mismo.
+- `--panel` (desde 2026-10-15): redes que abren el panel directamente, hasta /16, en `REDES_PANEL`.
+  El firewall deja llegar al 5637 a `REDES_PANEL` y a `IPS_PROXY`; el panel solo se fía de las
+  cabeceras `X-Forwarded-*` de `IPS_PROXY` (el proxy inverso, hasta /28). Dar `--panel` o `--proxy`
+  cierra el panel si venía abierto de `ids.conf`.
 - `--zona`: `America/Guayaquil`.
 
 En una reinstalación, la que falta conserva el valor de `ids.conf` (`NOMBRE_DNS`, `REDES_GESTION`,
-`IPS_PROXY`, `ZONA_HORARIA`): volver a ejecutarlo sin opciones no reabre un acceso cerrado. Para
-cerrarlo se ejecuta con `--gestion` y `--proxy`, y entonces sí hay modo seguro.
+`IPS_PROXY`, `REDES_PANEL`, `ZONA_HORARIA`): volver a ejecutarlo sin opciones no reabre un acceso
+cerrado. Para cerrarlo se ejecuta con `--gestion` y `--panel` (o `--proxy`), y entonces sí hay modo
+seguro. Un `IPS_PROXY` de `ids.conf` con redes de más de /28 (abiertas por consola antes de que
+existiera `--panel`) pasa a `REDES_PANEL` con un aviso: son redes que abren el panel, no proxies.
 
 Modo laboratorio (canario antes de la primera release, decidido en el contrato):
 `--desde-repo /root/IDS_MAAT-Docker --imagenes vpn=<ref>,suricata=<ref>` → usa el checkout local,

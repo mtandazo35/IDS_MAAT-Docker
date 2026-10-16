@@ -56,6 +56,20 @@ else
 fi
 esperar 1 "gestión más ancha que /16"                      bash install.sh --solo-validar "${V[@]}" --gestion 10.0.0.0/8
 esperar 0 "gestión 0.0.0.0/0 = abierto"                    bash install.sh --solo-validar "${V[@]}" --gestion 0.0.0.0/0
+esperar 0 "--panel con una /25 y una /26"                  bash install.sh --solo-validar "${V[@]}" --panel 198.51.100.0/25,192.0.2.128/26
+if grep -qF "proxy=203.0.113.50 panel=198.51.100.0/25,192.0.2.128/26" "$T/salida"; then
+  ok "--panel: redes del panel aparte del proxy"
+else
+  mal "--panel: no salen aparte del proxy"; sed 's/^/        /' "$T/salida"
+fi
+esperar 1 "--panel más ancha que /16"                      bash install.sh --solo-validar "${V[@]}" --panel 10.0.0.0/8
+esperar 1 "--panel con dos redes que se solapan"           bash install.sh --solo-validar "${V[@]}" --panel 198.51.100.0/25,198.51.100.64/26
+esperar 1 "--proxy /25: es una red, va en --panel"         bash install.sh --solo-validar "${V[@]}" --proxy 198.51.100.0/25
+if grep -qF "para abrir el panel a una red, --panel" "$T/salida"; then
+  ok "--proxy ancho: el error dice que va en --panel"
+else
+  mal "--proxy ancho: el error no lleva a --panel"; sed 's/^/        /' "$T/salida"
+fi
 esperar 1 "gestión 0.0.0.0/1 (ancha, no abierta)"          bash install.sh --solo-validar "${V[@]}" --gestion 0.0.0.0/1
 esperar 1 "gestión solapa con la base 100.64"              bash install.sh --solo-validar "${V[@]}" --gestion 100.64.5.0/24
 esperar 1 "gestión solapa con la base 198.18"              bash install.sh --solo-validar "${V[@]}" --gestion 198.18.0.0/24 --tun-base 198.18
@@ -541,10 +555,65 @@ p_resumen_abierto() {
   grep -qx "  SSH (22/tcp)      abierto a cualquier IP" "$r" || { cat "$r"; return 3; }
   grep -qF "modo seguro       no (SSH abierto: no hay nada que revertir)" "$r" || return 4
   grep -qx "  URL               http://203.0.113.10:5637" "$r" || { cat "$r"; return 5; }   # sin «(o …)» repetido
-  grep -qF "abierto a cualquier IP (sin --proxy)" "$r" || return 6
+  grep -qF "abierto a cualquier IP (sin --panel ni --proxy)" "$r" || return 6
+  grep -qF "proxy de confianza ninguno" "$r" || return 10
   grep -qF "AVISO: acceso ABIERTO (SSH y panel desde cualquier IP; fail2ban activo)" "$r" || { cat "$r"; return 7; }
-  grep -qF -- "--gestion <redes de gestión> --proxy <IP del proxy del panel>" "$r" || return 8
+  grep -qF -- "--gestion <redes de gestión> --panel <redes que abren el panel>" "$r" || return 8
   grep -qF "ssh -L" "$r" && return 9                                       # el túnel solo con proxy
+  return 0
+}
+
+p_reinstalacion_mueve_proxy_ancho_a_panel() {   # .152/.157-.159: IPS_PROXY con /25 y /26 abiertos por consola
+  mkdir -p "$IDS_RAIZ/etc/ids-maat"
+  printf 'NOMBRE_DNS=ids.empresa.example\nREDES_GESTION=192.0.2.0/25\nIPS_PROXY=198.51.100.0/25,192.0.2.128/26,203.0.113.50\n' \
+    > "$IDS_RAIZ/etc/ids-maat/ids.conf"
+  parsear_args && validar_args 2> "$T/avisos" || { cat "$T/avisos"; return 1; }
+  [ "$PANEL|$PROXY|$PROXY_ABIERTO" = "198.51.100.0/25,192.0.2.128/26|203.0.113.50|0" ] || { echo "$PANEL|$PROXY|$PROXY_ABIERTO"; return 2; }
+  grep -qF "pasan a REDES_PANEL" "$T/avisos" || { cat "$T/avisos"; return 3; }
+  escribir_ids_conf || return 4
+  grep -qx "REDES_PANEL=198.51.100.0/25,192.0.2.128/26" "$IDS_RAIZ/etc/ids-maat/ids.conf" || return 5
+  grep -qx "IPS_PROXY=203.0.113.50" "$IDS_RAIZ/etc/ids-maat/ids.conf" || return 6
+  [ "$(panel_desde)" = "198.51.100.0/25,192.0.2.128/26,203.0.113.50" ] || { panel_desde; return 7; }
+  # la siguiente reinstalación ya no avisa ni cambia nada
+  PANEL="" PROXY="" GESTION="" NOMBRE="" PROXY_ABIERTO=0
+  parsear_args && validar_args 2> "$T/avisos" || return 8
+  [ "$PANEL|$PROXY" = "198.51.100.0/25,192.0.2.128/26|203.0.113.50" ] || { echo "$PANEL|$PROXY"; return 9; }
+  grep -qF "REDES_PANEL" "$T/avisos" && return 10
+  # solo con redes anchas (el caso real): sin proxy de confianza
+  printf 'NOMBRE_DNS=ids.empresa.example\nREDES_GESTION=192.0.2.0/25\nIPS_PROXY=198.51.100.0/25,192.0.2.128/26\n' \
+    > "$IDS_RAIZ/etc/ids-maat/ids.conf"
+  PANEL="" PROXY="" GESTION="" NOMBRE="" PROXY_ABIERTO=0
+  parsear_args && validar_args 2>/dev/null || return 11
+  [ "$PANEL|$PROXY|$PROXY_ABIERTO" = "198.51.100.0/25,192.0.2.128/26||0" ] || { echo "$PANEL|$PROXY|$PROXY_ABIERTO"; return 12; }
+  return 0
+}
+
+p_panel_cierra_lo_abierto() {   # instalación abierta (IPS_PROXY=0.0.0.0/0) que se cierra con --panel
+  mkdir -p "$IDS_RAIZ/etc/ids-maat"
+  printf 'NOMBRE_DNS=203.0.113.10\nREDES_GESTION=0.0.0.0/0\nIPS_PROXY=0.0.0.0/0\n' > "$IDS_RAIZ/etc/ids-maat/ids.conf"
+  parsear_args --gestion 198.51.100.0/25 --panel 198.51.100.0/25 && validar_args || return 1
+  [ "$PANEL|$PROXY|$PROXY_ABIERTO|$GESTION_ABIERTA" = "198.51.100.0/25||0|0" ] || { echo "$PANEL|$PROXY|$PROXY_ABIERTO|$GESTION_ABIERTA"; return 2; }
+  [ "$(panel_desde)" = "198.51.100.0/25" ] || return 3
+  # y al revés: --proxy cierra un panel que estaba abierto con REDES_PANEL=0.0.0.0/0
+  printf 'NOMBRE_DNS=203.0.113.10\nREDES_GESTION=0.0.0.0/0\nIPS_PROXY=\nREDES_PANEL=0.0.0.0/0\n' > "$IDS_RAIZ/etc/ids-maat/ids.conf"
+  PANEL="" PROXY="" GESTION="" PROXY_ABIERTO=0 GESTION_ABIERTA=0
+  parsear_args --proxy 203.0.113.50 && validar_args || return 4
+  [ "$PANEL|$PROXY|$PROXY_ABIERTO" = "|203.0.113.50|0" ] || { echo "$PANEL|$PROXY|$PROXY_ABIERTO"; return 5; }
+  return 0
+}
+
+p_resumen_panel_sin_proxy() {
+  parsear_args --nombre ids.empresa.example --gestion 198.51.100.0/25 --panel 198.51.100.0/25,192.0.2.128/26 \
+    && validar_args || return 1
+  orq_falso
+  ip() { return 1; }
+  TS=20261011T120000Z PANEL_ESTADO=existente
+  resumen_texto "" > "$T/resumen" 2>&1
+  local r="$T/resumen"
+  grep -qF "se abre desde las redes de --panel: 198.51.100.0/25,192.0.2.128/26" "$r" || { cat "$r"; return 2; }
+  grep -qF "proxy de confianza ninguno" "$r" || { cat "$r"; return 3; }
+  grep -qF "solo se abre desde las IP de --proxy" "$r" && return 4
+  grep -qF "AVISO: acceso ABIERTO" "$r" && return 5
   return 0
 }
 
@@ -988,6 +1057,9 @@ esperar 0 "reinstalación: conserva acceso y nombre"      en_instalador p_reinst
 esperar 0 "sin --nombre: IP pública (y no si es privada)" en_instalador p_nombre_por_defecto_ip_publica
 esperar 0 "versión del instalador = release = README"    en_instalador p_version_del_instalador_es_la_de_la_release
 esperar 0 "resumen con el acceso abierto"                en_instalador p_resumen_abierto
+esperar 0 "reinstalación: IPS_PROXY ancho pasa a REDES_PANEL" en_instalador p_reinstalacion_mueve_proxy_ancho_a_panel
+esperar 0 "--panel cierra un panel abierto (y --proxy)"  en_instalador p_panel_cierra_lo_abierto
+esperar 0 "resumen con --panel y sin proxy"              en_instalador p_resumen_panel_sin_proxy
 esperar 0 "resumen sin modo seguro y sin IP de ruta"      en_instalador p_sin_reversion_en_el_resumen
 esperar 0 "principal completo: clave en pantalla, no en el log" en_instalador p_principal_completo_log_sin_clave
 esperar 0 "orquestador y unidades instalados"             en_instalador p_instalar_orquestador

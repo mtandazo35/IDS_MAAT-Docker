@@ -32,13 +32,14 @@ Sin opciones instala todo (la release de esa línea, reglas, timers y panel) con
 Para cerrar el acceso, vuelve a ejecutarlo con tus redes (no reinstala nada, solo cambia el firewall):
 
 ```bash
-bash /root/ids-maat-install.sh --gestion 192.0.2.0/25 --proxy 203.0.113.50
+bash /root/ids-maat-install.sh --gestion 192.0.2.0/25 --panel 192.0.2.0/25
 ```
 
 | Opción | Qué es |
 |---|---|
 | `--gestion` | redes desde las que entras por SSH, en CIDR y separadas por comas (como mucho /16). La IP de tu sesión SSH actual tiene que estar dentro |
-| `--proxy` | IP de tu proxy inverso (el que pone HTTPS): el panel solo se abre desde ahí. IPs o redes de hasta /28, separadas por comas |
+| `--panel` | redes desde las que abres el panel directamente, en CIDR y separadas por comas (como mucho /16). El panel no se fía de sus cabeceras `X-Forwarded-*` |
+| `--proxy` | IP de tu proxy inverso (el que pone HTTPS): abre el panel y el panel se fía de sus cabeceras `X-Forwarded-*` (la IP real del cliente). IPs o redes de hasta /28, separadas por comas |
 | `--nombre` | nombre DNS o IP del VPS con el que llegan los MikroTik (va en el certificado del servidor VPN) |
 | `--zona` | otra zona horaria (`Región/Ciudad`) |
 | `--version` | otra release `vX.Y.Z` (por defecto, la de esa línea) |

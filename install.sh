@@ -6,22 +6,26 @@
 #
 # Sin opciones instala todo (la release de este instalador, reglas, timers y panel) con el nombre =
 # la IP pública del VPS, la zona America/Guayaquil y el acceso ABIERTO: SSH y panel desde cualquier
-# IP (fail2ban sigue activo). Para cerrarlo, volver a ejecutarlo con --gestion y --proxy:
-#   bash /root/ids-maat-install.sh --gestion 192.0.2.0/25,198.51.100.0/26 --proxy 203.0.113.50
+# IP (fail2ban sigue activo). Para cerrarlo, volver a ejecutarlo con --gestion y --panel (o --proxy):
+#   bash /root/ids-maat-install.sh --gestion 192.0.2.0/25,198.51.100.0/26 --panel 192.0.2.0/25,198.51.100.0/26
 #
 # Al terminar imprime la URL del panel, el usuario «admin» y su clave (UNA sola vez; en el log
 # /root/ids-maat/install-<ts>.log sale enmascarada).
 #
 # Laboratorio (canario antes de la primera release; NO verifica firmas):
 #   bash install.sh --desde-repo /root/IDS_MAAT-Docker \
-#        --imagenes vpn=<ref>,suricata=<ref>,panel=<ref> [--nombre …] [--gestion …] [--proxy …]
+#        --imagenes vpn=<ref>,suricata=<ref>,panel=<ref> [--nombre …] [--gestion …] [--panel …]
 #
 # Opciones (todas opcionales; en una reinstalación, la que falta conserva lo que ya había):
 #   --version          release vX.Y.Z; por defecto la de este instalador
 #   --nombre           nombre DNS (o IP) con el que los MikroTik llegan al VPS; por defecto la IP
 #                      pública (la de la ruta por defecto; si es privada, hay que darlo)
 #   --gestion          redes desde las que se entra por SSH (hasta /16); sin ella, abierto
-#   --proxy            IP o /28 del proxy inverso del panel; sin ella, abierto (sin proxy de confianza)
+#   --panel            redes desde las que se abre el panel directamente (hasta /16); el panel no se fía
+#                      de sus cabeceras X-Forwarded-*
+#   --proxy            IP o /28 del proxy inverso del panel: abre el panel y el panel se fía de sus
+#                      X-Forwarded-*. Sin --panel ni --proxy, el panel queda abierto
+#                      (sin proxy de confianza)
 #   --tun-base         100.64 (por defecto) o 198.18
 #   --dueno-ip         IP que fail2ban nunca banea
 #   --zona             zona horaria del servidor y de lo que se muestra (panel, informes); por defecto
@@ -33,7 +37,7 @@
 #   --forzar-acceso    sigue aunque la IP de tu sesión SSH no esté en --gestion o no se pueda
 #                      averiguar
 #
-# Idempotente: volver a ejecutarlo cambia gestión/proxy. Respaldo en /root/backups antes de tocar
+# Idempotente: volver a ejecutarlo cambia gestión, panel y proxy. Respaldo en /root/backups antes de tocar
 # sshd, firewall, Docker o fail2ban. Nunca instala iptables-persistent ni ufw ni hace flush ruleset.
 set -euo pipefail
 umask 022
@@ -51,12 +55,12 @@ VENTANA_REVERSION=300
 UNIDAD_REVERSION=ids-maat-revertir-acceso
 ZONA_DEFECTO=America/Guayaquil   # zona del servidor y del panel sin --zona (los clientes son ISP de Ecuador)
 VERSION_DEFECTO=v0.1.3           # la release de este instalador (sin --version); = ORQ_VERSION de su etiqueta
-ABIERTO=0.0.0.0/0                # gestión o proxy sin --gestion/--proxy: cualquier IP
+ABIERTO=0.0.0.0/0                # gestión o panel sin --gestion/--panel/--proxy: cualquier IP
 R="${IDS_RAIZ:-}"            # prefijo de rutas para las pruebas; vacío en producción
 R="${R%/}"
 
 GESTION_ABIERTA=0 PROXY_ABIERTO=0 NOMBRE_AUTO=0
-VERSION="" NOMBRE="" GESTION="" PROXY="" TUN_BASE="100.64" TUN_BASE_DADO=0 DUENO=""
+VERSION="" NOMBRE="" GESTION="" PROXY="" PANEL="" TUN_BASE="100.64" TUN_BASE_DADO=0 DUENO=""
 DESDE_REPO="" IMAGENES="" SOLO_VALIDAR=0 CONFIRMAR=0 SIN_REVERSION=0 FORZAR_ACCESO=0
 HOST_DIR="" IMG_VPN="" IMG_SUR="" IMG_PANEL="" DEV=false TS="" T0_REVERSION="" ZONA=""
 USUARIO_PANEL=admin PANEL_ESTADO="" CLAVE_PANEL="" LOG_INSTALL=""
@@ -146,7 +150,7 @@ parsear_args() {
       --sin-reversion) SIN_REVERSION=1; shift; continue ;;
       --forzar-acceso) FORZAR_ACCESO=1; shift; continue ;;
       -h|--help) uso; exit 0 ;;
-      --version|--nombre|--gestion|--proxy|--tun-base|--dueno-ip|--desde-repo|--imagenes|--zona)
+      --version|--nombre|--gestion|--proxy|--panel|--tun-base|--dueno-ip|--desde-repo|--imagenes|--zona)
         if [ -z "$val" ]; then
           [ $# -ge 2 ] || fallar "falta el valor de $op"
           val="$2"; shift
@@ -159,6 +163,7 @@ parsear_args() {
       --nombre) NOMBRE="$val" ;;
       --gestion) GESTION="$val" ;;
       --proxy) PROXY="$val" ;;
+      --panel) PANEL="$val" ;;
       --tun-base) TUN_BASE="$val"; TUN_BASE_DADO=1 ;;
       --dueno-ip) DUENO="$val" ;;
       --desde-repo) DESDE_REPO="$val" ;;
@@ -184,8 +189,13 @@ texto_acceso() {   # texto_acceso <lista>: «abierto a cualquier IP» o «solo d
   if [ "$1" = "$ABIERTO" ]; then echo "abierto a cualquier IP"; else echo "solo desde $1"; fi
 }
 
+panel_desde() {   # quién llega al panel (el set @proxy del firewall): --panel y --proxy, o abierto
+  if [ "$PROXY_ABIERTO" = 1 ]; then echo "$ABIERTO"; else echo "${PANEL}${PANEL:+${PROXY:+,}}${PROXY}"; fi
+}
+
 validar_args() {
-  local c norm lista="" lista_proxy="" otro tun
+  local c norm lista="" lista_proxy="" lista_panel="" otro tun len anchas="" estrechas=""
+  local proxy_dado="$PROXY" panel_dado="$PANEL"
   # Sin --nombre: el de la instalación anterior y, en una nueva, la IP pública (la del certificado
   # del servidor OpenVPN y la que reciben los MikroTik en sus órdenes, así que tiene que alcanzarse)
   [ -n "$NOMBRE" ] || NOMBRE=$(valor_conf NOMBRE_DNS)
@@ -223,19 +233,51 @@ validar_args() {
   fi
   # con el SSH abierto el firewall no puede dejar a nadie fuera: no hay nada que revertir
   if [ "$GESTION_ABIERTA" = 1 ]; then SIN_REVERSION=1; fi
+  # Panel: --panel son redes que lo abren directamente (solo firewall, hasta /16); --proxy es el proxy
+  # inverso (firewall y cabeceras X-Forwarded-*, hasta /28). Separadas desde 2026-10-15: el dueño
+  # entra desde sus /25 y /26, que como proxy no cabían y harían que el panel se fiara de toda la red.
+  # La que falta conserva lo de ids.conf; sin ninguna de las dos, abierto (instalación nueva).
   [ -n "$PROXY" ] || PROXY=$(valor_conf IPS_PROXY)
-  if [ -z "$PROXY" ] || [ "$PROXY" = "$ABIERTO" ]; then
-    PROXY="$ABIERTO" PROXY_ABIERTO=1
-  else
+  [ -n "$PANEL" ] || PANEL=$(valor_conf REDES_PANEL)
+  # dar una cierra la otra si venía abierta de ids.conf (si no, cerrar con --panel no cerraría nada)
+  if [ -n "$panel_dado" ] && [ -z "$proxy_dado" ] && [ "$PROXY" = "$ABIERTO" ]; then PROXY=""; fi
+  if [ -n "$proxy_dado" ] && [ -z "$panel_dado" ] && [ "$PANEL" = "$ABIERTO" ]; then PANEL=""; fi
+  # IPS_PROXY de ids.conf con redes de más de /28 (abiertas por consola, OPERACION §4, antes de que
+  # existiera --panel): son redes que abren el panel, no proxies. Pasan a REDES_PANEL.
+  if [ -z "$proxy_dado" ] && [ -n "$PROXY" ] && [ "$PROXY" != "$ABIERTO" ]; then
+    for c in ${PROXY//,/ }; do
+      len=$(cidr_rango "$c" | cut -d' ' -f3) || len=""
+      if [ -n "$len" ] && [ "$len" -lt 28 ]; then anchas="${anchas:+$anchas,}$c"; else estrechas="${estrechas:+$estrechas,}$c"; fi
+    done
+    if [ -n "$anchas" ]; then
+      aviso "IPS_PROXY de ids.conf tiene redes de más de /28 ($anchas): pasan a REDES_PANEL (abren el panel) y el panel deja de fiarse de sus cabeceras X-Forwarded-*"
+      PANEL="${PANEL:+$PANEL,}$anchas" PROXY="$estrechas"
+    fi
+  fi
+  [ -n "$PROXY$PANEL" ] || PROXY="$ABIERTO"
+  if [ "$PROXY" = "$ABIERTO" ] || [ "$PANEL" = "$ABIERTO" ]; then PROXY_ABIERTO=1; fi
+  if [ -n "$PROXY" ] && [ "$PROXY" != "$ABIERTO" ]; then
     for c in ${PROXY//,/ }; do
       norm=$(cidr_norm "$c") || fallar "--proxy: '$c' no es una IP o CIDR IPv4"
-      [ "$(cidr_rango "$c" | cut -d' ' -f3)" -ge 28 ] || fallar "--proxy: '$c' es más ancha que /28 (o 0.0.0.0/0: abierto)"
+      [ "$(cidr_rango "$c" | cut -d' ' -f3)" -ge 28 ] \
+        || fallar "--proxy: '$c' es más ancha que /28: --proxy es el proxy inverso; para abrir el panel a una red, --panel"
       for otro in ${lista_proxy//,/ }; do
         solapan "$c" "$otro" && fallar "--proxy: '$c' se solapa con '$otro'"
       done
       lista_proxy="${lista_proxy:+$lista_proxy,}$norm"
     done
     PROXY="$lista_proxy"
+  fi
+  if [ -n "$PANEL" ] && [ "$PANEL" != "$ABIERTO" ]; then
+    for c in ${PANEL//,/ }; do
+      norm=$(cidr_norm "$c") || fallar "--panel: '$c' no es un CIDR IPv4"
+      [ "$(cidr_rango "$c" | cut -d' ' -f3)" -ge 16 ] || fallar "--panel: '$c' es más ancha que /16 (o 0.0.0.0/0: abierto)"
+      for otro in ${lista_panel//,/ }; do
+        solapan "$c" "$otro" && fallar "--panel: '$c' se solapa con '$otro'"
+      done
+      lista_panel="${lista_panel:+$lista_panel,}$norm"
+    done
+    PANEL="$lista_panel"
   fi
   if [ -n "$DUENO" ]; then
     ip_a_int "$DUENO" >/dev/null || fallar "--dueno-ip debe ser una IPv4"
@@ -607,6 +649,7 @@ NOMBRE_DNS=$NOMBRE
 TUN_BASE=$TUN_BASE
 REDES_GESTION=$GESTION
 IPS_PROXY=$PROXY
+REDES_PANEL=$PANEL
 IGNOREIP_DUENO=$DUENO
 PUERTO_PANEL=$PUERTO_PANEL
 POOL_DOCKER=$POOL_DOCKER
@@ -809,13 +852,13 @@ comprobar_puertos_ajenos() {
   escuchan=$(ss -Hltn 2>/dev/null | awk '{print $4}' | grep -Ev '^(127\.|\[::1\]|::1)' \
              | sed 's/.*://' | grep -vx 22 | sort -un | tr '\n' ' ' || true)
   if [ -n "$escuchan" ]; then
-    aviso "servicios del host escuchando en TCP $escuchan: con el firewall del IDS solo queda abierto el 22 (desde gestión)"
+    aviso "servicios del host escuchando en TCP $escuchan: el firewall del IDS los cierra (al host solo le deja el 22)"
   fi
 }
 
 firewall() {
   comprobar_puertos_ajenos
-  log "firewall del host (inet ids_host): SSH $(texto_acceso "$GESTION"), panel $PUERTO_PANEL $(texto_acceso "$PROXY")"
+  log "firewall del host (inet ids_host): SSH $(texto_acceso "$GESTION"), panel $PUERTO_PANEL $(texto_acceso "$(panel_desde)")"
   IDS_RAIZ="${R:-/}" "${R}/usr/local/bin/ids-orq" fw-render --aplicar || fallar "el firewall no pasó nft -c"
   systemctl enable ids-host-fw.service >/dev/null
 }
@@ -975,7 +1018,7 @@ arrancar() {
 # y guarda la clave SOLO en una variable para el resumen. En una reinstalación no la toca.
 panel() {
   local salida="" rc=0 linea
-  log "panel: núcleo ids-core ($PANEL_IP, $PUERTO_PANEL/tcp publicado solo para --proxy)"
+  log "panel: núcleo ids-core ($PANEL_IP, $PUERTO_PANEL/tcp $(texto_acceso "$(panel_desde)"))"
   "${R}/usr/local/bin/ids-orq" panel aplicar >/dev/null \
     || fallar "el panel no quedó sano (docker logs ids-core-panel; ids-orq panel aplicar)"
   if [ -e "${R}/srv/ids/panel/conf/usuarios.json" ]; then
@@ -1029,11 +1072,21 @@ resumen_texto() {   # resumen_texto <clave tal como se muestra>
   [ "$ip" = "$NOMBRE" ] && ip=""
   echo "  URL               http://$NOMBRE:$PUERTO_PANEL${ip:+   (o http://$ip:$PUERTO_PANEL)}"
   if [ "$PROXY_ABIERTO" = 1 ]; then
-    echo "                    abierto a cualquier IP (sin --proxy)"
+    echo "                    abierto a cualquier IP (sin --panel ni --proxy)"
   else
-    echo "                    solo se abre desde las IP de --proxy: $PROXY"
+    if [ -n "$PANEL" ]; then
+      echo "                    se abre desde las redes de --panel: $PANEL"
+      [ -n "$PROXY" ] && echo "                    y desde el proxy de --proxy: $PROXY"
+    else
+      echo "                    solo se abre desde las IP de --proxy: $PROXY"
+    fi
     echo "                    sin proxy, desde gestión: ssh -L $PUERTO_PANEL:$PANEL_IP:5637 root@$NOMBRE"
     echo "                    y en el navegador http://localhost:$PUERTO_PANEL"
+  fi
+  if [ -n "$PROXY" ] && [ "$PROXY" != "$ABIERTO" ]; then
+    echo "  proxy de confianza $PROXY   (el panel solo se fía de las X-Forwarded-* que vienen de ahí)"
+  else
+    echo "  proxy de confianza ninguno   (el panel no hace caso de ninguna cabecera X-Forwarded-*)"
   fi
   echo "  usuario           $USUARIO_PANEL"
   if [ "$PANEL_ESTADO" = nuevo ]; then
@@ -1046,7 +1099,7 @@ resumen_texto() {   # resumen_texto <clave tal como se muestra>
   if [ "$GESTION_ABIERTA" = 1 ] || [ "$PROXY_ABIERTO" = 1 ]; then
     echo
     echo "AVISO: acceso ABIERTO ($([ "$GESTION_ABIERTA" = 1 ] && echo 'SSH')$([ "$GESTION_ABIERTA$PROXY_ABIERTO" = 11 ] && echo ' y ')$([ "$PROXY_ABIERTO" = 1 ] && echo 'panel') desde cualquier IP; fail2ban activo). Para cerrarlo:"
-    echo "  bash /root/ids-maat-install.sh --gestion <redes de gestión> --proxy <IP del proxy del panel>"
+    echo "  bash /root/ids-maat-install.sh --gestion <redes de gestión> --panel <redes que abren el panel>"
   fi
   echo
   echo "Siguiente paso:  entra al panel, o desde SSH: ids-orq punto crear --nombre norte --redes 10.0.0.0/24"
@@ -1072,7 +1125,7 @@ principal() {
   if [ "$SOLO_VALIDAR" = 1 ]; then
     comprobar_tun_base
     elegir_zona
-    echo "argumentos válidos: nombre=$NOMBRE gestion=$GESTION proxy=$PROXY tun-base=$TUN_BASE zona=$ZONA version=$VERSION"
+    echo "argumentos válidos: nombre=$NOMBRE gestion=$GESTION proxy=$PROXY panel=$PANEL tun-base=$TUN_BASE zona=$ZONA version=$VERSION"
     return 0
   fi
   comprobar_sistema
@@ -1083,7 +1136,7 @@ principal() {
   install -d -m 0700 "${R}/root/ids-maat"
   LOG_INSTALL="${R}/root/ids-maat/install-${TS}.log"
   (umask 077; : > "$LOG_INSTALL")
-  registrar "install.sh $VERSION: nombre=$NOMBRE gestion=$GESTION proxy=$PROXY tun-base=$TUN_BASE zona=$ZONA"
+  registrar "install.sh $VERSION: nombre=$NOMBRE gestion=$GESTION proxy=$PROXY panel=$PANEL tun-base=$TUN_BASE zona=$ZONA"
   respaldo                   # 2
   paquetes                   # 3
   zona_host                  # 5 (adelantado: recién instalado tzdata; fuera del modo seguro y antes de

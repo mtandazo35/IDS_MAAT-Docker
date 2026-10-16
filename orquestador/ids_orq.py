@@ -399,7 +399,7 @@ def _redes(txt, campo):
 
 class Config:
     def __init__(self, kv):
-        faltan = [k for k in ("VERSION", "NOMBRE_DNS", "TUN_BASE", "REDES_GESTION", "IPS_PROXY",
+        faltan = [k for k in ("VERSION", "NOMBRE_DNS", "TUN_BASE", "REDES_GESTION",
                               "PUERTO_PANEL", "POOL_DOCKER") if not kv.get(k)]
         if faltan:
             raise ErrorOrden("FALLO", "ids.conf: faltan " + ", ".join(faltan))
@@ -409,12 +409,16 @@ class Config:
             raise ErrorOrden("FALLO", "ids.conf: TUN_BASE debe ser 100.64 o 198.18")
         self.tun_base = kv["TUN_BASE"]
         self.redes_gestion = _redes(kv["REDES_GESTION"], "REDES_GESTION")
-        self.ips_proxy = _redes(kv["IPS_PROXY"], "IPS_PROXY")
+        self.ips_proxy = _redes(kv.get("IPS_PROXY", ""), "IPS_PROXY")
+        # Quién abre el panel sin proxy (2026-10-15: el dueño entra desde sus /25 y /26, que como
+        # IPS_PROXY harían que el panel se fiara del X-Forwarded-For de toda esa red). El firewall deja
+        # llegar al 5637 a REDES_PANEL y a IPS_PROXY; el panel solo se fía de IPS_PROXY.
+        self.redes_panel = _redes(kv.get("REDES_PANEL", ""), "REDES_PANEL")
         self.ignoreip = kv.get("IGNOREIP_DUENO", "")
         self.puerto_panel = int(kv["PUERTO_PANEL"])
         self.pool = ipaddress.IPv4Network(kv["POOL_DOCKER"], strict=False)
-        if not self.redes_gestion or not self.ips_proxy:
-            raise ErrorOrden("FALLO", "ids.conf: REDES_GESTION e IPS_PROXY no pueden estar vacías")
+        if not self.redes_gestion or not (self.ips_proxy or self.redes_panel):
+            raise ErrorOrden("FALLO", "ids.conf: REDES_GESTION y una de IPS_PROXY o REDES_PANEL no pueden estar vacías")
         # F1b: zona horaria con la que el panel muestra las fechas (opcional; por defecto la de
         # Ecuador: los clientes son ISP de Ecuador y todo se lee en su hora)
         self.zona = kv.get("ZONA_HORARIA") or "America/Guayaquil"
@@ -424,6 +428,14 @@ class Config:
     @property
     def red_tuneles(self):
         return ipaddress.IPv4Network(self.tun_base + ".0.0/16")
+
+    @property
+    def panel_desde(self):
+        """Quién llega al 5637 (set @proxy del firewall): REDES_PANEL y los proxies. Sin REDES_PANEL,
+        IPS_PROXY tal cual; con ella, la unión agrupada (nft rechaza intervalos solapados)."""
+        if not self.redes_panel:
+            return list(self.ips_proxy)
+        return list(ipaddress.collapse_addresses(self.redes_panel + self.ips_proxy))
 
 
 def config():
@@ -675,7 +687,7 @@ def render_nft(cfg, puertos, origenes):
         '    meta l4proto tcp ct direction original ct status dnat ct original proto-dst %d '
         'ip saddr != %s counter drop comment "origen fijo %s"' % (puerto, ip, pid)
         for pid, puerto, ip in sorted(origenes))
-    valores = {"GESTION": _elems_ip(cfg.redes_gestion), "PROXY": _elems_ip(cfg.ips_proxy),
+    valores = {"GESTION": _elems_ip(cfg.redes_gestion), "PROXY": _elems_ip(cfg.panel_desde),
                "PUERTOS_VPN": elementos, "PUERTO_PANEL": cfg.puerto_panel}
     return renderizar(leer_plantilla("ids_host.nft.tmpl"), valores,
                       {"LINEAS_ORIGEN_FIJO": lineas_origen or None})
@@ -4861,9 +4873,11 @@ def cli_panel(a, salida=None, error=None):
         if a.sub == "aplicar":
             panel_aplicar(esperar=not a.sin_esperar)
             cfg = config()
-            print("OK panel %s en %s (http://%s:%d, solo desde %s)" % (
+            desde = cfg.panel_desde
+            print("OK panel %s en %s (http://%s:%d, %s)" % (
                 PANEL_CONTENEDOR, PANEL_IP, cfg.nombre_dns, cfg.puerto_panel,
-                ",".join(str(r) for r in cfg.ips_proxy)), file=salida)
+                "abierto a cualquier IP" if any(r.prefixlen == 0 for r in desde)
+                else "solo desde " + ",".join(str(r) for r in desde)), file=salida)
             return 0
         if a.sub == "confianza":
             r = panel_confianza(a.accion, getattr(a, "red", None), getattr(a, "nota", ""))

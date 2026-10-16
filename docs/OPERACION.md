@@ -422,11 +422,12 @@ rsync -a --chmod=F600 'root@ids.empresa.example:/root/backups/ids-maat-install-*
      existe si esa ejecución fue con modo seguro: con `--sin-reversion` no se genera (y queda el de
      una ejecución anterior, que devolvería un estado más viejo).
   3. Si no, **abrir una IP o red concreta**: editar `/etc/ids-maat/ids.conf` (`REDES_GESTION` para
-     SSH, separadas por comas; `IPS_PROXY` para el panel) y aplicar con
-     `ids-orq fw-render --aplicar` (genera `ids_host.nft`, lo prueba con `nft -c` y lo carga). Si se
-     cambió `IPS_PROXY`, además `ids-orq panel aplicar` (el panel lee esa lista al arrancar). La
-     próxima ejecución de `install.sh` sin `--gestion`/`--proxy` conserva lo que haya en `ids.conf`;
-     con ellos, lo sustituye.
+     SSH y `REDES_PANEL` para el panel, separadas por comas; `IPS_PROXY` solo para un proxy inverso,
+     porque el panel se fía de sus cabeceras) y aplicar con `ids-orq fw-render --aplicar` (genera
+     `ids_host.nft`, lo prueba con `nft -c` y lo carga). Si se cambió `IPS_PROXY`, además
+     `ids-orq panel aplicar` (el panel lee esa lista al arrancar). La próxima ejecución de
+     `install.sh` sin `--gestion`/`--panel`/`--proxy` conserva lo que haya en `ids.conf`; con ellos, lo
+     sustituye.
   4. Revisar `/root/backups/` y la bitácora.
 - **Una red más ancha que /16 solo se puede abrir así**, editando `ids.conf` desde la consola:
   `install.sh --gestion` la rechaza. La excepción es `0.0.0.0/0`: abierto a cualquier IP, lo mismo
@@ -437,12 +438,13 @@ rsync -a --chmod=F600 'root@ids.empresa.example:/root/backups/ids-maat-install-*
 - Al terminar, `install.sh` imprime la URL (`http://<nombre>:5637`), el usuario `admin` y su clave
   **una sola vez**. La clave no se guarda en claro: en `/root/ids-maat/install-<ts>.log` sale como
   `********`. Una reinstalación no la cambia.
-- El 5637 solo se abre desde las IP de `--proxy`. Para entrar directo durante las pruebas, se
-  ponen en `--proxy` las redes de gestión (≤ /28 cada una); si no, el túnel SSH de arriba.
+- El 5637 solo se abre desde las redes de `--panel` y las IP de `--proxy`. Para entrar directo, las
+  redes van en `--panel` (hasta /16), no en `--proxy`: así el panel no se fía de sus cabeceras
+  `X-Forwarded-*`. Si no, el túnel SSH de arriba.
 - **Instalación abierta** (sin `--gestion` ni `--proxy`, el one-liner del README): el SSH y el 5637
   se abren a cualquier IP, con fail2ban activo, y el resumen del instalador lo avisa en grande. Se
-  cierra volviendo a ejecutar `bash /root/ids-maat-install.sh --gestion <redes> --proxy <IP del
-  proxy>`, que pide confirmar desde una sesión SSH nueva (modo seguro).
+  cierra volviendo a ejecutar `bash /root/ids-maat-install.sh --gestion <redes> --panel <redes>`,
+  que pide confirmar desde una sesión SSH nueva (modo seguro).
 - Clave olvidada o perdida, desde SSH como root:
 
   ```sh

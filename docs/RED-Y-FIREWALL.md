@@ -294,10 +294,12 @@ Por qué cada pieza:
 - **Origen fijo opcional por punto.** Si el punto declara la IP pública de su MikroTik, se añade
   una regla de descarte para ese puerto con `ip saddr != <IP>`.
 - **Dos listas distintas.** `@gestion` abre el SSH y `@proxy` abre el panel. El panel habla HTTP:
-  el TLS lo termina el proxy inverso externo y en el VPS no hay certificados. Las dos listas salen
-  de `ids.conf` (`REDES_GESTION`, `IPS_PROXY`) y hoy se cambian volviendo a ejecutar `install.sh`
-  con `--gestion`/`--proxy` (con su modo seguro) o, desde la consola, editando `ids.conf` y
-  `ids-orq fw-render --aplicar` ([OPERACION.md](OPERACION.md) §4). La orden `acceso.aplicar` de §10
+  el TLS lo termina el proxy inverso externo y en el VPS no hay certificados. `@gestion` sale de
+  `REDES_GESTION`; `@proxy` es la unión de `REDES_PANEL` (redes que abren el panel directamente) e
+  `IPS_PROXY` (el proxy inverso). El panel solo se fía de las cabeceras `X-Forwarded-*` de
+  `IPS_PROXY`. Se cambian volviendo a ejecutar `install.sh` con `--gestion`/`--panel`/`--proxy` (con
+  su modo seguro) o, desde la consola, editando `ids.conf` y `ids-orq fw-render --aplicar`
+  ([OPERACION.md](OPERACION.md) §4). La orden `acceso.aplicar` de §10
   es un diseño sin implementar.
 - **Acceso abierto.** Sin `--gestion` ni `--proxy` el instalador escribe `0.0.0.0/0` en las dos
   listas: los conjuntos `@gestion` y `@proxy` dejan entrar a cualquier IP. El orquestador no trata
