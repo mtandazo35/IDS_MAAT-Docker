@@ -1,7 +1,7 @@
 #!/bin/bash
 # ids-maat — instalador del VPS (CONTRATO-F1a §7). Debian 13 (trixie), amd64, como root.
 #
-#   curl -fsSL https://raw.githubusercontent.com/mtandazo35/IDS_MAAT-Docker/v0.1.3/install.sh \
+#   curl -fsSL https://raw.githubusercontent.com/mtandazo35/IDS_MAAT-Docker/v0.1.4/install.sh \
 #        -o /root/ids-maat-install.sh && bash /root/ids-maat-install.sh
 #
 # Sin opciones instala todo (la release de este instalador, reglas, timers y panel) con el nombre =
@@ -54,7 +54,7 @@ POOL_DOCKER=10.210.0.0/16
 VENTANA_REVERSION=300
 UNIDAD_REVERSION=ids-maat-revertir-acceso
 ZONA_DEFECTO=America/Guayaquil   # zona del servidor y del panel sin --zona (los clientes son ISP de Ecuador)
-VERSION_DEFECTO=v0.1.3           # la release de este instalador (sin --version); = ORQ_VERSION de su etiqueta
+VERSION_DEFECTO=v0.1.4           # la release de este instalador (sin --version); = ORQ_VERSION de su etiqueta
 ABIERTO=0.0.0.0/0                # gestión o panel sin --gestion/--panel/--proxy: cualquier IP
 R="${IDS_RAIZ:-}"            # prefijo de rutas para las pruebas; vacío en producción
 R="${R%/}"

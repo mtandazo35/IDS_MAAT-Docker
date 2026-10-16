@@ -1187,8 +1187,8 @@ Identidad que verifica el instalador: ACTUALIZACIONES §3 con `<owner>` = `mtand
 One-liner (en `/root`, nunca en `/tmp`, y sin `curl | bash`):
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/mtandazo35/IDS_MAAT-Docker/v0.1.3/install.sh -o /root/ids-maat-install.sh \
-  && bash /root/ids-maat-install.sh [--version v0.1.3] [--nombre ids.empresa.example] \
+curl -fsSL https://raw.githubusercontent.com/mtandazo35/IDS_MAAT-Docker/v0.1.4/install.sh -o /root/ids-maat-install.sh \
+  && bash /root/ids-maat-install.sh [--version v0.1.4] [--nombre ids.empresa.example] \
        [--gestion 192.0.2.0/25,198.51.100.0/26] [--proxy 203.0.113.50] \
        [--tun-base 100.64|198.18] [--dueno-ip 203.0.113.20] [--zona America/Guayaquil]
 ```
