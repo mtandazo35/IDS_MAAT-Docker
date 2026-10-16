@@ -82,9 +82,11 @@ def _asunto(c):
 
 
 def _fecha(c):
+    """La marca ISO de GitHub tal cual (en UTC, «…Z»): el panel la pasa a la hora de la empresa al
+    pintarla (fecha_ec). Cortada aquí, un commit de las 22:10 del 15 en Ecuador salía del 16."""
     d = ((c.get("commit") or {}).get("committer") or {}).get("date") \
         or ((c.get("commit") or {}).get("author") or {}).get("date") or ""
-    return "%s/%s/%s" % (d[8:10], d[5:7], d[0:4]) if len(d) >= 10 else ""
+    return d if isinstance(d, str) else ""
 
 
 def _es_merge(c):
@@ -95,8 +97,8 @@ def buscar(estado, version_imagen="", pedir=None, ahora=None):
     """Lo que hay nuevo en main respecto a lo instalado. Nunca lanza: un fallo vuelve en «error».
 
     {"v", "checked", "instalada", "ref", "disponible", "objetivo" (sha de 40 del último commit de
-     main), "ultimo" (su asunto), "fecha", "n" (commits nuevos), "mejoras" [asuntos, del más nuevo
-     al más viejo], "historial" [{"sha", "asunto", "fecha", "nuevo"}], "error"}"""
+     main), "ultimo" (su asunto), "fecha" (ISO en UTC), "n" (commits nuevos), "mejoras" [asuntos,
+     del más nuevo al más viejo], "historial" [{"sha", "asunto", "fecha", "nuevo"}], "error"}"""
     pedir = pedir or pedir_github
     ahora = int(ahora if ahora is not None else time.time())
     ref, texto = instalada(estado, version_imagen)

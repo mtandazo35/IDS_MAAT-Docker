@@ -3247,6 +3247,12 @@ def cuar_aviso_url(texto):
     """/cuarentena?msg=<codigo> con el resultado de una accion de Cuarentena."""
     return rep_aviso_url(texto, pagina="/cuarentena")
 
+def ajustes_aviso_url(texto, ok=True, apartado="update"):
+    """/ajustes?msg=<codigo>#<apartado>: el resultado de una accion de Ajustes tras el redirect, con
+    su apartado abierto otra vez. Devolver la pagina en la respuesta del POST dejaba la URL de la
+    accion (/buscar-actualizacion) y recargar la repetia en vez de volver a Ajustes (el user)."""
+    return "/ajustes?msg=%s#%s" % (rep_aviso_guardar(texto, {"ok": bool(ok)}), apartado)
+
 # ---------------------------------------------------------------------------------
 # Bloqueo en el BORDE: los que nos atacan desde internet
 # ---------------------------------------------------------------------------------
@@ -9491,14 +9497,23 @@ font-size:15px;font-weight:500;transition:background .15s,color .15s}
 .nav .out{margin-left:14px;color:#f3b0b0;text-decoration:none;font-weight:600;padding:9px 17px;border-radius:8px;font-size:15px;
 border:1px solid rgba(243,176,176,.35);transition:background .15s,color .15s,border-color .15s}
 .nav .out:hover{background:#e34948;color:#fff;border-color:#e34948}
-/* boton «Actualizacion» (solo admin, cuando hay commits nuevos en main) y su ventana: los del
-   panel original */
-.nav .updbtn{flex:0 0 auto;display:inline-flex;align-items:center;gap:7px;margin-left:14px;cursor:pointer;background:#e67e22;
-color:#fff;border:0;padding:9px 15px;border-radius:8px;font:600 14px system-ui;box-shadow:0 2px 8px rgba(230,126,34,.4);
-text-decoration:none;white-space:nowrap}
-.nav .updbtn:hover{background:#d3691a}
-.nav .updbtn .uddot{width:9px;height:9px;border-radius:50%;background:#fff;animation:udpulse 1.6s infinite}
-@keyframes udpulse{0%{box-shadow:0 0 0 0 rgba(255,255,255,.6)}70%{box-shadow:0 0 0 8px rgba(255,255,255,0)}100%{box-shadow:0 0 0 0 rgba(255,255,255,0)}}
+/* aviso «Actualizacion disponible» (solo admin, cuando hay commits nuevos en main): como la
+   notificacion de una app, dentro del menu del usuario, con un punto que late sobre su foto; abre la
+   ventana de mejoras (la del panel original). Antes era un boton suelto en la barra y se montaba
+   encima del resto (el user, 2026-10-15) */
+.nav .ubtn{position:relative}
+.nav .ubtn .unotifdot{position:absolute;top:1px;left:27px;width:11px;height:11px;border-radius:50%;background:#e67e22;
+box-shadow:0 0 0 2px #12161c;animation:udpulse 1.6s infinite}
+@keyframes udpulse{0%{box-shadow:0 0 0 2px #12161c,0 0 0 2px rgba(230,126,34,.7)}70%{box-shadow:0 0 0 2px #12161c,0 0 0 9px rgba(230,126,34,0)}
+100%{box-shadow:0 0 0 2px #12161c,0 0 0 2px rgba(230,126,34,0)}}
+.umenu .unotif{display:flex;align-items:flex-start;gap:10px;width:calc(100% - 16px);margin:2px 8px 6px;padding:10px 12px;
+border-radius:10px;background:#fff6ec;border:1px solid #f6d3ad;color:#33322f;font:inherit;text-align:left;cursor:pointer;text-decoration:none}
+.umenu .unotif:hover,.umenu .unotif:focus{background:#ffedd9;outline:none}
+.umenu .unotif .unic{flex:none;width:30px;height:30px;border-radius:50%;background:#e67e22;color:#fff;display:flex;align-items:center;justify-content:center}
+.umenu .unotif .unic svg{color:#fff}
+.umenu .unotif .untx{min-width:0}
+.umenu .unotif b{display:block;font-size:13.5px;color:#8a4b0f}
+.umenu .unotif small{display:block;font-size:12px;color:#6b6a66;margin-top:2px;line-height:1.35}
 .updov{display:none;position:fixed;inset:0;background:rgba(11,11,11,.5);z-index:120;align-items:center;justify-content:center;padding:24px}
 .updov .updbox{position:relative;background:#fff;color:#0b0b0b;border-radius:14px;max-width:560px;width:100%;max-height:calc(100vh - 48px);overflow:auto;padding:22px 24px;box-shadow:0 14px 50px rgba(0,0,0,.4)}
 .updov .updx{position:absolute;top:8px;right:8px;border:0;background:#eceae6;width:30px;height:30px;border-radius:50%;font-size:19px;line-height:1;cursor:pointer;z-index:3}
@@ -9560,7 +9575,6 @@ min-height:30px}
        font-weight:600;white-space:nowrap}
  .nav .out{margin-left:8px;padding:7px 12px;font-size:14px}
  .nav .ubtn{margin-left:8px}
- .nav .updbtn{margin-left:8px;padding:7px 11px;font-size:13px}
  .askov,.updov{padding:14px}
  .empbar .empwrap{padding:6px 14px}
  /* base compartida: margen lateral comodo en movil para TODOS los apartados
@@ -9876,7 +9890,7 @@ def act_buscar_ahora():
 
 def _act_hilo():
     """Hilo de fondo (lo arranca el refrescador, como el de la GeoIP): pregunta a GitHub como
-    mucho cada 30 min si hay algo nuevo en main, para que el boton de la barra salga solo. En el
+    mucho cada 30 min si hay algo nuevo en main, para que el aviso del menu salga solo. En el
     original lo disparaba la navegacion de un admin; aqui no va en la pagina, que no espera."""
     while not _PARAR.is_set():
         try:
@@ -9904,13 +9918,19 @@ def _act_form(objetivo, fid, etiqueta="&#8681; Actualizar ahora", clase="updgo")
             f"<input type=hidden name=commit value='{html.escape(objetivo)}'>"
             f"<button class={clase} type=submit>{etiqueta}</button></form>")
 
+_IC_ACT = ('<svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="currentColor" '
+           'd="M5 20h14v-2H5v2zM19 9h-4V3H9v6H5l7 7 7-7z"/></svg>')
+
 def _actualizacion_nav():
-    """(boton, ventana) de la barra para el admin, como en el original: «Actualizacion» con el
-    punto que late cuando hay commits nuevos en main, y su ventana con las novedades. Mientras se
-    actualiza, «Actualizando…» lleva al avance."""
+    """(aviso, ventana) para el admin: el aviso va en el menu del usuario como la notificacion de
+    una app («Actualizacion disponible», y el punto sobre su foto) cuando hay commits nuevos en main;
+    abre la ventana con las novedades, la del original. Mientras se actualiza, el aviso lleva al
+    avance. ("", "") si no hay nada que avisar."""
     try:
         if actualizaciones.en_curso(act_avance()):
-            return ("<a class=updbtn href='/actualizando'><span class=uddot></span>Actualizando&hellip;</a>", "")
+            return ("<a role=menuitem class=unotif href='/actualizando'><span class=unic>" + _IC_ACT + "</span>"
+                    "<span class=untx><b>Actualizando el panel&hellip;</b><small>Pulsa para ver el avance.</small>"
+                    "</span></a>", "")
         b = act_busqueda()
     except Exception:
         return "", ""
@@ -9924,9 +9944,16 @@ def _actualizacion_nav():
         resto = 0
     if resto:
         items += f"<li>y {resto} cambio(s) más.</li>"
-    boton = ("<button type=button class=updbtn "
-             "onclick=\"document.getElementById('updov').style.display='flex'\">"
-             "<span class=uddot></span>Actualizaci&oacute;n</button>")
+    try:
+        n = int(b.get("n") or 0)
+    except (TypeError, ValueError):
+        n = 0
+    detalle = (f"{n} cambio(s) nuevo(s)" if n else "Hay una versión nueva") + ": pulsa para ver las mejoras."
+    aviso = ("<button type=button role=menuitem class=unotif "
+             "onclick=\"var m=document.getElementById('umenu');if(m)m.hidden=true;"
+             "document.getElementById('updov').style.display='flex'\">"
+             "<span class=unic>" + _IC_ACT + "</span><span class=untx><b>Actualizaci&oacute;n disponible</b>"
+             f"<small>{html.escape(detalle)}</small></span></button>")
     ventana = (
         "<div id=updov class=updov onmousedown=\"this._dn=event.target\" onclick=\"if(event.target===this&&this._dn===this){this.style.display='none'}\">"
         "<div class=updbox role=dialog aria-modal=true aria-labelledby=updtit>"
@@ -9937,7 +9964,7 @@ def _actualizacion_nav():
         "(VPN y Suricata) no se tocan. Mejoras incluidas:</p>"
         f"<ul class=updlist>{items}</ul>"
         + _act_form(b["objetivo"], "updform_nav") + "</div></div>")
-    return boton, ventana
+    return aviso, ventana
 
 def _act_hora(ts):
     try:
@@ -10141,7 +10168,7 @@ def tarjeta_version():
         filas = "".join(
             f"<tr><td class=c1>{'<span class=vnew>Nuevo</span>' if c.get('nuevo') else ''}</td>"
             f"<td class=c2>{esc(c.get('sha', ''))}</td><td>{esc(c.get('asunto', ''))}</td>"
-            f"<td class=c3>{esc(c.get('fecha', ''))}</td></tr>" for c in hist)
+            f"<td class=c3>{esc(fecha_ec(c.get('fecha', ''), '%d/%m/%Y'))}</td></tr>" for c in hist)
         cuerpo_hist = f"<table class=verchgt><tbody>{filas}</tbody></table>"
     else:
         cuerpo_hist = ("<p class=sub2 style='padding:12px;margin:0'>Sin historial todavía. Pulsa "
@@ -10159,7 +10186,7 @@ def tarjeta_version():
         f"{esc(str((est.get('reglas') or {}).get('current') or 'sin dato'))}</div></div>{badge}</div>"
         "<div class=verblk><div class=verlbl>Último cambio en GitHub</div>"
         f"<div class=vermsg>{esc(b.get('ultimo') or '') or 'Pulsa <b>Buscar actualizaciones</b> para consultar GitHub.'}"
-        + (f" <span class=hint>({esc(b.get('fecha'))})</span>" if b.get("fecha") else "") + "</div></div>"
+        + (f" <span class=hint>({esc(fecha_ec(b.get('fecha')))})</span>" if b.get("fecha") else "") + "</div></div>"
         "<hr class=versep>" + estado + aviso_err + lista_mej + acciones + _act_ultima(av) + tabla
         + "<p class=sub2 style='margin-top:14px;color:#8a8a86'>Actualiza el <b>panel</b> y el "
         "<b>orquestador</b> a la última versión de la rama main de GitHub: el servidor descarga el "
@@ -10181,12 +10208,12 @@ def nav(active=""):
         parts.append(f'<a href="{h}" class="{cls}">{t}</a>')
     brand = '<span class="brand"><img class="applogo" src="/logo.png" alt="Suricata">Estadísticas Suricata</span>'
     selector = _selector_nodo(active)
-    _ubtn, _upanel = _menu_usuario()
-    # «Actualizacion» (solo admin): sale cuando hay commits nuevos en main, como en el original
-    _upd_btn, _upd_ventana = _actualizacion_nav() if es_admin_nav else ("", "")
+    # «Actualizacion disponible» (solo admin): aviso dentro del menu del usuario, como en una app
+    _upd_aviso, _upd_ventana = _actualizacion_nav() if es_admin_nav else ("", "")
+    _ubtn, _upanel = _menu_usuario(aviso=_upd_aviso)
     navbar = ('<div class="nav"><div class="navwrap">' + brand + '<span class="push"></span>'
               + "".join(parts) + '<span class="push"></span>'
-              + _upd_btn + _THEME_BTN + _ubtn + _BURGER_BTN + '</div></div>' + _upanel + _upd_ventana
+              + _THEME_BTN + _ubtn + _BURGER_BTN + '</div></div>' + _upanel + _upd_ventana
               # el modal de confirmacion/aviso: sustituye a confirm() y alert() del navegador
               + _ASK)
     # franja de debajo: a la izquierda el selector de nodo; a la derecha la marca de la empresa
@@ -10225,8 +10252,11 @@ _MU_JS = ("<script>(function(){var m=document.getElementById('umenu'),b=document
           "o.textContent=p(Math.floor(s/3600))+':'+p(Math.floor(s%3600/60))+':'+p(s%60);"
           "if(s<=0){location.href='/login';return;}setTimeout(tic,1000);})();})();</script>")
 
-def _menu_usuario():
+def _menu_usuario(aviso=""):
     """(boton, panel) del menu del usuario, a la derecha de la barra; sustituye al boton Salir.
+
+    `aviso` (solo admin: «Actualizacion disponible», _actualizacion_nav) va el primero del panel,
+    como la notificacion de una app, y pone un punto que late sobre la foto del boton.
 
     El boton es la foto (o las iniciales) + el nombre + una flecha; el panel trae Mi cuenta,
     Cambiar contrasena, Cerrar sesion y cuanto le queda a la sesion (12 h fijas desde el
@@ -10256,14 +10286,17 @@ def _menu_usuario():
     disp = html.escape(nombre or yo)
     tit = html.escape((nombre + " (" + yo + ")") if nombre else yo)
     resta = int((getattr(CTX, "exp", 0) or 0) - time.time())
+    if aviso:
+        tit += " &middot; tienes un aviso"
+    punto = '<span class="unotifdot" aria-hidden="true"></span>' if aviso else ""
     boton = (f'<button type="button" class="ubtn" id="ubtn" aria-haspopup="menu" aria-expanded="false" '
-             f'aria-controls="umenu" title="{tit}">{av}<span class="un">{disp}</span>'
+             f'aria-controls="umenu" title="{tit}">{av}{punto}<span class="un">{disp}</span>'
              '<span class="uc">&#9662;</span></button>')
     panel = (f'<div class="umenu" id="umenu" role="menu" hidden>'
              f'<div class="uhd">{av}<div><div class="uhn">{disp}</div>'
              # el nombre de arriba es el que se muestra; para entrar vale el usuario
              + f'<div class="uhr">Usuario: {html.escape(yo)}' + (f' &middot; {rol}' if rol else "")
-             + '</div></div></div>'
+             + '</div></div></div>' + aviso +
              f'<a role="menuitem" href="/ajustes#cuenta">{_MU_CUENTA}Mi cuenta</a>'
              f'<a role="menuitem" href="/ajustes#clave">{_MU_CLAVE}Cambiar contrase&ntilde;a</a>'
              f'<a role="menuitem" class="usal" href="/logout">{_MU_SALIR}Cerrar sesi&oacute;n</a>'
@@ -14114,9 +14147,11 @@ sin guardar, y para quitarlo se escribe <code>BORRAR</code>. Para que el enlace 
 clicable, el servidor tiene que declarar la URL pública del panel (<code>IDS_PANEL_URL</code>).</p>
 
 <!--CAT:Mantenimiento--><h2>Versión, actualizaciones y recuperación</h2>
-<p>Como en el panel original, el panel avisa solo cuando hay una versión nueva: al administrador le
-sale en la barra el botón naranja <b>Actualización</b>, con un punto que late. Al pulsarlo se ven las
-mejoras que trae (los cambios nuevos de GitHub) y <b>Actualizar ahora</b>.</p>
+<p>El panel avisa solo cuando hay una versión nueva, como la notificación de una app. Al administrador
+le sale un punto naranja que late sobre su foto, arriba a la derecha, y en su menú el aviso
+<b>Actualización disponible</b>. Al pulsarlo se ven las mejoras que trae (los cambios nuevos de GitHub)
+y <b>Actualizar ahora</b>. Mientras se actualiza, el aviso dice <b>Actualizando el panel…</b> y lleva al
+avance.</p>
 <p>En <b>Ajustes &rarr; Versión</b> está todo lo demás:</p>
 <ul>
 <li>la versión instalada, la del orquestador y las reglas en uso;</li>
@@ -18919,7 +18954,10 @@ class H(BaseHTTPRequestHandler):
             self.wfile.write(ft[1])
             return
         if path == "/ajustes":
-            return self._html(perfil_page())
+            # ?msg= es el codigo de un solo uso de ajustes_aviso_url (el resultado de una accion)
+            _qj = _up.parse_qs(self.path.split("?", 1)[1]) if "?" in self.path else {}
+            _av = rep_aviso_tomar(_qj.get("msg", [""])[0])      # (texto, {"ok": …})
+            return self._html(perfil_page(_av[0], ok=bool(_av[1].get("ok"))))
         if path in ("/actualizando", "/actualizacion.json"):
             if not self._admin():
                 return self._prohibido()   # actualizar el panel es de admin
@@ -19078,25 +19116,25 @@ class H(BaseHTTPRequestHandler):
                 return self._prohibido()
             _d = act_buscar_ahora()
             if _d.get("disponible"):
-                _m, _ok = "Hay una versión nueva disponible: la ves en Ajustes → Versión.", True
+                _m, _ok = "Hay una versión nueva disponible.", True
             elif _d.get("error"):
                 _m, _ok = "No se pudo consultar GitHub: %s." % _d["error"], False
             else:
                 _m, _ok = "Estás en la última versión.", True
-            return self._html(perfil_page(_m, ok=_ok))
+            return self._redirect(ajustes_aviso_url(_m, _ok))
         if ruta == "/actualizar-panel":
             # boton «Actualizar» (como el del original): lo hace el orquestador (sistema.actualizar)
             if not self._admin():
                 return self._prohibido()
             _c = (q.get("commit", [""])[0] or "").strip()
             if not actualizaciones.RE_SHA.match(_c):
-                return self._html(perfil_page("La versión pedida no es válida.", ok=False))
+                return self._redirect(ajustes_aviso_url("La versión pedida no es válida.", False))
             if actualizaciones.en_curso(act_avance()):
                 return self._redirect("/actualizando")
             _op, _r = act_pedir(_c)
             if _r.get("codigo") not in ("ACEPTADA", "OK"):
-                return self._html(perfil_page("No se pudo pedir la actualización. " + orq_textos.traducir(
-                    _r.get("codigo"), _r.get("mensaje"), _r.get("datos")), ok=False))
+                return self._redirect(ajustes_aviso_url("No se pudo pedir la actualización. " + orq_textos.traducir(
+                    _r.get("codigo"), _r.get("mensaje"), _r.get("datos")), False))
             return self._redirect("/actualizando?op=" + _op)
         if ruta == "/ventana":
             if not self._admin():

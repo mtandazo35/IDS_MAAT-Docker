@@ -90,7 +90,7 @@ class Modulo(unittest.TestCase):
         self.assertIn("/compare/%s...%s" % (VIEJO, NUEVO2), p.pedidas[1])
         self.assertEqual([(h["sha"], h["nuevo"]) for h in d["historial"]],
                          [(NUEVO2[:7], True), (NUEVO1[:7], True), (VIEJO[:7], False)])
-        self.assertEqual(d["historial"][0]["fecha"], "15/10/2026")
+        self.assertEqual(d["historial"][0]["fecha"], "2026-10-15T20:00:00Z")    # el panel la pasa a su hora
 
     def test_release_se_compara_por_su_etiqueta(self):
         p = github({"/commits?": LISTA, "/compare/": dict(COMPARA, base_commit={"sha": VIEJO})})
@@ -156,28 +156,43 @@ class Panel(unittest.TestCase):
         with open(os.path.join(self.p.tmp.name, "run", "actualizacion.json"), "w", encoding="utf-8", newline="\n") as f:
             json.dump(d, f)
 
+    def seguir(self, r):
+        """La pagina a la que redirige `r` (sin el #)."""
+        return self.get(r.cab("Location").split("#", 1)[0])
+
     def get(self, ruta, cookie=None):
         r = self.p.pedir("GET", ruta, cookie=cookie or self.ana)
         self.assertEqual(r.status, 200, r.texto[:300])
         return r.texto
 
-    def test_boton_y_ventana_solo_para_el_admin_con_novedades(self):
+    def test_aviso_en_el_menu_y_ventana_solo_para_el_admin_con_novedades(self):
+        """Como la notificacion de una app: dentro del menu del usuario, con el punto sobre su foto
+        (en la barra se montaba encima del resto, el user 2026-10-15), y abre la ventana de mejoras."""
         self.busqueda()
         t = self.get("/ajustes")
-        self.assertIn("class=updbtn", t)
+        menu = t[t.index('id="umenu"'):]
+        menu = menu[:menu.index("Cerrar sesi")]
+        self.assertIn("class=unotif", menu)
+        self.assertIn("Actualizaci&oacute;n disponible", menu)
+        self.assertIn("3 cambio(s) nuevo(s): pulsa para ver las mejoras.", menu)
+        self.assertIn("getElementById('updov').style.display='flex'", menu)
+        self.assertIn('class="unotifdot"', t[t.index('id="ubtn"') - 200:t.index('id="umenu"')])
+        self.assertNotIn("class=updbtn", t)                     # ya no hay boton suelto en la barra
         self.assertIn("id=updov", t)
         self.assertIn("<li>Panel: botón &lt;b&gt;Actualizar&lt;/b&gt;</li>", t)    # escapado
         self.assertIn("<li>y 1 cambio(s) más.</li>", t)
         self.assertRegex(t, r"action='/actualizar-panel'.*?name=commit value='%s'" % NUEVO2)
         self.assertIn("return ask(this,'Actualizar el panel y el orquestador'", t)
         o = self.get("/ajustes", self.olga)
-        self.assertNotIn("class=updbtn", o)
+        self.assertNotIn("class=unotif", o)
+        self.assertNotIn('class="unotifdot"', o)
         self.assertNotIn("id=updov", o)
 
     def test_al_dia_sin_boton_en_la_barra(self):
         self.busqueda(disponible=False, objetivo=VIEJO, mejoras=[], n=0)
         t = self.get("/ajustes")
-        self.assertNotIn("class=updbtn", t)
+        self.assertNotIn("class=unotif", t)
+        self.assertNotIn('class="unotifdot"', t)
         self.assertIn("Estás en la última versión", t)
         self.assertIn("Actualizar de todos modos", t)      # como en el original: siempre se puede forzar
 
@@ -194,7 +209,7 @@ class Panel(unittest.TestCase):
     def test_sin_buscar_todavia(self):
         t = self.get("/ajustes")
         self.assertIn("Aún no se ha buscado", t)
-        self.assertNotIn("class=updbtn", t)
+        self.assertNotIn("class=unotif", t)
 
     def test_ultima_actualizacion_y_fallos(self):
         self.busqueda(disponible=False, objetivo=NUEVO2)
@@ -225,8 +240,8 @@ class Panel(unittest.TestCase):
         for malo in ("", "main", "ABCDEF1", NUEVO2 + "0", "abc; rm -rf /"):
             with self.subTest(malo=malo):
                 r = self.p.pedir("POST", "/actualizar-panel", {"commit": malo}, cookie=self.ana)
-                self.assertEqual(r.status, 200)
-                self.assertIn("La versión pedida no es válida", r.texto)
+                self.assertEqual(r.status, 303)
+                self.assertIn("La versión pedida no es válida", self.seguir(r))
         self.assertEqual(self.p.orq.ordenes("sistema.actualizar"), [])
         for ruta in ("/actualizando", "/actualizacion.json"):
             self.assertEqual(self.p.pedir("GET", ruta, cookie=self.olga).status, 403, ruta)
@@ -238,7 +253,8 @@ class Panel(unittest.TestCase):
         self.assertIn("/actualizando", r.cab("Location"))
         self.assertEqual(self.p.orq.ordenes("sistema.actualizar"), [])
         t = self.get("/ajustes")
-        self.assertIn("href='/actualizando'><span class=uddot></span>Actualizando", t)   # la barra lleva al avance
+        self.assertIn("<a role=menuitem class=unotif href='/actualizando'>", t)   # el aviso lleva al avance
+        self.assertIn("Actualizando el panel&hellip;", t)
 
     def test_avance_en_json_y_pagina(self):
         self.avance()
@@ -265,8 +281,11 @@ class Panel(unittest.TestCase):
         t = time.time() + 5
         os.utime(est, (t, t))
         r = self.p.pedir("POST", "/buscar-actualizacion", {}, cookie=self.ana)
-        self.assertEqual(r.status, 200, r.texto[:300])
-        self.assertIn("Hay una versión nueva disponible", r.texto)
+        # vuelve a Ajustes → Versión con el aviso (recargar ya no repite la busqueda: el user)
+        self.assertEqual(r.status, 303, r.texto[:300])
+        self.assertRegex(r.cab("Location"), r"^/ajustes\?msg=[A-Za-z0-9_-]+#update$")
+        self.assertIn("Hay una versión nueva disponible", self.seguir(r))
+        self.assertNotIn("Hay una versión nueva disponible", self.get(r.cab("Location").split("#")[0]))   # un solo uso
         self.assertEqual(A.leer_busqueda(self.p.nodos.ESTADO)["objetivo"], NUEVO2)
         self.assertEqual(self.p.pedir("POST", "/buscar-actualizacion", {}, cookie=self.olga).status, 403)
 

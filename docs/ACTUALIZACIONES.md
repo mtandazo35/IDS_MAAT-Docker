@@ -94,8 +94,15 @@ que actualice el **panel y el orquestador**, sin tocar los puntos, y que salga d
 
 **En el panel** (solo admin), igual que en suricata-ids-lab:
 
-- En la barra sale el botón naranja **Actualización** cuando hay commits nuevos en `main`. Abre
-  una ventana con las novedades (los asuntos de los commits nuevos) y **Actualizar ahora**.
+- Cuando hay commits nuevos en `main`, avisa como la notificación de una app:
+  - sale un punto naranja que late sobre la foto del menú del usuario;
+  - dentro del menú, la tarjeta **Actualización disponible** («N cambios nuevos»);
+  - la tarjeta abre una ventana con las novedades (los asuntos de los commits nuevos) y
+    **Actualizar ahora**.
+
+  Al principio era un botón suelto en la barra, y el dueño pidió que fuera dentro del menú porque
+  se montaba encima del resto. Mientras se actualiza, el aviso dice «Actualizando el panel…» y
+  lleva al avance.
 - **Ajustes → Versión** muestra:
   - lo instalado;
   - si hay algo nuevo;
