@@ -1859,9 +1859,8 @@ def _cuerpo_fin(d, vm):
             if renovado:
                 cuerpo += aviso("El servidor renovó además su certificado: antes, pega en el router las líneas "
                                 "de la CA del VPS del bloque de abajo.", "amb")
-        cuerpo += ("<h2>Comandos para el MikroTik</h2><p class=hint>Ya llevan la clave de la VPN. "
-                   "<code>&lt;CLAVE-API&gt;</code> es la clave que elijas para el usuario de la API del router; "
-                   "después ponla en la ficha del punto (API).</p>")
+        cuerpo += ("<h2>Comandos para el MikroTik</h2><p class=hint>Ya llevan la clave de la VPN: "
+                   "solo crean la VPN.</p>")
         cuerpo += comandos_html(r.get("comandos", ""), vm.get("ros_version"), "op")
     elif vm.get("orden") == "punto.crear" and (r.get("ya_entregada") or vm.get("ya_existia")):
         cuerpo += aviso("Ese punto ya existía con los mismos datos. Los comandos para el MikroTik están en la "
@@ -2578,7 +2577,7 @@ def ficha(h, pid, mensaje="", codigo=200, ok=False, extra_espejo=""):
                          "amb")
     elif puesta:
         vpn_html = ("<p class=hint>Llevan la clave de la VPN puesta: cópialos y pégalos en el router tal cual. "
-                    "<code>&lt;CLAVE-API&gt;</code> es la clave que elijas para el usuario de la API del router.</p>"
+                    "Solo crean la VPN.</p>"
                     "<details><summary>El router ya tiene <code>ids-vpn</code> (por ejemplo, con la clave "
                     "mal puesta): basta con esta orden</summary>%s</details>"
                     % _bloque("ficha-set", "Cambiar la clave en el MikroTik", orden_set_clave(puesta))

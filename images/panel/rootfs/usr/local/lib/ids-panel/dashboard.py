@@ -13410,12 +13410,16 @@ contexto, no por una sola firma). Desde ahí, con un botón, el panel empuja la 
 (8729) a través del túnel de su punto.</p>
 
 <h3>1) La API del router y su usuario</h3>
-<p>Los comandos de la ficha del punto (bloque VPN) crean el usuario <code>ids-api</code>, que solo puede
-entrar desde el sensor y por el túnel, y no tocan la <b>API-SSL</b> del router: va <b>sin certificado</b>
-(ver «La API del router: API-SSL sin certificado»). El script no abre la API a internet ni a tu LAN.</p>
+<p>Los comandos de la ficha del punto (bloque VPN) <b>solo crean la VPN</b>: no crean ningún usuario
+en el router ni tocan su <b>API-SSL</b>. Si quieres que el panel hable con el router por la API, crea
+tú en el router un usuario que solo pueda entrar desde el sensor del punto (por el túnel), por ejemplo:</p>
+<pre>/user group add name=ids-api policy=read,write,api
+/user add name=ids-api group=ids-api address=&lt;IP del sensor&gt;/32 password=&lt;CLAVE-API&gt;</pre>
+<p>La IP del sensor es la <code>.1</code> de la red del túnel del punto (ficha → Resumen). La API-SSL
+va <b>sin certificado</b> (ver «La API del router: API-SSL sin certificado»).</p>
 
 <h3>2) La clave del usuario API</h3>
-<p>La eliges tú (<code>&lt;CLAVE-API&gt;</code> en los comandos) y la pones en la ficha del punto
+<p>La eliges tú al crear el usuario en el router y la pones en la ficha del punto
 (apartado <b>API</b>). Se guarda cifrada con la clave
 maestra del servidor y no se vuelve a mostrar.</p>
 

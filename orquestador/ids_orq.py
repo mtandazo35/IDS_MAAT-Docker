@@ -835,15 +835,12 @@ def comandos_mikrotik(p, nombre_dns, clave=None, ca_pem=None, aviso_cert=None):
     else:
         version = "declarado RouterOS v7"
         nota = "El bloque v6 solo conecta tras: ids-orq punto ajustar %s --ros 6" % pid
-    sensor = p["sensor"]
     ca = lineas_ca_mikrotik(pid, ca_pem if ca_pem is not None else leer_ca_pem())
-    # Sin reglas de firewall ni rutas en el router (el user, 2026-10-15: «eso no va»): el script
-    # solo crea la VPN y el usuario de la API. El firewall y las rutas del router son del operador.
-    # Tampoco certificado para la API-SSL (decision del dueno 2026-10-15): el panel habla con ella
-    # sin certificado y el script no toca /ip service api-ssl.
-    comun = (
-        "/user group add name=ids-api policy=read,write,api\n"
-        "/user add name=ids-api group=ids-api address=%s/32 password=<CLAVE-API>\n" % sensor)
+    # El script SOLO crea la VPN (la CA del VPS y el ovpn-client). Sin reglas de firewall ni rutas
+    # (el user, 2026-10-15: «eso no va»), sin certificado para la API-SSL (2026-10-15) y sin el
+    # usuario ni el grupo de la API (el user, 2026-10-16: «lo de la vpn está bien, toca sacar el user
+    # que crea»): el usuario de la API, si se quiere usar, lo crea el operador en el router.
+    comun = ""
     cabecera_aviso = "".join("# AVISO: %s\n" % x for x in (aviso_cert or "").splitlines() if x.strip())
     return (
         "# ids-maat %s (%s) · N=%s · puerto %s · túnel %s · %s\n"

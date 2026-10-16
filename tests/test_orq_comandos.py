@@ -17,7 +17,8 @@ CA_PRUEBA = "-----BEGIN CERTIFICATE-----\nMIIBszCCAVmgAwIBAgIU\nAbC+/9==\n-----E
 # verifica al servidor. La cabecera pide el reloj en hora (el certificado del servidor vale desde
 # 2 días antes de emitirse). Decisión del dueño (2026-10-15): el script NO lleva reglas de
 # firewall ni rutas (ni el aislamiento de ids-vpn ni la ruta blackhole); solo la CA, el ovpn-client
-# y el usuario de la API limitado al sensor. Decisión del dueño (2026-10-15): tampoco el certificado
+# (el usuario de la API tampoco desde 2026-10-16: lo crea el operador si quiere usar la API).
+# Decisión del dueño (2026-10-15): tampoco el certificado
 # API-SSL ids-promax; la API-SSL va sin certificado y el script no toca /ip service api-ssl.
 _CA_P003 = r"""# CA del VPS (pública): con ella el MikroTik verifica al servidor (verify-server-certificate)
 /file print file=ids-maat-ca-p003
@@ -27,9 +28,8 @@ _CA_P003 = r"""# CA del VPS (pública): con ella el MikroTik verifica al servido
 /certificate set [find name~"^ids-maat-ca-p003"] trusted=yes
 /file remove [find name="ids-maat-ca-p003.txt"]
 """
-_COMUN_P003 = r"""/user group add name=ids-api policy=read,write,api
-/user add name=ids-api group=ids-api address=100.64.3.1/32 password=<CLAVE-API>
-"""
+# el script solo crea la VPN: ni grupo ni usuario de la API (el user, 2026-10-16)
+_COMUN_P003 = ""
 V7_CONTRATO = r"""# ids-maat p003 (norte) · N=3 · puerto 1196 · túnel 100.64.3.0/24 · declarado RouterOS v7
 # El bloque v6 solo conecta tras: ids-orq punto ajustar p003 --ros 6
 # Antes de pegar: el reloj del router en hora (/system ntp client). El certificado del
@@ -114,6 +114,16 @@ class OvpnClient(unittest.TestCase):
             self.assertNotIn("/certificate sign", txt)
             self.assertNotIn("Certificado API-SSL", txt)
             self.assertEqual(txt.count("/certificate import"), 2)
+
+    def test_sin_usuario_de_la_api(self):
+        """Orden del user (2026-10-16: «lo de la vpn está bien, toca sacar el user que crea»): el script
+        solo crea la VPN; ni grupo ni usuario de la API ni su clave."""
+        for ros in (6, 7):
+            txt = comandos(self.mod, punto3(self.mod, ros_version=ros))
+            self.assertNotIn("/user", txt)
+            self.assertNotIn("ids-api", txt)
+            self.assertNotIn("CLAVE-API", txt)
+            self.assertEqual(txt.count("/interface ovpn-client add"), 2)
 
     def test_api_8728(self):
         """Sin reglas de firewall, el puerto de la API no sale en el script: con 8728 es el mismo
