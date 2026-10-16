@@ -38,8 +38,10 @@ services:
       - @@RAIZ@@/srv/ids/ctl/@@PID@@/vpn:/run/ids-ctl
     logging: { driver: journald, options: { tag: ids-vpn } }
     @@LINEA_CPUSET_VPN@@
-    mem_limit: @@MEM_VPN@@
-    memswap_limit: @@MEM_VPN@@
+    # memoria compartida (decision del user, 2026-10-16): sin tope duro; reserva blanda y la VPN
+    # protegida si el VPS se queda sin memoria (sin ella el punto queda ciego)
+    mem_reservation: @@MEM_VPN@@
+    oom_score_adj: -800
     pids_limit: 64
     healthcheck:
       test: ["CMD", "/usr/local/bin/salud-vpn"]
@@ -69,8 +71,10 @@ services:
       - @@RAIZ@@/srv/ids/ctl/@@PID@@/suricata:/run/suricata
     @@LINEA_CPUSET_SURICATA@@
     cpus: @@HILOS@@
-    mem_limit: @@MEM_SURICATA@@
-    memswap_limit: @@MEM_SURICATA@@
+    # memoria compartida: sin tope duro, reserva blanda (la de la admision). El freno de Suricata
+    # son sus memcaps; si aun asi el VPS se queda sin memoria, cae el primero (oom_score_adj alto)
+    mem_reservation: @@MEM_SURICATA@@
+    oom_score_adj: 500
     pids_limit: 256
     stop_grace_period: 30s
     healthcheck:

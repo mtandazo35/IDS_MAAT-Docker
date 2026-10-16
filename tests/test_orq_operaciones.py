@@ -60,7 +60,7 @@ class Operaciones(unittest.TestCase):
         self.assertEqual(r["codigo"], "OK", r)
         self.assertEqual(r["resultado"]["recreado"], ["suricata"])
         compose = self.e.ruta("/srv/ids/puntos/p001/compose.yml").read_text(encoding="utf-8")
-        self.assertIn("mem_limit: 1700m", compose)
+        self.assertIn("mem_reservation: 1700m", compose)
         self.assertIn('cpuset: "2-3"\n    cpus: 2', compose)
         yaml = self.e.ruta("/srv/ids/puntos/p001/suricata/suricata.yaml").read_text(encoding="utf-8")
         self.assertIn('HOME_NET: "[10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,100.64.0.0/10]"', yaml)

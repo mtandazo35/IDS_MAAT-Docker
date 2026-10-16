@@ -50,8 +50,10 @@ services:
       - /srv/ids/ctl/p003/vpn:/run/ids-ctl
     logging: { driver: journald, options: { tag: ids-vpn } }
     cpuset: "0-1"
-    mem_limit: 192m
-    memswap_limit: 192m
+    # memoria compartida (decision del user, 2026-10-16): sin tope duro; reserva blanda y la VPN
+    # protegida si el VPS se queda sin memoria (sin ella el punto queda ciego)
+    mem_reservation: 192m
+    oom_score_adj: -800
     pids_limit: 64
     healthcheck:
       test: ["CMD", "/usr/local/bin/salud-vpn"]
@@ -81,8 +83,10 @@ services:
       - /srv/ids/ctl/p003/suricata:/run/suricata
     cpuset: "2"
     cpus: 1
-    mem_limit: 900m
-    memswap_limit: 900m
+    # memoria compartida: sin tope duro, reserva blanda (la de la admision). El freno de Suricata
+    # son sus memcaps; si aun asi el VPS se queda sin memoria, cae el primero (oom_score_adj alto)
+    mem_reservation: 900m
+    oom_score_adj: 500
     pids_limit: 256
     stop_grace_period: 30s
     healthcheck:
@@ -169,6 +173,24 @@ class Compose(unittest.TestCase):
         txt = self.mod.render_compose(punto3(self.mod), self.imgs, "0.1.0", nc=4)
         self.assertNotIn("arp_ignore", txt)
 
+    def test_memoria_compartida_sin_tope_duro(self):
+        """Decision del user (2026-10-16): los contenedores comparten la memoria del VPS y compiten por ella.
+        Ningun servicio lleva mem_limit/memswap_limit (con 900 MiB fijos el Suricata de un punto con trafico
+        real moria cada ~5 min por OOM con 6 GB libres en el host); cada uno lleva su reserva blanda (la de
+        la admision) y, si el VPS se queda sin memoria, cae antes un Suricata que una VPN."""
+        for perfil, mb in (("reducido", 900), ("completo-low", 1300), ("completo", 1700)):
+            txt = self.mod.render_compose(punto3(self.mod, perfil=perfil), self.imgs, "0.1.0", nc=8)
+            self.assertNotIn("mem_limit", txt, perfil)
+            self.assertNotIn("memswap_limit", txt, perfil)
+            vpn, sur = txt.split("\n  suricata:\n", 1)
+            self.assertIn("    mem_reservation: 192m\n", vpn)
+            self.assertIn("    mem_reservation: %dm\n" % mb, sur)
+            adj_vpn = int(re.search(r"oom_score_adj: (-?\d+)", vpn).group(1))
+            adj_sur = int(re.search(r"oom_score_adj: (-?\d+)", sur).group(1))
+            self.assertGreater(adj_sur, 0)                 # el Suricata cae primero
+            self.assertLess(adj_vpn, 0)                    # la VPN, la ultima
+            self.assertLess(adj_vpn, adj_sur)
+
     def test_pocas_cpu_omite_cpuset(self):
         txt = self.mod.render_compose(punto3(self.mod, cpuset_suricata=None), self.imgs, "0.1.0", nc=2)
         self.assertNotIn("cpuset", txt)
@@ -177,8 +199,8 @@ class Compose(unittest.TestCase):
     def test_perfil_completo_y_8728(self):
         txt = self.mod.render_compose(punto3(self.mod, perfil="completo", hilos=2, api_puerto=8728,
                                              cpuset_suricata="2-3"), self.imgs, "0.1.0", nc=8)
-        self.assertIn("mem_limit: 1700m", txt)
-        self.assertIn("memswap_limit: 1700m", txt)
+        self.assertIn("    mem_reservation: 1700m\n", txt)
+        self.assertNotIn("mem_limit", txt)            # memoria compartida: sin tope duro
         self.assertIn('API_PUERTO: "8728"', txt)
         self.assertIn('cpuset: "2-3"\n    cpus: 2\n', txt)
 
@@ -297,7 +319,7 @@ class SuricataYaml(unittest.TestCase):
         for esperado in ("sensor-name: p003", 'HOME_NET: "[10.0.0.0/24,192.168.88.0/24]"',
                          "default-rule-path: /reglas/current/reducido", "cluster-id: 103", "mpm-algo: hs",
                          "spm-algo: hs", "profile: medium", "ring-size: 1024", "block-size: 131072",
-                         "snaplen: 32768", "reassembly: {memcap: 256mb}"):
+                         "snaplen: 32768", "reassembly: {memcap: 128mb}"):
             self.assertIn(esperado, txt)
         sin_hs = self.mod.valores_suricata("p003", "[10.0.0.0/24]", "/reglas/current/completo", 3, 2,
                                            "completo-low", False)

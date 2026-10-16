@@ -70,10 +70,14 @@ class ComposeCore(Base):
         self.assertNotIn(A.TOKEN, txt)               # el token va por fichero, nunca en el compose
 
     def test_memoria_igual_a_la_reserva_de_la_admision(self):
+        """Memoria compartida (decision del user, 2026-10-16): el panel no tiene tope duro; su reserva
+        blanda es la de la admision y esta protegido frente a los Suricata si el VPS se queda sin memoria."""
         txt = self.render()
         mem = "%dm" % self.mod.RESERVA_PANEL_MB
-        self.assertIn("    mem_limit: %s\n" % mem, txt)
-        self.assertIn("    memswap_limit: %s\n" % mem, txt)
+        self.assertIn("    mem_reservation: %s\n" % mem, txt)
+        self.assertIn("    oom_score_adj: -500\n", txt)
+        self.assertNotIn("mem_limit", txt)
+        self.assertNotIn("memswap_limit", txt)
         self.assertEqual(self.mod.RESERVA_PANEL_MB, 1536)           # CONTRATO-F2 §6
         # la admisión de un punto ya descuenta esa reserva aunque no haya panel
         self.assertEqual(self.mod.memoria_comprometida([]), self.mod.RESERVA_HOST_MB + self.mod.RESERVA_PANEL_MB)

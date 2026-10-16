@@ -57,14 +57,14 @@ RE_MARCADOR = re.compile(r"@@([A-Z0-9_]+)@@")
 # Perfiles (§4.6.2). La tabla vive SOLO aquí.
 PERFILES = {
     "reducido": {"reglas": "reducido", "detect": "medium", "sgh": "auto",
-                 "flow": "64mb", "stream": "64mb", "reassembly": "256mb", "defrag": "32mb",
-                 "mem_limit": 900},
+                 "flow": "64mb", "stream": "64mb", "reassembly": "128mb", "defrag": "32mb",
+                 "reserva_mb": 900},
     "completo-low": {"reglas": "completo", "detect": "low", "sgh": "single",
-                     "flow": "64mb", "stream": "64mb", "reassembly": "256mb", "defrag": "32mb",
-                     "mem_limit": 1300},
+                     "flow": "64mb", "stream": "64mb", "reassembly": "128mb", "defrag": "32mb",
+                     "reserva_mb": 1300},
     "completo": {"reglas": "completo", "detect": "medium", "sgh": "auto",
-                 "flow": "64mb", "stream": "64mb", "reassembly": "256mb", "defrag": "32mb",
-                 "mem_limit": 1700},
+                 "flow": "64mb", "stream": "64mb", "reassembly": "128mb", "defrag": "32mb",
+                 "reserva_mb": 1700},
 }
 PERFIL_DEFECTO = "reducido"
 MEM_VPN_MB = 192
@@ -541,13 +541,13 @@ def cpuset_suricata(nc, hilos, ocupadas):
 
 
 def coste_punto(perfil, hilos):
-    return PERFILES[perfil]["mem_limit"] + MEM_VPN_MB + ANILLO_MB_POR_HILO * hilos
+    return PERFILES[perfil]["reserva_mb"] + MEM_VPN_MB + ANILLO_MB_POR_HILO * hilos
 
 
 def memoria_comprometida(puntos):
     """puntos: lista de (perfil, hilos). Fórmula de INSTANCIA §10.3."""
     total = sum(coste_punto(pf, h) for pf, h in puntos)
-    reserva_t = max([PERFILES[pf]["mem_limit"] for pf, _ in puntos] or [0])
+    reserva_t = max([PERFILES[pf]["reserva_mb"] for pf, _ in puntos] or [0])
     return total + reserva_t + RESERVA_HOST_MB + RESERVA_PANEL_MB
 
 
@@ -555,7 +555,7 @@ def cabe(puntos, nuevo, mem):
     pf, h = nuevo
     if memoria_comprometida(puntos + [nuevo]) > mem["total"]:
         return False
-    return mem["disponible"] >= PERFILES[pf]["mem_limit"] + MARGEN_DISPONIBLE_MB
+    return mem["disponible"] >= PERFILES[pf]["reserva_mb"] + MARGEN_DISPONIBLE_MB
 
 
 def caben(puntos, mem):
@@ -567,7 +567,7 @@ def caben(puntos, mem):
             nuevo = (pf, 1)
             if memoria_comprometida(lista + [nuevo]) > mem["total"]:
                 break
-            if mem["disponible"] - k * coste_punto(pf, 1) < PERFILES[pf]["mem_limit"] + MARGEN_DISPONIBLE_MB:
+            if mem["disponible"] - k * coste_punto(pf, 1) < PERFILES[pf]["reserva_mb"] + MARGEN_DISPONIBLE_MB:
                 break
             lista.append(nuevo)
             k += 1
@@ -632,7 +632,7 @@ def render_compose(p, imgs, version, nc, raiz_host="/"):
         "TZSP_PUERTO": TZSP_PUERTO, "TZSP_BYTES": TZSP_BYTES, "ESPERA_MON": IDS_ESPERA_MON_S,
         "IMAGEN_VPN": imgs["vpn"], "IMAGEN_SURICATA": imgs["suricata"], "VERSION": version,
         "RAIZ": prefijo, "HILOS": p["hilos"],
-        "MEM_SURICATA": "%dm" % PERFILES[p["perfil"]]["mem_limit"], "MEM_VPN": "%dm" % MEM_VPN_MB,
+        "MEM_SURICATA": "%dm" % PERFILES[p["perfil"]]["reserva_mb"], "MEM_VPN": "%dm" % MEM_VPN_MB,
         "SUBRED": p["subred"],
     }
     lineas = {
@@ -3456,7 +3456,7 @@ class Orquestador:
 
     def reserva_T(self, perfiles_extra=()):
         usados = [p["perfil"] for p in self.puntos()] + list(perfiles_extra)
-        return max([PERFILES[x]["mem_limit"] for x in usados] or [PERFILES[PERFIL_DEFECTO]["mem_limit"]])
+        return max([PERFILES[x]["reserva_mb"] for x in usados] or [PERFILES[PERFIL_DEFECTO]["reserva_mb"]])
 
     def instalar_cert(self, pid, nombre_dns):
         """Certificado de servidor nuevo del punto (con NOMBRE_DNS en CN y SAN) y copia al
@@ -3490,7 +3490,7 @@ class Orquestador:
         d = {"pid": p["pid"], "n": p["n"], "puerto": p["puerto"], "tun_net": p["tun_net"],
              "usuario": p["usuario"], "nombre": p["nombre"], "perfil": p["perfil"],
              "hilos": p["hilos"], "cpuset": p.get("cpuset_suricata"),
-             "mem_limit": "%dm" % PERFILES[p["perfil"]]["mem_limit"],
+             "reserva": "%dm" % PERFILES[p["perfil"]]["reserva_mb"],
              "comandos": self.comandos(p, cfg.nombre_dns), "clave_id": huella_clave_vpn(p["pid"])}
         if ya:
             d["ya_entregada"] = True
@@ -3787,7 +3787,7 @@ class Orquestador:
             ctx.mensaje = "sin cambios"
             return {"recreado": []}
         imgs = imagenes()
-        sube = (PERFILES[nuevo["perfil"]]["mem_limit"] > PERFILES[p["perfil"]]["mem_limit"]
+        sube = (PERFILES[nuevo["perfil"]]["reserva_mb"] > PERFILES[p["perfil"]]["reserva_mb"]
                 or nuevo["hilos"] > p["hilos"])
         activo = p["deseado"] == "activo"
         ctx.total = ((1 if sube else 0) + (2 if cambia_motor else 1 if cambia_home else 0)
@@ -4136,7 +4136,7 @@ class Orquestador:
                 ctx.registrar("release %s" % ts)
         info_tmpl = None
         perfiles = sorted({x["perfil"] for x in self.puntos()} | {"reducido", "completo"})
-        reserva = max(PERFILES[x]["mem_limit"] for x in perfiles)
+        reserva = max(PERFILES[x]["reserva_mb"] for x in perfiles)
         try:
             with ctx.paso("plantilla"):
                 info_tmpl = plantilla_suricata(imagen)
@@ -4472,8 +4472,8 @@ def formato_creado(d):
         "  puerto       %s/tcp" % d["puerto"],
         "  túnel        %s (sensor %s, MikroTik %s)" % (d["tun_net"], d["tun_net"].rsplit(".", 1)[0] + ".1",
                                                        d["tun_net"].rsplit(".", 1)[0] + ".2"),
-        "  perfil       %s · hilos %s · cpuset %s · mem_limit %s" % (d["perfil"], d["hilos"],
-                                                                    d.get("cpuset") or "-", d["mem_limit"]),
+        "  perfil       %s · hilos %s · cpuset %s · reserva %s" % (d["perfil"], d["hilos"],
+                                                                  d.get("cpuset") or "-", d["reserva"]),
         "  usuario VPN  %s" % d["usuario"],
         ("  clave VPN    %s      ← se muestra UNA sola vez" % d["clave"]) if d.get("clave")
         else "  clave VPN    (ya entregada; para una nueva: ids-orq punto vpn-regenerar %s)" % d["pid"],

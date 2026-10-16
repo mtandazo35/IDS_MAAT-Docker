@@ -160,7 +160,7 @@ class Cli(unittest.TestCase):
         self.assertRegex(lineas[14], r"^  \[14/14\] esperar salud \.+ ok")
         self.assertIn("OK punto p001 creado", out)
         self.assertIn("  túnel        100.64.1.0/24 (sensor 100.64.1.1, MikroTik 100.64.1.2)", out)
-        self.assertIn("  perfil       reducido · hilos 1 · cpuset 2 · mem_limit 900m", out)
+        self.assertIn("  perfil       reducido · hilos 1 · cpuset 2 · reserva 900m", out)
         clave = re.search(r"clave VPN    ([A-Za-z0-9]{24})      ← se muestra UNA sola vez", out).group(1)
         self.assertEqual(out.count("password=%s " % clave), 2)
         self.assertTrue(all(p["quien"].startswith("cli:") for p in self.tr.peticiones))

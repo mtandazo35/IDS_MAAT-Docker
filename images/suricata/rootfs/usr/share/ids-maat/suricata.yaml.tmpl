@@ -283,10 +283,14 @@ flow:
 vlan:
   use-for-tracking: true
 
+# Timeouts cortos a proposito: el espejo del MikroTik solo trae los primeros 10 KB de cada
+# conexion (connection-bytes=0-10000), asi que Suricata casi nunca ve el FIN/RST. Con 300 s cada
+# flujo y su reensamblado se quedaban 5 min en memoria: 124 692 flujos a ~3 800 paq/s y OOM del
+# contenedor cada ~5 min (205.235.2.157, 2026-10-16). Un flujo del que ya no llega nada no aporta.
 flow-timeouts:
   default:
     new: 30
-    established: 300
+    established: 60
     closed: 0
     bypassed: 100
     emergency-new: 10
@@ -295,8 +299,8 @@ flow-timeouts:
     emergency-bypassed: 50
   tcp:
     new: 60
-    established: 300
-    closed: 60
+    established: 60
+    closed: 10
     bypassed: 100
     emergency-new: 5
     emergency-established: 100
@@ -304,14 +308,14 @@ flow-timeouts:
     emergency-bypassed: 50
   udp:
     new: 30
-    established: 300
+    established: 60
     bypassed: 100
     emergency-new: 10
     emergency-established: 100
     emergency-bypassed: 50
   icmp:
     new: 30
-    established: 300
+    established: 60
     bypassed: 100
     emergency-new: 10
     emergency-established: 100
@@ -326,7 +330,7 @@ stream:
   bypass: yes
   reassembly:
     memcap: @@REASSEMBLY_MEMCAP@@
-    depth: 512kb
+    depth: 64kb              # con 10 KB por conexion no se llega a mas
     toserver-chunk-size: 2560
     toclient-chunk-size: 2560
     randomize-chunk-size: yes

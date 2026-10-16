@@ -25,8 +25,9 @@ services:
       - @@RAIZ@@/etc/ids-maat/orq_token:/run/secrets/orq_token:ro
       - @@RAIZ@@/etc/ids-maat/master.key:/run/secrets/master_key:ro
     logging: { driver: journald, options: { tag: ids-panel } }
-    mem_limit: @@MEM_PANEL@@
-    memswap_limit: @@MEM_PANEL@@
+    # memoria compartida: sin tope duro, reserva blanda; protegido frente a los Suricata
+    mem_reservation: @@MEM_PANEL@@
+    oom_score_adj: -500
     pids_limit: 128
     stop_grace_period: 15s
     healthcheck:
