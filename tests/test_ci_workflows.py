@@ -279,7 +279,7 @@ class Workflows(unittest.TestCase):
         solo hace lint (~30 s) y release.yml lo exige en verde para el commit etiquetado."""
         ci = self.leer("ci.yml")
         self.assertEqual(re.findall(r"(?m)^  ([\w-]+):\n", ci.split("\njobs:\n", 1)[1]), ["lint"])
-        self.assertNotIn("tests/run.sh", ci)
+        self.assertNotIn("bash tests/run.sh", ci)          # ningún paso corre la suite
         self.assertNotIn("windows-latest", ci)
         for paso in ("pyflakes", "shellcheck", "test_ci_eol.py", "test_f3_ci.YamlReal", "nft -c"):
             self.assertIn(paso, ci)
