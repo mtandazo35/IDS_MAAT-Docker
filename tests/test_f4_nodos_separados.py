@@ -610,6 +610,34 @@ class AuthKeyAbuseCh(Base):
         self.assertIsNone(self.d.feeds_auth_probar("hostfile")[0])
 
 
+class HistPodar(Base):
+    def test_recorta_el_top_sin_atascarse(self):
+        """Corrección de defecto (205.235.2.159, 2026-10-16): un abonado con miles de destinos en un día
+        dejaba hist_podar sin terminar (subconsulta correlacionada: el grupo se reordenaba por cada fila)
+        y el refrescador parado, sin informes nuevos en ningún punto. Ahora es una pasada: queda el top
+        HIST_TOP de cada (día, CPE, tipo) y el resto de grupos intacto."""
+        dia = time.strftime("%Y-%m-%d")
+        c = self.d._hist_con("p001")
+        try:
+            filas = [(dia, IP, "destino", "198.51.100.%d:%d" % (i % 250, i), i) for i in range(4000)]
+            filas += [(dia, "10.0.0.6", "destino", "192.0.2.%d" % i, 1) for i in range(3)]
+            filas += [(dia, IP, "firma", "firma %d" % i, 100 - i) for i in range(20)]
+            c.executemany("INSERT INTO detalle(dia,cpe,tipo,clave,n) VALUES(?,?,?,?,?)", filas)
+            c.commit()
+            t0 = time.time()
+            self.d.hist_podar(c)
+            dur = time.time() - t0
+            top = self.d.HIST_TOP
+            ns = sorted((r[0] for r in c.execute(
+                "SELECT n FROM detalle WHERE cpe=? AND tipo='destino'", (IP,))), reverse=True)
+            self.assertEqual(ns, list(range(3999, 3999 - top, -1)))          # los de mayor n
+            self.assertEqual(c.execute("SELECT COUNT(*) FROM detalle WHERE cpe='10.0.0.6'").fetchone()[0], 3)
+            self.assertEqual(c.execute("SELECT COUNT(*) FROM detalle WHERE tipo='firma'").fetchone()[0], top)
+            self.assertLess(dur, 3.0, "hist_podar tardó %.1f s con un grupo de 4000 filas" % dur)
+        finally:
+            c.close()
+
+
 class SoloElUltimoReporte(Entorno):
     def test_borra_las_instantaneas_viejas(self):
         """Capacidad nueva (el user quito «Reportes guardados», 2026-10-12): el generador deja solo el

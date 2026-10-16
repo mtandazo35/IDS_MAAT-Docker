@@ -15616,10 +15616,17 @@ def hist_podar(c=None, pid=None):
         c.execute("DELETE FROM resumen WHERE hora < ?", (corte_h,))
         c.execute("DELETE FROM detalle WHERE dia < ?", (corte_d,))
         c.execute("DELETE FROM firma_ts WHERE dia < ?", (corte_d,))
-        c.execute("""DELETE FROM detalle WHERE rowid NOT IN (
-                       SELECT rowid FROM detalle d2 WHERE d2.dia=detalle.dia
-                         AND d2.cpe=detalle.cpe AND d2.tipo=detalle.tipo
-                       ORDER BY n DESC LIMIT ?)""", (HIST_TOP,))
+        # el top de cada (dia, cpe, tipo) con una ventana, en una sola pasada. La version anterior
+        # (rowid NOT IN una subconsulta correlacionada con ORDER BY n LIMIT) reordenaba el grupo
+        # entero por cada fila: con un abonado de 21 955 destinos en un dia no terminaba nunca (470 GB
+        # leidos de historial.db y el refrescador parado: sin informes nuevos en ningun punto,
+        # 205.235.2.159, 2026-10-16). Con ROW_NUMBER() esa misma base se recorta en 0,47 s.
+        c.execute("""DELETE FROM detalle WHERE rowid IN (
+                       SELECT rowid FROM (
+                         SELECT rowid, ROW_NUMBER() OVER (
+                           PARTITION BY dia, cpe, tipo ORDER BY n DESC, rowid) AS rn
+                         FROM detalle)
+                       WHERE rn > ?)""", (HIST_TOP,))
         c.commit()
     finally:
         if propia:
