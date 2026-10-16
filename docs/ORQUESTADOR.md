@@ -187,6 +187,13 @@ disponible» y no hacen nada.
   `docker run`/`docker create`/`compose up` del orquestador descarga nada (`--pull never`).
 - **Lo deseado frente a lo observado:** un punto `pausado` no se levanta.
 - **Salud funcional:** espejo que no llega a Suricata, o punto activo sin espejo.
+- **Logs sin reabrir.** Un Suricata `healthy` al que le falta `eve.json` o `dns.json` sigue
+  escribiendo en el rotado: el `postrotate` de logrotate no pudo pedir `reopen-log-files`, por
+  ejemplo porque el orquestador se reiniciaba en ese segundo. Sin reabrir, el punto no vuelve a
+  rotar y el rotado crece hasta llenar el disco. La supervisión le pide `reopen-log-files` como
+  mucho una vez por minuto y punto, y lo anota en `orq.jsonl` como `supervision.reabrir_logs`
+  (con `faltan` y `resultado`). Con el timer de logrotate cada 5 min ya no hay una hora de rotación
+  que evitar al cargar o al actualizar.
 
 ### 8.1 Retención de los eventos (CONTRATO-F2 §9)
 

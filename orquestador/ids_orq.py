@@ -86,6 +86,8 @@ N_MAX = 250
 ESPERA_SALUD_S = 300
 ESPERA_SALUD_MARGEN_S = 90
 CURA_ERROR_S = 180                   # un punto en `error` con todo healthy este tiempo vuelve a activo
+LOGS_VIVOS = ("eve.json", "dns.json")  # los que logrotate rota sin copytruncate (hay que reabrirlos)
+REABRIR_CADA_S = 60                  # como mucho una petición de reopen-log-files por punto y minuto
 STATUS_OVPN_VIEJO_S = 45             # OpenVPN reescribe openvpn-status.log cada 10 s (server.conf)
 MAX_LOG_OP = 100                     # líneas del log de una orden (log_tail), cada una de 500 como mucho
 LINEAS_LOG_FALLO = 40                # de `docker logs` por contenedor cuando falla la salud
@@ -2241,6 +2243,7 @@ class Orquestador:
         self._ultima_poda = 0.0
         self._threshold_fallido = {}     # pid -> {"ts", "mensaje"} hasta el siguiente que vaya bien
         self._sano_desde = {}            # pid en `error` -> desde cuándo (tick) tiene todo healthy
+        self._reabierto = {}             # pid -> cuándo (tick) se le pidió reabrir por faltarle un log
         self._alertas_cache = None       # alertas.json en memoria (se carga al primer uso, ver _alertas)
         self._alertas_marca = None       # cuándo (t) se guardó alertas.json por última vez
         self._alertas_lock = threading.Lock()    # estado.json se arma desde varios hilos
@@ -3014,7 +3017,40 @@ class Orquestador:
                     self.programar_reinicio(pid, parte, t)
         if self._curar_errores(est, t):
             est = self.escribir_estado()
+        try:
+            self._reabrir_logs_perdidos(est, t)
+        except Exception as e:  # noqa: BLE001 - nunca para la supervisión
+            log("reabrir logs: %r" % e)
         return est
+
+    def _reabrir_logs_perdidos(self, est, t):
+        """Un Suricata sano sin su eve.json o su dns.json sigue escribiendo en el rotado: el
+        postrotate de logrotate no pudo pedir `reopen-log-files` (el orquestador se reiniciaba en
+        ese segundo; con el timer cada 5 min ya no hay una hora que evitar). Sin reabrir, el punto
+        no vuelve a rotar y el rotado crece sin tope hasta llenar el disco. Como mucho una petición
+        por punto cada REABRIR_CADA_S. Devuelve los pid a los que se les pidió."""
+        pedidos = []
+        for pid, ep in est["puntos"].items():
+            su = (ep.get("contenedores") or {}).get("suricata") or {}
+            if ep.get("estado") not in ("activo", "error") or su.get("salud") != "healthy":
+                continue
+            datos = ruta("/srv/ids/datos/%s" % pid)
+            if not os.path.isdir(datos):
+                continue
+            faltan = [n for n in LOGS_VIVOS if not os.path.exists(os.path.join(datos, n))]
+            if not faltan or t - self._reabierto.get(pid, 0) < REABRIR_CADA_S:
+                continue
+            self._reabierto[pid] = t
+            pedidos.append(pid)
+            try:
+                suricata_comando(pid, "reopen-log-files")
+                res = "ok"
+            except Exception as e:  # noqa: BLE001
+                res = "fallo: %s" % getattr(e, "mensaje", e)
+            log("%s: Suricata sano sin %s: reopen-log-files %s" % (pid, ", ".join(faltan), res))
+            self._diario_linea({"ts": int(t), "evento": "supervision.reabrir_logs", "pid": pid,
+                                "faltan": faltan, "resultado": res})
+        return pedidos
 
     def _curar_errores(self, est, t):
         """Un punto en `error` (deseado activo) cuyos dos contenedores llevan CURA_ERROR_S seguidos
