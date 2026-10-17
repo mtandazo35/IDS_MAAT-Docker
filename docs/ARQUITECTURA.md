@@ -1,7 +1,8 @@
 # IDS_MAAT-Docker — Arquitectura
 
-- **Estado:** propuesta para revisión. No hay código todavía; este documento y sus anexos son el
-  contrato que seguirán quienes lo escriban.
+- **Estado:** el código ya existe (instalador, orquestador, imágenes `vpn` y `suricata`, panel; ver
+  el README). Este documento resume el diseño y sus decisiones, y sus anexos dicen lo que hace el
+  código; donde no coincidan, manda el código y el anexo se corrige.
 - **Fecha:** 2026-10-10.
 - **Base:** `suricata-ids-lab` @ `5b89110` (`install-suricata.sh`: panel `DASH`, generador `HREP`,
   receptor `tzsp-decap.py`, montaje del espejo `MKINIT`, `openvpn.sh`).
@@ -136,7 +137,7 @@ aprendido en `suricata-ids-lab` y de la auditoría del diseño.
 | `suricata.yaml` completo generado por punto, con memcaps e hilos fijos. Perfil de reglas por punto. | Dentro del contenedor, la RAM y las CPU que se ven son las del host. | [INSTANCIA](INSTANCIA.md) §6 |
 | Sin recarga en caliente: un cambio de reglas es un reinicio **en serie** de cada instancia. | No existe el pico de doble motor; la admisión es predecible. | [INSTANCIA](INSTANCIA.md) §11 |
 | Orquestador como servicio systemd del host, encerrado, con socket UNIX, `SO_PEERCRED`, token, órdenes fijas y **una cola única en serie**. | Es root de todos modos; la cola evita cerrojos y cargas simultáneas. | [ORQUESTADOR](ORQUESTADOR.md) |
-| CA común por VPS fuera de los contenedores, certificado de servidor por punto, usuario y clave con hash (scrypt), sin cuentas del sistema y sin CRL. | La seguridad del punto la dan sus credenciales; con `verify-client-cert none`, una CRL no hace nada. | [INSTANCIA](INSTANCIA.md) §7 |
+| CA común por VPS fuera de los contenedores, certificado de servidor por punto, usuario y clave con hash (scrypt), sin cuentas del sistema y sin CRL (VPN-11, abierto). | La seguridad del punto la dan sus credenciales; con `verify-client-cert none` no hay certificados de cliente que revocar. Tampoco se puede revocar el certificado de servidor: la baja borra su clave, no la revoca, y como los MikroTik verifican al servidor con la CA del VPS y todos los certificados de servidor llevan el nombre del VPS, una clave de servidor filtrada valdría hasta caducar (10 años) para suplantar a cualquier punto ante su router. | [INSTANCIA](INSTANCIA.md) §7 |
 | Tabla nft propia en el host, con freno de conexiones VPN, y tabla «solo datos» en cada netns. DOCKER-USER no se toca. | Convive con Docker y con su backend nftables. | [RED](RED-Y-FIREWALL.md) §7–8 |
 | Espejo siempre con `connection-bytes=0-10000` en ida y vuelta, sin regla de DNS aparte, y fasttrack ajustado sin ningún `accept` (el espejo nunca autoriza tráfico que el router rechazaba). | Incidente real: 100 Mbps de espejo para que Suricata usara 3 (97 % desperdiciado). | [RED](RED-Y-FIREWALL.md) §3 |
 | Healthcheck = procesos vivos (con latido). La falta de espejo es salud funcional. | Un punto pausado o sin tráfico no entra en reinicios en bucle. | [INSTANCIA](INSTANCIA.md) §8 |
@@ -258,14 +259,19 @@ Detalle, entidades, retenciones y secretos: [DATOS.md](DATOS.md).
     `Secure`/`__Host-` (con `X-Forwarded-Proto=https`). En cualquier otra conexión las ignora.
   - **Acceso de emergencia:** desde una red de gestión, por túnel SSH (`ssh -L`) al puerto del
     panel ([OPERACION.md](OPERACION.md) §4).
-- **Las dos listas las cambia solo el orquestador** (`acceso.aplicar`), que valida:
+- **Las listas se cambian volviendo a ejecutar `install.sh`** con su modo seguro (o, desde la
+  consola, `ids.conf` + `ids-orq fw-render --aplicar`, [OPERACION.md](OPERACION.md) §4).
+  `acceso.aplicar` es un diseño reservado del orquestador (contesta «no disponible»), que
+  validaría:
   - que el proxy por el que llega la petición sigue en su lista;
   - que no hay redes de gestión más anchas que /16 (para eso, la consola);
   - que no hay solape con los túneles ni con el pool de Docker;
   - `PasswordAuthentication no`.
 - **Modo seguro:** aplica, arma la reversión (5 min por defecto) y solo hace persistente el cambio
   si el admin confirma desde una conexión nueva. Un reinicio del VPS en la ventana equivale a
-  revertir. Recuperación: consola del proveedor y `acceso-emergencia.sh`.
+  revertir. Recuperación: consola del proveedor y `/root/ids-maat/revertir-acceso.sh` (solo existe
+  si la última ejecución de `install.sh` fue con modo seguro) o `ids.conf` +
+  `ids-orq fw-render --aplicar` ([OPERACION.md](OPERACION.md) §4).
 - **fail2ban:**
   - SSH, con `journalmatch` para Debian 13;
   - OpenVPN, con los logs en journald y el baneo en `forward`;
@@ -307,7 +313,7 @@ Detalle, entidades, retenciones y secretos: [DATOS.md](DATOS.md).
 Con 8 GB, el número de MikroTik por VPS lo limita **la RAM, no la CPU**, porque cada instancia
 carga su propio ruleset. Estimación, **a medir en el canario (F1a)**:
 
-| Perfil del punto | Reglas / detección | `mem_limit` de `suricata` (motor + memcaps + 20 %) | Puntos en 8 GB |
+| Perfil del punto | Reglas / detección | Reserva (`mem_reservation`) de `suricata` (motor + memcaps + 20 %; sin tope duro desde 2026-10-16) | Puntos en 8 GB |
 |---|---|---|---|
 | `reducido` (**por defecto en el alta**) | ~15–20k reglas útiles para un espejo de ISP | 0,6–0,9 GB | **5–7** |
 | `completo-low` | ET completo, `profile: low` | 1,0–1,3 GB | **3–4** |
@@ -360,7 +366,7 @@ La tabla completa está en [FASES-Y-CANARIO.md](FASES-Y-CANARIO.md) §3.
 | Desperdicio del espejo por un túnel TCP | `connection-bytes=0-10000` obligatorio y recorte en el receptor |
 | Choque con el CGNAT del ISP | base `100.64` o `198.18` elegida al instalar, validación al alta, diagnóstico periódico que deshabilita el mangle |
 | Romper el firewall de Docker (`flush ruleset`, `iptables-persistent`) | tablas propias; ninguno de los dos se instala |
-| Dejar fuera al dueño al cambiar el acceso | modo seguro, validaciones en el orquestador, consola, `acceso-emergencia.sh` y túnel SSH |
+| Dejar fuera al dueño al cambiar el acceso | modo seguro, validaciones en el orquestador, consola, `revertir-acceso.sh` (o `ids.conf` + `ids-orq fw-render --aplicar`) y túnel SSH |
 | Fuerza bruta contra OpenVPN | `meter` en el host, freno antes de scrypt, jaula `ids-vpn` |
 | RouterOS 6.49 con OpenSSL 3 | se prueba en F1a; si falla, `SECLEVEL=0` y después `legacy`, solo en ese punto |
 | Pérdida del VPS | respaldo diario con copia fuera (pendiente: hoy, respaldo del proveedor y el manual de [OPERACION.md](OPERACION.md) §3), nombre DNS para los routers, recuperación probada |

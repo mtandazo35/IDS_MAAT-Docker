@@ -210,8 +210,10 @@ retención posterior (§8).
   - **una por punto**: todo lo que se hace sobre ese punto y su router.
 
   Así, borrar un punto elimina su cadena entera **sin romper la global**, que sigue verificándose.
-- **Anclaje diario.** El panel envía cada día la orden `bitacora.anclar {cabezas}` al orquestador,
-  con la cabeza y el número de filas de la cadena global y de cada cadena de punto. El orquestador
+- **Anclaje diario (diseño, sin implementar).** `bitacora.anclar` es hoy una orden reservada del
+  orquestador y contesta «no disponible». El diseño: el panel envía cada día la orden
+  `bitacora.anclar {cabezas}` al orquestador, con la cabeza y el número de filas de la cadena
+  global y de cada cadena de punto. El orquestador
   lo escribe en `orq.jsonl`, un diario que el panel no puede modificar, así que una cadena
   reescrita entera desde el panel no casa con los anclajes. Los anclajes de un punto borrado son
   solo hashes, sin datos.

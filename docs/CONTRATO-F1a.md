@@ -86,7 +86,7 @@ Reglas del contrato:
 | 24 | §4.4: `max-clients 2`, sin `hand-window` (60 s) | `max-clients 16` y `hand-window 20`, sin `duplicate-cn` | auditoría VPN-03: las conexiones sin autenticar ocupan plaza y no llegan a fail2ban; 2 `nc` colgados dejaban fuera al MikroTik |
 | 25 | §3: certificado de servidor `CN=server-<pid>`; §5.12: el script sin CA ni verificación del servidor | `OU=server-<pid>`, `CN=<NOMBRE_DNS>`, `subjectAltName=DNS:<NOMBRE_DNS>`; el script importa la CA del VPS (`ids-maat-ca-<pid>`) y pone `verify-server-certificate=yes` en v6 y v7; añade `drop` de `input` y `forward` desde `ids-vpn` debajo del `accept` de la API (quitados después, fila 27); `punto.vpn.regenerar` renueva un certificado sin el nombre | auditoría VPN-01/VPN-02: el router no verificaba al servidor y no aislaba `ids-vpn`; RouterOS compara `connect-to` con el CN o el SAN |
 | 26 | §4.3: `suricata` con `cap_add: [NET_RAW, NET_ADMIN]` | `cap_add: [NET_RAW]` | auditoría VPN-05: af-packet no necesita `NET_ADMIN` (promisc y offloads los pone el `vpn`, `disable-offloading: false`) |
-| 27 | §5.12 (y fila 25): el script lleva la ruta blackhole `100.64.N.0/24` de distancia 250 y reglas de `/ip firewall filter` para `ids-vpn` | el script no lleva reglas de firewall ni rutas: certificado `ids-promax` (quitado después, fila 28), CA del VPS con `ovpn-client` y `verify-server-certificate=yes`, y usuario y grupo `ids-api` (`address=<sensor>/32`); los routers ya dados de alta quitan lo viejo con `/ip firewall filter remove [find comment="IDS ids-maat:<pid>"]` y `/ip route remove [find comment="IDS ids-maat:<pid>"]` | decisión del dueño (2026-10-15): el firewall y las rutas del router los gestiona el operador. Sin blackhole, si el túnel cae, el espejo sigue la ruta por defecto del router |
+| 27 | §5.12 (y fila 25): el script lleva la ruta blackhole `100.64.N.0/24` de distancia 250 y reglas de `/ip firewall filter` para `ids-vpn` | el script no lleva reglas de firewall ni rutas: certificado `ids-promax` (quitado después, fila 28), CA del VPS con `ovpn-client` y `verify-server-certificate=yes`, y usuario y grupo `ids-api` (`address=<sensor>/32`; quitados después, 2026-10-16: el usuario de la API lo crea a mano el operador, OPERACION §1.2); los routers ya dados de alta quitan lo viejo con `/ip firewall filter remove [find comment="IDS ids-maat:<pid>"]` y `/ip route remove [find comment="IDS ids-maat:<pid>"]` | decisión del dueño (2026-10-15): el firewall y las rutas del router los gestiona el operador. Sin blackhole, si el túnel cae, el espejo sigue la ruta por defecto del router |
 | 28 | §5.12 (y fila 27): el script lleva el bloque «Certificado API-SSL ids-promax» (`/certificate add`, `sign` y `set trusted=yes`, y `/ip service set api-ssl certificate=ids-promax`) | el script no crea ningún certificado ni toca `/ip service api-ssl` (ni el certificado ni `address=`): la API-SSL del router se usa tal como esté (lo normal, `certificate=none`, con cifrado anónimo). `punto.api.huella` contesta `FALLO` «el router no presentó certificado (API-SSL sin certificado: no hay huella que fijar)» si el router no presenta certificado. Los routers dados de alta con el script anterior revisan `/ip service print detail where name=api-ssl` (OPERACION §1.1) | decisión del dueño (2026-10-15): API-SSL (8729) sin certificado, como el proyecto original; la clave de `ids-api` la protege el túnel. Quien ponga certificado en el router puede fijar su huella en el panel |
 
 ---
@@ -130,10 +130,11 @@ IDS_MAAT-Docker/
 │   └── plantillas/{compose.yml.tmpl, server.conf.tmpl, ids_host.nft.tmpl}
 ├── host/                                             C
 │   ├── systemd/{ids-host-fw.service, ids-orq.service, ids-reglas.service, ids-reglas.timer,
-│   │            ids-logrotate.service, ids-logrotate.timer}
+│   │            ids-logrotate.service, ids-logrotate.timer, ids-actualizar.service}
 │   ├── fail2ban/{jail.d/10-ids.local.tmpl, filter.d/ids-vpn.conf}
 │   ├── docker/daemon.json
 │   ├── logrotate/ids-maat.conf
+│   ├── journald/90-ids.conf                           límites de ritmo y tamaño del journal (VPN-15)
 │   ├── sysctl/90-ids.conf      modules/ids.conf      ssh/10-ids.conf
 ├── tests/
 │   ├── run.sh                                        C  runner (§8.1)
@@ -403,7 +404,7 @@ Reglas de render (decidido en el contrato):
 ```
 # ids-maat p003 — generado por ids-orq; no editar
 port 1194
-proto tcp-server
+proto tcp4-server
 dev tun0
 topology subnet
 server 100.64.3.0 255.255.255.0
@@ -705,11 +706,13 @@ exec socat UNIX-LISTEN:/run/ids/api.sock,fork,unlink-early,mode=660,max-children
 3. **Freno, antes de scrypt** (decidido en el contrato), con `flock` sobre
    `/run/ovpn-auth/freno.lock` y estado en `/run/ovpn-auth/freno.json`:
    - por IP: ≥ 5 rechazos en los últimos 600 s → rechazo inmediato `motivo=freno`;
-   - global: ≥ 30 cálculos de scrypt en los últimos 60 s → rechazo inmediato `motivo=freno-global`.
+   - global: ≥ 30 cálculos de scrypt en los últimos 60 s → rechazo inmediato `motivo=freno-global`,
+     salvo a la IP del último aceptado, que queda exenta durante 24 h (VPN-08).
    Sin `sleep` en ningún caso.
 4. Busca el usuario en `/etc/ids/vpn/usuarios`; si no existe, `motivo=usuario` (sin scrypt).
 5. scrypt con los parámetros de la línea y `hmac.compare_digest`. Si no coincide, `motivo=clave`.
-6. Sale con 0 si acepta y con 1 si rechaza. Registra el resultado del paso 3 en el estado.
+6. Sale con 0 si acepta y con 1 si rechaza. Qué registra en `freno.json`: cada scrypt calculado,
+   cada rechazo de los pasos 2, 4 y 5 (los del freno no cuentan) y la IP del último aceptado.
 
 Líneas de log por **stderr** (exactas; las usan fail2ban y las pruebas de C):
 
@@ -883,16 +886,19 @@ código `CANCELADA` y quedan en `orq.jsonl`; nunca se ejecutan (los `pid` no se 
 | `punto.borrar` | `pid`, `confirmar` (= nombre) | sí | — |
 | `punto.arrancar` / `punto.parar` / `punto.reiniciar` | `pid`, `parte` ∈ vpn/suricata/todo | sí | `observado` |
 | `punto.ajustar` | `pid`, `perfil?`, `hilos?`, `redes_abonados?`, `compat_v6?`, `ros_version?`, `origen_ip?` | sí | lo recreado |
-| `punto.vpn.regenerar` | `pid` | sí | `usuario`, `clave`, `comandos` |
+| `punto.reconfigurar` | `pid` | sí | `recreado`, `cambios`. Reescribe `server.conf`, `suricata.yaml` y `compose.yml` con las plantillas actuales, pasa el punto a las imágenes de `imagenes.json`, recrea y espera la salud; si no queda sano, vuelve a lo de antes (`REVERTIDA`) |
+| `punto.vpn.regenerar` | `pid` | sí | `usuario`, `clave`, `comandos`. Si el certificado de servidor del punto no lleva `NOMBRE_DNS` o no lo firma la CA actual del VPS, lo renueva y reinicia OpenVPN en lugar del `kill` |
 | `punto.threshold` (F2) | `pid`, `contenido` (≤ 256 KiB; solo `suppress`/`threshold`/`event_filter` y comentarios, validados línea a línea) | sí (rechaza al encolar un punto inexistente o en baja) | `aplicado`, `recarga` (`reload-rules`, `reinicio` o `al arrancar`), `sha256`; si otra posterior del mismo punto espera en la cola, `aplicado: false` y `sustituida_por`. Escritura atómica; `reload-rules` por el socket de control; si falla, reinicio de `suricata`; si tampoco queda sano, vuelve al anterior y acaba `REVERTIDA` con `THRESHOLD-FALLIDO`. Un punto parado no se levanta |
 | `punto.estado` | `pid` o `*` | no | la entrada de `estado.json` |
 | `punto.logs` | `pid`, `parte`, `lineas` ≤ 500 | no | líneas (sin `password`/`key`) |
-| `punto.comandos` | `pid` | no | `comandos` sin la clave |
+| `punto.comandos` | `pid` | no | `comandos` con la clave puesta (y `clave` aparte) si el orquestador la tiene cifrada y es la vigente; si no, con `<CLAVE-VPN>` (2026-10-16) |
 | `punto.api.huella` | `pid` | no | `sha256` del certificado del router, vía el relé; `FALLO` si el router no presenta certificado (fila 28 de §0.2) |
 | `punto.medir` | `pid` | no | `memoria_actual_mb`, `memoria_pico_mb` (cgroup), `kernel_packets`, `kernel_drops`, `reglas_cargadas`, `tzsp` |
 | `reglas.actualizar` | `sin_descarga?` (revalida y reinicia con la release actual) | sí | `ts`, conteos |
 | `logs.reabrir` | `pid?` | no | por punto, OK/fallo |
 | `sistema.reconciliar` | — | sí | lo levantado, lo huérfano (solo se informa) |
+| `vpn.desbanear` | `ip` (una IPv4 o IPv6, sin rangos) | no: **inmediata**, se ejecuta al recibirla y queda en `orq.jsonl` | `ip`, `desbaneada`, `jaula` (`fail2ban-client set ids-vpn unbanip <ip>`) |
+| `sistema.actualizar` | `commit` (7–40 hex en minúsculas, de `main`) | sí; la cola queda en pausa hasta que acaba `ids-actualizar.service` | `commit`, `unidad` (botón «Actualizar» del panel; ACTUALIZACIONES §4.1) |
 | `sistema.estado` / `sistema.capacidad` | — | no | §5.10 sin `puntos` / capacidad por perfil |
 | `op.estado` | `op_id` | no | `{estado, paso, avance, log_tail}` |
 
@@ -933,6 +939,7 @@ que encolan, `--no-esperar` (imprime el `op_id` y sale).
 | `ids-orq punto estado [<pid>\|'*']` | `punto.estado` |
 | `ids-orq punto arrancar\|parar\|reiniciar <pid> [--parte vpn\|suricata\|todo]` | `punto.*` |
 | `ids-orq punto ajustar <pid> [--perfil …] [--hilos …] [--redes …] [--compat-v6[=…]\|--sin-compat-v6] [--ros 6\|7] [--origen-ip IP\|--sin-origen-ip]` | `punto.ajustar` |
+| `ids-orq punto reconfigurar <pid>` | `punto.reconfigurar` |
 | `ids-orq punto ovpn-client <pid>` | `punto.comandos` |
 | `ids-orq punto vpn-regenerar <pid>` | `punto.vpn.regenerar` |
 | `ids-orq punto logs <pid> [--parte vpn\|suricata] [--lineas 100]` | `punto.logs` |
@@ -941,6 +948,7 @@ que encolan, `--no-esperar` (imprime el `op_id` y sale).
 | `ids-orq reglas actualizar [--sin-descarga]` | `reglas.actualizar` |
 | `ids-orq reabrir-logs [<pid>]` | `logs.reabrir` (lo llama logrotate) |
 | `ids-orq reconciliar` | `sistema.reconciliar` |
+| `ids-orq vpn desbanear <ip>` | `vpn.desbanear` |
 | `ids-orq actualizar <commit>` | `sistema.actualizar` (botón «Actualizar» del panel; ACTUALIZACIONES §4.1) |
 | `ids-orq estado` | `sistema.estado` + `punto.estado *` |
 | `ids-orq op <op_id>` | `op.estado` |
@@ -957,14 +965,14 @@ OK punto p003 creado
   N            3
   puerto       1196/tcp
   túnel        100.64.3.0/24 (sensor 100.64.3.1, MikroTik 100.64.3.2)
-  perfil       reducido · hilos 1 · cpuset 2 · mem_limit 900m
+  perfil       reducido · hilos 1 · cpuset 2 · reserva 900m
   usuario VPN  vpn3a9f2c
-  clave VPN    <24 caracteres>      ← se muestra UNA sola vez
+  clave VPN    <24 caracteres>      (de nuevo: ids-orq punto ovpn-client p003)
 <bloque de comandos de punto ovpn-client, con la clave ya puesta>
 ```
 
-Salida de `ids-orq punto ovpn-client p003` (la clave nunca aparece; en `crear` y `vpn-regenerar`
-sí, ya sustituida):
+Salida de `ids-orq punto ovpn-client p003` (con la clave puesta si el orquestador la tiene cifrada y
+es la vigente, 2026-10-16; si no, con `<CLAVE-VPN>`, como aquí):
 
 ```
 # ids-maat p003 (norte) · N=3 · puerto 1196 · túnel 100.64.3.0/24 · declarado RouterOS v7
@@ -983,8 +991,6 @@ sí, ya sustituida):
 /interface ovpn-client add name=ids-vpn connect-to=ids.empresa.example port=1196 protocol=tcp mode=ip \
     user=vpn3a9f2c password=<CLAVE-VPN> cipher=aes256-gcm auth=sha1 verify-server-certificate=yes \
     add-default-route=no use-peer-dns=no disabled=no
-/user group add name=ids-api policy=read,write,api
-/user add name=ids-api group=ids-api address=100.64.3.1/32 password=<CLAVE-API>
 #
 # --- RouterOS v6 (6.49 o superior) ---
 # CA del VPS (pública): con ella el MikroTik verifica al servidor (verify-server-certificate)
@@ -997,14 +1003,13 @@ sí, ya sustituida):
 /interface ovpn-client add name=ids-vpn connect-to=ids.empresa.example port=1196 mode=ip \
     user=vpn3a9f2c password=<CLAVE-VPN> cipher=aes256 auth=sha1 verify-server-certificate=yes \
     add-default-route=no disabled=no
-/user group add name=ids-api policy=read,write,api
-/user add name=ids-api group=ids-api address=100.64.3.1/32 password=<CLAVE-API>
 ```
 
 - Con `ros_version = 6`, la cabecera dice `RouterOS 6.49+ o 7 (AES-256-CBC)` y la nota, que conectan
   los dos bloques; el bloque v7 lleva `cipher=aes256-cbc`.
-- `connect-to` = `NOMBRE_DNS`. La API usa siempre `<CLAVE-API>`: en F1a el orquestador no guarda
-  credenciales de la API.
+- `connect-to` = `NOMBRE_DNS`.
+- Sin el usuario ni el grupo `ids-api` (fila 27 de §0.2, 2026-10-16): el usuario de la API lo crea a
+  mano el operador si la quiere usar (OPERACION §1.2); el orquestador no guarda credenciales de la API.
 - Sin reglas de firewall ni rutas (fila 27 de §0.2): el firewall y las rutas del router los
   gestiona el operador.
 - Sin certificado de la API-SSL ni nada de `/ip service api-ssl` (fila 28 de §0.2): la API-SSL del
@@ -1229,8 +1234,9 @@ Pasos (idempotente: se puede volver a ejecutar para cambiar gestión/proxy):
    sin solapes entre gestión, `<tun-base>.0.0/16` y `10.210.0.0/16`. `--tun-base` solo se acepta
    si todavía no hay puntos.
 2. **Respaldo** en `/root/backups/ids-maat-install-<ts>.tar.gz` de `/etc/ssh/sshd_config*`,
-   `/etc/docker/`, `/srv/ids/fw/`, `/etc/fail2ban/` y `/etc/ids-maat/` antes de tocar nada
-   (desde 2026-10-15 también `/etc/localtime`, como enlace, y `/etc/timezone`).
+   `/etc/docker/`, `/srv/ids/fw/`, `/etc/fail2ban/`, `/etc/systemd/journald.conf.d/` y
+   `/etc/ids-maat/` antes de tocar nada (desde 2026-10-15 también `/etc/localtime`, como enlace, y
+   `/etc/timezone`).
 3. Paquetes: `nftables fail2ban python3 python3-systemd openssl logrotate curl ca-certificates`
    (más `systemd-timesyncd` y, desde 2026-10-15, `tzdata`).
    **Nunca** `iptables-persistent`/`netfilter-persistent` ni `ufw`. `systemctl disable --now nftables`.
@@ -1238,18 +1244,23 @@ Pasos (idempotente: se puede volver a ejecutar para cambiar gestión/proxy):
    `docker-compose-plugin`; `daemon.json` = RED §1 **más** `"bip": "10.210.254.1/24"`. Comprueba
    `update-alternatives --query iptables` → `iptables-nft`.
 5. `modules/ids.conf` (`tun`, `veth`, `nft_ct`), `sysctl/90-ids.conf` (`net.core.rmem_max=33554432`),
-   `systemd-timesyncd`. **Zona horaria del servidor** (2026-10-15, «UTC dentro, Ecuador fuera»):
+   `journald/90-ids.conf` en `/etc/systemd/journald.conf.d/` (reinicia `systemd-journald`; si no
+   puede, vale desde el próximo arranque), `systemd-timesyncd`. **Zona horaria del servidor**
+   (2026-10-15, «UTC dentro, Ecuador fuera»):
    `zona_host` deja `/etc/localtime` en `--zona`, la de `ids.conf` o `America/Guayaquil`
    (`timedatectl` o enlace atómico; idempotente; una zona inexistente falla antes de tocar nada). Se
    hace justo tras los paquetes (hace falta `tzdata`), fuera del modo seguro y antes de `arrancar`.
    Los contenedores siguen en UTC.
 6. Grupo y usuario `ids-panel` 10500; árbol de §2.1; `ids.conf`; secretos (si no existen).
-7. PKI si no existe: CA RSA 2048 SHA-256 de 20 años (`CN=ids-maat-ca <NOMBRE_DNS>`) y `dh.pem`
-   `ffdhe2048` con `openssl genpkey -genparam -algorithm DH -pkeyopt dh_param:ffdhe2048`.
+7. PKI si no existe: CA RSA 2048 SHA-256 de 20 años (`CN=ids-maat-ca <NOMBRE_DNS>`), válida desde
+   2 días antes, como el certificado de servidor (margen para routers con el reloj atrasado), y
+   `dh.pem` `ffdhe2048` con `openssl genpkey -genparam -algorithm DH -pkeyopt dh_param:ffdhe2048`.
 8. Firewall: renderiza `ids_host.nft`, `nft -c -f`, instala y arranca `ids-host-fw.service`.
 9. SSH: `/etc/ssh/sshd_config.d/10-ids.conf` con `PasswordAuthentication no`; `sshd -t`; reload;
    comprueba `sshd -T`.
-10. fail2ban: jaulas y filtro; `fail2ban-regex` del filtro contra las líneas de §5.13 (4 coincidencias).
+10. fail2ban: jaulas y filtro; `fail2ban-regex` del filtro contra las líneas de §5.13 (2 coincidencias:
+    las dos `ovpn-auth: rechazado`, con `motivo=formato` y `motivo=usuario`; con otro número, el
+    instalador se para).
 11. Verifica la release (cosign con sha256 fijado en el script; `release.json`; sha256 del tar), la
     desempaqueta en `/root/ids-maat/host-<v>/`, instala el orquestador y las unidades, escribe
     `imagenes.json` y hace `docker pull` por digest.

@@ -49,8 +49,8 @@ services:
       - /srv/ids/run/p003:/run/ids                      # root:10500 2770
       - /srv/ids/ctl/p003/vpn:/run/ids-ctl
     logging: { driver: journald, options: { tag: ids-vpn } }   # fail2ban de OpenVPN
-    mem_limit: 192m
-    memswap_limit: 192m
+    mem_reservation: 192m     # reserva blanda, sin tope duro (§2.1)
+    oom_score_adj: -800
     pids_limit: 64
     healthcheck: { test: ["CMD", "/usr/local/bin/salud-vpn"], interval: 30s, retries: 3,
                    start_period: 30s, start_interval: 5s }
@@ -67,16 +67,14 @@ services:
     tmpfs: ["/tmp:size=64m", "/run:size=8m"]
     environment: { TZ: "UTC" }
     volumes:
-      - /srv/ids/reglas:/reglas:ro
-      - /srv/ids/feeds:/var/lib/suricata-feeds:ro
-      - /srv/ids/puntos/p003/suricata/suricata.yaml:/etc/suricata/suricata.yaml:ro
-      - /srv/ids/puntos/p003/suricata/threshold.config:/etc/suricata/threshold.config:ro
+      - /srv/ids/reglas:/reglas:ro                      # los feeds van dentro de cada release (§11)
+      - /srv/ids/puntos/p003/suricata:/etc/ids/suricata:ro   # el directorio: suricata.yaml y threshold.config
       - /srv/ids/datos/p003:/var/log/suricata
       - /srv/ids/ctl/p003/suricata:/run/suricata
     cpuset: "4-5"
     cpus: 2
-    mem_limit: 1600m          # motor medido + memcaps + 20 % (§10.3)
-    memswap_limit: 1600m
+    mem_reservation: 1600m    # reserva blanda (§10.3): motor medido + memcaps + 20 %, sin tope duro
+    oom_score_adj: 500
     pids_limit: 256
     healthcheck: { test: ["CMD", "/usr/local/bin/salud-suricata"], interval: 30s, retries: 3,
                    start_period: 600s, start_interval: 5s }   # start_interval: Docker Engine >= 25
@@ -150,8 +148,8 @@ ese límite cuando hay `NET_ADMIN`. Como respaldo, el host lo sube en `/etc/sysc
    ip link add ids-in type veth peer name ids-mon
    ip link set ids-in  up mtu 65535 arp off
    ip link set ids-mon up mtu 65535 promisc on arp off
-   ethtool -K ids-mon gro off lro off tso off gso off rx-gro-hw off 2>/dev/null || true
-   ethtool -K ids-in  gro off tso off gso off 2>/dev/null || true
+   ethtool -K ids-mon sg off gro off lro off tso off gso off rx-gro-hw off 2>/dev/null || true
+   ethtool -K ids-in  sg off gro off tso off gso off 2>/dev/null || true
    ```
 
 3. **Carga la tabla `netdev ids_mon`.** Necesita que `ids-mon` ya exista.
@@ -224,7 +222,7 @@ Valores que pone el orquestador:
 | `mpm-algo`/`spm-algo` | `hs` si la build trae Hyperscan; si no, `ac-ks` | `suricata --build-info` |
 | memcaps | `flow 64mb`, `stream 64mb`, `reassembly 256mb`, `defrag 32mb` (orientativos) | fijos por perfil |
 | `default-rule-path` | `/reglas/current/<completo\|reducido>` | perfil |
-| `threshold-file` | `/etc/suricata/threshold.config` | exclusiones globales más las del punto |
+| `threshold-file` | `/etc/ids/suricata/threshold.config` | exclusiones globales más las del punto |
 | `unix-command` | `/run/suricata/suricata-command.socket` | solo para el orquestador (reapertura de logs, `dataset-add`) |
 
 **Nada de autodetección.** Dentro del contenedor, `/proc/meminfo` y el número de CPU son los del
@@ -246,8 +244,11 @@ de espejo ya recortado.
   compatibilidad con v6. Con un `NOMBRE_DNS` de más de 64 caracteres el CN es `server-<pid>` y vale
   el SAN.
 - En el `vpn` se montan solo `ca.crt`, su certificado y su clave, y `dh.pem`.
-- **Sin CRL.** Con `verify-client-cert none` no hay certificados de cliente que revocar. En la baja
-  se borran la clave y el certificado del servidor.
+- **Sin CRL (VPN-11, abierto).** Con `verify-client-cert none` no hay certificados de cliente que
+  revocar, pero tampoco se puede revocar el certificado de servidor: en la baja se borran su clave y
+  su certificado, no se revocan. Como el MikroTik verifica al servidor con la CA del VPS y todos los
+  certificados de servidor llevan el nombre del VPS, una clave de servidor filtrada valdría hasta
+  caducar (10 años) para suplantar a cualquier punto ante su router.
 - **El MikroTik verifica al servidor** (v6 y v7): el script del alta importa la CA del VPS (pública;
   una por VPS) y pone `verify-server-certificate=yes`. RouterOS exige la cadena hasta esa CA y el
   `connect-to` en el CN o el SAN ([OPERACION.md](OPERACION.md) §1.4).
@@ -295,11 +296,13 @@ management /run/ids-ctl/ovpn-mgmt.sock unix
   conexiones TCP que aún no se han autenticado, que no llegan a `ovpn-auth` ni a fail2ban: con 2
   plazas, dos `nc` colgados de un desconocido dejaban fuera al MikroTik. Ahora quien no termina el
   TLS y la autenticación en 20 s pierde su plaza (antes, 60 s por defecto) y, con el freno del host
-  (10 conexiones nuevas/min por IP), una IP sostiene unas 3 a la vez: hace falta más de media
-  docena de IP para llenar las 16. **Sin `duplicate-cn`**, sigue habiendo un solo túnel útil: la
-  sesión nueva del usuario echa a la vieja (las 2 plazas de antes eran para eso). 20 s deja margen a
-  un 6.49 lento en el handshake RSA 2048. Prueba de laboratorio pendiente: 3 `nc <vps> <puerto>`
-  colgados, cortar la VPN del router y ver que reconecta.
+  (10 conexiones nuevas/min por IP), una IP sostiene unas 3 a la vez: unas 5 IP (5 o 6) llenan las
+  16 plazas. **Mitigado, no cerrado** (VPN-03): lo cierra fijar el origen del punto
+  (`ids-orq punto ajustar <pid> --origen-ip <IP pública del MikroTik>`) cuando el router tiene IP
+  fija. **Sin `duplicate-cn`**, sigue habiendo un solo túnel útil: la sesión nueva del usuario echa
+  a la vieja (las 2 plazas de antes eran para eso). 20 s deja margen a un 6.49 lento en el handshake
+  RSA 2048. Pendiente de confirmar en el laboratorio: 3 `nc <vps> <puerto>` colgados, cortar la VPN
+  del router y ver que reconecta.
 - **No se usan** `iroute`, `push` de rutas, compresión, `tls-crypt` ni `tls-auth`. RouterOS no
   soporta los dos últimos.
 - **`persist-tun`** mantiene `tun0` entre renegociaciones, pero **no sobrevive a la muerte del
@@ -341,7 +344,7 @@ management /run/ids-ctl/ovpn-mgmt.sock unix
 
 | Contenedor | Healthcheck (solo «el proceso está vivo») | Nunca falla por |
 |---|---|---|
-| `vpn` | `openvpn` vivo y con más de 5 s arriba según s6 (no en bucle de reinicios), un socket TCP en LISTEN en el `port` de `server.conf` (`/proc/net/tcp` del netns), relé vivo, y `tzsp.json` con menos de 90 s (el latido de §5) | que no llegue espejo, que el punto esté pausado o que el MikroTik esté desconectado |
+| `vpn` | s6 da `up` para `openvpn`, `tzsp-decap` y el relé (`rele-api`); `openvpn` con más de 5 s arriba según s6 (no en bucle de reinicios); un socket TCP en LISTEN en el `port` de `server.conf` (`/proc/net/tcp` del netns); `tzsp.json` con menos de 90 s (el latido de §5); y existe la tabla `inet ids_punto` | que no llegue espejo, que el punto esté pausado o que el MikroTik esté desconectado |
 | `suricata` | proceso vivo y el último `stats` de `stats.json` (o de `stats.json.1`, recién rotado) con menos de 120 s **y posterior al arranque del proceso actual** (se abre en modo añadir: tras un reinicio, el último stats es de la instancia anterior). Sin `stats.json` (yaml de antes), la cola de 512 KiB del eve | que no haya tráfico |
 
 - **Sin espejo no es un fallo del contenedor.** Es **salud funcional** y la vigila el orquestador
@@ -395,7 +398,7 @@ Las cifras son orientativas para Suricata 7.0.x de Debian. **Se miden en el cana
 Reservas fijas: ~1 GB para el host y Docker, ~1 GB para el panel, y **una sola reserva** para el
 `suricata -T` efímero, del tamaño del motor del perfil más grande que esté en uso.
 
-| Perfil | Reglas / detección | `mem_limit` estimado de `suricata` | Puntos en 8 GB |
+| Perfil | Reglas / detección | Reserva (`mem_reservation`) estimada de `suricata` | Puntos en 8 GB |
 |---|---|---|---|
 | `reducido` (**por defecto en el alta**) | ~15–20k reglas útiles para un espejo de ISP | 0,6–0,9 GB | **5–7** |
 | `completo-low` | ET completo, `profile: low` y `sgh-mpm-context: single` | 1,0–1,3 GB | **3–4** |
@@ -422,10 +425,10 @@ llegaba a 227 de 256 MB en 5 min. La plantilla usa por eso `established: 60`, `t
 `reassembly.depth: 64kb`, y los perfiles `reassembly 128mb`.
 
 ```
-mem_limit(suricata) = (motor medido del perfil + memcaps) × 1,2
-Σ mem_limit(suricata) + Σ mem_limit(vpn) + Σ anillos af-packet
+reserva(suricata) = (motor medido del perfil + memcaps) × 1,2       (mem_reservation, sin tope duro)
+Σ reserva(suricata) + Σ reserva(vpn) + Σ anillos af-packet
   + reserva_T (motor del perfil mayor × 1,2) + host 1 GB + panel 1 GB  ≤  MemTotal
-y además  MemAvailable ≥ mem_limit(nuevo) + 512 MB
+y además  MemAvailable ≥ reserva(nuevo) + 512 MB
 ```
 
 - Si no cabe, el orquestador responde cuántos puntos caben con cada perfil.
@@ -464,7 +467,7 @@ y además  MemAvailable ≥ mem_limit(nuevo) + 512 MB
 ```
 /srv/ids/reglas/releases/<ts>/{completo,reducido}/suricata.rules
 /srv/ids/reglas/current -> releases/<ts>        # enlace RELATIVO
-/srv/ids/feeds/{reputation.lst,domains.lst,domains.dataset}
+/srv/ids/reglas/releases/<ts>/feeds/{domains.lst,domains.dataset}   # los feeds van DENTRO de cada release
 ```
 
 - **Se monta el directorio padre**, `/srv/ids/reglas:/reglas:ro`. Si se montara el enlace

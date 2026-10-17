@@ -83,12 +83,23 @@ proyecto original (decisión del dueño, 2026-10-15) y vale igual en 6.49 y en v
 /interface ovpn-client add name=ids-vpn connect-to=ids.empresa.example port=1196 protocol=tcp mode=ip \
     user=vpn3a9f2c password=<CLAVE-VPN> cipher=aes256-gcm auth=sha1 verify-server-certificate=yes \
     add-default-route=no use-peer-dns=no disabled=no
-/user group add name=ids-api policy=read,write,api
-/user add name=ids-api group=ids-api address=100.64.3.1/32 password=<CLAVE-API>
 ```
 
-El script no lleva reglas de firewall ni rutas: crea la VPN (con la CA del VPS) y el usuario de la
-API. El firewall y las rutas del router los gestiona el operador (§1.5).
+El script no lleva reglas de firewall, ni rutas, ni el usuario de la API: crea la VPN (con la CA
+del VPS) y nada más (desde 2026-10-16). El firewall y las rutas del router los gestiona el operador
+(§1.5).
+
+- **El usuario de la API lo crea el operador**, a mano, si quiere que el panel hable con el router
+  por la API: un usuario exclusivo que solo pueda entrar desde el sensor del punto (`100.64.N.1`,
+  por el túnel). Igual en v6 y en v7:
+
+  ```
+  /user group add name=ids-api policy=read,write,api
+  /user add name=ids-api group=ids-api address=100.64.3.1/32 password=<CLAVE-API>
+  ```
+
+  La clave la elige el operador y se pone en la ficha del punto (apartado API), que la guarda
+  cifrada.
 
 - **El cifrado del bloque v7 sale de la versión del punto.** RouterOS 7 no negocia el cifrado de
   datos (solo manda `IV_PROTO=2`) y OpenVPN usa el respaldo del servidor (`data-ciphers-fallback`).
@@ -107,8 +118,6 @@ API. El firewall y las rutas del router los gestiona el operador (§1.5).
 /interface ovpn-client add name=ids-vpn connect-to=ids.empresa.example port=1196 mode=ip \
     user=vpn3a9f2c password=<CLAVE-VPN> cipher=aes256 auth=sha1 verify-server-certificate=yes \
     add-default-route=no disabled=no
-/user group add name=ids-api policy=read,write,api
-/user add name=ids-api group=ids-api address=100.64.3.1/32 password=<CLAVE-API>
 ```
 
 v6 solo admite TCP, así que no lleva `protocol=`, y no tiene `use-peer-dns`. Si el handshake TLS
@@ -131,8 +140,8 @@ con la clave VPN y haría de «sensor» para el router.
   el nombre es una IP) e EKU `serverAuth`.
 - **El reloj del router cuenta.** Con la verificación activa, un router con la fecha atrasada ve el
   certificado del servidor «todavía no válido» y no conecta. El certificado de cada punto vale desde
-  **2 días antes** de emitirse, para cubrir un reloj algo atrasado, pero un router que arranca sin
-  hora (sin batería de reloj, en 1970 o en la fecha de fábrica) sigue fallando. **Antes de pegar el
+  **2 días antes** de emitirse (y la CA del VPS, desde 2 días antes de crearse), para cubrir un
+  reloj algo atrasado, pero un router que arranca sin hora (sin batería de reloj, en 1970 o en la fecha de fábrica) sigue fallando. **Antes de pegar el
   script:** activar el cliente NTP del router (`/system ntp client`, con un servidor que alcance) y
   comprobar la fecha con `/system clock print`.
 - **La CA es una por VPS y es pública.** Nunca va una clave privada en el script. El certificado
@@ -197,12 +206,14 @@ por su camino:
 
 | Parte | Qué recibe | Cómo |
 |---|---|---|
-| Host (fail2ban, journald, sysctl, firewall del host) y el orquestador | filtros y jaulas de fail2ban, `journald.conf.d/90-ids.conf`, `ids_orq.py` y sus plantillas, unidades systemd | volver a ejecutar `install.sh` con las mismas opciones (`--nombre`, `--gestion`, `--proxy`…); es idempotente y respalda antes de tocar nada (§3.1). El panel no actualiza el orquestador |
+| Host (fail2ban, journald, sysctl, firewall del host) | filtros y jaulas de fail2ban, `journald.conf.d/90-ids.conf` | volver a ejecutar `install.sh` con las mismas opciones (`--nombre`, `--gestion`, `--proxy`…); es idempotente y respalda antes de tocar nada (§3.1). **Actualizar no lleva el host:** si los ficheros de fail2ban, journald, sysctl o módulos del kernel del commit difieren de los instalados, termina con el aviso «host sin actualizar (…): vuelve a ejecutar install.sh» |
+| El orquestador | `ids_orq.py` y sus plantillas, unidades systemd, logrotate | el botón **Actualizar** del panel (o `ids-orq actualizar <commit>`) lo lleva a un commit de `main` (§5); `install.sh` también lo instala (el de su release) |
 | Cada punto (contenedores `vpn` y `suricata`) | `server.conf` (p. ej. `max-clients 16`, `hand-window 20`), `suricata.yaml`, `compose.yml` (p. ej. `NET_RAW` sin `NET_ADMIN`, `start_interval`) y las imágenes actuales de `imagenes.json` (p. ej. `ovpn-auth` y `salud-vpn` nuevos) | `ids-orq punto reconfigurar p003` (en el servidor, como root; el botón del panel «Aplicar la configuración actual» está pendiente). Va por la cola: reescribe los tres ficheros con las plantillas actuales, pasa el punto a las imágenes actuales, recrea los contenedores y espera la salud; si no queda sano, vuelve a los ficheros y a las imágenes de antes y deja el motivo. Devuelve qué se recreó y qué cambió (`recreado`, `cambios`). Mientras se recrean los contenedores, ese punto no captura y su VPN se corta (el MikroTik reconecta solo) |
 | Cada MikroTik | lo que va en el script del router (p. ej. la CA y la verificación de §1.4) | a mano en el router: no se puede hacer desde el VPS. Para la verificación del servidor, §1.4; para quitar la ruta y las reglas del script anterior, §1.5; para la API-SSL con el certificado del script anterior, §1.1 |
 
-Orden recomendado tras una corrección: `install.sh` (host y orquestador) → «Aplicar la configuración
-actual» punto por punto, empezando por uno y comprobando que vuelve a `activo` → los routers.
+Orden recomendado tras una corrección: el orquestador (Actualizar, o `install.sh` si la corrección
+toca también el host) → `ids-orq punto reconfigurar <pid>` punto por punto (el botón del panel está
+pendiente), empezando por uno y comprobando que vuelve a `activo` → los routers.
 
 ## 2. Espejo
 
@@ -285,9 +296,9 @@ router por la API: saca de las address-lists las IPs que puso él (cuarentenas, 
 bloqueados) y **retira el espejo** (address-list `ids-vigilados`, los dos mangle, los fasttrack de
 los vigilados, y devuelve la regla fasttrack del operador a sus valores originales; con el respaldo
 previo de §2). **Nada más.** Lo del alta se queda en el router porque es el camino por el que el
-panel habla con él: la interfaz `ids-vpn`, el usuario y el grupo `ids-api`, y la CA del VPS con su
-fichero (y, en un router dado de alta con el script anterior, la ruta blackhole y el bloque de
-aislamiento de `ids-vpn` en `filter`).
+panel habla con él: la interfaz `ids-vpn` y la CA del VPS con su fichero, el usuario y el grupo
+`ids-api` si el operador los creó (§1.2) y, en un router dado de alta con el script anterior, la
+ruta blackhole y el bloque de aislamiento de `ids-vpn` en `filter`.
 Eso se quita a mano, después de la baja, con el bloque de **terminar una baja con API** de abajo
 (todo menos el espejo, que ya no está). La API-SSL del router no se toca: el script actual no
 crea ningún certificado, y el `ids-promax` de un router dado de alta con el script anterior no se

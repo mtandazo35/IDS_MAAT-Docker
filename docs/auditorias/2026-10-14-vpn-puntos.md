@@ -165,6 +165,8 @@ Nota de coherencia (no es un hallazgo): el encargo habla de «puerto 1194+N», p
 - Si la lista `filter` del router está vacía, `place-before=0` falla, igual que la regla actual. Conviene añadir una nota en el script.
 - Defensa en el servidor, complementaria: ver VPN-05 (quitar NET_ADMIN a Suricata). Como opción, OpenVPN puede correr sin privilegios: `tun0` precreado en un oneshot (`ip tuntap add dev tun0 mode tun user <uid>`), `ifconfig-noexec` con la IP puesta en ese oneshot, y `s6-setuidgid` con `SETUID/SETGID` solo en el `vpn`. Esto requiere pruebas.
 
+> **Nota (2026-10-17):** esta propuesta deja las reglas en orden inverso. En la CLI de RouterOS, `place-before=0` se refiere al número que dio el último `print`, no a la regla que esté arriba en ese momento: con un `print` previo, las tres quedan delante de esa regla en el orden en que se escriben (drop de `forward`, drop de `input`, accept), con el `accept` debajo del `drop` de `input` y la API cortada; sin `print` previo, «no such item». Se aplicó así en `1aa307e`; `b80e9af` la cambió por drops de `input` negados y un `move` por comentario, y desde `b644b90` el script no lleva reglas de firewall (§6).
+
 ---
 
 ### VPN-03 — MEDIA (ALTA si se confirma) — DoS previo a la autenticación con `max-clients 2`
@@ -442,8 +444,8 @@ Docker real (job `imagenes`, e2e con cliente OpenVPN) pasa con VPN-01 y VPN-05 a
 | ID | Estado | Qué se hizo |
 |---|---|---|
 | VPN-01 | **Corregido** (confirmar 6.49 en el canario) | El script lleva la CA del VPS (PEM público validado: sin `PRIVATE`, ≤ 4000 bytes, solo base64) con `/file print` + `/file set contents=` + `/certificate import` + `trusted=yes`, y `verify-server-certificate=yes` en v6 y v7. El certificado del servidor pasa a `CN=<nombre del VPS>` con `subjectAltName` (DNS o IP), porque RouterOS v7 compara CN/SAN con `connect-to`. Los puntos viejos lo renuevan al «Regenerar la clave VPN»; mientras tanto su script lleva un `# AVISO:`. |
-| VPN-02 | **Corregido** | El script añade `drop` en `input` y `forward` para `ids-vpn`, con el `accept` de la API por encima (`place-before=0`, comentario `IDS ids-maat:<pid>`). Lo único que el sensor manda por el túnel es la API (relé). |
-| VPN-03 | **Mitigado** (confirmar con `nc` en el laboratorio) | `max-clients 16` y `hand-window 20`. No se añadió `ct count` en el nft (necesita `nft_connlimit` en el netns; sin validar). |
+| VPN-02 | **Sustituido** (`b644b90`) | Desde `b644b90` (2026-10-15) el script no lleva reglas de firewall: lo que entra por `ids-vpn` lo decide el firewall del operador (nota al final de §6). Lo que se hizo entonces: el script añade `drop` en `input` y `forward` para `ids-vpn`, con el `accept` de la API por encima (`place-before=0`, comentario `IDS ids-maat:<pid>`). Lo único que el sensor manda por el túnel es la API (relé). |
+| VPN-03 | **Mitigado** (confirmar con `nc` en el laboratorio) | `max-clients 16` y `hand-window 20`. No se añadió `ct count` en el nft (iría en el nft del host, `ids_host.nft`, y necesita `nft_connlimit`; sin validar). |
 | VPN-04 | **Corregido** | fail2ban `ids-vpn` solo cuenta `motivo=formato\|usuario`; orden inmediata `vpn.desbanear` e `ids-orq vpn desbanear <ip>`; botón «Desbanear IP del MikroTik» en la ficha (solo admin). |
 | VPN-05 | **Corregido** | Suricata con `cap_add: [NET_RAW]` (sin `NET_ADMIN`); la e2e del CI sigue recibiendo la alerta. Falta ver `capture.kernel_packets` en el canario. |
 | VPN-06 | **Corregido** | Sin huella guardada, el panel lee la huella por TLS y **no** hace `/login`; la ficha la enseña con el comando del router y «La huella coincide: confirmar». Huella distinta = sin login y aviso rojo. Las huellas fijadas antes se respetan como «fijadas automáticamente». Con 8728, aviso en la ficha. |
@@ -454,7 +456,7 @@ Docker real (job `imagenes`, e2e con cliente OpenVPN) pasa con VPN-01 y VPN-05 a
 | VPN-11 | Abierto (BAJA) | Sin CRL; con VPN-01 aplicado, valorar certificados de servidor más cortos. |
 | VPN-12 | Abierto (BAJA) | Que la baja desactive el `ovpn-client` por la API. La baja ya explica cómo quitar la CA y las reglas. |
 | VPN-13 | **Corregido** | `leer_status_openvpn` toma la sesión más reciente y solo usuarios del IDS. |
-| VPN-14 | **Corregido** | Documentación al día (RED-Y-FIREWALL, INSTANCIA, ORQUESTADOR, OPERACION, CONTRATO-F1a, FASES-Y-CANARIO). |
+| VPN-14 | **Parcial** | Se corrigió lo que citaba este hallazgo (RED-Y-FIREWALL, INSTANCIA, ORQUESTADOR, OPERACION, CONTRATO-F1a, FASES-Y-CANARIO), pero la revisión del 2026-10-15 encontró más frases de `docs/` que no coinciden con el código; se corrigen aparte. |
 | VPN-15 | **Corregido** | `host/journald/90-ids.conf` (`RateLimitBurst=50000` cada 30 s, `SystemMaxUse=2G`), instalado por `install.sh`. |
 | VPN-16 | Info | Sin cambios. |
 
@@ -463,3 +465,19 @@ la terminal (una línea de ~1,3 KB), el nombre que queda tras importar, que 6.49
 `verify-server-certificate` con el certificado nuevo, que el `fingerprint` de
 `/certificate print detail` coincida en formato con la huella del panel, y la prueba de conexiones
 TCP colgadas.
+
+**Nota (2026-10-17): decisiones posteriores del dueño que cambian esta tabla.**
+
+- **Desde `b644b90` (2026-10-15) el script del MikroTik no lleva reglas de firewall ni rutas**: lo
+  que entra por `ids-vpn` lo decide el firewall del operador. La fila VPN-02 y el último párrafo de
+  §5 («VPN-01 y VPN-02 se aplican pegando solo las líneas nuevas») describen un estado intermedio.
+  Los routers dados de alta con aquel script quitan esas reglas con
+  `/ip firewall filter remove [find comment="IDS ids-maat:<pid>"]` (OPERACION §1.5).
+- **Desde `c867217` (2026-10-15) la fila VPN-06 está superada**: la API-SSL sin certificado es el
+  modo normal. Sin huella fijada, el panel prueba primero el cifrado anónimo (ADH) y después los
+  normales, y hace `/login` con lo que presente el router; la clave de `ids-api` la protege el
+  túnel. La huella es opcional: si el router presenta un certificado, se puede fijar desde la
+  ficha, y desde entonces se exige.
+- **Desde `af5fe3b` (2026-10-16) el script no crea el usuario ni el grupo `ids-api`** (la línea de
+  §4 sobre `address=<sensor>/32` describe el script de entonces): si se quiere usar la API, el
+  operador lo crea a mano (OPERACION §1.2).

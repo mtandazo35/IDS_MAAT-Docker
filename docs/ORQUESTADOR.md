@@ -108,15 +108,15 @@ disponible» y no hacen nada.
 
 | Orden | Parámetros (lista blanca) | Hace / devuelve |
 |---|---|---|
-| `punto.crear` | `nombre` (`^[a-z0-9][a-z0-9-]{1,30}$`); opcionales: `redes_abonados` CIDR[≤64] (sin ella, las de por defecto: `10/8`, `172.16/12`, `192.168/16` y `100.64/10` menos la base de túneles, el pool de Docker y las redes de gestión; así crea el panel todos los puntos, decisión del dueño 2026-10-15), `perfil` (`reducido` por defecto, `completo-low`, `completo`), `hilos` 1–2, `ros_version` 6/7 (7), `compat_v6` `no`/`seclevel0`/`legacy`, `api_puerto` 8729/8728, `origen_ip`, `n` 1–250 y `pid` `^p\d{3}$` (`pid` solo lo admite una petición de root por el socket, para reconstruir; la CLI no tiene opción para `pid` ni `n`) | §11.1. Devuelve los comandos v6/v7 y la clave VPN (una sola vez). CLI: `ids-orq punto crear --nombre … [--redes …] [--perfil] [--hilos] [--ros] [--compat-v6] [--api-puerto] [--origen-ip]` |
+| `punto.crear` | `nombre` (`^[a-z0-9][a-z0-9-]{1,30}$`); opcionales: `redes_abonados` CIDR[≤64] (solo los prefijos **adicionales**, p. ej. rangos públicos de abonados; vacía por defecto, y así crea el panel todos los puntos. Lo privado y el CGNAT, `10/8`, `172.16/12`, `192.168/16` y `100.64/10`, van siempre en el espejo, menos la base de túneles, el pool de Docker y las redes de gestión, y en el `HOME_NET`; decisión del dueño 2026-10-16), `perfil` (`reducido` por defecto, `completo-low`, `completo`), `hilos` 1–2, `ros_version` 6/7 (7), `compat_v6` `no`/`seclevel0`/`legacy`, `api_puerto` 8729/8728, `origen_ip`, `n` 1–250 y `pid` `^p\d{3}$` (`pid` solo lo admite una petición de root por el socket, para reconstruir; la CLI no tiene opción para `pid` ni `n`) | §11.1. Devuelve los comandos v6/v7 con la clave VPN puesta (y `clave` aparte); después, `punto.comandos` los vuelve a dar con ella si el orquestador la tiene cifrada (2026-10-16). CLI: `ids-orq punto crear --nombre … [--redes …] [--perfil] [--hilos] [--ros] [--compat-v6] [--api-puerto] [--origen-ip]` |
 | `punto.borrar` | `pid` | borrado total del lado del host (§11.2, [DATOS.md](DATOS.md) §8) |
 | `punto.arrancar` / `punto.parar` / `punto.reiniciar` | `pid`, `parte` ∈ {vpn, suricata, todo} | `observado` |
 | `punto.estado` | `pid` o `*` | lo observado (sin encolar) |
 | `punto.logs` | `pid`, `parte`, `lineas` ≤ 500 | líneas filtradas (`password`, `key`) |
 | `punto.vpn.regenerar` | `pid` | hash nuevo, la clave cifrada en `clave_vpn`, desconexión por management y la clave en el resultado (una vez; después, `punto.comandos`). Si el certificado de servidor del punto no lleva `NOMBRE_DNS` (puntos de antes de la verificación del servidor), lo renueva y reinicia OpenVPN en lugar del `kill` ([OPERACION.md](OPERACION.md) §1.4) |
-| `punto.comandos` | `pid` | el script del MikroTik con la clave puesta (y `clave` aparte) si el orquestador la tiene cifrada (tabla `clave_vpn`, o la copia del panel) y es la vigente; si no, con `<CLAVE-VPN>` (2026-10-16). Lleva: CA del VPS, `ovpn-client` con `verify-server-certificate=yes` y el usuario y el grupo `ids-api`; sin certificado de la API-SSL ni nada de `/ip service api-ssl`, que se usa tal como esté (decisión del dueño, 2026-10-15; [OPERACION.md](OPERACION.md) §1.1), y sin reglas de firewall ni rutas, que gestiona el operador ([OPERACION.md](OPERACION.md) §1.5); con un certificado de servidor viejo, un `# AVISO` en la cabecera. CLI: `ids-orq punto ovpn-client <pid>` |
+| `punto.comandos` | `pid` | el script del MikroTik con la clave puesta (y `clave` aparte) si el orquestador la tiene cifrada (tabla `clave_vpn`, o la copia del panel) y es la vigente; si no, con `<CLAVE-VPN>` (2026-10-16). Lleva solo la CA del VPS y el `ovpn-client` con `verify-server-certificate=yes`: sin el usuario ni el grupo `ids-api`, que crea a mano el operador si quiere usar la API (2026-10-16; [OPERACION.md](OPERACION.md) §1.2); sin certificado de la API-SSL ni nada de `/ip service api-ssl`, que se usa tal como esté (decisión del dueño, 2026-10-15; [OPERACION.md](OPERACION.md) §1.1), y sin reglas de firewall ni rutas, que gestiona el operador ([OPERACION.md](OPERACION.md) §1.5); con un certificado de servidor viejo, un `# AVISO` en la cabecera. CLI: `ids-orq punto ovpn-client <pid>` |
 | `vpn.desbanear` | `ip` (una IPv4/IPv6; nada de rangos) | **inmediata** (§4): `fail2ban-client set ids-vpn unbanip <ip>`; devuelve `{ip, desbaneada, jaula}` («no estaba baneada» también es `OK`). CLI: `ids-orq vpn desbanear <ip>`. En el panel: ficha del punto → «Desbanear IP del MikroTik», solo administradores |
-| `punto.ajustar` | `pid`; opcionales: `perfil`, `hilos` 1–2, `redes_abonados`, `compat_v6` `no`/`seclevel0`/`legacy`, `ros_version` 6/7, `origen_ip` (IPv4, o `null` para quitarla) | Solo lo que cambia: **perfil o hilos**: admisión de RAM si sube el perfil o los hilos (§7), yaml nuevo, `-T`, `compose.yml` nuevo y `--force-recreate` de `suricata`; **solo los prefijos**: yaml nuevo sin `-T` y reinicio de `suricata`, que relee el yaml montado; **`compat_v6` o `ros_version`**: `server.conf` nuevo, reinicio de OpenVPN dentro del contenedor (`s6-svc -r`, corta el túnel unos segundos) y devuelve también los `comandos` nuevos del router; **`origen_ip`**: regenera el firewall del host. Sin cambios: `OK` «sin cambios». Devuelve `{recreado}`. Varios ajustes pendientes del mismo punto con los mismos campos se juntan en el último. CLI: `ids-orq punto ajustar <pid> [--perfil] [--hilos] [--redes] [--compat-v6 \| --sin-compat-v6] [--ros] [--origen-ip \| --sin-origen-ip]`. No cambia `api_puerto` ni las imágenes (eso es `punto.reconfigurar`) |
+| `punto.ajustar` | `pid`; opcionales: `perfil`, `hilos` 1–2, `redes_abonados`, `compat_v6` `no`/`seclevel0`/`legacy`, `ros_version` 6/7, `origen_ip` (IPv4, o `null` para quitarla) | Solo lo que cambia: **perfil o hilos**: admisión de RAM si sube el perfil o los hilos (§7), yaml nuevo, `-T`, `compose.yml` nuevo y `--force-recreate` de `suricata`; **solo los prefijos**: se guardan y Suricata no se reinicia (ya analiza todo lo privado y el CGNAT); solo si cambia su `HOME_NET` (entra o sale un prefijo público), yaml nuevo sin `-T` y reinicio de `suricata`, que relee el yaml montado; **`compat_v6` o `ros_version`**: `server.conf` nuevo, reinicio de OpenVPN dentro del contenedor (`s6-svc -r`, corta el túnel unos segundos) y devuelve también los `comandos` nuevos del router; **`origen_ip`**: regenera el firewall del host. Sin cambios: `OK` «sin cambios». Devuelve `{recreado}`. Varios ajustes pendientes del mismo punto con los mismos campos se juntan en el último. CLI: `ids-orq punto ajustar <pid> [--perfil] [--hilos] [--redes] [--compat-v6 \| --sin-compat-v6] [--ros] [--origen-ip \| --sin-origen-ip]`. No cambia `api_puerto` ni las imágenes (eso es `punto.reconfigurar`) |
 | `punto.reconfigurar` | `pid` | Lleva un punto ya creado a la configuración y las imágenes **actuales**: reescribe `server.conf`, `suricata.yaml` y `compose.yml` con las plantillas actuales, pasa el punto a las imágenes `vpn` y `suricata` de `imagenes.json`, recrea los contenedores y espera la salud (§8); si no queda sano, vuelve a los ficheros y las imágenes de antes y deja el motivo. Devuelve `{recreado, cambios}`. Va por la cola. CLI: `ids-orq punto reconfigurar <pid>` (el botón del panel «Aplicar la configuración actual» está pendiente). Es como reciben los puntos creados antes una corrección del servidor ([OPERACION.md](OPERACION.md) §1.6) |
 | `punto.api.huella` | `pid` | lectura: abre TLS con la API-SSL del router por el relé del punto, sin verificar y sin `/login`, y devuelve `{sha256}` del certificado (para fijar la huella, que es opcional). Si el router no presenta certificado, `FALLO` «el router no presentó certificado (API-SSL sin certificado: no hay huella que fijar)». CLI: `ids-orq punto api-huella <pid>` |
 | `punto.medir` | `pid` | lectura: memoria actual y pico del contenedor `suricata` (cgroup) y estadísticas de su `eve.json`. CLI: `ids-orq punto medir <pid>` |
@@ -138,8 +138,10 @@ disponible» y no hacen nada.
 - **`orq.db` guarda `op_id → (orden, sha256(params), resultado)` durante 30 días:**
   - el mismo `op_id` con los mismos parámetros devuelve el resultado guardado;
   - el mismo `op_id` con otros parámetros devuelve `CONFLICTO`.
-  - **El resultado se guarda sin secretos.** Repetir un `punto.crear` ya ejecutado devuelve los
-    comandos sin la clave VPN («ya entregada»; para una nueva, `punto.vpn.regenerar`).
+  - **El resultado se guarda sin secretos.** Repetir el mismo `op_id` devuelve los comandos sin la
+    clave VPN. Un `punto.crear` nuevo de un punto que ya existe («ya existe», `ya_entregada`) y
+    `punto.comandos` los dan con la clave puesta si el orquestador la tiene cifrada y es la vigente
+    (2026-10-16); si no, con `<CLAVE-VPN>` (para una nueva, `punto.vpn.regenerar`).
   - Al borrar un punto se eliminan sus filas (§11.2). Las órdenes de ese punto que esperaban en la
     cola **se cancelan**: `op.estado` las da `terminada` con código `CANCELADA` (sin parámetros) y
     quedan en `orq.jsonl`; nunca se ejecutan, y como los `pid` no se reutilizan, nada alcanza a un
@@ -158,7 +160,8 @@ disponible» y no hacen nada.
 - **Comprueba que el puerto está libre en el host.** Si no lo está, responde `CONFLICTO_PUERTO` y
   el panel propone el siguiente `N`.
 - **Admisión de RAM** con la fórmula de [INSTANCIA.md](INSTANCIA.md) §10.3. Se aplica en
-  `punto.crear` y en `punto.ajustar` cuando sube el perfil (más `mem_limit`) o los hilos.
+  `punto.crear` y en `punto.ajustar` cuando sube el perfil (más reserva, `mem_reservation`; sin
+  tope duro desde 2026-10-16) o los hilos.
 
 ## 8. Supervisión y estado publicado
 
@@ -224,10 +227,13 @@ disponible» y no hacen nada.
   `dias`, `anticipado`, `ultimo_anticipado`): `desde` es el primer evento del fichero más
   viejo que queda. Nunca se promete el objetivo si hubo borrado anticipado.
 
-## 9. Avisos aunque el panel esté caído
+## 9. Avisos aunque el panel esté caído (diseño, **sin implementar**)
 
-El orquestador tiene su propio canal de avisos: Telegram directo, con el token en
-`/etc/ids-maat/avisos.conf` (0600), que se configura al instalar. Avisa de:
+> **Estado real:** no existe. `install.sh` crea `/etc/ids-maat/avisos.conf` vacío (0600) y el
+> orquestador no lo lee ni manda nada por Telegram. Lo de abajo es el diseño pendiente.
+
+El orquestador tendrá su propio canal de avisos: Telegram directo, con el token en
+`/etc/ids-maat/avisos.conf` (0600), que se configura al instalar. Avisará de:
 
 - el panel caído o sin responder a `/salud`;
 - un punto en `error`;
@@ -261,11 +267,11 @@ MikroTik en [OPERACION.md](OPERACION.md).
 | 1 | El operador da el nombre, `redes_abonados`, RouterOS (6.49 o superior, o v7), el perfil (**`reducido` por defecto**) y, opcionalmente, la IP pública. Se muestra la capacidad. | `borrador` | Nombre repetido. CIDR inválido. Solape con la base de túneles, el pool de Docker o las redes de gestión. El perfil no cabe. |
 | 2 | Transacción en el panel: `N` libre más bajo y derivación de túnel, IP y puerto. **[B] PUNTO-RESERVA** | `reservado` | Sin `N` libres: se dice cuándo se liberan. Dos altas a la vez no pueden coger el mismo `N` (`UNIQUE`). |
 | 3 | **[O] `punto.crear`**: admisión, certificado de servidor, usuario VPN (hash), ccd, `suricata.yaml` completo, threshold, compose, `up -d`, espera a la salud **de los procesos** (no del espejo) y puerto en `@puertos_vpn`. | `creando` | Fallo parcial: se **deshace** todo (contenedores, volúmenes, certificado, puerto) y se devuelve el paso. El punto vuelve a `reservado` con `paso_error`, y «Reintentar» usa un `op_id` nuevo. |
-| 4 | Comandos del MikroTik, en bloques v7 y v6 separados: CA del VPS (pública) y `ovpn-client` con `verify-server-certificate=yes`, y usuario API. Sin certificado de la API-SSL: el script no toca `/ip service api-ssl`, que se usa tal como esté ([OPERACION.md](OPERACION.md) §1.1). Sin reglas de firewall ni rutas: el firewall y las rutas del router los gestiona el operador ([OPERACION.md](OPERACION.md) §1.5). La clave VPN se muestra **una sola vez**. | `esperando_vpn` | «Ver comando» los vuelve a mostrar sin la clave. «Regenerar credencial» invalida la anterior. |
+| 4 | Comandos del MikroTik, en bloques v7 y v6 separados: CA del VPS (pública) y `ovpn-client` con `verify-server-certificate=yes`, y nada más: el usuario de la API, si se quiere usar, lo crea a mano el operador ([OPERACION.md](OPERACION.md) §1.2). Sin certificado de la API-SSL: el script no toca `/ip service api-ssl`, que se usa tal como esté ([OPERACION.md](OPERACION.md) §1.1). Sin reglas de firewall ni rutas: el firewall y las rutas del router los gestiona el operador ([OPERACION.md](OPERACION.md) §1.5). Los comandos salen con la clave VPN puesta. | `esperando_vpn` | «Ver comando» (`punto.comandos`) los vuelve a dar con la clave si el orquestador la tiene cifrada y es la vigente; si no, con `<CLAVE-VPN>`. «Regenerar credencial» invalida la anterior. |
 | 5 | Indicador en vivo con `estado.json`: «Conectado desde 203.0.113.45». **[B] VPN-CONECTADA** | `→ esperando_api` | Sin conexión en 30 min: diagnóstico (puerto alcanzable desde fuera, usuario rechazado en el log, handshake TLS fallido en 6.49 → «compatibilidad v6», IP baneada por fail2ban). |
 | 6 | **API-SSL:** usuario, clave y «Probar». **Primera conexión:** sin huella fijada, el panel hace `/login` con lo que presente el router, con certificado o sin él: primero prueba el cifrado anónimo (`ADH:@SECLEVEL=0`, router con `certificate=none`) y después los normales, y la clave de `ids-api` va protegida por el túnel (decisión del dueño, 2026-10-15; [OPERACION.md](OPERACION.md) §1.1). **Huella opcional:** si el router presenta un certificado, la ficha muestra su huella SHA-256 para compararla con el `fingerprint` de `/certificate print detail` y, al confirmar («La huella coincide: confirmar»), la fija; desde entonces exige ese certificado (ya no prueba el cifrado anónimo) y, con otro, no manda la clave. Sin certificado no hay huella que fijar. Se guardan `identidad`, `sw_id` y `version_ros`, con la clave cifrada. `envio_habilitado = 0`. Revisión de CGNAT ([RED-Y-FIREWALL.md](RED-Y-FIREWALL.md) §6). **[B] API-ALTA** | `→ esperando_espejo` | **Timeout:** el firewall del router no deja entrar la API desde el sensor por `ids-vpn` (lo añade el operador, [OPERACION.md](OPERACION.md) §1.5). **Conexión cortada al instante:** `/ip service api-ssl` tiene un `address=` sin `100.64.N.1`, y se muestra el comando para añadirla conservando la lista; **el panel no toca esa lista**. En un router dado de alta con el script anterior, si la API-SSL corta nada más conectar («TLS handshake falló … EOF»), se revisa el servicio y, si tiene un certificado asignado, se deja sin él ([OPERACION.md](OPERACION.md) §1.1). **RouterOS anterior a 6.49:** se rechaza, porque no está soportado. En cualquier error **no se guarda nada**. |
-| 7 | **Vista previa del espejo:** el generador único produce los comandos exactos (address-list, dos mangle y el ajuste del fasttrack sin ningún `accept`). Se guardan el plan y su sha256. | `esperando_espejo` | — |
-| 8 | **Aplicar:** el POST lleva `plan_sha` y el plan **se regenera**; si el hash no coincide, se rechaza y se muestra el nuevo. Después: respaldo del firewall del router (si falla, no se toca nada), aplicación y **[B] ESPEJO-APLICADO** con los sha. | `esperando_espejo` | Si falla a mitad, se quita todo lo que lleva `ids-maat:<pid>` y se informa. El respaldo no se restaura solo. |
+| 7 | **Espejo, a mano** (desde 2026-10-16): lo monta el operador en su MikroTik ([OPERACION.md](OPERACION.md) §2); la ficha ya no tiene vista previa ni «Aplicar». Hasta entonces, el generador único producía los comandos exactos (address-list, dos mangle y el ajuste del fasttrack sin ningún `accept`) y se guardaban el plan y su sha256. | `esperando_espejo` | — |
+| 8 | **Aplicar** (hasta 2026-10-16; ya no existe): el POST llevaba `plan_sha` y el plan **se regeneraba**; si el hash no coincidía, se rechazaba y se mostraba el nuevo. Después: respaldo del firewall del router (si fallaba, no se tocaba nada), aplicación y **[B] ESPEJO-APLICADO** con los sha. | `esperando_espejo` | Si fallaba a mitad, se quitaba todo lo que llevaba `ids-maat:<pid>` y se informaba. El respaldo no se restauraba solo. |
 | 9 | **Verificación** (hasta 120 s): llegan paquetes desde `ip_mk` y hay eventos con `host == pid`. Se calculan los Mbps y el desperdicio. **[B] ESPEJO-VERIFICADO** | `→ activo` | Contador mangle a 0: no hay tráfico. Contador mayor que 0 sin llegada: túnel o ruta. Desperdicio mayor del 50 %: falta el recorte. El punto queda `activo` con aviso. |
 
 ### 11.2 Baja
@@ -290,10 +296,9 @@ está en [DATOS.md](DATOS.md) §8. No hay botón «Purgar» ni retención poster
      sus valores originales.
 
    **Nada más.** Lo del alta queda en el router, porque es el camino por el que el panel habla con
-   él: la interfaz `ids-vpn`, el usuario y el grupo `ids-api` y la CA del VPS con su fichero (y,
-   en un router dado de alta con el script anterior, la ruta blackhole y el bloque de aislamiento
-   de `ids-vpn` en `filter`). Se quita a
-   mano tras la baja con el bloque «terminar una baja con API» de [OPERACION.md](OPERACION.md) §2.1
+   él: la interfaz `ids-vpn` y la CA del VPS con su fichero, el usuario y el grupo `ids-api` si
+   el operador los creó y, en un router dado de alta con el script anterior, la ruta blackhole y
+   el bloque de aislamiento de `ids-vpn` en `filter`. Se quita a mano tras la baja con el bloque «terminar una baja con API» de [OPERACION.md](OPERACION.md) §2.1
    (todo menos el espejo), mejor antes de que acabe el enfriamiento de `N` (7 días, VPN-12). **La
    API-SSL del router no se toca**: el script actual no crea ningún certificado, y el `ids-promax`
    de un router dado de alta con el script anterior puede usarlo otro servicio del router (si
@@ -319,16 +324,19 @@ Todos los pasos son idempotentes: borrar lo ya borrado devuelve `OK`.
 ### 11.3 Pausa, reanudación y reinicio
 
 - **Pausar:**
-  1. Se deshabilita el mangle del espejo en el router (activado por defecto).
+  1. El espejo del router no se toca: desde 2026-10-16 lo monta (y lo pausa, si quiere) el
+     operador a mano ([OPERACION.md](OPERACION.md) §2).
   2. **[O] `punto.parar`** con `estado_deseado = pausada`.
   3. La política automática del punto se suspende. Las cuarentenas vivas siguen hasta su TTL.
   **[B]**
-- **Reanudar:** **[O] `punto.arrancar`** → espera a la salud → se reactiva el mangle → se verifica
-  como en 11.1-9.
-- **«Reintentar arranque»** (ficha del punto) encola el mismo `punto.arrancar`. Antes
-  de esperar la salud, los contenedores que están `running` pero `unhealthy` (o `restarting`) se
-  recrean de verdad (`--force-recreate`): un `compose up` solo no los tocaría y la espera vencería
-  con el punto igual de roto.
+- **Reanudar:** **[O] `punto.arrancar`** → espera a la salud (si el operador pausó el espejo, lo
+  reactiva él en su router) → se verifica como en 11.1-9.
+- **«Reintentar arranque»** (ficha del punto) encola el mismo `punto.arrancar`: `compose up -d` y,
+  antes de esperar la salud, se reinician de verdad los contenedores que están `running` pero
+  `unhealthy` (o `restarting`), porque un `compose up` solo no los tocaría y la espera vencería con
+  el punto igual de roto. La `vpn` se reinicia con `docker restart` y, detrás, siempre `suricata`
+  (comparte su netns); `suricata` con `docker restart` y, solo si ese restart falla,
+  `--force-recreate`.
 - **Reiniciar:** **[O] `punto.reiniciar {parte}`**.
   - El orden es siempre primero el `vpn` y después `suricata`.
   - Antes se avisa de que serán 30–90 s sin captura.

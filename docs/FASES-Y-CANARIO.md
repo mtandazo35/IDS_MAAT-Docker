@@ -143,16 +143,17 @@ Reglas para todas las fases:
     sus exclusiones y su bitácora están vacíos;
   - **baja con API:** antes de encolar la baja, el panel saca del router las IPs que puso
     (cuarentenas y destinos bloqueados) y retira el espejo (con su respaldo y la regla fasttrack
-    devuelta a sus valores originales); en el router **siguen** lo del alta (`ids-vpn`, usuario y grupo
-    `ids-api`, CA del VPS; en un router del script anterior, también la ruta blackhole y el bloque
-    de aislamiento de `filter`), que se quita con
+    devuelta a sus valores originales); en el router **siguen** lo del alta (`ids-vpn` y la CA del
+    VPS; el usuario y el grupo `ids-api`, si los creó el operador; en un router del script anterior,
+    también la ruta blackhole y el bloque de aislamiento de `filter`), que se quita con
     el bloque «terminar una baja con API» de [OPERACION.md](OPERACION.md) §2.1, y tras pegarlo no
     queda ninguna entrada `ids-maat:p001`;
   - **baja sin API:** el panel avisa de que las entradas quedan en el router y entrega los
     comandos;
   - las credenciales borradas ya no conectan;
   - la confirmación exige escribir el nombre exacto del punto;
-  - la pausa deshabilita el mangle y el `vpn` sigue sano;
+  - con el espejo pausado en el router (desde 2026-10-16 lo monta y lo pausa el operador a mano,
+    [OPERACION.md](OPERACION.md) §2), el `vpn` sigue sano;
   - con el túnel caído se anota por dónde sale el TZSP (sin ruta del IDS, sigue la ruta por defecto
     del router; el operador decide si lo evita);
   - una ruta estática del CHR dentro de `100.64.N.0/24` deshabilita el mangle y avisa;
