@@ -83,7 +83,7 @@ Reglas del contrato:
 | 21 | §2.1: `master.key` `root:root 0400`; el panel sin clave maestra | **F2:** `root:10500 0440`, montada en el panel en `/run/secrets/master_key:ro` (`IDS_MASTER_KEY`); `ids-orq panel aplicar` se niega si no existe (Docker crearía un directorio) | CONTRATO-F2 §10.3: el panel corre como 10500 sin capacidades y descifra sus secretos con ella |
 | 22 | §5.11: reserva del panel 1024 MiB | **F2:** `RESERVA_PANEL_MB = 1536` (compose `mem_reservation`, sin tope duro desde 2026-10-16, y admisión) | CONTRATO-F2 §6: el dashboard heredado y el generador por nodo (`RLIMIT_AS` 1 GiB, de uno en uno) |
 | 23 | §3 (fila 16 de §0.2): fail2ban cuenta todos los `ovpn-auth: rechazado` salvo `freno-global`; §5.13: 6 líneas | solo `motivo=formato` y `motivo=usuario`; §5.13 con 8 líneas (añade una de cada), casan la 5.ª y la 6.ª; orden inmediata `vpn.desbanear {ip}` (`ids-orq vpn desbanear <ip>`); el freno global de `ovpn-auth` no frena a la última IP aceptada durante 24 h | auditoría VPN-04/VPN-08 (2026-10-14): tras «Regenerar la clave VPN» el MikroTik reintentaba con la vieja y acababa baneado en todos los puertos hasta 1 semana |
-| 24 | §4.4: `max-clients 2`, sin `hand-window` (60 s) | `max-clients 16` y `hand-window 20`, sin `duplicate-cn` | auditoría VPN-03: las conexiones sin autenticar ocupan plaza y no llegan a fail2ban; 2 `nc` colgados dejaban fuera al MikroTik |
+| 24 | §4.4: `max-clients 2`, sin `hand-window` (60 s) | `max-clients 32` (16 hasta el 2026-10-17) y `hand-window 20`, sin `duplicate-cn` | auditoría VPN-03: las conexiones sin autenticar ocupan plaza y no llegan a fail2ban; 2 `nc` colgados dejaban fuera al MikroTik |
 | 25 | §3: certificado de servidor `CN=server-<pid>`; §5.12: el script sin CA ni verificación del servidor | `OU=server-<pid>`, `CN=<NOMBRE_DNS>`, `subjectAltName=DNS:<NOMBRE_DNS>`; el script importa la CA del VPS (`ids-maat-ca-<pid>`) y pone `verify-server-certificate=yes` en v6 y v7; añade `drop` de `input` y `forward` desde `ids-vpn` debajo del `accept` de la API (quitados después, fila 27); `punto.vpn.regenerar` renueva un certificado sin el nombre | auditoría VPN-01/VPN-02: el router no verificaba al servidor y no aislaba `ids-vpn`; RouterOS compara `connect-to` con el CN o el SAN |
 | 26 | §4.3: `suricata` con `cap_add: [NET_RAW, NET_ADMIN]` | `cap_add: [NET_RAW]` | auditoría VPN-05: af-packet no necesita `NET_ADMIN` (promisc y offloads los pone el `vpn`, `disable-offloading: false`) |
 | 27 | §5.12 (y fila 25): el script lleva la ruta blackhole `100.64.N.0/24` de distancia 250 y reglas de `/ip firewall filter` para `ids-vpn` | el script no lleva reglas de firewall ni rutas: certificado `ids-promax` (quitado después, fila 28), CA del VPS con `ovpn-client` y `verify-server-certificate=yes`, y usuario y grupo `ids-api` (`address=<sensor>/32`; quitados después, 2026-10-16: el usuario de la API lo crea a mano el operador, OPERACION §1.2); los routers ya dados de alta quitan lo viejo con `/ip firewall filter remove [find comment="IDS ids-maat:<pid>"]` y `/ip route remove [find comment="IDS ids-maat:<pid>"]` | decisión del dueño (2026-10-15): el firewall y las rutas del router los gestiona el operador. Sin blackhole, si el túnel cae, el espejo sigue la ruta por defecto del router |
@@ -411,7 +411,7 @@ proto tcp4-server
 dev tun0
 topology subnet
 server 100.64.3.0 255.255.255.0
-max-clients 16
+max-clients 32
 hand-window 20
 tls-server
 tls-version-min 1.2

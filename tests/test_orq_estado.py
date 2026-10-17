@@ -63,8 +63,9 @@ class Estado(unittest.TestCase):
         self.assertEqual(set(p), {"nombre", "n", "puerto", "tun_net", "perfil", "hilos", "ros_version", "compat_v6",
                                   "deseado", "estado", "contenedores", "netns", "vpn_cliente", "tzsp", "suricata",
                                   "avisos", "redes", "redes_espejo", "api_puerto", "sensor", "mk", "tzsp_puerto", "retencion",
-                                  "paso_error", "error_desde", "alertas_24h"})
+                                  "paso_error", "error_desde", "alertas_24h", "origen_ip"})
         self.assertEqual((p["paso_error"], p["error_desde"]), (None, None))
+        self.assertIsNone(p["origen_ip"])                       # sin origen fijo: cualquiera (C6)
         # §5.10: recuento de 24 h del orquestador (este stats no trae detect.alert)
         self.assertEqual(set(p["alertas_24h"]), {"n", "desde", "completo"})
         self.assertIsNone(p["suricata"]["alertas"])

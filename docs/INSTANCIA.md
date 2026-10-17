@@ -267,7 +267,7 @@ proto tcp4-server
 dev tun0
 topology subnet
 server 100.64.3.0 255.255.255.0
-max-clients 16
+max-clients 32
 hand-window 20
 tls-version-min 1.2
 data-ciphers AES-256-GCM:AES-256-CBC
@@ -292,12 +292,12 @@ management /run/ids-ctl/ovpn-mgmt.sock unix
   `ccd-exclusive`, nadie entra sin ese fichero.
 - **`proto tcp4-server`:** el `vpn` no usa IPv6. `data-ciphers` es el mismo en v6 y v7; solo cambia
   el `data-ciphers-fallback` según la versión declarada del punto.
-- **`max-clients 16` y `hand-window 20` (auditoría VPN-03).** OpenVPN cuenta en `max-clients` las
+- **`max-clients 32` y `hand-window 20` (auditoría VPN-03; 16 plazas hasta el 2026-10-17).** OpenVPN cuenta en `max-clients` las
   conexiones TCP que aún no se han autenticado, que no llegan a `ovpn-auth` ni a fail2ban: con 2
   plazas, dos `nc` colgados de un desconocido dejaban fuera al MikroTik. Ahora quien no termina el
   TLS y la autenticación en 20 s pierde su plaza (antes, 60 s por defecto) y, con el freno del host
-  (10 conexiones nuevas/min por IP), una IP sostiene unas 3 a la vez: unas 5 IP (5 o 6) llenan las
-  16 plazas. **Mitigado, no cerrado** (VPN-03): lo cierra fijar el origen del punto
+  (10 conexiones nuevas/min por IP), una IP sostiene unas 3 a la vez: unas 10 u 11 IP llenan las
+  32 plazas. **Mitigado, no cerrado** (VPN-03): lo cierra fijar el origen del punto
   (`ids-orq punto ajustar <pid> --origen-ip <IP pública del MikroTik>`) cuando el router tiene IP
   fija. **Sin `duplicate-cn`**, sigue habiendo un solo túnel útil: la sesión nueva del usuario echa
   a la vieja (las 2 plazas de antes eran para eso). 20 s deja margen a un 6.49 lento en el handshake

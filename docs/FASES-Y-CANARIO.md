@@ -179,7 +179,7 @@ Reglas para todas las fases:
     (`motivo=clave`, tras regenerarla) **no** se bloquea y entra solo en ≤ 10 min tras poner la
     nueva; `ids-orq vpn desbanear <ip>` quita un ban;
   - 3 `nc <vps> <puerto>` colgados no impiden que el MikroTik reconecte tras cortarle la VPN
-    (`max-clients 16`, `hand-window 20`; en el log del `vpn` no aparece «would exceed maximum
+    (`max-clients 32`, `hand-window 20`; en el log del `vpn` no aparece «would exceed maximum
     number of clients»);
   - más de 10 conexiones nuevas por minuto **desde una misma IP de origen** se descartan; el freno
     suma todos los puertos VPN del VPS (11 conexiones repartidas entre los puertos de dos puntos

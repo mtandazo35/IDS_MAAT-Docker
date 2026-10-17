@@ -14081,6 +14081,14 @@ certificado (hazlo también si le quitaste el certificado al router).</li>
 8728 <b>no conecta</b> (la ficha y <b>Probar la conexión</b> lo dicen). Hace falta API-SSL (8729), el
 puerto con el que el panel crea los puntos.</li>
 </ul>
+<h3>Origen fijo de la VPN</h3>
+<p>Cualquiera puede abrir el puerto VPN de un punto, y OpenVPN reserva una de sus <b>32 plazas</b> a cada
+conexión que aún no se ha autenticado (quien no termina en 20 s la pierde). Con el freno del servidor,
+hacen falta unas 10 IP a la vez para llenarlas y dejar fuera al MikroTik. Si el router sale siempre por
+la misma IP pública, fíjala y la VPN solo aceptará conexiones desde ella:
+<code>ids-orq punto ajustar &lt;punto&gt; --origen-ip &lt;IP del MikroTik&gt;</code> (en el servidor; para
+quitarlo, <code>--sin-origen-ip</code>). La ficha lo dice en <b>Origen de la VPN</b>: «solo desde …» o, si
+no está fijado, la orden con la IP desde la que conecta el router.</p>
 <h3>Desbanear la IP del MikroTik</h3>
 <p>El servidor banea con fail2ban (jaula <code>ids-vpn</code>) la IP que insiste en la VPN con un usuario
 que no existe o con datos mal formados, y el ban le corta a esa IP <b>todo lo que el servidor publica por

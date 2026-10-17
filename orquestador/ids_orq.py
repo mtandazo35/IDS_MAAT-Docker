@@ -2944,6 +2944,8 @@ class Orquestador:
             # privado y el CGNAT sin lo reservado, mas los adicionales)
             "redes": list(p["redes"]), "redes_espejo": self._redes_espejo(p),
             "api_puerto": p["api_puerto"], "sensor": p["sensor"],
+            # el origen fijo de la VPN (null = cualquiera): la ficha lo muestra o lo recomienda (C6)
+            "origen_ip": p.get("origen_ip") or None,
             "mk": p["mk"], "tzsp_puerto": TZSP_PUERTO,
             "contenedores": cont, "netns": ns,
             "vpn_cliente": leer_status_openvpn(ruta("/srv/ids/run/%s/openvpn-status.log" % pid)),

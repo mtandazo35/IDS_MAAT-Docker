@@ -113,7 +113,7 @@ server 100.64.3.0 255.255.255.0
 # max-clients: plazas para conexiones a medio negociar (cualquiera puede abrir el puerto); sin
 # duplicate-cn sigue habiendo un solo túnel útil: la sesión nueva del usuario echa a la vieja.
 # hand-window: quien no termina el TLS y la autenticación en 20 s pierde su plaza (VPN-03).
-max-clients 16
+max-clients 32
 hand-window 20
 tls-server
 tls-version-min 1.2

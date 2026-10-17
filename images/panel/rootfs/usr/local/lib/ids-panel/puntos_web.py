@@ -2489,6 +2489,7 @@ def ficha(h, pid, mensaje="", codigo=200, ok=False, extra_espejo=""):
             ("Alertas 24 h", "<a href='/eventos?nodo=%s'>%s</a>" % (esc(pid), alertas_24h_html(pid, ahora, p)[0])),
             ("Retención efectiva", retencion_html(retencion(pid, p), ahora)),
             ("Puerto VPN / red del túnel", esc("%s/tcp · %s" % (p.get("puerto") or "-", p.get("tun_net") or "-"))),
+        ) + ((("Origen de la VPN", origen_html(pid, p)),) if "origen_ip" in p else ()) + (
             ("Perfil / RouterOS", esc("%s · %s" % (p.get("perfil") or "-", ros_txt(p.get("ros_version"))))),
             ("Prefijos espejados", "todas las redes privadas y el CGNAT" + (
                 " + " + esc(", ".join(p.get("redes") or [])) if p.get("redes") else "")),
@@ -2899,6 +2900,20 @@ def _ip_valida(v):
         return str(ipaddress.ip_address(str(v or "").strip()))
     except ValueError:
         return ""
+
+
+def origen_html(pid, p):
+    """Origen de la VPN en la ficha (revisión 2026-10-15, C6). Con origen fijo la VPN solo acepta
+    conexiones desde esa IP y nadie más ocupa sus plazas; sin él cualquiera puede abrir el puerto y
+    unas 10 IP llenarían las 32 plazas: se recomienda fijarlo, con la IP desde la que conecta."""
+    fijo = _ip_valida(p.get("origen_ip"))
+    if fijo:
+        return "solo desde <code>%s</code> (origen fijo)" % esc(fijo)
+    vc = p.get("vpn_cliente") or {}
+    ip = _ip_valida(vc.get("ip_real")) if vc.get("conectado") else ""
+    orden = "ids-orq punto ajustar %s --origen-ip %s" % (pid, ip or "<IP pública del MikroTik>")
+    return ("cualquiera<div class=hint>Si el MikroTik sale siempre por la misma IP pública, fíjala y nadie "
+            "más podrá ocupar las plazas de su VPN: <code>%s</code></div>" % esc(orden))
 
 
 def ip_mikrotik(p):

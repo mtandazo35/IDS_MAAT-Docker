@@ -85,8 +85,11 @@ class Operaciones(unittest.TestCase):
         self.assertTrue(self.s.ordenes("docker exec ids-p001-vpn /command/s6-svc -r /run/service/openvpn"))
         self.assertIn("RouterOS 6.49+ o 7 (AES-256-CBC)", r["resultado"]["comandos"])
         self.assertIn('ip saddr != 203.0.113.45 counter drop comment "origen fijo p001"', self.s.nft_aplicado[-1])
+        # el estado lo publica: la ficha del panel lo enseña en vez de recomendarlo (C6)
+        self.assertEqual(self.orq.escribir_estado()["puntos"]["p001"]["origen_ip"], "203.0.113.45")
         r = A.ejecutar_orden(self.orq, "punto.ajustar", {"pid": "p001", "origen_ip": None})
         self.assertNotIn("origen fijo", self.s.nft_aplicado[-1])
+        self.assertIsNone(self.orq.escribir_estado()["puntos"]["p001"]["origen_ip"])
 
     def test_regenerar_cambia_hash_y_entrega_clave(self):
         usuarios = self.e.ruta("/srv/ids/puntos/p001/vpn/usuarios")

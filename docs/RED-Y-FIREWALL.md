@@ -441,11 +441,11 @@ se bloquea. Solo se exceptúa **una** IPv4 fija del dueño, para no perder el ac
   `/etc/systemd/journald.conf.d/90-ids.conf` (de `host/journald/`) lo sube a 50 000 mensajes cada
   30 s, para que una avalancha no tire las líneas que lee fail2ban, y fija el tamaño en 2 GB.
 - **Conexiones a medio negociar** (cualquiera puede abrir el puerto): no llegan a `ovpn-auth` ni a
-  fail2ban. Las acotan `hand-window 20` y `max-clients 16` del `server.conf`
+  fail2ban. Las acotan `hand-window 20` y `max-clients 32` del `server.conf`
   ([INSTANCIA.md](INSTANCIA.md) §7.2) junto al freno de conexiones nuevas del §7 (10/min por IP de
   origen, sumando todos los puertos VPN). **Mitigado, no cerrado (VPN-03):** con 10 conexiones
   nuevas por minuto y 20 s de `hand-window`, una IP mantiene unas 3 conexiones colgadas a la vez, así
-  que 5 o 6 IP llenan las 16 plazas de un punto. Contra eso, la defensa fuerte es el origen fijo
+  que unas 10 u 11 IP llenan las 32 plazas de un punto. Contra eso, la defensa fuerte es el origen fijo
   (`--origen-ip`) del punto. No hay límite de conexiones simultáneas por IP (`ct count`): necesitaría
   el módulo `nft_connlimit` en el **host** y no está validado.
 

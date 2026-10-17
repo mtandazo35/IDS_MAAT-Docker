@@ -414,6 +414,41 @@ class _Panel(unittest.TestCase):
             json.dump(e, f)
 
 
+class FichaOrigen(_Panel):
+    """Capacidad nueva (revisión 2026-10-15, C6; elegida por el dueño 2026-10-17): sin origen fijo,
+    unas pocas IP pueden ocupar las plazas de la VPN de un punto. La ficha dice el origen o recomienda
+    fijarlo con la IP desde la que conecta el MikroTik."""
+
+    def _origen(self, **kv):
+        ruta = os.path.join(self.p.tmp.name, "run", "estado.json")
+        with open(ruta, encoding="utf-8") as f:
+            e = json.load(f)
+        p = e["puntos"]["p001"]
+        p.update(kv)
+        p["relleno"] = "x" * (len(p.get("relleno", "")) + 7)      # otro tamaño: nodos relee estado.json
+        with open(ruta, "w", encoding="utf-8") as f:
+            json.dump(e, f)
+        return self.get("/puntos/p001")
+
+    def test_sin_origen_fijo_lo_recomienda_con_la_ip_que_conecta(self):
+        h = self._origen(origen_ip=None)
+        self.assertIn("Origen de la VPN", h)
+        self.assertIn("ids-orq punto ajustar p001 --origen-ip 198.51.100.7", h)
+
+    def test_sin_conectar_la_orden_lleva_el_hueco(self):
+        h = self._origen(origen_ip=None, vpn_cliente={"conectado": False, "desde": None, "ip_real": None,
+                                                      "usuario": None})
+        self.assertIn("--origen-ip &lt;IP pública del MikroTik&gt;", h)
+
+    def test_con_origen_fijo_lo_dice_y_no_lo_recomienda(self):
+        h = self._origen(origen_ip="198.51.100.7")
+        self.assertIn("solo desde <code>198.51.100.7</code> (origen fijo)", h)
+        self.assertNotIn("--origen-ip", h)
+
+    def test_con_un_orquestador_viejo_sin_el_dato_no_dice_nada(self):
+        self.assertNotIn("Origen de la VPN", self.get("/puntos/p001"))
+
+
 class FichaHuella(_Panel):
     def test_sin_javascript_la_huella_se_lee_en_su_pagina(self):
         """Corrección de defecto (revisión 2026-10-15, B5): sin JavaScript la ficha se quedaba en
