@@ -393,10 +393,14 @@ Motivo: no mezclar la información de un punto viejo con la de uno nuevo.
 - **En la bitácora global queda una sola línea:** «punto pNNN (nombre) eliminado por <usuario>
   <fecha>».
 - **Antes de borrar**, confirmación fuerte (escribir el nombre del punto) y aviso:
-  - si hay API, el flujo retira del router todo lo que lleva `ids-maat:<pid>`, incluidas las
-    cuarentenas vivas;
-  - si no la hay, avisa de que esas entradas quedan en el router (las cuarentenas, hasta su TTL) y
-    entrega los comandos para quitarlas.
+  - si hay API, el panel saca del router las IPs que puso él (cuarentenas y destinos bloqueados) y
+    el espejo que hubiera montado; **lo del alta se queda en el router**: la interfaz `ids-vpn`, la
+    CA del VPS y el usuario de la API si el operador lo creó. Se quita a mano con el bloque
+    «terminar una baja con API» de [OPERACION.md](OPERACION.md) §2.1, mejor antes de 7 días: pasado
+    el enfriamiento, el N del túnel se puede reutilizar y un router viejo que siga llamando acaba con
+    su IP baneada (VPN-12);
+  - si no la hay, avisa de que todo eso queda en el router (las cuarentenas no caducan solas) y
+    entrega los comandos para quitarlo.
 - **No hay botón «Purgar»** ni retenciones después de la baja.
 
 Flujo: [ORQUESTADOR.md](ORQUESTADOR.md) §11.2. Qué se borra: [DATOS.md](DATOS.md) §8.
