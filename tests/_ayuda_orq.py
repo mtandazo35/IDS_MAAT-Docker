@@ -392,7 +392,8 @@ class SistemaFalso:
         for opcion in ("-keyout", "-out"):
             if opcion in a:
                 Path(a[a.index(opcion) + 1]).write_text("-----BEGIN FALSO-----\n%s\n" % opcion, encoding="utf-8")
-        if "-extfile" in a and "-out" in a:
+        if "-extfile" in a and "-out" in a and "-selfsign" not in a:
+            # (la CA autofirmada no: su ca.crt tiene que seguir pareciendo un PEM para leer_ca_pem)
             # el certificado «firmado» lleva las extensiones pedidas (para `-ext subjectAltName`)
             ext = Path(a[a.index("-extfile") + 1]).read_text(encoding="utf-8")
             with open(a[a.index("-out") + 1], "a", encoding="utf-8") as fh:

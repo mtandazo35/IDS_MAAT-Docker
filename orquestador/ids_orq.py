@@ -1753,11 +1753,7 @@ def asegurar_ca(nombre_dns):
     pki = asegurar_dir(ruta("/srv/ids/pki"), 0o700)
     asegurar_dir(pki / "servidores", 0o700)
     if not (pki / "ca.crt").exists() or not (pki / "ca.key").exists():
-        ejecutar_ok(["openssl", "req", "-x509", "-newkey", "rsa:2048", "-sha256", "-days", "7300",
-                     "-nodes", "-keyout", str(pki / "ca.key"), "-out", str(pki / "ca.crt"),
-                     "-subj", "/CN=ids-maat-ca %s" % nombre_dns,
-                     "-addext", "basicConstraints=critical,CA:TRUE",
-                     "-addext", "keyUsage=critical,keyCertSign,cRLSign"], timeout=120)
+        _crear_ca(pki, nombre_dns)
         _chmod(pki / "ca.key", 0o600)
         _chmod(pki / "ca.crt", 0o644)
     if not (pki / "dh.pem").exists():
@@ -1861,6 +1857,38 @@ email_in_dn      = no
 organizationalUnitName = optional
 commonName             = supplied
 """
+
+
+EXT_CA = """basicConstraints=critical,CA:TRUE
+keyUsage=critical,keyCertSign,cRLSign
+subjectKeyIdentifier=hash
+"""
+
+
+def _crear_ca(pki, nombre_dns):
+    """CA común del VPS (RSA 2048, SHA-256, 20 años), autofirmada con notBefore = ahora −
+    MARGEN_RELOJ_S, como el certificado de servidor (revisión C3): un router con el reloj atrasado
+    rechazaría la CA «aún no válida» aunque el certificado del punto ya lo fuera. Con
+    `openssl ca -selfsign -startdate` por lo mismo que en cert_servidor (= pki() de install.sh)."""
+    tmp = pki / (".ca.%s" % secrets.token_hex(4))
+    try:
+        asegurar_dir(tmp, 0o700)
+        (tmp / "index.txt").write_text("", encoding="utf-8")
+        (tmp / "serial").write_text(secrets.token_hex(16) + "\n", encoding="ascii")
+        conf = tmp / "ca.cnf"
+        conf.write_text(OPENSSL_CA_CONF.replace("@@DIR@@", str(tmp).replace("\\", "/")), encoding="utf-8")
+        (tmp / "ext").write_text(EXT_CA, encoding="utf-8")
+        ejecutar_ok(["openssl", "req", "-new", "-newkey", "rsa:2048", "-nodes", "-sha256",
+                     "-keyout", str(pki / "ca.key"), "-subj", "/CN=ids-maat-ca %s" % nombre_dns,
+                     "-out", str(tmp / "ca.csr")], timeout=120)
+        desde = time.strftime("%Y%m%d%H%M%SZ", time.gmtime(time.time() - MARGEN_RELOJ_S))
+        ejecutar_ok(["openssl", "ca", "-batch", "-selfsign", "-config", str(conf), "-notext",
+                     "-preserveDN", "-keyfile", str(pki / "ca.key"), "-in", str(tmp / "ca.csr"),
+                     "-startdate", desde, "-days", "7300", "-md", "sha256",
+                     "-extfile", str(tmp / "ext"), "-out", str(pki / "ca.crt")], timeout=120)
+    finally:
+        if tmp.exists():
+            borrar_arbol(tmp)
 
 
 def cert_servidor(pid, nombre_dns):

@@ -255,6 +255,27 @@ restaurar_anterior() {
   aplicar_panel || return 1
 }
 
+# Lo del host que instala install.sh y este botón NO toca (fail2ban, journald, sysctl, módulos):
+# si el commit lo trae distinto de lo instalado, se avisa al terminar (revisión 2026-10-15, R1).
+# Solo compara lo que el commit trae. Imprime los nombres separados por «, » (nada = al día).
+host_pendiente() {
+  local dueno c=() IFS
+  dueno=$(sed -n 's/^IGNOREIP_DUENO=//p' "$ETC/ids.conf" 2>/dev/null | head -n1)
+  distinto() { [ -f "$1" ] && ! cmp -s "$1" "$2"; }
+  if { [ -f "$SRC/host/fail2ban/jail.d/10-ids.local.tmpl" ] \
+         && ! sed "s|@@IGNOREIP_DUENO@@|${dueno}|" "$SRC/host/fail2ban/jail.d/10-ids.local.tmpl" \
+              | cmp -s - "$R/etc/fail2ban/jail.d/10-ids.local"; } \
+     || distinto "$SRC/host/fail2ban/filter.d/ids-vpn.conf" "$R/etc/fail2ban/filter.d/ids-vpn.conf" \
+     || distinto "$SRC/host/fail2ban/filter.d/sshd.local.tmpl" "$R/etc/fail2ban/filter.d/sshd.local"; then
+    c+=(fail2ban)
+  fi
+  distinto "$SRC/host/journald/90-ids.conf" "$R/etc/systemd/journald.conf.d/90-ids.conf" && c+=(journald)
+  distinto "$SRC/host/sysctl/90-ids.conf" "$R/etc/sysctl.d/90-ids.conf" && c+=(sysctl)
+  distinto "$SRC/host/modules/ids.conf" "$R/etc/modules-load.d/ids.conf" && c+=("módulos del kernel")
+  IFS=,
+  printf '%s' "${c[*]}" | sed 's/,/, /g'
+}
+
 podar_imagenes() {   # quedan la imagen nueva y la anterior (para volver atrás a mano)
   local img
   docker image ls ids-maat-panel --format '{{.Repository}}:{{.Tag}}' 2>/dev/null | grep ':main-' \
@@ -340,6 +361,13 @@ hecho
 
 podar_imagenes
 log "listo: panel y orquestador en $SHA7"
-escribir_avance ok "Actualizado a $SHA7."
-diario OK "actualizado a $SHA7"
+PEND=$(host_pendiente || true)
+if [ -n "$PEND" ]; then
+  log "AVISO: host sin actualizar ($PEND): este botón no lo toca; vuelve a ejecutar install.sh"
+  escribir_avance ok "Actualizado a $SHA7. Aviso: host sin actualizar ($PEND): vuelve a ejecutar install.sh."
+  diario OK "actualizado a $SHA7; host sin actualizar ($PEND): vuelve a ejecutar install.sh"
+else
+  escribir_avance ok "Actualizado a $SHA7."
+  diario OK "actualizado a $SHA7"
+fi
 exit 0

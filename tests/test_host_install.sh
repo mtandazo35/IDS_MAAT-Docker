@@ -135,6 +135,27 @@ en_instalador() {
   )
 }
 
+p_pki_ca_retrofechada() {
+  # revisión 2026-10-15, C3: la CA vale desde 2 días antes, como el certificado de servidor (un
+  # router con el reloj atrasado la rechazaba «aún no válida»). Con openssl real; sin él, nada.
+  command -v openssl >/dev/null 2>&1 || return 0
+  NOMBRE=ids.empresa.example
+  mkdir -p "$R/srv/ids/pki"
+  pki >/dev/null || return 1
+  local ca="$R/srv/ids/pki/ca.crt" ahora
+  ahora=$(date +%s)
+  openssl verify -attime $((ahora - 86400)) -CAfile "$ca" "$ca" >/dev/null 2>&1 || return 2
+  openssl verify -attime $((ahora - 3 * 86400)) -CAfile "$ca" "$ca" >/dev/null 2>&1 && return 3
+  openssl x509 -in "$ca" -noout -text | grep -q "CA:TRUE" || return 4
+  openssl x509 -in "$ca" -noout -subject | grep -q "ids-maat-ca ids.empresa.example" || return 5
+  find "$R/srv/ids/pki" -maxdepth 1 -name '.ca.*' | grep -q . && return 6     # sin restos
+  [ -s "$R/srv/ids/pki/dh.pem" ] || return 7
+  local antes; antes=$(cat "$ca")
+  pki >/dev/null || return 8
+  [ "$(cat "$ca")" = "$antes" ] || return 9                                     # no se regenera
+  return 0
+}
+
 p_helpers() {
   [ "$(cidr_norm 192.0.2.77/25)" = 192.0.2.0/25 ] || return 1
   [ "$(cidr_norm 203.0.113.50)" = 203.0.113.50 ] || return 1
@@ -1026,6 +1047,7 @@ p_principal_zona_en_su_sitio() {
 
 echo "== install.sh: trozos con órdenes simuladas"
 esperar 0 "helpers de direcciones IPv4"                   en_instalador p_helpers
+esperar 0 "PKI: la CA vale desde 2 días antes (openssl)"   en_instalador p_pki_ca_retrofechada
 esperar 0 "árbol, ids.conf y secretos (idempotentes)"     en_instalador p_arbol_conf_secretos
 esperar 1 "--tun-base distinta con puntos: rechazo"       en_instalador p_tun_base_con_puntos
 esperar 0 "respaldo antes de tocar nada"                  en_instalador p_respaldo

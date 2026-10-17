@@ -3,6 +3,7 @@
 import shutil
 import subprocess
 import sys
+import time
 import unittest
 from pathlib import Path
 
@@ -47,6 +48,27 @@ class Pki(unittest.TestCase):
         self.assertEqual(ca.read_bytes(), antes)
         self.mod.borrar_cert("p003")
         self.assertEqual(sorted(x.name for x in (pki / "servidores").iterdir()), ["p004.crt", "p004.key"])
+
+    def test_validos_desde_dos_dias_antes(self):
+        """Corrección de defecto (revisión 2026-10-15, C3): un router con el reloj atrasado acepta la
+        cadena. El certificado de servidor ya valía desde 2 días antes, pero la CA desde «ahora»: con
+        el reloj un día atrás, la cadena fallaba por la CA."""
+        _, crt = self.mod.cert_servidor("p003", "ids.empresa.example")
+        ca = self.e.ruta("/srv/ids/pki/ca.crt")
+        base = ["openssl", "verify", "-CAfile", str(ca), "-purpose", "sslserver",
+                "-verify_hostname", "ids.empresa.example"]
+        ayer = str(int(time.time()) - 86400)
+        r = subprocess.run(base + ["-attime", ayer, str(crt)], capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, r.stderr + r.stdout)
+        hace3 = str(int(time.time()) - 3 * 86400)                  # el margen es de 2 días, no más
+        r = subprocess.run(base + ["-attime", hace3, str(crt)], capture_output=True, text=True)
+        self.assertNotEqual(r.returncode, 0)
+        texto = openssl("x509", "-in", str(ca), "-noout", "-text")
+        self.assertIn("CA:TRUE", texto)
+        self.assertIn("Certificate Sign, CRL Sign", texto)
+        self.assertIn("Subject Key Identifier", texto)
+        self.assertIn("Subject: CN=ids-maat-ca ids.empresa.example", texto.replace(" = ", "="))
+        self.assertFalse(list(self.e.ruta("/srv/ids/pki").glob(".ca.*")))   # sin restos
 
     def test_lo_que_comprueba_el_mikrotik(self):
         """verify-server-certificate=yes: cadena hasta la CA importada, uso de servidor y el

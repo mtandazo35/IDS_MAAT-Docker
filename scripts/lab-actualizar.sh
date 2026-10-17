@@ -22,6 +22,11 @@ ETC=/etc/ids-maat
 GUARDA=/root/ids-maat/lab
 TS=$(date -u +%Y%m%dT%H%M%SZ)
 
+# Lo del host que install.sh instala desde host/ y la carga también lleva (revisión 2026-10-15,
+# O-LAB): sin esto, un lab cargado sobre una instalación vieja seguía con el filtro ids-vpn de antes.
+HOST_F=(/etc/fail2ban/jail.d/10-ids.local /etc/fail2ban/filter.d/ids-vpn.conf
+        /etc/fail2ban/filter.d/sshd.local /etc/systemd/journald.conf.d/90-ids.conf)
+
 log() { printf '[lab %s] %s\n' "$(date +%H:%M:%S)" "$*"; }
 fallar() { printf '[lab] ERROR: %s\n' "$*" >&2; exit 1; }
 
@@ -31,7 +36,8 @@ fallar() { printf '[lab] ERROR: %s\n' "$*" >&2; exit 1; }
 respaldar() {
   install -d -m 0700 /root/backups
   local f="/root/backups/ids-maat-lab-${TS}.tar.gz" rutas=() r
-  for r in "$ETC" "$LIB" /srv/ids/panel /srv/ids/estado /srv/ids/pki /srv/ids/puntos /srv/ids/fw /usr/local/bin/ids-orq; do
+  for r in "$ETC" "$LIB" /srv/ids/panel /srv/ids/estado /srv/ids/pki /srv/ids/puntos /srv/ids/fw /usr/local/bin/ids-orq \
+           /etc/fail2ban /etc/systemd/journald.conf.d; do
     [ -e "$r" ] && rutas+=("$r")
   done
   ls /etc/systemd/system/ids-* >/dev/null 2>&1 && rutas+=(/etc/systemd/system/ids-*)
@@ -84,7 +90,34 @@ guardar_estado() {     # $1 = destino (anterior | original)
   cp -a "$LIB" "$d/ids-orq"
   install -d "$d/systemd"; cp -a /etc/systemd/system/ids-* "$d/systemd/" 2>/dev/null || true
   [ -f "$ETC/logrotate.conf" ] && cp -a "$ETC/logrotate.conf" "$d/"
+  local f
+  install -d -m 0700 "$d/host"
+  for f in "${HOST_F[@]}"; do [ -f "$f" ] && cp -a --parents "$f" "$d/host/"; done
   return 0
+}
+
+recargar_host() {
+  systemctl reload fail2ban >/dev/null 2>&1 || systemctl restart fail2ban >/dev/null 2>&1 \
+    || log "aviso: fail2ban sin recargar (journalctl -u fail2ban)"
+  systemctl restart systemd-journald >/dev/null 2>&1 \
+    || log "aviso: systemd-journald sin reiniciar: 90-ids.conf vale desde el próximo arranque"
+}
+
+instalar_host() {   # fail2ban y journald del commit, como install.sh (fail2ban_jaulas y journald)
+  local dueno
+  dueno=$(sed -n 's/^IGNOREIP_DUENO=//p' "$ETC/ids.conf" 2>/dev/null | head -n1)
+  install -d -m 0755 /etc/fail2ban/jail.d /etc/fail2ban/filter.d /etc/systemd/journald.conf.d
+  sed "s|@@IGNOREIP_DUENO@@|${dueno}|" "$SRC/host/fail2ban/jail.d/10-ids.local.tmpl" > /etc/fail2ban/jail.d/10-ids.local
+  chmod 0644 /etc/fail2ban/jail.d/10-ids.local
+  install -m 0644 "$SRC/host/fail2ban/filter.d/ids-vpn.conf" /etc/fail2ban/filter.d/ids-vpn.conf
+  install -m 0644 "$SRC/host/fail2ban/filter.d/sshd.local.tmpl" /etc/fail2ban/filter.d/sshd.local
+  install -m 0644 "$SRC/host/journald/90-ids.conf" /etc/systemd/journald.conf.d/90-ids.conf
+  if ! fail2ban-client -t >/dev/null 2>&1; then
+    cp -a "$GUARDA/anterior/host/." / 2>/dev/null || true
+    recargar_host
+    fallar "fail2ban no acepta la configuración del commit $SHA: se dejó la de antes (fail2ban-client -t)"
+  fi
+  recargar_host
 }
 
 restaurar_estado() {   # $1 = origen (anterior | original)
@@ -95,6 +128,10 @@ restaurar_estado() {   # $1 = origen (anterior | original)
   rm -rf "$LIB"; cp -a "$d/ids-orq" "$LIB"
   cp -a "$d/systemd/." /etc/systemd/system/ 2>/dev/null || true
   [ -f "$d/logrotate.conf" ] && cp -a "$d/logrotate.conf" "$ETC/logrotate.conf"
+  if [ -d "$d/host" ] && [ -n "$(ls -A "$d/host")" ]; then
+    cp -a "$d/host/." /
+    recargar_host
+  fi
   systemctl daemon-reload
   reiniciar_orq
   aplicar_panel
@@ -174,6 +211,8 @@ install -m 0644 "$SRC"/orquestador/plantillas/*.tmpl "$LIB/plantillas/"
 for u in "$SRC"/host/systemd/*; do install -m 0644 "$u" /etc/systemd/system/; done
 install -m 0644 "$SRC/host/logrotate/ids-maat.conf" "$ETC/logrotate.conf"
 systemctl daemon-reload
+log "host del commit $SHA (fail2ban y journald)"
+instalar_host
 
 python3 - "$ETC/imagenes.json" "$SHA" "${REFS[panel]:-}" "${REFS[vpn]:-}" "${REFS[suricata]:-}" \
     "$(git -C "$SRC" rev-parse HEAD)" <<'PY'

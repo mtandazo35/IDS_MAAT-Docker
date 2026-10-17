@@ -682,12 +682,30 @@ secretos() {
 }
 
 pki() {
-  local p="${R}/srv/ids/pki"
+  local p="${R}/srv/ids/pki" t
   if [ ! -s "$p/ca.crt" ] || [ ! -s "$p/ca.key" ]; then
-    log "PKI: CA común del VPS (RSA 2048, SHA-256, 20 años)"
-    openssl req -x509 -newkey rsa:2048 -sha256 -days 7300 -nodes \
-      -keyout "$p/ca.key" -out "$p/ca.crt" -subj "/CN=ids-maat-ca $NOMBRE" \
-      -addext "basicConstraints=critical,CA:TRUE" -addext "keyUsage=critical,keyCertSign,cRLSign" 2>/dev/null
+    log "PKI: CA común del VPS (RSA 2048, SHA-256, 20 años, válida desde 2 días antes)"
+    # Válida desde 2 días antes, como el certificado de servidor que firma el orquestador (revisión
+    # C3): un router con el reloj atrasado rechazaría la CA «aún no válida». `openssl ca -selfsign
+    # -startdate` porque `req -x509 -not_before` solo existe desde OpenSSL 3.4 (= ids_orq._crear_ca).
+    t=$(mktemp -d "$p/.ca.XXXXXX") || fallar "PKI: sin directorio temporal en $p"
+    : > "$t/index.txt"
+    openssl rand -hex 16 > "$t/serial"
+    printf '%s\n' "[ca]" "default_ca = ids" "[ids]" "dir = $t" "database = \$dir/index.txt" \
+      "new_certs_dir = \$dir" "serial = \$dir/serial" "default_md = sha256" "policy = politica" \
+      "unique_subject = no" "copy_extensions = none" "email_in_dn = no" "[politica]" \
+      "commonName = supplied" > "$t/ca.cnf"
+    printf '%s\n' "basicConstraints=critical,CA:TRUE" "keyUsage=critical,keyCertSign,cRLSign" \
+      "subjectKeyIdentifier=hash" > "$t/ext"
+    if ! openssl req -new -newkey rsa:2048 -sha256 -nodes -keyout "$p/ca.key" -out "$t/ca.csr" \
+           -subj "/CN=ids-maat-ca $NOMBRE" >/dev/null 2>&1 \
+       || ! openssl ca -batch -selfsign -config "$t/ca.cnf" -keyfile "$p/ca.key" -in "$t/ca.csr" \
+           -notext -preserveDN -startdate "$(date -u -d '-2 days' +%Y%m%d%H%M%SZ)" -days 7300 \
+           -md sha256 -extfile "$t/ext" -out "$p/ca.crt" >/dev/null 2>&1; then
+      rm -rf "$t"
+      fallar "PKI: no se pudo crear la CA del VPS"
+    fi
+    rm -rf "$t"
   fi
   chmod 0600 "$p/ca.key"; chmod 0644 "$p/ca.crt"
   if [ ! -s "$p/dh.pem" ]; then

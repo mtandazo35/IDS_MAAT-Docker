@@ -170,6 +170,44 @@ class Actualizador(unittest.TestCase):
         linea = json.loads(self.leer("srv/ids/estado/orq.jsonl").splitlines()[-1])
         self.assertEqual((linea["orden"], linea["codigo"], linea["a"]), ("sistema.actualizar", "OK", self.c2))
 
+    def _commit_con_journald(self):
+        r = self.repo
+        (r / "host" / "journald").mkdir(parents=True, exist_ok=True)
+        shutil.copy2(REPO / "host/journald/90-ids.conf", r / "host/journald/90-ids.conf")
+        git(r, "add", "-A")
+        git(r, "commit", "-q", "-m", "Con journald")
+        return git(r, "rev-parse", "HEAD")
+
+    def test_host_al_dia_no_avisa(self):
+        """Corrección de defecto (revisión 2026-10-15, R1): con el host igual que en el commit, el
+        mensaje de siempre."""
+        c3 = self._commit_con_journald()
+        dst = self.R / "etc/systemd/journald.conf.d/90-ids.conf"
+        dst.parent.mkdir(parents=True)
+        shutil.copy2(REPO / "host/journald/90-ids.conf", dst)
+        r = self.correr(c3[:7], "ana", etiqueta="main-" + c3[:7])
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(self.avance()["mensaje"], "Actualizado a %s." % c3[:7])
+
+    def test_host_distinto_avisa_que_hay_que_volver_a_instalar(self):
+        """Corrección de defecto (revisión 2026-10-15, R1): «Actualizar» no lleva fail2ban, journald,
+        sysctl ni módulos (eso es install.sh) y no lo decía: un host con lo de antes quedaba así sin que
+        nadie lo supiera. Ahora termina bien, sin tocar el host, y avisa."""
+        c3 = self._commit_con_journald()
+        dst = self.R / "etc/systemd/journald.conf.d/90-ids.conf"
+        dst.parent.mkdir(parents=True)
+        dst.write_text("# viejo\n", encoding="utf-8")
+        r = self.correr(c3[:7], "ana", etiqueta="main-" + c3[:7])
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        av = self.avance()
+        self.assertEqual(av["estado"], "ok")
+        self.assertIn("host sin actualizar (journald)", av["mensaje"])
+        self.assertIn("install.sh", av["mensaje"])
+        self.assertEqual(dst.read_text(encoding="utf-8"), "# viejo\n")            # el botón no lo toca
+        linea = json.loads(self.leer("srv/ids/estado/orq.jsonl").splitlines()[-1])
+        self.assertEqual(linea["codigo"], "OK")
+        self.assertIn("host sin actualizar (journald)", linea["mensaje"])
+
     def test_panel_que_no_queda_sano_vuelve_atras(self):
         self.fallos_panel.write_text("1", encoding="utf-8")
         r = self.correr(self.c2, "ana")
