@@ -14065,9 +14065,8 @@ el usuario y la clave de la VPN y los comandos para el MikroTik (v7 y v6) con la
 <li><b>La clave de la VPN se guarda cifrada</b> con la clave maestra del servidor, en el orquestador y
 en el panel (la VPN solo guarda su hash para comprobarla). Por eso la ficha del punto (VPN) y
 <code>ids-orq punto ovpn-client &lt;punto&gt;</code> dan <b>siempre</b> los comandos con la clave puesta,
-listos para pegar, también si el punto se creó o se regeneró desde la consola del servidor. La ficha da
-además una orden corta para un router que ya tiene <code>ids-vpn</code>:
-<code>/interface ovpn-client set [find name=ids-vpn] password=&lt;clave&gt; verify-server-certificate=yes disabled=no</code>.
+listos para pegar, también si el punto se creó o se regeneró desde la consola del servidor. La ficha
+enseña además el <b>usuario y la clave de la VPN a la vista</b>, cada uno con <b>Copiar</b>.
 Solo los ven los administradores, y la página no se guarda en el navegador. Antes de darla, el servidor
 comprueba que es la clave vigente: nunca da una vieja. Solo si no tiene ninguna que valga (p. ej. sin la
 clave maestra) la ficha lo dice y ofrece regenerarla; no pegues <code>password=&lt;CLAVE-VPN&gt;</code>

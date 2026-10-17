@@ -1594,6 +1594,17 @@ def con_clave_vpn(texto, pid, clave_id=None):
     return texto.replace(PLACEHOLDER_VPN, clave), clave
 
 
+def cred_html(usuario, clave, prefijo="cred"):
+    """Usuario y clave de la VPN a la vista, cada uno con «Copiar» (página de la operación y ficha)."""
+    return ("<div class='card cred'><div><span class=hint>Usuario de la VPN</span><br>"
+            "<code id=%s-usuario>%s</code> <button type=button class='btn sec' "
+            "onclick=\"pcopiar('%s-usuario',this)\">Copiar</button></div>"
+            "<div><span class=hint>Clave de la VPN</span><br>"
+            "<code id=%s-clave>%s</code> <button type=button class='btn sec' "
+            "onclick=\"pcopiar('%s-clave',this)\">Copiar</button></div></div>"
+            % (prefijo, esc(usuario), prefijo, prefijo, esc(clave), prefijo))
+
+
 def orden_set_clave(clave):
     """La orden que pone la clave en la ids-vpn que el router ya tiene (y la activa). Con la
     verificacion del servidor, como el script del alta: un router de antes de VPN-01 la necesita
@@ -1848,13 +1859,7 @@ def _cuerpo_fin(d, vm):
                         "Listo. Copia ahora la clave: el panel no la pudo guardar (falta la clave maestra) y no "
                         "la vuelve a mostrar. Si la pierdes, regenérala desde la ficha del punto.",
                         "ok" if vm.get("clave_guardada") else "amb")
-        cuerpo += ("<div class='card cred'><div><span class=hint>Usuario de la VPN</span><br>"
-                   "<code id=cred-usuario>%s</code> <button type=button class='btn sec' "
-                   "onclick=\"pcopiar('cred-usuario',this)\">Copiar</button></div>"
-                   "<div><span class=hint>Clave de la VPN</span><br>"
-                   "<code id=cred-clave>%s</code> <button type=button class='btn sec' "
-                   "onclick=\"pcopiar('cred-clave',this)\">Copiar</button></div></div>"
-                   % (esc(r.get("usuario")), esc(r.get("clave"))))
+        cuerpo += cred_html(r.get("usuario"), r.get("clave"))
         if vm.get("orden") == "punto.vpn.regenerar":
             # el router ya tiene ids-vpn: no se vuelve a crear, se le cambia la clave con UNA orden,
             # ya con la clave puesta. Si el servidor renovo su certificado (punto de antes de VPN-01),
@@ -2469,11 +2474,13 @@ def ficha(h, pid, mensaje="", codigo=200, ok=False, extra_espejo=""):
         vpn_html = aviso("No se pudieron obtener los comandos: %s" % _orq.traducir(r.get("codigo"), r.get("mensaje")),
                          "amb")
     elif puesta:
-        vpn_html = ("<p class=hint>Llevan la clave de la VPN puesta: cópialos y pégalos en el router tal cual. "
-                    "Solo crean la VPN.</p>"
-                    "<details><summary>El router ya tiene <code>ids-vpn</code> (por ejemplo, con la clave "
-                    "mal puesta): basta con esta orden</summary>%s</details>"
-                    % _bloque("ficha-set", "Cambiar la clave en el MikroTik", orden_set_clave(puesta))
+        # la clave SIEMPRE a la vista, en claro y fuera de los bloques plegados (el user, 2026-10-16:
+        # «la clave debe siempre estar visible»); en disco sigue cifrada. Sin el atajo «el router ya
+        # tiene ids-vpn» (quitado a peticion del user; esa orden la da la pagina de Regenerar)
+        m = re.search(r"(?:^|\s)user=(\S+)", cmds_txt or "")
+        vpn_html = (cred_html(m.group(1) if m else "-", puesta, "ficha")
+                    + "<p class=hint>Los comandos llevan la clave de la VPN puesta: cópialos y pégalos en el "
+                      "router tal cual. Solo crean la VPN.</p>"
                     + comandos_html(cmds_txt, p.get("ros_version"), "ficha"))
     else:
         vpn_html = (aviso("El panel no tiene la clave vigente de la VPN de este punto (se creó antes de que el "

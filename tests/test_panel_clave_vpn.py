@@ -62,6 +62,16 @@ class ClaveVpn(_tpe._Base):
             return real(pet)
         self.p.pw.TRANSPORTE = transporte
 
+    def assertClaveALaVista(self, h):
+        """La clave a la vista y en claro, fuera de los bloques plegados (el user, 2026-10-16: «la clave
+        debe siempre estar visible»), y sin el atajo «el router ya tiene ids-vpn» (quitado por el user)."""
+        self.assertIn("<code id=ficha-usuario>vpn7ad2d8</code>", h)
+        self.assertIn("<code id=ficha-clave>%s</code>" % CLAVE, h)
+        i = h.index("<code id=ficha-clave>")
+        self.assertEqual(h[:i].count("<details"), h[:i].count("</details>"))     # no está dentro de un desplegable
+        self.assertNotIn("/interface ovpn-client set [find name=ids-vpn]", h)
+        self.assertNotIn("basta con esta orden", h)
+
     def ruta_claves(self):
         return self.p.nodos.ruta("conf", "vpn-claves.json")
 
@@ -96,7 +106,7 @@ class ClaveVpn(_tpe._Base):
         h = r.texto
         self.assertNotIn("&lt;CLAVE-VPN&gt;", h)
         self.assertEqual(h.count("user=vpn7ad2d8 password=%s " % CLAVE), 2)     # v7 y v6
-        self.assertIn("/interface ovpn-client set [find name=ids-vpn] password=%s verify-server-certificate=yes disabled=no" % CLAVE, h)
+        self.assertClaveALaVista(h)
         self.assertNotIn("El panel no tiene la clave vigente", h)
         self.assertEqual(r.cab("Cache-Control"), "no-store")
 
@@ -109,7 +119,7 @@ class ClaveVpn(_tpe._Base):
         r = self.p.pedir("GET", "/puntos/p001", cookie=self.ana)
         h = r.texto
         self.assertEqual(h.count("user=vpn7ad2d8 password=%s " % CLAVE), 2)
-        self.assertIn("/interface ovpn-client set [find name=ids-vpn] password=%s verify-server-certificate=yes disabled=no" % CLAVE, h)
+        self.assertClaveALaVista(h)
         self.assertNotIn("El panel no tiene la clave vigente", h)
         self.assertNotIn("&lt;CLAVE-VPN&gt;", h)
         self.assertEqual(r.cab("Cache-Control"), "no-store")
