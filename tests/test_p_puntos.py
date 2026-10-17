@@ -138,8 +138,9 @@ class Puntos(unittest.TestCase):
         self.assertIn("desde <b>01/10/2026</b>", r.texto)
         r = self.p.pedir("GET", "/puntos/p001", cookie=self.ana)
         self.assertEqual(r.status, 200)
-        for sec in ("id=resumen", "id=vpn", "id=api", "id=espejo", "id=prefijos", "id=baja"):
+        for sec in ("id=resumen", "id=vpn", "id=api", "id=prefijos", "id=baja"):
             self.assertIn(sec, r.texto)
+        self.assertNotIn("id=espejo", r.texto)
         self.assertIn("&lt;CLAVE-VPN&gt;", r.texto)
         self.assertIn("reducido · RouterOS 7", r.texto)
         self.assertIn("reducido · RouterOS 6.49+ o 7", self.p.pedir("GET", "/puntos/p002", cookie=self.ana).texto)
@@ -191,44 +192,32 @@ class BotonEnlace(unittest.TestCase):
                 self.assertNotRegex(regla, r"(?<![-\w])background", sel)
 
 
-class Espejo(unittest.TestCase):
+class SinEspejo(unittest.TestCase):
+    """Correccion de defecto (el user, 2026-10-16: «yo uso esas reglas para enviar los datos, por eso
+    quiero quitar eso del espejo»): el espejo lo monta el operador a mano en el MikroTik (dos mangle
+    sniff-tzsp sobre su address-list) y la ficha ya no ofrece «Ver el plan», «Aplicar», «Pausar» ni
+    «Retirar»: con ellas, «Aplicar» deshabilitaba las reglas a mano y ponia las del panel."""
+
     def setUp(self):
         self.p = PanelP()
         self.addCleanup(self.p.cerrar)
         self.ana = self.p.entrar("ana")
 
-    def _post(self, form):
-        return self.p.pedir("POST", "/puntos/p001/espejo", form, cookie=self.ana)
+    def test_la_ficha_no_monta_el_espejo(self):
+        h = self.p.pedir("GET", "/puntos/p001", cookie=self.ana).texto
+        for no in ("id=espejo", "href='#espejo'", "/puntos/p001/espejo", "pesp(", "pjPlan", "Ver el plan",
+                   "Llevarlos al MikroTik", "ids-vigilados"):
+            self.assertNotIn(no, h, no)
+        self.assertIn("<section class=card id=prefijos><h2>Prefijos adicionales</h2>", h)
+        # quien use prefijos adicionales sabe que tiene que llevarlos a SU address-list
+        self.assertIn("Redes Privadas", h)
 
-    def test_aplicar_exige_el_plan_visto(self):
-        """Capacidad nueva: aplicar solo con la huella del plan que se vio; si cambio, no se aplica."""
-        r = self._post({"accion": "plan"})
-        huella = re.search(r"name=plan value='([0-9a-f]{32})'", r.texto).group(1)
-        self.assertNotIn(("aplicar", "p001"), self.p.espejo)
-        self.p.plan.append("/ip firewall mangle add chain=forward comment=otra")
-        self.assertEqual(self._post({"accion": "aplicar", "plan": huella}).status, 409)
-        self.assertNotIn(("aplicar", "p001"), self.p.espejo)
-        r = self._post({"accion": "plan"})
-        huella = re.search(r"name=plan value='([0-9a-f]{32})'", r.texto).group(1)
-        self.assertEqual(self._post({"accion": "aplicar", "plan": huella}).status, 200)
-        self.assertEqual(self.p.espejo.count(("aplicar", "p001")), 1)
-
-    def test_plan_con_accept_nunca_se_aplica(self):
-        """Correccion de defecto (OPERACION §2): un plan con action=accept no se aplica ni se ofrece."""
-        self.p.plan.append("/ip firewall filter add chain=forward action=accept connection-bytes=0-10000")
-        r = self._post({"accion": "plan"})
-        self.assertEqual(r.status, 500)
-        self.assertNotIn("name=plan value=", r.texto)
-        import hashlib
-        h = hashlib.sha256("\n".join(self.p.plan).encode()).hexdigest()[:32]
-        self.assertEqual(self._post({"accion": "aplicar", "plan": h}).status, 500)
-        self.assertNotIn(("aplicar", "p001"), self.p.espejo)
-
-    def test_pausar_y_retirar(self):
-        """Capacidad nueva: pausar y retirar van al espejo del punto de la ruta."""
-        self._post({"accion": "pausar"})
-        self.p.pedir("POST", "/puntos/p002/espejo", {"accion": "retirar"}, cookie=self.ana)
-        self.assertEqual(self.p.espejo, [("pausar", "p001"), ("retirar", "p002")])
+    def test_la_ruta_del_espejo_ya_no_existe(self):
+        for acc in ("plan", "aplicar", "pausar", "retirar"):
+            for form in ({"accion": acc}, {"accion": acc, "ajax": "1"}):
+                r = self.p.pedir("POST", "/puntos/p001/espejo", form, cookie=self.ana)
+                self.assertEqual(r.status, 404, form)
+        self.assertEqual(self.p.espejo, [])            # el nucleo ni se entera
 
 
 class OrdenesDelPunto(unittest.TestCase):
@@ -244,7 +233,8 @@ class OrdenesDelPunto(unittest.TestCase):
         pet = self.p.orq.ordenes("punto.ajustar")
         self.assertEqual(pet[0]["params"], {"pid": "p001", "redes_abonados": ["10.5.0.0/24", "10.6.0.0/24"]})
         r = self.p.pedir("GET", r.cab("Location"), cookie=self.ana)
-        self.assertIn("/puntos/p001#espejo", r.texto)
+        self.assertIn("/puntos/p001#prefijos", r.texto)
+        self.assertNotIn("#espejo", r.texto)
 
     def test_baja_exige_el_nombre(self):
         """Conservacion: la baja pide escribir el nombre; con el nombre pide punto.borrar."""

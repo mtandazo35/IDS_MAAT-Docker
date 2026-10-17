@@ -90,7 +90,8 @@ está en `inv_A.md` §1 y `inv_C.md` §1; se respeta salvo motivo que se explica
   protocolo no cambia.
 - El alta, la VPN y la baja del router son del apartado Puntos (§5). Se quitan `/routers/guardar`,
   `/routers/quitar`, `_card_nodos` y el tope de 8 routers.
-- **Espejo**: «Montar espejo» en la ficha del punto, con vista previa del plan, respaldo (`/export` en el
+- **Espejo** (retirado de la ficha el 2026-10-16: lo monta el operador a mano, ver
+  [OPERACION.md](OPERACION.md) §2; queda el núcleo para la baja): «Montar espejo» en la ficha del punto, con vista previa del plan, respaldo (`/export` en el
   router + JSON local en `RESPALDOS`) y aplicar. Lo hace `mikrotik_init.py` como módulo, por el relé, con
   sensor = `punto.sensor` y puerto `punto.tzsp_puerto`, y las reglas de [OPERACION.md](OPERACION.md) §2
   (comentario `IDS ids-maat:<pid>`, `connection-bytes=0-10000`, fasttrack ajustado **sin ningún `accept`**, **sin**
@@ -182,8 +183,8 @@ Respuestas al documento «Suricata IDS Lab: definición de la evolución multiso
   6.49+ y v7 con OpenVPN; por el túnel solo espejo y API; un punto = un MikroTik con identidad fija; almacenamiento
   separado por sonda y baja = borrar todo; cada servicio independiente; alta desde el formulario con espejo por API.
 - **Prefijos del espejo: los elige el usuario por punto** (`redes` del alta, editables después con
-  `punto.ajustar`). Al cambiarlos, la ficha del punto ofrece volver a aplicar el espejo (la address-list
-  `ids-vigilados` del router) con la misma vista previa.
+  `punto.ajustar`). Desde 2026-10-16 son solo los adicionales (lo privado va siempre) y el operador los
+  lleva a mano a la address-list de su espejo.
 - **Página «Eventos»** por nodo y en «Todos» (sustituye al buscador de EveBox): filtros por fecha/hora, firma
   (texto o SID), severidad, IP origen/destino, puerto, protocolo y tipo de evento; resultados paginados, más
   recientes primero; detalle con el JSON completo del evento; columna Nodo en «Todos». Lee los `eve.json*`/

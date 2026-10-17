@@ -3662,7 +3662,7 @@ def mk_diagnostico(router=None):
         out.append(("falta", "El espejo NO está enviando (o solo en un sentido)",
                     "Sin esto el sensor está ciego y todo lo demás da igual. Hacen falta las dos "
                     "reglas sniff-tzsp (ida y vuelta) hacia %s:%s." % (_sensor or "el sensor del punto", _puerto),
-                    "Puntos -> este punto -> Espejo -> Montar espejo (con vista previa y respaldo)"))
+                    "en el MikroTik: dos reglas mangle sniff-tzsp (ida y vuelta) hacia el sensor del punto"))
 
     # 2) las address-lists tienen que tener una regla que las use.
     #    Incluidas las de CATEGORIA, que son a las que el panel manda de verdad: antes se
@@ -12850,53 +12850,30 @@ crear la conexión, para no llenar la tabla de conntrack.</li>
 </ul>
 
 <h2>El espejo del MikroTik</h2>
-<p>El espejo ya no se pega a mano: lo monta el panel desde la ficha del punto (<b>Puntos &rarr; ficha
-&rarr; Espejo</b>), por la API y el túnel del punto, siempre con <b>vista previa</b> y <b>respaldo</b>
-(export en el router y copia en el panel). Es equivalente a esto (con los prefijos del punto, la IP del
-sensor dentro de su túnel y el comentario del espejo de su punto, <code>IDS ids-maat:&lt;punto&gt;:espejo</code>,
-distinto del de la regla de acceso a la API que se pegó en el alta, <code>IDS ids-maat:&lt;punto&gt;</code>: montar,
-pausar o retirar el espejo nunca toca esa regla):</p>
-<pre><code>/ip firewall address-list add list=ids-vigilados address=10.0.0.0/24 comment="IDS ids-maat:p003:espejo"
-/ip firewall mangle add chain=forward src-address-list=ids-vigilados connection-bytes=0-10000 \
-    action=sniff-tzsp sniff-target=&lt;sensor del punto&gt; sniff-target-port=37008 comment="IDS ids-maat:p003:espejo"
-/ip firewall mangle add chain=forward dst-address-list=ids-vigilados connection-bytes=0-10000 \
-    action=sniff-tzsp sniff-target=&lt;sensor del punto&gt; sniff-target-port=37008 comment="IDS ids-maat:p003:espejo"</code></pre>
-<p><b>Nunca se añade una regla <code>accept</code></b>: en RouterOS un accept termina la cadena y los
-paquetes se saltarían los <code>drop</code> de detrás (incluida la cuarentena). Montar, pausar o retirar
-el espejo no autoriza nada que tu firewall rechazaba; si el plan trajera un accept, el panel no lo aplica.</p>
-<p><b>FastTrack.</b> Los paquetes acelerados no pasan por mangle: sin tocarlo el espejo solo vería el
-primer paquete y te perderías el handshake TLS con su SNI, que es donde se detecta botnet y C2. Solo se
-cambian <b>condiciones</b> de las reglas <code>fasttrack-connection</code> (que deciden qué se acelera,
-nunca qué pasa): la existente deja fuera a <code>ids-vigilados</code> y se añaden dos fasttrack con sus
-mismas condiciones para los vigilados a partir de los 10 KB. Si tu regla fasttrack ya usa
-address-lists, el panel no la toca y lo dice en la vista previa.</p>
+<p>El espejo lo montas <b>tú, a mano, en el MikroTik</b> del punto: dos reglas <code>mangle</code>
+<code>sniff-tzsp</code> hacia el sensor del punto (su IP dentro del túnel, puerto <code>37008</code>), una
+para la ida y otra para la vuelta, sobre la address-list con las redes de tus abonados (en el ejemplo,
+<code>Redes Privadas</code>). El panel ya no lo monta desde la ficha del punto: así nunca toca tus reglas.</p>
+<pre><code>/ip firewall mangle
+add action=sniff-tzsp chain=forward comment="IDS ida" connection-bytes=0-10000 passthrough=yes sniff-target=&lt;sensor del punto&gt; sniff-target-port=37008 src-address-list="Redes Privadas"
+add action=sniff-tzsp chain=forward comment="IDS vuelta" connection-bytes=0-10000 dst-address-list="Redes Privadas" passthrough=yes sniff-target=&lt;sensor del punto&gt; sniff-target-port=37008</code></pre>
+<p>La IP del sensor y el puerto de cada punto salen en su ficha (<b>Puntos &rarr; ficha &rarr; VPN</b>).</p>
 <ul>
 <li><b><code>chain=forward</code> en las dos</b>, también en la de vuelta: en <code>prerouting</code>
 el des-NAT del retorno todavía no se aplicó y <code>dst-address-list</code> no coincidiría.</li>
 <li><b><code>connection-bytes=0-10000</code></b>: captura reducida, el arranque de cada conexión, que es
 donde Suricata detecta casi todo. La salud del punto lo muestra como tal.</li>
-<li><b>Idempotente</b>: aplicar dos veces no duplica nada. <b>Pausar</b> deshabilita los dos mangle;
-<b>Retirar</b> borra lo del comentario del punto y devuelve al fasttrack sus valores del respaldo.</li>
+<li><b>Nunca una regla <code>accept</code></b> para el espejo: en RouterOS un accept termina la cadena y
+los paquetes se saltarían los <code>drop</code> de detrás (incluida la cuarentena).</li>
+<li><b>FastTrack.</b> Los paquetes acelerados no pasan por mangle: si el router acelera las conexiones
+de los abonados, el espejo solo ve el primer paquete y te pierdes el handshake TLS con su SNI, que es
+donde se detecta botnet y C2. Deja la address-list del espejo fuera de la regla
+<code>fasttrack-connection</code> (al menos hasta los 10 KB de cada conexión).</li>
 </ul>
-<p><b>Cómo se ve en la ficha.</b> Hablar con el router tarda (conectar por el túnel, leerlo, el
-<code>/export</code> del respaldo y cada orden), así que <b>Ver el plan</b>, <b>Aplicar este plan</b>,
-<b>Pausar</b> y <b>Retirar</b> van en segundo plano: se abre una ventana con el paso en que va
-(conectar, leer router, verificar, respaldo, export, orden 2 de 6...) y, al terminar, el plan o el
-resultado en esa misma ventana. La página no se recarga ni se queda en blanco; puedes cerrar la ventana
-(<b>Seguir en segundo plano</b>) y el resultado aparece igual cuando termina. Si cierras la pestaña, al
-volver a la ficha se retoma el avance o se enseña el resultado <b>una vez</b>.</p>
-<ul>
-<li><b>Aplicar</b> solo aplica el plan que viste, con su huella: el panel lo vuelve a calcular contra el
-router y, si cambió, no toca nada y te enseña el plan nuevo con su propio botón. Lee el router dos veces
-(antes, tres).</li>
-<li>Una sola orden con el router a la vez por punto: un segundo clic, u otra pestaña, se engancha a la
-que está en marcha en vez de esperar.</li>
-<li>Mientras haya un <b>cambio de prefijos</b> del punto en marcha en el orquestador, <b>Aplicar</b> no se
-deja: una ventana explica que hay que esperar a que termine (si no, llevarías al MikroTik la lista de redes
-vieja).</li>
-</ul>
+<p>La <b>baja</b> de un punto no toca estas reglas: solo retira lo que hubiera montado una versión
+anterior del panel (lo que lleva el comentario <code>IDS ids-maat:&lt;punto&gt;:espejo</code>).</p>
 <p>Comprueba que llega mirando la salud por etapas del punto (<b>Espejo TZSP</b> y <b>Suricata</b>)
-o, en el router, <code>/ip firewall mangle print stats where comment~"ids-maat"</code>.</p>
+o, en el router, <code>/ip firewall mangle print stats where action=sniff-tzsp</code>.</p>
 
 <h3>Prefijos: qué deciden y por qué a veces faltan datos</h3>
 <p>El espejo de cada punto llega a su receptor TZSP (en su contenedor VPN) y su Suricata lo inspecciona.
@@ -12904,8 +12881,7 @@ El Suricata trata como red propia (<code>HOME_NET</code>) <b>todo lo privado y e
 (<code>10/8</code>, <code>172.16/12</code>, <code>192.168/16</code>, <code>100.64/10</code>) más los prefijos
 <b>públicos</b> del punto: cualquier red de abonados que llegue por el espejo da alertas, esté o no en
 los prefijos.</p>
-<p>Lo mismo vale para el <b>espejo del MikroTik</b> (la address-list <code>ids-vigilados</code>, cuando el
-espejo lo monta el panel) y para lo que el <b>panel</b> trata como tus abonados (cuarentena, ranking de
+<p>Lo mismo vale para lo que el <b>panel</b> trata como tus abonados (cuarentena, ranking de
 riesgo, métricas): <b>siempre</b> todo lo privado y el CGNAT, menos lo que usa el propio servidor
 (túneles, Docker y gestión). No hace falta escribirlo en ningún sitio.</p>
 <p>Los <b>prefijos del punto</b> son solo los <b>adicionales</b>: rangos que no son privados, como IPs
@@ -12930,12 +12906,12 @@ abonados (servidores, gestión) y pulsa <b>Guardar prefijos</b>.</li>
 cambia nada);</li>
 <li>añadir o quitar un prefijo <b>público</b> (sensor POST-NAT) sí cambia el <code>HOME_NET</code>: el
 orquestador reinicia el Suricata del punto (aprox. un minuto sin inspeccionar mientras carga las reglas);</li>
-<li>en los dos casos, después hay que <b>volver a aplicar el espejo</b> para llevarlos a la address-list
-<code>ids-vigilados</code> del router (con la misma vista previa).</li>
+<li>si tu espejo del MikroTik filtra por una address-list (p. ej. <code>Redes Privadas</code>), añade
+ahí también los prefijos adicionales: el panel ya no toca el espejo del router.</li>
 </ul>
 <p>Al pulsar <b>Guardar prefijos</b> la ficha no se recarga: debajo del formulario se ve el avance del
 orquestador paso a paso, con lo que tardó cada uno, y al terminar sale la ventana <b>Prefijos
-guardados</b> con el botón <b>Llevarlos al MikroTik</b>, que abre la vista previa del espejo.</p>
+guardados</b> con el resultado.</p>
 
 <h2>Sensor POST-NAT: analizar lo que hacen tus IPs públicas</h2>
 <p>Lo normal es espejar el <b>bridge</b> del MikroTik: ahí se ve quién es cada abonado (<code>10.x</code>)
@@ -13839,7 +13815,8 @@ del punto los vuelve a dar completos cuando quieras; si la clave no llega, ver "
 <li>Hasta que pegas los comandos en el router, el punto sale en <b>ámbar</b>, «esperando MikroTik»: es lo
 esperado, no un fallo.</li>
 <li>En la ficha: la clave de la <b>API</b>, <b>La huella coincide: confirmar</b> (tras compararla con la
-del router), <b>Probar conexión</b> y luego <b>Espejo &rarr; Ver el plan &rarr; Aplicar</b>.</li>
+del router) y <b>Probar conexión</b>. El espejo lo montas a mano en el MikroTik (ver «El espejo del
+MikroTik»).</li>
 </ol>
 <h3>Si algo falla</h3>
 <ul>
@@ -13852,8 +13829,8 @@ cualquier otra operación.</li>
 </ul>
 <h3>La ficha del punto</h3>
 <p>Resumen (estado, salud por etapas, espejo, Suricata, alertas de 24 h y <b>retención efectiva</b>),
-VPN (comandos sin la clave), API (usuario, clave, probar, huella), Espejo (plan, aplicar, pausar,
-retirar), Prefijos, Logs de la VPN y del Suricata, arrancar, parar, reiniciar, desbanear la IP del
+VPN (comandos sin la clave), API (usuario, clave, probar, huella), Prefijos adicionales, Logs de la
+VPN y del Suricata, arrancar, parar, reiniciar, desbanear la IP del
 MikroTik y la baja. La huella del certificado del router se lee por el túnel: con el MikroTik sin
 conectar, la ficha dice «se comprobará cuando el MikroTik conecte»; conectado, la ficha abre sin
 esperarla (dice «comprobando…» y la trae enseguida) y la recuerda 10 minutos.</p>
@@ -13909,7 +13886,8 @@ queda registrado: por eso Puntos y Eventos dicen la <b>retención efectiva</b> (
 eventos de verdad) y nunca prometen 30 días si hubo borrado anticipado.</p>
 <h3>Baja</h3>
 <p>En la ficha (o en <b>Eliminar</b> de la lista), escribiendo el nombre del punto. La limpieza del
-MikroTik va en segundo plano y se ve en una ventana («IPs quitadas 12 de 40», retirar el espejo); solo si
+MikroTik va en segundo plano y se ve en una ventana («IPs quitadas 12 de 40» y, si una versión anterior
+del panel montó el espejo, retirarlo: tus reglas a mano no se tocan); solo si
 el router quedó limpio se encola la baja y se pasa a su página de avance. Se borra todo el punto en el servidor (VPN, Suricata y
 eventos) y en el panel (sus reportes, su conexión y sus registros); queda una línea en el Registro. Los
 identificadores no se reutilizan. En el MikroTik quedan la interfaz <code>ids-vpn</code>, el usuario

@@ -4,12 +4,10 @@ cada prueba falla en b9dcd02 y pasa con la correccion. Panel de verdad sobre un 
 temporal (fixtures/panel2/_dash_p.py); A-01 tambien con mikrotik_init real y el MikroTik simulado.
 """
 import gzip
-import hashlib
 import json
 import os
 import re
 import sys
-import threading
 import time
 import unittest
 from unittest import mock
@@ -20,8 +18,6 @@ if TESTS not in sys.path:
     sys.path.insert(0, TESTS)
 from _dash_p import CLAVE, PanelP  # noqa: E402
 
-PLAN_RE = re.compile(r"<pre class=cmd id=plan-p001>(.*?)</pre>", re.S)
-HUELLA_RE = re.compile(r"name=plan value='([0-9a-f]{16,64})'")
 
 
 def token(texto, accion, pid="p001", valor=None):
@@ -53,107 +49,6 @@ class _Base(unittest.TestCase):
         r = self.p.pedir("GET", "/puntos/%s" % pid, cookie=self.ana)
         self.assertEqual(r.status, 200)
         return r.texto
-
-
-# --------------------------------------------------------------------------------------------
-# A-01: la vista previa del espejo muestra el plan real
-# --------------------------------------------------------------------------------------------
-class _PanelEspejoReal(PanelP):
-    """Con espejo_plan/espejo_aplicar REALES del nucleo, mikrotik_init real y un router simulado."""
-
-    def _sustitutos(self):
-        reales = {k: getattr(self.d, k) for k in ("espejo_plan", "espejo_aplicar", "espejo_pausar",
-                                                  "espejo_retirar")}
-        super()._sustitutos()
-        for k, v in reales.items():
-            setattr(self.d, k, v)
-        import _mikrotik_simulado as sim
-        self.router = sim.router_isp()
-        self.d.mk_conectar = lambda dd, timeout=6: self.router.conexion()
-
-
-class EspejoReal(_Base):
-    Panel = _PanelEspejoReal
-
-    def setUp(self):
-        super().setUp()
-        self.p.d.guardar_routers([{"id": "p001", "USER": "ids-api", "PASS": "clave-api", "ENABLED": "1"}])
-
-    def test_a01_vista_previa_con_ordenes_y_aplica_lo_visto(self):
-        """A-01: la vista previa enseña las ordenes reales (`terminal` de mikrotik_init), el boton
-        Aplicar aparece, la huella de un plan vacio no aplica nada y la del plan visto aplica
-        exactamente esas ordenes."""
-        r = self.p.pedir("POST", "/puntos/p001/espejo", {"accion": "plan"}, cookie=self.ana)
-        self.assertEqual(r.status, 200)
-        pre = PLAN_RE.search(r.texto)
-        self.assertIsNotNone(pre, "la vista previa no lleva las ordenes")
-        ordenes = [x for x in pre.group(1).splitlines() if x.strip()]
-        self.assertEqual(len(ordenes), 6)
-        self.assertTrue(any("sniff-tzsp" in x for x in ordenes))
-        self.assertNotIn("accept", pre.group(1).replace("fasttrack-connection", ""))
-        self.assertIn("Aplicar este plan", r.texto)
-        huella = HUELLA_RE.search(r.texto).group(1)
-        n0 = len(self.p.router.escrituras)
-        vacia = hashlib.sha256(b"").hexdigest()[:32]
-        r = self.p.pedir("POST", "/puntos/p001/espejo", {"accion": "aplicar", "plan": vacia}, cookie=self.ana)
-        self.assertEqual(r.status, 409)
-        self.assertEqual(len(self.p.router.escrituras), n0)
-        r = self.p.pedir("POST", "/puntos/p001/espejo", {"accion": "aplicar", "plan": huella}, cookie=self.ana)
-        self.assertEqual(r.status, 200, r.texto[-600:])
-        self.assertEqual(len(self.p.router.escrituras) - n0, 6)
-        # ya aplicado: el plan siguiente esta vacio y no ofrece Aplicar
-        r = self.p.pedir("POST", "/puntos/p001/espejo", {"accion": "plan"}, cookie=self.ana)
-        self.assertNotIn("Aplicar este plan", r.texto)
-
-
-class EspejoPlanes(_Base):
-    def poner_plan(self, res):
-        self.p.d.espejo_plan = lambda pid: (self.p.espejo.append(("plan", pid)) or dict(res))
-
-    def test_a01_bloqueos_impiden_aplicar(self):
-        """A-01: con `bloqueos` el plan se enseña con los bloqueos, sin boton, y aplicar no se hace."""
-        self.poner_plan({"ok": True, "mensaje": "vista previa", "lineas": [],
-                         "terminal": ["/ip firewall mangle add chain=forward action=sniff-tzsp"],
-                         "avisos": [], "bloqueos": ["la lista ids-vigilados ya existe con otras entradas"]})
-        r = self.p.pedir("POST", "/puntos/p001/espejo", {"accion": "plan"}, cookie=self.ana)
-        self.assertIn("ya existe con otras entradas", r.texto)
-        self.assertIn("sniff-tzsp", r.texto)
-        self.assertNotIn("Aplicar este plan", r.texto)
-        h = hashlib.sha256(b"/ip firewall mangle add chain=forward action=sniff-tzsp").hexdigest()[:32]
-        r = self.p.pedir("POST", "/puntos/p001/espejo", {"accion": "aplicar", "plan": h}, cookie=self.ana)
-        self.assertEqual(r.status, 409)
-        self.assertNotIn(("aplicar", "p001"), self.p.espejo)
-
-    def test_a01_fasttrack_y_avisos_visibles(self):
-        """A-01: los cambios del fasttrack y los avisos del plan se ven en la vista previa."""
-        self.poner_plan({"ok": True, "terminal": ["/ip firewall filter set *6 src-address-list=!ids-vigilados"],
-                         "avisos": ["hay otra regla sniff-tzsp ajena"],
-                         "fasttrack": [{".id": "*6", "accion": "excluir", "que": "excluir ids-vigilados del fasttrack *6"}]})
-        r = self.p.pedir("POST", "/puntos/p001/espejo", {"accion": "plan"}, cookie=self.ana)
-        self.assertIn("excluir ids-vigilados del fasttrack *6", r.texto)
-        self.assertIn("hay otra regla sniff-tzsp ajena", r.texto)
-        self.assertIn("Aplicar este plan", r.texto)
-
-    def test_a01_accept_en_los_cambios_se_rechaza(self):
-        """A-01: un `accept` en los cambios estructurados (no solo en el texto) tambien se rechaza."""
-        self.poner_plan({"ok": True, "terminal": ["/ip firewall filter add chain=forward"],
-                         "cambios": [{"orden": "/ip/firewall/filter/add", "args": ["=chain=forward", "=action=accept"]}]})
-        r = self.p.pedir("POST", "/puntos/p001/espejo", {"accion": "plan"}, cookie=self.ana)
-        self.assertEqual(r.status, 500)
-        self.assertNotIn("Aplicar este plan", r.texto)
-
-    def test_a01_huella_del_nucleo_va_a_aplicar(self):
-        """A-01 + A-21(1): si el nucleo da la huella de su plan, el formulario la lleva y se le pasa a
-        espejo_aplicar(pid, huella=...) para que aplique ese plan y no otro."""
-        self.poner_plan({"ok": True, "terminal": ["/ip firewall mangle add x"], "huella": "c0ffee" * 6})
-        visto = []
-        self.p.d.espejo_aplicar = lambda pid, usuario=None, huella=None: (
-            visto.append((pid, huella)) or {"ok": True, "mensaje": "aplicado", "lineas": ["hecho: x"]})
-        r = self.p.pedir("POST", "/puntos/p001/espejo", {"accion": "plan"}, cookie=self.ana)
-        self.assertEqual(HUELLA_RE.search(r.texto).group(1), "c0ffee" * 6)
-        r = self.p.pedir("POST", "/puntos/p001/espejo", {"accion": "aplicar", "plan": "c0ffee" * 6}, cookie=self.ana)
-        self.assertEqual(r.status, 200)
-        self.assertEqual(visto, [("p001", "c0ffee" * 6)])
 
 
 # --------------------------------------------------------------------------------------------
@@ -191,25 +86,10 @@ class TokensFicha(_Base):
         self.assertEqual(r.status, 409)
         self.assertEqual(self.p.orq.ordenes("punto.parar"), [])
 
-    def test_a08_espejo_y_api_un_solo_uso(self):
-        """A-08: aplicar, pausar y retirar el espejo y guardar la API con el mismo token se hacen
-        una sola vez; el reintento da el resultado de la primera."""
-        r = self.p.pedir("POST", "/puntos/p001/espejo", {"accion": "plan"}, cookie=self.ana)
-        huella = HUELLA_RE.search(r.texto).group(1)
-        tok = token(r.texto, "espejo", valor="aplicar")
-        self.assertIsNotNone(tok)
-        for _ in range(2):
-            r = self.p.pedir("POST", "/puntos/p001/espejo", {"accion": "aplicar", "plan": huella, "op": tok},
-                             cookie=self.ana)
-            self.assertEqual(r.status, 200)
-        self.assertEqual(self.p.espejo.count(("aplicar", "p001")), 1)
+    def test_a08_api_un_solo_uso(self):
+        """A-08: guardar la API con el mismo token se hace una sola vez; el reintento da el resultado
+        de la primera. (El espejo ya no se monta desde la ficha: el user, 2026-10-16.)"""
         texto = self.ficha()
-        for acc in ("pausar", "retirar"):
-            tok = token(texto, "espejo", valor=acc)
-            self.assertIsNotNone(tok, acc)
-            for _ in range(2):
-                self.p.pedir("POST", "/puntos/p001/espejo", {"accion": acc, "op": tok}, cookie=self.ana)
-            self.assertEqual(self.p.espejo.count((acc, "p001")), 1, acc)
         tok = token(texto, "api", valor="guardar")
         self.assertIsNotNone(tok)
         guardados = []
@@ -220,30 +100,6 @@ class TokensFicha(_Base):
                              cookie=self.ana)
             self.assertEqual(r.status, 200)
         self.assertEqual(len(guardados), 1)
-
-    def test_a08_doble_clic_simultaneo_en_aplicar(self):
-        """A-08 (§10.5 «doble clic»): dos POST a la vez con el mismo formulario aplican una vez."""
-        lento = threading.Event()
-
-        def aplicar(pid):
-            self.p.espejo.append(("aplicar", pid))
-            lento.wait(0.5)
-            return {"ok": True, "mensaje": "aplicado"}
-        self.p.d.espejo_aplicar = aplicar
-        r = self.p.pedir("POST", "/puntos/p001/espejo", {"accion": "plan"}, cookie=self.ana)
-        form = {"accion": "aplicar", "plan": HUELLA_RE.search(r.texto).group(1),
-                "op": token(r.texto, "espejo", valor="aplicar")}
-        st = []
-        hilos = [threading.Thread(target=lambda: st.append(
-            self.p.pedir("POST", "/puntos/p001/espejo", form, cookie=self.ana).status)) for _ in range(2)]
-        for h in hilos:
-            h.start()
-        for h in hilos:
-            h.join(10)
-        lento.set()
-        self.assertEqual(self.p.espejo.count(("aplicar", "p001")), 1)
-        self.assertEqual(sorted(st), [200, 409])
-
 
 # --------------------------------------------------------------------------------------------
 # A-09: la limpieza de la baja no depende de quien abra la operacion

@@ -1,10 +1,7 @@
 """Apartado B de Puntos (2026-10-14): «lo que demora, por debajo; que visualmente se vea bien».
 
-- T1 Espejo en segundo plano: «Ver el plan», «Aplicar», «Pausar» y «Retirar» por fetch (ajax=1)
-  devuelven enseguida {trabajo}; un hilo del panel habla con el router y GET
-  /operaciones/<id>?json=1 da el avance por etapas y el resultado (el plan con su huella). Aplicar
-  lee el router 2 veces (antes 3); un segundo clic se engancha al trabajo en marcha; con un
-  punto.ajustar pendiente, Aplicar se bloquea; la bitácora lleva usuario e IP aunque corra en un hilo.
+- T1 (Espejo en segundo plano) ya no está: la ficha no monta el espejo desde 2026-10-16 (lo monta el
+  operador a mano en el MikroTik); la prueba de que la ruta ya no existe está en test_p_puntos.SinEspejo.
 - T2 Prefijos por fetch: {op_id} y el avance en JSON con la duración de cada paso. La clave de un
   solo uso de punto.crear sale UNA vez en el JSON (y nunca en operaciones.json).
 - T3 La página de una operación ya no se recarga entera (sin <meta refresh>): sigue el JSON.
@@ -21,7 +18,6 @@ Tipo «corrección de defecto» salvo las marcadas «conservación»: cada una f
 Panel de verdad sobre un directorio temporal (fixtures/panel2/_dash_p.py), sin red; los hilos se
 esperan con tope.
 """
-import importlib
 import json
 import os
 import re
@@ -93,183 +89,6 @@ class _Base(unittest.TestCase):
                 return f.read()
         except OSError:
             return ""
-
-
-# --------------------------------------------------------------------------------------------
-# T1: espejo en segundo plano
-# --------------------------------------------------------------------------------------------
-class EspejoFondo(_Base):
-    def plan_lento(self):
-        """espejo_plan que cuenta sus etapas y espera a que la prueba lo suelte."""
-        self.suelta = threading.Event()
-        self.addCleanup(self.suelta.set)
-        p = self.p
-
-        def plan(pid, avance=None):
-            p.espejo.append(("plan", pid))
-            if avance:
-                avance(etapa="conectar")
-                avance(etapa="leer router")
-            self.suelta.wait(TOPE)
-            return {"ok": True, "mensaje": "plan", "lineas": list(p.plan)}
-        p.d.espejo_plan = plan
-
-    def test_plan_responde_enseguida_y_se_sigue_por_etapas(self):
-        """Antes: «Ver el plan» esperaba al router dentro de la petición (hasta 45 s). Ahora responde
-        {trabajo} enseguida; el JSON dice la etapa y, al terminar, el plan con su Aplicar y su huella."""
-        self.plan_lento()
-        r, j, dt = self.ajax("/puntos/p001/espejo", {"accion": "plan"})
-        self.assertEqual(r.status, 200)
-        self.assertLess(dt, 3)
-        tid = j["trabajo"]
-        self.assertEqual(j["orden"], "panel.espejo.plan")
-        e = esperar(lambda: (lambda x: x if x.get("etapa") == "leer router" else None)(self.estado(tid)))
-        self.assertFalse(e["terminada"])
-        self.assertEqual([x["nombre"] for x in e["pasos"]], ["conectar"])
-        self.assertIn("dur_s", e["pasos"][0])
-        self.suelta.set()
-        f = self.fin(tid)
-        self.assertTrue(f["ok"])
-        self.assertIn("Aplicar este plan", f["html"])
-        self.assertIn("sniff-tzsp", f["html"])
-        self.assertRegex(f["html"], r"name=plan value='[0-9a-f]{32}'")
-        self.assertIn("pesp(this.form)", f["html"])            # Aplicar también por fetch
-        # el orquestador no sabe nada de los trabajos del panel (vista_op no le pregunta)
-        self.assertEqual([x for x in self.p.orq.ordenes("op.estado") if x["params"].get("op_id") == tid], [])
-        # la bitácora del hilo lleva usuario e IP de quien lo pidió
-        linea = [x for x in self.bitacora().splitlines() if "\tESPEJO-PLAN\t" in x][-1]
-        self.assertEqual(linea.split("\t")[1:3], ["ana", "127.0.0.1"])
-
-    def test_segundo_clic_se_engancha_al_que_esta_en_marcha(self):
-        """Dos a la vez en el mismo punto: el segundo no espera 120 s a un cerrojo ni lanza otro;
-        recibe el id del que está en marcha."""
-        self.plan_lento()
-        _r, j1, _dt = self.ajax("/puntos/p001/espejo", {"accion": "plan"})
-        tok = self.token(self.ficha(), "espejo", "pausar")
-        r, j2, dt = self.ajax("/puntos/p001/espejo", {"accion": "pausar", "op": tok})
-        self.assertLess(dt, 3)
-        self.assertEqual(j2["trabajo"], j1["trabajo"])
-        self.assertEqual(j2["orden"], "panel.espejo.plan")
-        self.assertIn("Ya había otra orden", j2["nota"])
-        self.suelta.set()
-        self.fin(j1["trabajo"])
-        self.assertNotIn(("pausar", "p001"), self.p.espejo)
-        # el token no se gastó: ahora sí pausa, y un reintento del mismo formulario no repite
-        _r, j3, _dt = self.ajax("/puntos/p001/espejo", {"accion": "pausar", "op": tok})
-        self.fin(j3["trabajo"])
-        _r, j4, _dt = self.ajax("/puntos/p001/espejo", {"accion": "pausar", "op": tok})
-        self.assertEqual(j4["trabajo"], j3["trabajo"])
-        self.assertEqual(self.p.espejo.count(("pausar", "p001")), 1)
-
-    def test_aplicar_se_bloquea_con_un_ajuste_pendiente(self):
-        """Con un punto.ajustar de ese punto aún en el orquestador, Aplicar no se lanza (llevaría la
-        lista de redes vieja) y lo explica; terminado el ajuste, sí."""
-        tok = self.token(self.ficha(), "ajustar")
-        self.assertEqual(self.ajax("/puntos/p001/ajustar", {"redes": "10.9.0.0/24", "op": tok})[0].status, 200)
-        real = self.p.orq
-
-        def transporte(pet):                    # el ajuste sigue en curso
-            if pet["orden"] == "op.estado":
-                real.pedidas.append(pet)
-                return {"op_id": pet["op_id"], "ok": True, "codigo": "OK", "mensaje": "",
-                        "datos": {"estado": "en_curso", "paso": "validar", "avance": "1/4", "pasos": []}}
-            return real(pet)
-        self.p.pw.TRANSPORTE = transporte
-        r, j, _dt = self.ajax("/puntos/p001/espejo", {"accion": "aplicar", "plan": "ab" * 16})
-        self.assertEqual(r.status, 409)
-        self.assertIn("cambio de prefijos", j["error"])
-        self.assertNotIn("trabajo", j)
-        # sin JavaScript, lo mismo
-        r = self.p.pedir("POST", "/puntos/p001/espejo", {"accion": "aplicar", "plan": "ab" * 16}, cookie=self.ana)
-        self.assertEqual(r.status, 409)
-        self.assertNotIn(("aplicar", "p001"), self.p.espejo)
-        # también cuando lo dice la cola de estado.json (de otro panel o de la CLI)
-        self.p.pw.TRANSPORTE = real
-        ruta = os.path.join(self.p.tmp.name, "run", "estado.json")
-        with open(ruta, encoding="utf-8") as f:
-            est = json.load(f)
-        est["cola"]["en_curso"] = {"op_id": "x", "orden": "punto.ajustar", "pid": "p001", "paso": "x"}
-        with open(ruta, "w", encoding="utf-8") as f:
-            json.dump(est, f)
-        os.utime(ruta, (time.time() + 5, time.time() + 5))
-        self.assertEqual(self.ajax("/puntos/p001/espejo", {"accion": "aplicar", "plan": "ab" * 16})[0].status, 409)
-        est["cola"]["en_curso"] = None
-        with open(ruta, "w", encoding="utf-8") as f:
-            json.dump(est, f)
-        os.utime(ruta, (time.time() + 9, time.time() + 9))
-        r, j, _dt = self.ajax("/puntos/p001/espejo", {"accion": "aplicar", "plan": "ab" * 16})
-        self.assertIn("trabajo", j)
-
-
-class _PanelEspejoReal(PanelP):
-    """espejo_* REALES del núcleo, mikrotik_init real y el MikroTik simulado."""
-
-    def _sustitutos(self):
-        reales = {k: getattr(self.d, k) for k in ("espejo_plan", "espejo_aplicar", "espejo_pausar",
-                                                  "espejo_retirar")}
-        super()._sustitutos()
-        for k, v in reales.items():
-            setattr(self.d, k, v)
-        import _mikrotik_simulado as sim
-        self.router = sim.router_isp()
-        self.d.mk_conectar = lambda dd, timeout=6: self.router.conexion()
-
-
-class EspejoReal(_Base):
-    Panel = _PanelEspejoReal
-
-    def setUp(self):
-        super().setUp()
-        self.p.d.guardar_routers([{"id": "p001", "USER": "ids-api", "PASS": "clave-api", "ENABLED": "1"}])
-        mi = sys.modules.get("mikrotik_init")
-        if mi is None or not hasattr(mi, "_calcular"):     # otra prueba pudo dejar un sustituto
-            sys.modules.pop("mikrotik_init", None)
-            mi = importlib.import_module("mikrotik_init")
-        self.mi = mi
-        self.lecturas = 0
-        real = mi._calcular
-
-        def contar(*a, **k):
-            self.lecturas += 1
-            return real(*a, **k)
-        mi._calcular = contar
-        self.addCleanup(setattr, mi, "_calcular", real)
-
-    def test_aplicar_lee_el_router_dos_veces_y_cuenta_ordenes(self):
-        """Aplicar: antes 3 lecturas del router (la del panel en validar(), la de espejo_aplicar y
-        la de mikrotik_init.aplicar); ahora 2, porque espejo_aplicar(huella=) ya revisa huella,
-        bloqueos y accept. Por fetch, el avance llega a «orden i/N» y termina «Espejo aplicado»."""
-        _r, j, _dt = self.ajax("/puntos/p001/espejo", {"accion": "plan"})
-        f = self.fin(j["trabajo"])
-        huella = re.search(r"name=plan value='([0-9a-f]{32})'", f["html"]).group(1)
-        tok = re.search(RE_TOKEN, f["html"]).group(1)
-        self.assertEqual(self.lecturas, 1)
-        n0 = len(self.p.router.escrituras)
-        _r, j, _dt = self.ajax("/puntos/p001/espejo", {"accion": "aplicar", "plan": huella, "op": tok})
-        f = self.fin(j["trabajo"])
-        self.assertTrue(f["ok"], f)
-        self.assertEqual(f["titulo_fin"], "Espejo aplicado")
-        self.assertEqual(self.lecturas, 3)                  # 1 del plan + 2 de aplicar
-        self.assertEqual(len(self.p.router.escrituras) - n0, 6)
-        nombres = [x["nombre"] for x in f["pasos"]]
-        self.assertEqual(nombres[:4], ["conectar", "leer router", "verificar", "respaldo"])
-        self.assertIn("export", nombres)
-        self.assertRegex(nombres[-1], r"^orden [0-9]+/[0-9]+$")
-        # aplicado: el plan siguiente está vacío y no ofrece Aplicar
-        r = self.p.pedir("POST", "/puntos/p001/espejo", {"accion": "plan"}, cookie=self.ana)
-        self.assertNotIn("Aplicar este plan", r.texto)
-
-    def test_plan_cambiado_se_ensena_con_su_huella_nueva(self):
-        """Si el router cambió desde la vista previa, el núcleo no toca nada y lo que se enseña es el
-        plan de ahora con SU huella (sin la lectura de más del panel)."""
-        _r, j, _dt = self.ajax("/puntos/p001/espejo", {"accion": "plan"})
-        f = self.fin(j["trabajo"])
-        huella = re.search(r"name=plan value='([0-9a-f]{32})'", f["html"]).group(1)
-        r = self.p.pedir("POST", "/puntos/p001/espejo", {"accion": "aplicar", "plan": "cd" * 16}, cookie=self.ana)
-        self.assertEqual(r.status, 409)
-        self.assertIn("El plan cambió desde la vista previa", r.texto)
-        self.assertIn("name=plan value='%s'" % huella, r.texto)
-        self.assertEqual(self.lecturas, 2)
 
 
 # --------------------------------------------------------------------------------------------
@@ -561,10 +380,13 @@ class Telegram(_Base):
 # --------------------------------------------------------------------------------------------
 class Retomar(_Base):
     def test_la_ficha_retoma_lo_no_visto_una_vez(self):
-        """Se pidió el plan y se cerró la pestaña sin verlo: la ficha lo retoma (pjretomar) y, visto
-        el resultado, ya no lo vuelve a enseñar."""
-        _r, j, _dt = self.ajax("/puntos/p001/espejo", {"accion": "plan"})
-        tid = j["trabajo"]
+        """Un trabajo del panel en la ficha (una baja que no siguió) terminó con la pestaña cerrada
+        sin verlo: la ficha lo retoma (pjretomar) y, visto el resultado, ya no lo vuelve a enseñar."""
+        tid, nuevo = self.p.pw.lanzar_trabajo(
+            self.p.d, "p001", "panel.baja", "ana", "127.0.0.1",
+            lambda avance: {"ok": False, "mensaje": "el router no respondió",
+                            "resultado": {"titulo_fin": "No se dio de baja", "html": ""}})
+        self.assertTrue(nuevo)
         esperar(lambda: self.p.pw.ops().obtener(tid).get("terminada"))
         h = self.ficha()
         m = re.search(r"<div id=pjretomar hidden data-ops='([^']*)'>", h)

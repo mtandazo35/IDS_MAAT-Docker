@@ -206,7 +206,22 @@ actual» punto por punto, empezando por uno y comprobando que vuelve a `activo` 
 
 ## 2. Espejo
 
-Lo aplica el panel desde la ficha del punto, siempre después de la vista previa y del respaldo
+> **Desde 2026-10-16 el espejo lo monta el operador a mano en el MikroTik** (decisión del dueño: «yo uso
+> esas reglas para enviar los datos»). La ficha del punto ya no tiene la sección Espejo (ni «Ver el plan»,
+> «Aplicar», «Pausar», «Retirar»). Las reglas que se usan son dos `mangle` `sniff-tzsp` en `forward` sobre
+> la address-list del operador, p. ej.:
+>
+> ```
+> /ip firewall mangle
+> add action=sniff-tzsp chain=forward comment="IDS ida" connection-bytes=0-10000 passthrough=yes sniff-target=100.64.3.1 sniff-target-port=37008 src-address-list="Redes Privadas"
+> add action=sniff-tzsp chain=forward comment="IDS vuelta" connection-bytes=0-10000 dst-address-list="Redes Privadas" passthrough=yes sniff-target=100.64.3.1 sniff-target-port=37008
+> ```
+>
+> Si el punto tiene prefijos adicionales, también se añaden a esa address-list. Lo que sigue describe el
+> montaje que hacía el panel (`mikrotik_init.py`): sigue valiendo para la **baja**, que retira lo que lleve
+> el comentario `IDS ids-maat:<pid>:espejo` (nunca las reglas a mano), y como referencia del fasttrack.
+
+Lo aplicaba el panel desde la ficha del punto, siempre después de la vista previa y del respaldo
 (`/export` en el router y copia JSON en el panel). Requisito que manda sobre todo lo demás:
 
 > **Instalar, actualizar, pausar o retirar el espejo no autoriza tráfico que la política original del
