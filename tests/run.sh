@@ -2,7 +2,8 @@
 # ids-maat — runner de pruebas (CONTRATO-F1a §8.1). Sin lista que mantener: descubre todo.
 #   tests/run.sh [--imagenes] [--integracion]
 #   1. python tests/correr.py (unittest de tests/ y tests/legado/, un módulo por proceso en todos los
-#      núcleos; IDS_PROCESOS=1 en serie; python3, python o "py -3")
+#      núcleos; IDS_PROCESOS=1 en serie; como root, en un cgroup con IDS_TOPE_MEMORIA, 3G por
+#      defecto; python3, python o "py -3")
 #   2. cada tests/test_*.sh con bash
 #   3. --imagenes:    cada tests/imagen/test_*.sh       (Docker Linux, IDS_IMG_VPN, IDS_IMG_SURICATA)
 #   4. --integracion: cada tests/integracion/test_*.sh  (root y Docker)
@@ -48,8 +49,17 @@ ARGS_PY=()
 [ -n "${IDS_OBLIGATORIAS:-}" ] && ARGS_PY+=(--obligatorias "$IDS_OBLIGATORIAS")
 [ -n "${IDS_RESUMEN:-}" ] && ARGS_PY+=(--resumen "$IDS_RESUMEN")
 [ -n "${IDS_PROCESOS:-}" ] && ARGS_PY+=(--procesos "$IDS_PROCESOS")
+# IDS_TOPE_MEMORIA=<n>: tope de memoria de las pruebas en un cgroup propio (systemd-run --scope,
+# como root); por defecto 3G, 0 = sin tope. El 2026-10-16 la suite agotó la memoria del VPS de
+# producción y el kernel mató a Suricata; con el tope, un exceso mata la suite y no los servicios.
+TOPE=()
+if [ "${IDS_TOPE_MEMORIA:-3G}" != 0 ] && [ "$(id -u)" = 0 ] && command -v systemd-run >/dev/null 2>&1 \
+   && systemd-run --quiet --scope -p MemoryMax=64M true >/dev/null 2>&1; then
+  TOPE=(systemd-run --quiet --scope -p "MemoryMax=${IDS_TOPE_MEMORIA:-3G}" -p MemorySwapMax=0 --)
+  echo "   (en un cgroup con MemoryMax=${IDS_TOPE_MEMORIA:-3G})"
+fi
 # shellcheck disable=SC2086
-if $PY tests/correr.py "${ARGS_PY[@]}"; then
+if ${TOPE[@]+"${TOPE[@]}"} $PY tests/correr.py "${ARGS_PY[@]}"; then
   PASADAS=$((PASADAS + 1))
 else
   FALLOS=$((FALLOS + 1))

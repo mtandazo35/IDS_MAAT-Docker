@@ -1289,7 +1289,10 @@ Un .sh que sale con 77 cuenta como OMITIDA. Sale con 1 si falla alguna.
 
 El paso 1 lo hace `tests/correr.py`, que **desde 2026-10-16** reparte los módulos entre todos los
 núcleos (un módulo entero por proceso, en su orden de siempre; `IDS_PROCESOS=1` o `--procesos 1` lo
-corre en serie): en la VPS de 8 núcleos la suite pasaba de ~16 min en uno solo. Mientras se trabaja
+corre en serie): en la VPS de 8 núcleos la suite pasaba de ~16 min en uno solo. Como root, `run.sh`
+la mete en un cgroup con tope de memoria (`IDS_TOPE_MEMORIA`, 3G por defecto; `0` sin tope): el
+2026-10-16, sin él, la suite en paralelo agotó la memoria del VPS de producción y el kernel mató a
+Suricata. Al acabar imprime los módulos más lentos y los que más memoria piden. Mientras se trabaja
 se corren solo los ficheros de prueba del cambio; la suite completa, para pasar a `main`.
 
 Se corre en Linux, en la VPS. **Desde 2026-10-15** (decisión del dueño) no hay Windows (ni job

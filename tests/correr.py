@@ -35,6 +35,11 @@ import traceback
 import unittest
 import warnings
 
+try:
+    import resource
+except ImportError:                          # sin Linux no hay ru_maxrss: no se mide la memoria
+    resource = None
+
 TESTS = os.path.dirname(os.path.abspath(__file__))
 PLATAFORMAS = ("linux", "root")       # sin Windows desde 2026-10-15 (decisión del dueño)
 # qué columnas de obligatorias.txt aplica cada plataforma («todas» siempre)
@@ -119,11 +124,20 @@ def modulos(suite):
 _MODULOS = []
 
 
+def _picos():
+    """(MB, MB): pico de memoria (RSS) de este proceso y del mayor de sus subprocesos acabados."""
+    if resource is None:
+        return 0, 0
+    return (resource.getrusage(resource.RUSAGE_SELF).ru_maxrss // 1024,
+            resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss // 1024)
+
+
 def _correr_modulo(i, verbosidad=1):
     """Corre el módulo i en este proceso. Devuelve solo lo que se puede mandar al padre."""
     nombre, s = _MODULOS[i]
     flujo = _Flujo()
     r = Resultado(flujo, True, verbosidad)
+    m0 = _picos()
     t0 = time.monotonic()
     with warnings.catch_warnings():
         if not sys.warnoptions:              # lo mismo que hace TextTestRunner
@@ -133,7 +147,11 @@ def _correr_modulo(i, verbosidad=1):
             s.run(r)
         finally:
             r.stopTestRun()
-    return {"nombre": nombre, "seg": time.monotonic() - t0, "salida": flujo.getvalue(),
+    m1 = _picos()
+    # Lo que este módulo SUBIÓ el pico del proceso, y el pico de un subproceso suyo si es nuevo:
+    # ru_maxrss solo crece, así que un módulo que no pasa del pico anterior cuenta 0.
+    mem = (m1[0] - m0[0], m1[1] if m1[1] > m0[1] else 0)
+    return {"nombre": nombre, "seg": time.monotonic() - t0, "mem": mem, "salida": flujo.getvalue(),
             "corridas": r.testsRun, "pasadas": r.pasadas,
             "fallos": [(t.id(), r.getDescription(t), txt) for t, txt in r.failures],
             "errores": [(t.id(), r.getDescription(t), txt) for t, txt in r.errors],
@@ -144,7 +162,7 @@ def _correr_modulo(i, verbosidad=1):
 
 def _anotar(total, tiempos, d, salida):
     total.sumar(d)
-    tiempos.append((d["seg"], d["nombre"]))
+    tiempos.append((d["seg"], d["nombre"], d["mem"]))
     salida.write(d["salida"])
     salida.flush()
 
@@ -206,8 +224,12 @@ def _informe(total, tiempos, seg, procesos, salida):
     info = ", ".join("%s=%d" % (k, n) for k, n in info if n)
     w(("OK" if total.wasSuccessful() else "FAILED") + (" (%s)" % info if info else "") + "\n")
     w("== los 10 módulos más lentos (segundos)\n")
-    for s, nombre in sorted(tiempos, reverse=True)[:10]:
+    for s, nombre, _m in sorted(tiempos, reverse=True)[:10]:
         w("   %7.1f  %s\n" % (s, nombre))
+    # la memoria manda más que la CPU en un VPS con servicios vivos (OOM del 2026-10-16 en el .152)
+    w("== los 10 módulos que más memoria piden (MB que suben el pico del proceso / pico de un subproceso)\n")
+    for _s, nombre, (sube, hijo) in sorted(tiempos, key=lambda x: -max(x[2]))[:10]:
+        w("   %6d / %6d  %s\n" % (sube, hijo, nombre))
     salida.flush()
 
 
