@@ -682,6 +682,55 @@ class AbonadosSinAdicionales(Entorno):
         self.assertEqual(self.cpes(self.salida("p001", "cuarentena.json")), [("p001", "10.0.0.5")])
 
 
+class HiloHistorial(Base):
+    """La ingesta del historial va en su propio hilo (205.235.2.159, 2026-10-16: con mucho DNS, o el
+    atraso tras una parada, el refrescador pasaba minutos ingiriendo y no regeneraba ningún informe)."""
+
+    def test_el_refrescador_ya_no_ingiere(self):
+        """Corrección de defecto: una vuelta del refrescador con la ingesta «vencida» no llama a
+        hist_ingerir (eso es del hilo del historial)."""
+        llamadas = []
+        self.d.hist_ingerir = lambda pid=None, **k: llamadas.append(pid)
+        estado = {k: 0.0 for k in ("ult_poda", "ult_sensor", "ult_fast", "ult_dur", "ult_fin", "ult_aidb",
+                                   "ult_pub", "ult_diag", "ult_feeds", "ult_forzado", "ult_cond", "ult_hist",
+                                   "ult_bajas")}
+        hecho = {}
+        for k in ("barrido_alto_rapido", "medir_sensor", "generar_reporte", "_conducta_nodo",
+                  "guardar_diagnostico", "actualizar_feeds_async", "barrer_bajas"):
+            if hasattr(self.d, k):
+                setattr(self.d, k, (lambda nombre: lambda *a, **kw: hecho.setdefault(nombre, True))(k))
+        try:
+            self.d._vuelta_refrescador(estado)
+        except Exception:
+            pass                         # lo que importa es que no haya llamado a hist_ingerir
+        self.assertEqual(llamadas, [])
+
+    def test_el_hilo_ingiere_cada_punto(self):
+        """Capacidad nueva: una vuelta de _hist_hilo ingiere todos los puntos activos."""
+        llamadas = []
+        self.d.hist_ingerir = lambda pid=None, **k: llamadas.append(pid)
+        espera = self.d._PARAR.wait
+        self.d._PARAR.wait = lambda t=None: True          # una sola vuelta
+        try:
+            self.d._hist_hilo()
+        finally:
+            self.d._PARAR.wait = espera
+        self.assertEqual(sorted(llamadas), ["p001", "p002"])
+        self.assertIn("historial", self.d.LATIDO)
+
+    def test_la_baja_espera_al_hilo_del_historial(self):
+        """Corrección de defecto evitado: purgar_punto espera a que el hilo del historial suelte el
+        punto (si no, podría volver a crear nodos/<pid>/historial.db después de borrarlo)."""
+        import threading
+        with self.d._OPS_CERROJOS_LOCK:
+            lk = self.d._OPS_CERROJOS.setdefault(("p002", "historial"), threading.Lock())
+        lk.acquire()
+        t0 = time.time()
+        threading.Timer(1.0, lk.release).start()
+        self.d.purgar_punto("p002")
+        self.assertGreaterEqual(time.time() - t0, 0.9)
+
+
 class SoloElUltimoReporte(Entorno):
     def test_borra_las_instantaneas_viejas(self):
         """Capacidad nueva (el user quito «Reportes guardados», 2026-10-12): el generador deja solo el

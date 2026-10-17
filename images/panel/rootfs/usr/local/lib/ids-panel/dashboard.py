@@ -9273,9 +9273,10 @@ def generar_reporte(nodo, vmin):
             sys.stderr.write("generador %s: %s\n" % (nodo, e))
     return time.time() - t0
 
-def _por_nodo(fn, pids, *args):
+def _por_nodo(fn, pids, *args, cerrojo="fondo"):
     """Llama fn(pid) para cada punto con el contexto de ese punto puesto. Un fallo de un
-    punto no para a los demas ni deja el contexto puesto."""
+    punto no para a los demas ni deja el contexto puesto. `cerrojo`: el del refrescador
+    («fondo») o el del hilo del historial («historial»); purgar_punto espera a los dos."""
     for pid in pids:
         if _PARAR.is_set():
             return
@@ -9285,13 +9286,26 @@ def _por_nodo(fn, pids, *args):
         if pid in _BAJAS or _en_prebaja(pid) or not nodos.existe(pid):
             continue
         try:
-            with cerrojo_operacion(pid, "fondo", espera=GEN_TIMEOUT + 60):
+            with cerrojo_operacion(pid, cerrojo, espera=GEN_TIMEOUT + 60):
                 if pid in _BAJAS or _en_prebaja(pid) or not nodos.existe(pid):
                     continue
                 with nodos.contexto(pid):
                     fn(pid, *args)
         except Exception as _e:
             sys.stderr.write("%s(%s): %s\n" % (getattr(fn, "__name__", "?"), pid, _e))
+
+def _hist_hilo():
+    """Hilo propio de la ingesta del historial persistente (hist_ingerir de cada punto, cada
+    HIST_CADA). Con su propio cerrojo por punto: no espera a la generacion del informe del punto
+    ni la hace esperar. Supervisado como el refrescador (lanzar_hilo)."""
+    while not _PARAR.is_set():
+        LATIDO["historial"] = time.time()
+        try:
+            _por_nodo(hist_ingerir, pids_activos(), cerrojo="historial")
+        except Exception:
+            sys.stderr.write("historial: vuelta fallida\n%s" % traceback.format_exc())
+        if _PARAR.wait(HIST_CADA):
+            return
 
 def _conducta_nodo(pid):
     rep_ = hist_conducta(pid=pid)
@@ -9409,9 +9423,9 @@ def _vuelta_refrescador(estado):
         ult_pub = time.time()
     # historial: barato porque es incremental (solo lo nuevo desde la marca).
     # Va ANTES del informe para que el informe lea una base ya al dia. Una base por punto.
-    if time.time() - ult_hist > HIST_CADA:
-        ult_hist = time.time()
-        _por_nodo(hist_ingerir, pids)
+    # la ingesta del historial va en su propio hilo (_hist_hilo): con mucho DNS, o con el atraso
+    # tras una parada, tardaba minutos y en ese tiempo no se regeneraba ningun informe (205.235.2.159,
+    # 2026-10-16: casi una hora sin informes nuevos en ningun punto)
     # reporte de varios dias: caro (recorre los rotados), asi que espaciado; el boton
     # de la pestana lo adelanta poniendo FORCE_CONDUCTA
     if FORCE_CONDUCTA or (time.time() - ult_cond > CONDUCTA_CADA):
@@ -11007,7 +11021,9 @@ def purgar_punto(pid, quien=None):
     # de fondo repasa luego lo que quede.
     with _OPS_CERROJOS_LOCK:
         lk = _OPS_CERROJOS.setdefault((pid, "fondo"), threading.Lock())
+        lk_hist = _OPS_CERROJOS.setdefault((pid, "historial"), threading.Lock())
     tengo = lk.acquire(timeout=20)
+    tengo_hist = lk_hist.acquire(timeout=20)     # el hilo del historial escribe en nodos/<pid>/
     try:
         for path in (MK_SENT, MK_SENT_DNS, MK_SENT_GRAD):
             with _ENV_LOCK:
@@ -11085,6 +11101,8 @@ def purgar_punto(pid, quien=None):
     finally:
         if tengo:
             lk.release()
+        if tengo_hist:
+            lk_hist.release()
     if quien != "panel" or any(hecho.values()):
         bitacora("PUNTO-PURGADO", "punto=%s %s" % (pid, " ".join("%s=%s" % kv for kv in sorted(hecho.items()) if kv[1])),
                  quien=quien)
@@ -21026,6 +21044,7 @@ def main():
     except (ValueError, AttributeError, OSError):
         pass
     lanzar_hilo("refrescador", refrescador)
+    lanzar_hilo("historial", _hist_hilo)          # la ingesta del historial, aparte de los informes
     lanzar_hilo("informe-diario", informe_diario_hilo)
     threading.Thread(target=supervisor, name="supervisor", daemon=True).start()
     sys.stderr.write("panel: escuchando en %s:%s (proxies de confianza: %s)\n" % (
