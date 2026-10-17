@@ -17,7 +17,7 @@ OpenVPN y su propio Suricata.
 En un VPS **Debian 13 (trixie) amd64** recién instalado, como `root` y entrando por SSH con clave:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/mtandazo35/IDS_MAAT-Docker/v0.1.6/install.sh -o /root/ids-maat-install.sh && bash /root/ids-maat-install.sh
+curl -fsSL https://raw.githubusercontent.com/mtandazo35/IDS_MAAT-Docker/v0.1.7/install.sh -o /root/ids-maat-install.sh && bash /root/ids-maat-install.sh
 ```
 
 Sin opciones instala todo (la release de esa línea, reglas, timers y panel) con:
@@ -59,5 +59,5 @@ opciones no reabre un acceso cerrado. Opcionales: `--tun-base 198.18` (si tus ab
 
 Sucesor en contenedores de [suricata-ids-lab](https://github.com/mtandazo35/suricata-ids-lab).
 
-**Estado:** versión publicada `v0.1.6` (la primera fue `v0.1.0`). La arquitectura está en
+**Estado:** versión publicada `v0.1.7` (la primera fue `v0.1.0`). La arquitectura está en
 [docs/ARQUITECTURA.md](docs/ARQUITECTURA.md), con sus anexos en docs/.
