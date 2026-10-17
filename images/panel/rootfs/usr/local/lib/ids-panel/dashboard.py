@@ -782,6 +782,51 @@ _JS_VENTANA_PEND = (
     "setTimeout(mira,2000);});}"
     "setTimeout(mira,1500);})();</script>")
 
+# «En vivo» sin recarga entera. Antes la pagina se recargaba entera cada 20 s (<meta refresh>): en
+# cada recarga las barras de la linea de tiempo volvian a crecer desde cero («cuando actualiza como
+# que todo palpita», el user, 2026-10-16), y casi siempre para pintar lo mismo, porque el resumen se
+# rehace cada 5 min. Ahora cada ENVIVO_MIRA_S pregunta a /ventana-estado por la version del resumen
+# (`v`, la misma que lleva #hact en data-v) y, solo si cambio, trae la pagina por detras y cambia
+# los bloques de <main> que cambiaron: sin animar las barras (clase `quieto` en <html>) y volviendo
+# a correr sus <script> (un <script> metido por el DOM no se ejecuta solo; el mapa se redibuja y
+# repone su vista). Recarga entera solo si aun no habia resumen (o desaparece), si un admin tiene
+# otra ventana generandose (vuelve el «generando…»), si la sesion caduco o tras 3 fallos seguidos.
+ENVIVO_MIRA_S = 20
+_JS_ENVIVO = (
+    "<script>(function(){var H=document.getElementById('hact'),V=H?H.getAttribute('data-v')||'':'',"
+    "fallos=0,PREV=null,CARG={};"
+    "[].forEach.call(document.scripts,function(s){if(s.src)CARG[s.src]=1;});"
+    "function hijos(m){return [].map.call(m.children,function(c){return c.outerHTML;});}"
+    "var M=document.querySelector('main');if(M)PREV=hijos(M);"
+    # los externos ya cargados (topojson del mapa) no se vuelven a pedir: se quedan inertes
+    "function corre(n){var ss=n.tagName==='SCRIPT'?[n]:[].slice.call(n.querySelectorAll('script'));"
+    "ss.forEach(function(s){if(s.src&&CARG[s.src])return;var x=document.createElement('script');"
+    "if(s.src){CARG[s.src]=1;x.src=s.src;}else x.text=s.textContent;s.parentNode.replaceChild(x,s);});}"
+    "function cambia(nm){var om=document.querySelector('main'),nh=hijos(nm),i,n;"
+    "document.documentElement.classList.add('quieto');"
+    "if(!PREV||PREV.length!==nh.length||om.children.length!==nh.length){om.innerHTML=nm.innerHTML;corre(om);}"
+    "else{for(i=0;i<nh.length;i++){if(nh[i]===PREV[i])continue;"
+    "n=document.importNode(nm.children[i],true);om.replaceChild(n,om.children[i]);corre(n);}}"
+    "PREV=nh;}"
+    "function pide(u,json){var c=window.AbortController?new AbortController():null,"
+    "k=setTimeout(function(){if(c)c.abort();},15000);"
+    "return fetch(u,{credentials:'same-origin',cache:'no-store',signal:c?c.signal:undefined})"
+    ".then(function(r){if(!r.ok||r.redirected)throw r.status;return json?r.json():r.text();})"
+    ".then(function(x){clearTimeout(k);return x;},function(e){clearTimeout(k);throw e;});}"
+    "function mira(){if(document.hidden){setTimeout(mira,%(ms)d);return;}"
+    "pide('/ventana-estado'+location.search,1).then(function(d){"
+    "if(d.pendiente&&document.querySelector('.wsel')){location.reload();return 1;}"
+    "if(d.v===V)return 0;if(!V||!d.v){location.reload();return 1;}"
+    "return pide(location.pathname+location.search,0).then(function(t){"
+    "var p=new DOMParser().parseFromString(t,'text/html'),nm=p.querySelector('main'),"
+    "h=p.getElementById('hact'),o=document.getElementById('hact');"
+    "if(!nm||!h||!o||!document.querySelector('main')){location.reload();return 1;}"
+    "cambia(nm);o.textContent=h.textContent;V=h.getAttribute('data-v')||'';"
+    "o.setAttribute('data-v',V);return 0;});})"
+    ".then(function(x){if(x===1)return;fallos=0;setTimeout(mira,%(ms)d);})"
+    ".catch(function(){fallos++;if(fallos>=3){location.reload();return;}setTimeout(mira,%(ms)d);});}"
+    "setTimeout(mira,%(ms)d);})();</script>") % {"ms": ENVIVO_MIRA_S * 1000}
+
 # s que /duenos espera a la red antes de contestar con lo que ya tenga. Con 8 s la pagina no pintaba
 # nada hasta que llegaba la ULTIMA IP; ahora pinta por tandas y lo que falta lo vuelve a pedir.
 DUENOS_ESPERA = 2.0
@@ -5983,13 +6028,26 @@ def ventana_generada(nodo=None):
 def estado_ventana(nodo=None):
     """Si el resumen que se mira ya es de la ventana elegida y cuantos reportes van hechos con
     ella (los puntos activos y «Todos», que se genera el ultimo). Lo consulta la pagina cada 2 s
-    mientras se genera, en vez de recargarse entera cada segundo."""
+    mientras se genera, en vez de recargarse entera cada segundo; y «En vivo», cada 20 s, por `v`
+    (si hay un resumen nuevo que pintar)."""
     va = ventana_actual()
     vg = ventana_generada(nodo)
     todos = pids_activos() + [nodos.TODOS]
     listos = sum(1 for n in todos if ventana_generada(n) == va)
     return {"elegida": va, "generada": vg, "pendiente": bool(vg and vg != va),
-            "listos": listos, "total": len(todos)}
+            "listos": listos, "total": len(todos), "v": version_resumen(nodo)[0]}
+
+def version_resumen(nodo=None):
+    """(version, mtime) del resumen del nodo: nombre y hora del ultimo reporte, o ("", None) si aun
+    no hay. «En vivo» la compara cada 20 s para saber si tiene algo nuevo que pintar."""
+    f = newest_report(nodo)
+    if not f:
+        return "", None
+    try:
+        mt = os.path.getmtime(f)
+    except OSError:
+        return "", None
+    return "%s@%d" % (os.path.basename(f), int(mt)), mt
 
 def etiqueta_ventana(minutos):
     for v, t in VENTANAS:
@@ -12652,7 +12710,8 @@ atacantes por puerto (qué IP golpea qué puerto), IPs origen (atacantes), IPs d
 firmas más frecuentes (el tipo de ataque, en español y con el nombre entero; la regla propia de los
 feeds sale aparte como «DNS a dominio fichado en feeds de reputación») y la
 línea de tiempo en 48 barras (de 30 minutos con la ventana de 24 h; con una ventana más corta, más
-cortas). Se actualiza sola cada 20 segundos.</td></tr>
+cortas). Se actualiza sola sin recargar la página: cada 20 segundos mira si hay un resumen nuevo y,
+si lo hay, cambia solo lo que cambió.</td></tr>
 <tr><td><b>Top orígenes</b></td><td>Ranking del <b>Top 5 de CPEs que más alertan</b> (quién ataca más),
 con el desglose de cada uno: puerto origen, IP destino, dueño/organización del destino, puerto y
 protocolo. Debajo, el <b>espejo</b>: <b>Top IPs destino más atacadas</b> (los blancos que reciben más
@@ -12724,11 +12783,12 @@ que entras; al llegar a cero vuelve a pedir la clave). Si la pantalla es estrech
 
 <h2>Cada cuánto se actualiza</h2>
 <ul>
-<li><b>En vivo</b>: la página se recarga sola cada <b>20 segundos</b>, pero lo que enseña cambia
-cuando se regenera el resumen.</li>
+<li><b>En vivo</b>: la página <b>no se recarga entera</b>. Cada <b>20 segundos</b> pregunta si hay un
+resumen nuevo y, si lo hay, cambia solo los bloques que cambiaron (sin mover la página ni volver a
+animar las barras). «Actualizado» dice la hora de ese resumen, no la de la última consulta.</li>
 <li><b>Resumen (tiles, gráficos, línea de tiempo y mapa), Detalle, Top e Histórico</b>: se regeneran
-en segundo plano cada <b>5 minutos</b>. Por eso los gráficos casi no cambian entre
-recargas.</li>
+en segundo plano cada <b>5 minutos</b>. Por eso En vivo solo cambia algo más o menos cada 5
+minutos.</li>
 <li><b>Salud del sensor</b> (tarjeta en Cuarentena): se mide cada <b>~60 segundos</b>.</li>
 <li><b>El distintivo "En cuarentena" del Top</b> no espera esos 5 minutos: cada vez que
 <b>entra o sale</b> un CPE de cualquiera de las dos listas (infectados o DNS), el resumen se
@@ -13018,7 +13078,8 @@ más repetidos y se indica cuántos más hay.</li>
 un panel fijo con ese mismo detalle, cómodo de leer en el teléfono. Puedes <b>arrastrar</b> para
 mover el mapa, usar <b>+</b> / <b>&minus;</b> o <b>Ctrl + rueda</b> para acercar, y <b>Vista completa</b>
 para volver al mundo entero.</li>
-<li><b>No pierde el zoom:</b> la página se recarga sola cada 20 s; el mapa <b>repone la vista</b>
+<li><b>No pierde el zoom:</b> cuando llega un resumen nuevo (o recargas la página) el mapa se
+redibuja con los datos nuevos y <b>repone la vista</b>
 (el zoom, el desplazamiento y el país que tenías abierto) en vez de volver al mundo entero. Se
 guarda por pestaña del navegador, así que otra pestaña o una sesión nueva empiezan limpias.</li>
 <li><b>Cobertura:</b> el mapa reconoce <b>175 países</b>: los 174 del atlas que traen código en el
@@ -18842,12 +18903,18 @@ class H(BaseHTTPRequestHandler):
             self.end_headers(); self.wfile.write(cuerpo)
             return
         if path in ("/", "/index.html"):
+            # la version ANTES de leer el resumen: si entre medias sale uno nuevo, la pagina lo
+            # vuelve a pedir (sin cambios que pintar) en vez de quedarse con el viejo 5 min
+            v_res, mt_res = version_resumen()
             head_css, resumen_inner, _ = partes_reporte()   # resumen SIN la tabla de detalle
-            ahora_ec = datetime.now(TZ_EC).strftime("%d/%m/%Y %H:%M")
+            # «actualizado» = la hora del resumen que se ve, no la de la peticion (antes ponia la
+            # hora de cada recarga aunque los datos fueran de hace 5 min)
+            hora_res = datetime.fromtimestamp(mt_res or time.time(), TZ_EC).strftime("%d/%m/%Y %H:%M")
+            hact = "<span id='hact' data-v='%s'>%s</span>" % (html.escape(v_res, True), hora_res)
             # selector de ventana (solo admin): elegir cuanto tiempo abarca el resumen
             wsel = ""
-            recarga = 20   # s; mientras se genera otra ventana no hay recarga: la pagina pregunta
-            pendiente = False   # por /ventana-estado y se recarga UNA vez al terminar
+            pendiente = False   # mientras se genera otra ventana la pagina pregunta por
+                                # /ventana-estado y se recarga UNA vez al terminar
             if getattr(CTX, "role", None) == "admin":
                 va = ventana_actual()
                 opts = "".join(f"<option value={v}{' selected' if v == va else ''}>{t}</option>"
@@ -18875,29 +18942,27 @@ class H(BaseHTTPRequestHandler):
                     "<h1>Resumen</h1>"
                     "<p class='ph-sub'>Panel IDS Suricata &middot; "
                     + html.escape(nodos.nombre(nodos.nodo_actual())) + " &middot; alertas graves salientes &middot; "
-                    f"actualizado {ahora_ec} (hora local) "
+                    f"actualizado {hact} (hora local) "
                     "<span class='ph-live'><span class='dotlive'></span>en vivo"
-                    + ("" if pendiente else f" &middot; refresca en <span id='cd'>{recarga}</span>s")
-                    + f"</span></p></div>{wsel}</header>")
+                    f"</span></p></div>{wsel}</header>")
                 resumen = f"{cabecera}<main>{resumen_inner}</main>"
             else:
                 cabecera = (
                     "<header class='pageh'><div><h1>Resumen</h1>"
                     "<p class='ph-sub'>Panel IDS Suricata &middot; " + html.escape(nodos.nombre(nodos.nodo_actual()))
-                    + f" &middot; actualizado {ahora_ec} (hora local)</p></div>{wsel}</header>")
+                    + f" &middot; actualizado {hact} (hora local)</p></div>{wsel}</header>")
                 resumen = (cabecera + "<main style='padding:8px 28px 24px'><p style='color:#52514e'>El resumen se "
                            "está generando en segundo plano; aparecerá aquí en unos minutos.</p></main>")
             page = ("<!doctype html><html lang=es><head><meta charset=utf-8><link rel=icon type=image/png href=/favicon.ico>"
                     "<meta name=viewport content='width=device-width,initial-scale=1'>"
-                    + ("" if pendiente else f"<meta http-equiv=refresh content={recarga}>")
-                    + "<title>Suricata</title>"
+                    "<title>Suricata</title>"
                     f"{_PAGEH_CSS}{head_css}"
-                    "<style>main{max-width:1360px;margin:0 auto;padding-top:8px}</style>"
+                    "<style>main{max-width:1360px;margin:0 auto;padding-top:8px}"
+                    # al cambiar un bloque sin recargar, las barras no vuelven a crecer desde cero
+                    # (aqui y no en el CSS del reporte: vale tambien con un reporte viejo)
+                    ".quieto .tl-bar{animation:none}</style>"
                     f"</head><body>{nav('/')}{resumen}"
-                    + (_JS_VENTANA_PEND if pendiente else
-                       f"<script>(function(){{var s={recarga},e=document.getElementById('cd');"
-                       "var t=setInterval(function(){s--;if(s<0)s=0;if(e)e.textContent=s;"
-                       "if(s<=0)clearInterval(t);},1000);})();</script>")
+                    + (_JS_VENTANA_PEND if pendiente else _JS_ENVIVO)
                     + "</body></html>")
             return self._html(page)
         if path == "/feeds/tabla":

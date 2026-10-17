@@ -71,13 +71,15 @@ class Recarga(unittest.TestCase):
         self.assertEqual(r.status, 200)
         return json.loads(r.texto)
 
-    def test_20_s_normal_y_sin_recarga_mientras_genera_otra_ventana(self):
-        """Correccion de defecto: con la ventana elegida ya generada se recarga cada 20 s. Si se
-        eligio otra y aun se muestra la vieja («generando…»), la pagina NO se recarga entera cada
-        segundo (parecia un bucle y un clic en el selector a mitad de recarga se reenviaba; el
-        user, 2026-10-13): pregunta a /ventana-estado y enseña cuanto va."""
+    def test_sin_recarga_entera_ni_mientras_genera_otra_ventana(self):
+        """Correccion de defecto: con la ventana elegida ya generada la pagina ya no se recarga
+        entera cada 20 s (las barras «palpitaban»; el user, 2026-10-16): lo cubre
+        tests/test_envivo_sin_recarga.py. Si se eligio otra y aun se muestra la vieja
+        («generando…»), tampoco se recarga entera cada segundo (parecia un bucle y un clic en el
+        selector a mitad de recarga se reenviaba; el user, 2026-10-13): pregunta a
+        /ventana-estado y enseña cuanto va."""
         self.p.d.CFG["VENTANA_MIN"] = "1440"
-        self.assertEqual(self.recarga()[0], "20")
+        self.assertIsNone(self.recarga()[0])
         self.p.d.CFG["VENTANA_MIN"] = "30"
         seg, h = self.recarga()
         self.assertIsNone(seg)
