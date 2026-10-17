@@ -480,8 +480,10 @@ paquetes() {
   export DEBIAN_FRONTEND=noninteractive
   apt-get update -qq
   # git: el botón «Actualizar» del panel (ids-actualizar) descarga el commit de main con él
-  apt-get install -y -qq --no-install-recommends nftables fail2ban python3 python3-systemd openssl \
-    logrotate curl ca-certificates systemd-timesyncd tzdata git >/dev/null
+  # python3-cryptography: el orquestador guarda cifrada la clave VPN de cada punto (AES-256-GCM con la
+  # clave maestra) para que los comandos del MikroTik salgan siempre completos
+  apt-get install -y -qq --no-install-recommends nftables fail2ban python3 python3-systemd python3-cryptography \
+    openssl logrotate curl ca-certificates systemd-timesyncd tzdata git >/dev/null
   # nftables.service hace «flush ruleset» al parar o recargar: se desactiva y se enmascara SIN pararlo
   systemctl disable nftables.service >/dev/null 2>&1 || true
   systemctl mask nftables.service >/dev/null 2>&1 || true

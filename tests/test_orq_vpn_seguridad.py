@@ -82,7 +82,8 @@ class CaYVerificacion(Base):
                 # el fichero de paso se borra y el certificado se puede encontrar para la baja
                 self.assertIn('/file remove [find name="ids-maat-ca-p001.txt"]', cmds)
                 self.assertIn('/certificate set [find name~"^ids-maat-ca-p001"] trusted=yes', cmds)
-        self.assertEqual(self.comandos().count("password=<CLAVE-VPN>"), 2)
+        # con la clave puesta (el orquestador la guarda cifrada, 2026-10-16)
+        self.assertEqual(self.comandos().count("password=%s " % self.crear["clave"]), 2)
 
     def test_una_ca_que_no_cabe_en_routeros_no_llega_al_script(self):
         ca = self.e.ruta("/srv/ids/pki/ca.crt")

@@ -154,7 +154,7 @@ Petición (una por conexión, JSON + `\n`): `{"v":1,"op_id":"<uuid4>","token":"<
 |---|---|---|
 | `punto.crear` | `nombre`, sin `redes_abonados` (el orquestador pone las de por defecto), `perfil` `reducido` y `ros_version` 6 fijos (VPN compatible con RouterOS 6.49+ y 7). Lo demás, por defecto | Agregar punto |
 | `op.estado` | `op_id` | avance (`pasos`, `paso`, `avance`, `delante`) y `resultado` |
-| `punto.comandos` | `pid` | ficha: comandos con `<CLAVE-VPN>` y `clave_id` (huella de la clave vigente) |
+| `punto.comandos` | `pid` | ficha: comandos y `clave_id` (huella de la clave vigente). Desde 2026-10-16, con la clave puesta y `clave` aparte si el orquestador la tiene cifrada y es la vigente; si no, con `<CLAVE-VPN>` |
 | `punto.borrar` | `pid`, `confirmar` | Borrar |
 | `punto.vpn.regenerar` | `pid` | Regenerar la clave |
 

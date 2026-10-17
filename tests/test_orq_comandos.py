@@ -171,16 +171,18 @@ class Cli(unittest.TestCase):
         self.assertIn("OK punto p001 creado", out)
         self.assertIn("  túnel        100.64.1.0/24 (sensor 100.64.1.1, MikroTik 100.64.1.2)", out)
         self.assertIn("  perfil       reducido · hilos 1 · cpuset 2 · reserva 900m", out)
-        clave = re.search(r"clave VPN    ([A-Za-z0-9]{24})      ← se muestra UNA sola vez", out).group(1)
+        clave = re.search(r"clave VPN    ([A-Za-z0-9]{24})      \(de nuevo: ids-orq punto ovpn-client p001\)",
+                          out).group(1)
         self.assertEqual(out.count("password=%s " % clave), 2)
         self.assertTrue(all(p["quien"].startswith("cli:") for p in self.tr.peticiones))
         p = self.tr.peticiones[0]
         self.assertEqual(p["params"], {"nombre": "norte", "redes_abonados": ["10.0.0.0/24", "192.168.88.0/24"]})
-        # ovpn-client: nunca la clave
+        # ovpn-client: el script completo, con la clave puesta (el orquestador la guarda cifrada; el
+        # user, 2026-10-16: «el plan es que las vpn se carguen ya todo»)
         rc, out2 = self.cli("punto", "ovpn-client", "p001")
         self.assertEqual(rc, 0)
-        self.assertNotIn(clave, out2)
-        self.assertEqual(out2.count("password=<CLAVE-VPN>"), 2)
+        self.assertNotIn("<CLAVE-VPN>", out2)
+        self.assertEqual(out2.count("password=%s " % clave), 2)
         self.assertTrue(out2.startswith("# ids-maat p001 (norte) · N=1 · puerto 1194"))
 
     def test_codigos_de_salida(self):

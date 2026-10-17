@@ -14062,14 +14062,16 @@ compatible con RouterOS 6.49+ y 7.</p>
 <ul>
 <li>La crea el alta del punto (ver "Puntos: un MikroTik, su VPN y su Suricata"). Al terminar se muestran
 el usuario y la clave de la VPN y los comandos para el MikroTik (v7 y v6) con la clave puesta.</li>
-<li><b>El panel guarda la clave de la VPN cifrada</b> con la clave maestra del servidor, como la de la API
-del router (el servidor de la VPN solo guarda su hash). Por eso la ficha del punto (VPN) da siempre los
-comandos con la clave puesta, listos para pegar, y una orden corta para un router que ya tiene
-<code>ids-vpn</code>: <code>/interface ovpn-client set [find name=ids-vpn] password=&lt;clave&gt; verify-server-certificate=yes disabled=no</code>.
-Solo los ven los administradores, y la página no se guarda en el navegador. Los puntos creados antes de
-este cambio no la tienen: la ficha lo dice y ofrece regenerarla. No pegues
-<code>password=&lt;CLAVE-VPN&gt;</code> tal cual: el router se queda con ese texto de clave y no conecta.
-En la baja del punto la clave se borra.</li>
+<li><b>La clave de la VPN se guarda cifrada</b> con la clave maestra del servidor, en el orquestador y
+en el panel (la VPN solo guarda su hash para comprobarla). Por eso la ficha del punto (VPN) y
+<code>ids-orq punto ovpn-client &lt;punto&gt;</code> dan <b>siempre</b> los comandos con la clave puesta,
+listos para pegar, también si el punto se creó o se regeneró desde la consola del servidor. La ficha da
+además una orden corta para un router que ya tiene <code>ids-vpn</code>:
+<code>/interface ovpn-client set [find name=ids-vpn] password=&lt;clave&gt; verify-server-certificate=yes disabled=no</code>.
+Solo los ven los administradores, y la página no se guarda en el navegador. Antes de darla, el servidor
+comprueba que es la clave vigente: nunca da una vieja. Solo si no tiene ninguna que valga (p. ej. sin la
+clave maestra) la ficha lo dice y ofrece regenerarla; no pegues <code>password=&lt;CLAVE-VPN&gt;</code>
+tal cual: el router se queda con ese texto de clave y no conecta. En la baja del punto la clave se borra.</li>
 <li><b>La VPN solo trae el espejo y la API del propio router</b>: no enruta tráfico de abonados, no lleva
 a otras redes y un punto no ve a otro. En el router, lo que entra por <code>ids-vpn</code> lo decide tu
 firewall (ver "Firewall y rutas del router: los gestionas tú").</li>

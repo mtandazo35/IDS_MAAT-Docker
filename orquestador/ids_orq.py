@@ -19,6 +19,7 @@ hace lo mismo con /proc y /sys.
 """
 
 import argparse
+import base64
 import datetime as dt
 import hashlib
 import hmac
@@ -588,6 +589,93 @@ def nueva_clave():
 
 def nuevo_usuario():
     return "vpn" + secrets.token_hex(3)
+
+
+# --------------------------------------------------------------------------------------------
+# Clave VPN del punto guardada CIFRADA (el user, 2026-10-16: «el plan es que las vpn se carguen ya
+# todo»). Antes el orquestador solo guardaba su hash (ovpn-auth la verifica) y la clave en claro
+# vivía una sola entrega: si no llegaba al panel (alta o regeneración por la consola, orquestador
+# reiniciado a mitad) los comandos salían con <CLAVE-VPN> y había que regenerarla, cortando el
+# MikroTik. Ahora se guarda cifrada con la clave maestra del VPS (AES-256-GCM, el mismo formato
+# `enc1:` y el mismo dato asociado `vpn:<pid>` que secretos.py del panel) y los comandos salen
+# siempre completos. Los respaldos no llevan la clave maestra: un respaldo solo no la descifra.
+# --------------------------------------------------------------------------------------------
+CLAVE_VPN_PREFIJO = "enc1:"
+PANEL_VPN_CLAVES = "/srv/ids/panel/conf/vpn-claves.json"     # la copia del panel (puntos_web.py)
+RE_HASH_CLAVE = re.compile(r"scrypt\$([0-9]{1,8})\$([0-9]{1,3})\$([0-9]{1,3})\$([0-9a-f]{32})\$([0-9a-f]{64})")
+
+
+class ClaveNoDisponible(Exception):
+    """Sin python3-cryptography, sin clave maestra legible o con un valor que no se descifra."""
+
+
+def _aesgcm():
+    try:
+        from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+    except ImportError:
+        raise ClaveNoDisponible("falta python3-cryptography") from None
+    try:
+        k = bytes.fromhex(ruta(MASTER_KEY).read_text(encoding="ascii").strip())
+    except (OSError, ValueError, UnicodeError):
+        raise ClaveNoDisponible("no se puede leer la clave maestra") from None
+    if len(k) != 32:
+        raise ClaveNoDisponible("la clave maestra no tiene 32 bytes")
+    return AESGCM(k)
+
+
+def _asoc_vpn(pid):
+    return ("vpn:%s" % pid).encode("utf-8")
+
+
+def cifrar_clave_vpn(pid, clave):
+    nonce = os.urandom(12)
+    return CLAVE_VPN_PREFIJO + base64.b64encode(
+        nonce + _aesgcm().encrypt(nonce, clave.encode("utf-8"), _asoc_vpn(pid))).decode("ascii")
+
+
+def descifrar_clave_vpn(pid, valor):
+    """La clave en claro de un valor `enc1:` del punto `pid`. Un valor sin cifrar, manipulado o de
+    otro punto (el dato asociado lleva el pid) lanza ClaveNoDisponible: nunca se acepta en claro."""
+    if not isinstance(valor, str) or not valor.startswith(CLAVE_VPN_PREFIJO):
+        raise ClaveNoDisponible("valor sin cifrar o ilegible")
+    try:
+        bruto = base64.b64decode(valor[len(CLAVE_VPN_PREFIJO):], validate=True)
+    except ValueError:
+        raise ClaveNoDisponible("valor cifrado ilegible") from None
+    if len(bruto) < 12 + 16:
+        raise ClaveNoDisponible("valor cifrado ilegible")
+    aead = _aesgcm()
+    try:
+        return aead.decrypt(bruto[:12], bruto[12:], _asoc_vpn(pid)).decode("utf-8")
+    except Exception:  # noqa: BLE001 - InvalidTag (manipulado o de otro punto) o texto que no es UTF-8
+        raise ClaveNoDisponible("valor cifrado manipulado o de otro punto") from None
+
+
+def clave_es_vigente(pid, usuario, clave):
+    """¿Es `clave` la que acepta hoy ovpn-auth para `usuario`? Se comprueba con el hash scrypt del
+    fichero de usuarios del punto (las mismas cotas que ovpn-auth): así nunca se da por buena una
+    clave vieja (regenerada sin guardarla, o una copia antigua del panel)."""
+    try:
+        lineas = ruta("/srv/ids/puntos/%s/vpn/usuarios" % pid).read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeError):
+        return False
+    for linea in lineas:
+        nombre, sep, resto = linea.strip().partition(":")
+        if not sep or nombre != usuario:
+            continue
+        m = RE_HASH_CLAVE.fullmatch(resto)
+        if not m:
+            return False
+        n, r, p = int(m.group(1)), int(m.group(2)), int(m.group(3))
+        if n < 2 or n > 1 << 20 or n & (n - 1) or not 1 <= r <= 32 or not 1 <= p <= 16:
+            return False
+        try:
+            calculado = hashlib.scrypt(clave.encode("utf-8"), salt=bytes.fromhex(m.group(4)), n=n, r=r, p=p,
+                                       maxmem=64 * 1024 * 1024, dklen=32)
+        except (ValueError, MemoryError):
+            return False
+        return hmac.compare_digest(calculado, bytes.fromhex(m.group(5)))
+    return False
 
 
 # --------------------------------------------------------------------------------------------
@@ -1840,6 +1928,7 @@ CREATE TABLE IF NOT EXISTS op (
   codigo TEXT, mensaje TEXT, datos TEXT, paso TEXT, pasos TEXT, total INTEGER, log TEXT,
   creado INTEGER NOT NULL, inicio INTEGER, fin INTEGER);
 CREATE TABLE IF NOT EXISTS reinicio (pid TEXT NOT NULL, parte TEXT NOT NULL, ts INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS clave_vpn (pid TEXT PRIMARY KEY, cifrada TEXT NOT NULL, actualizado INTEGER NOT NULL);
 """
 
 
@@ -2649,7 +2738,13 @@ class Orquestador:
             if p is None:
                 raise ErrorOrden("NO_EXISTE", "no existe %s" % params["pid"])
         if orden == "punto.comandos":
-            return {"comandos": self.comandos(p, config().nombre_dns), "clave_id": huella_clave_vpn(p["pid"])}
+            # con la clave puesta si el orquestador la tiene y es la vigente; `clave` aparte para la
+            # orden «cambiar la clave» del panel. Es una lectura: no queda en orq.db ni en orq.jsonl
+            clave = self.clave_vpn_vigente(p)
+            d = {"comandos": self.comandos(p, config().nombre_dns, clave), "clave_id": huella_clave_vpn(p["pid"])}
+            if clave:
+                d["clave"] = clave
+            return d
         if orden == "punto.logs":
             return self.logs(p, params["parte"], params["lineas"])
         if orden == "punto.api.huella":
@@ -3411,6 +3506,7 @@ class Orquestador:
         with self.tx() as db:
             db.execute("DELETE FROM punto WHERE pid=?", (pid,))
             db.execute("DELETE FROM reinicio WHERE pid=?", (pid,))
+            db.execute("DELETE FROM clave_vpn WHERE pid=?", (pid,))
             cancelar = []
             if enfriar:
                 db.execute("INSERT OR REPLACE INTO enfriamiento (n, hasta) VALUES (?,?)",
@@ -3505,6 +3601,51 @@ class Orquestador:
         escribir_atomico(ruta("/srv/ids/puntos/%s/vpn/usuarios" % p["pid"]),
                          render_usuarios(p["pid"], usuario, hash_clave(clave)), modo=0o600)
 
+    def guardar_clave_vpn(self, pid, clave):
+        """La clave VPN del punto, CIFRADA, para que sus comandos salgan siempre completos. Sin
+        python3-cryptography o sin clave maestra no se guarda nada (nunca en claro) y la orden sigue:
+        la clave se entrega igual, como antes. True si quedó guardada."""
+        try:
+            valor = cifrar_clave_vpn(pid, clave)
+        except ClaveNoDisponible as e:
+            log("clave VPN de %s sin guardar: %s" % (pid, e))
+            return False
+        self.x("INSERT OR REPLACE INTO clave_vpn (pid, cifrada, actualizado) VALUES (?,?,?)", (pid, valor, ahora()))
+        return True
+
+    def clave_vpn_vigente(self, p):
+        """La clave VPN del punto `p` en claro si es la vigente (clave_es_vigente); si no, None. Primero
+        la guardada aquí; si no está (puntos de antes) o ya no vale, la copia del panel
+        (vpn-claves.json, mismo cifrado), que se adopta si es la vigente. Nunca lanza: sin clave, los
+        comandos salen con <CLAVE-VPN> como antes."""
+        pid, usuario = p["pid"], p.get("usuario")
+        if not usuario:
+            return None
+        try:
+            f = self.q1("SELECT cifrada FROM clave_vpn WHERE pid=?", (pid,))
+            if f is not None:
+                clave = descifrar_clave_vpn(pid, f[0])
+                if clave_es_vigente(pid, usuario, clave):
+                    return clave
+        except (ClaveNoDisponible, sqlite3.Error):
+            pass
+        try:
+            todo = json.loads(ruta(PANEL_VPN_CLAVES).read_text(encoding="utf-8"))
+            g = (todo.get("puntos") or {}).get(pid) if isinstance(todo, dict) else None
+            if not isinstance(g, dict) or g.get("usuario") != usuario:
+                return None
+            clave = descifrar_clave_vpn(pid, g.get("clave"))
+        except (OSError, ValueError, AttributeError, ClaveNoDisponible):
+            return None
+        if not clave_es_vigente(pid, usuario, clave):
+            return None
+        try:
+            if self.guardar_clave_vpn(pid, clave):
+                log("clave VPN de %s tomada de la copia del panel (comprobada con su hash)" % pid)
+        except sqlite3.Error as e:
+            log("clave VPN de %s sin guardar: %s" % (pid, e))
+        return clave
+
     def reserva_T(self, perfiles_extra=()):
         usados = [p["perfil"] for p in self.puntos()] + list(perfiles_extra)
         return max([PERFILES[x]["reserva_mb"] for x in usados] or [PERFILES[PERFIL_DEFECTO]["reserva_mb"]])
@@ -3545,6 +3686,8 @@ class Orquestador:
              "comandos": self.comandos(p, cfg.nombre_dns), "clave_id": huella_clave_vpn(p["pid"])}
         if ya:
             d["ya_entregada"] = True
+            # el alta repetida también da los comandos completos (con la clave guardada, si es la vigente)
+            clave = clave or self.clave_vpn_vigente(p)
         sec = None
         if clave:
             sec = {"clave": clave, "comandos": self.comandos(p, cfg.nombre_dns, clave)}
@@ -3634,6 +3777,7 @@ class Orquestador:
             escribir_atomico(ruta("/srv/ids/puntos/%s/vpn/ccd/%s" % (pid, usuario)), render_ccd(der["mk"]),
                              modo=0o644)
             self.x("UPDATE punto SET usuario=? WHERE pid=?", (usuario, pid))
+            self.guardar_clave_vpn(pid, clave)
             p = self.punto(pid)
         with ctx.paso("server.conf"):
             escribir_atomico(ruta("/srv/ids/puntos/%s/vpn/server.conf" % pid),
@@ -4057,6 +4201,7 @@ class Orquestador:
             if not ccd.exists():
                 escribir_atomico(ccd, render_ccd(p["mk"]), modo=0o644)
             self.x("UPDATE punto SET usuario=?, actualizado=? WHERE pid=?", (usuario, ahora(), pid))
+            self.guardar_clave_vpn(pid, clave)
         if renovar:
             # reiniciar OpenVPN corta también la sesión (lo que hace el `kill` de abajo); un punto
             # parado carga el certificado nuevo al arrancar
@@ -4526,8 +4671,9 @@ def formato_creado(d):
         "  perfil       %s · hilos %s · cpuset %s · reserva %s" % (d["perfil"], d["hilos"],
                                                                   d.get("cpuset") or "-", d["reserva"]),
         "  usuario VPN  %s" % d["usuario"],
-        ("  clave VPN    %s      ← se muestra UNA sola vez" % d["clave"]) if d.get("clave")
-        else "  clave VPN    (ya entregada; para una nueva: ids-orq punto vpn-regenerar %s)" % d["pid"],
+        ("  clave VPN    %s      (de nuevo: ids-orq punto ovpn-client %s)" % (d["clave"], d["pid"]))
+        if d.get("clave")
+        else "  clave VPN    (no disponible; para una nueva: ids-orq punto vpn-regenerar %s)" % d["pid"],
         d["comandos"].rstrip("\n")])
 
 
@@ -4758,7 +4904,8 @@ class Cliente:
             self.p("OK %s" % mensaje)
             self.p("  usuario VPN  %s" % datos.get("usuario"))
             if datos.get("clave"):
-                self.p("  clave VPN    %s      ← se muestra UNA sola vez" % datos["clave"])
+                self.p("  clave VPN    %s      (de nuevo: ids-orq punto ovpn-client %s)"
+                       % (datos["clave"], datos.get("pid") or "<pid>"))
             self.p(datos.get("comandos", "").rstrip("\n"))
         elif orden in ("punto.estado", "punto.medir", "sistema.capacidad"):
             for k, v in _aplanar(datos):

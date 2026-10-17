@@ -16,6 +16,7 @@ test_orq_threshold.*                    todas   # punto.threshold (CONTRATO-F2 �
 test_orq_retencion.*                    todas   # retención por fecha y por disco (CONTRATO-F2 §9)
 test_host_ficheros.LogrotateReal.*      linux   # logrotate real: rotación fechada sin tope de número
 test_orq_pki.*                          linux   # openssl real
+test_orq_clave_vpn.*                    linux   # clave VPN cifrada en el orquestador: exige python3-cryptography
 legado.*                                linux   # pruebas heredadas de suricata-ids-lab (docs/PRUEBAS-HEREDADAS.md)
 # Casos obligatorios de CONTRATO-F2 §10.5 (auditoría B-03)
 test_eventos_busqueda.*                 todas   # §10.5 Eventos: rutas manipuladas, JSON incompleto, .gz que descomprime mucho, límites

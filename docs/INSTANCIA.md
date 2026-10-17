@@ -327,9 +327,13 @@ management /run/ids-ctl/ovpn-mgmt.sock unix
      (`motivo=clave`).
   4. Escribe una línea `<ip>:<puerto> ovpn-auth: rechazado usuario=<u|-> motivo=<m>` (o `aceptado`).
      fail2ban solo cuenta `formato` y `usuario` ([RED-Y-FIREWALL.md](RED-Y-FIREWALL.md) §9).
-- **El orquestador guarda solo el hash** y entrega la clave en claro una sola vez, al panel. El panel
-  la guarda **cifrada** con la clave maestra (`/srv/ids/panel/conf/vpn-claves.json`, 600, ligada al
-  punto) para dar en la ficha los comandos del MikroTik con la clave puesta; la borra en la baja.
+- **La VPN guarda solo el hash** (`/etc/ids/vpn/usuarios`, lo comprueba ovpn-auth). Desde 2026-10-16
+  el orquestador guarda además la clave **cifrada** con la clave maestra (AES-256-GCM, tabla `clave_vpn`
+  de `orq.db`, ligada al punto; el mismo formato `enc1:` que el panel) y `punto.comandos` /
+  `ids-orq punto ovpn-client` dan siempre el script con la clave puesta, después de comprobarla con el
+  hash (nunca una vieja). Los puntos de antes la toman, comprobada, de la copia del panel
+  (`/srv/ids/panel/conf/vpn-claves.json`, 600). Sin `python3-cryptography` o sin clave maestra no se guarda
+  nada en claro y todo funciona como antes (la clave se entrega una vez). La baja la borra.
 - Más frenos en el host: el `meter` de conexiones nuevas y la jaula `ids-vpn`
   ([RED-Y-FIREWALL.md](RED-Y-FIREWALL.md) §7 y §9).
 

@@ -203,8 +203,9 @@ class Idempotencia(unittest.TestCase):
         self.assertIn("clave", r["resultado"])
         r2 = A.crear(self, self.orq, NORTE)
         self.assertEqual((r2["codigo"], r2["mensaje"]), ("OK", "ya existe"))
-        self.assertNotIn("clave", r2["resultado"])
-        self.assertIn("<CLAVE-VPN>", r2["resultado"]["comandos"])
+        # la clave guardada (cifrada) es la vigente: el alta repetida da los comandos completos
+        self.assertEqual(r2["resultado"]["clave"], r["resultado"]["clave"])
+        self.assertNotIn("<CLAVE-VPN>", r2["resultado"]["comandos"])
         r3 = A.crear(self, self.orq, {"nombre": "norte", "redes_abonados": ["10.9.0.0/24"]}, "CONFLICTO")
         self.assertEqual(r3["codigo"], "CONFLICTO")
 

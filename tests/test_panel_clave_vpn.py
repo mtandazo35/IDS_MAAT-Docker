@@ -40,12 +40,15 @@ class ClaveVpn(_tpe._Base):
         real = self.p.orq
         self.cid = "huella-1"          # la huella de la clave vigente que da el orquestador
         self.entrega = True            # si el resultado de regenerar trae la clave
+        self.orq_con_clave = False     # el orquestador la guarda cifrada y da los comandos completos (2026-10-16)
 
         def transporte(pet):
             if pet["orden"] == "punto.comandos":
                 real.pedidas.append(pet)
-                return {"op_id": pet["op_id"], "ok": True, "codigo": "OK", "mensaje": "",
-                        "datos": {"comandos": COMANDOS, "clave_id": self.cid}}
+                datos = {"comandos": COMANDOS, "clave_id": self.cid}
+                if self.orq_con_clave:
+                    datos.update(comandos=COMANDOS.replace("<CLAVE-VPN>", CLAVE), clave=CLAVE)
+                return {"op_id": pet["op_id"], "ok": True, "codigo": "OK", "mensaje": "", "datos": datos}
             if pet["orden"] == "op.estado" and real.ops.get((pet.get("params") or {}).get("op_id")) == \
                     "punto.vpn.regenerar":
                 real.pedidas.append(pet)
@@ -95,6 +98,20 @@ class ClaveVpn(_tpe._Base):
         self.assertEqual(h.count("user=vpn7ad2d8 password=%s " % CLAVE), 2)     # v7 y v6
         self.assertIn("/interface ovpn-client set [find name=ids-vpn] password=%s verify-server-certificate=yes disabled=no" % CLAVE, h)
         self.assertNotIn("El panel no tiene la clave vigente", h)
+        self.assertEqual(r.cab("Cache-Control"), "no-store")
+
+    def test_con_los_comandos_completos_del_orquestador_no_pide_regenerar(self):
+        """Corrección de defecto (el user, 2026-10-16: «no le pones la clave a la vpn y toca generar la
+        clave para que funcione»): el orquestador guarda la clave cifrada y da los comandos ya con ella.
+        Sin copia en el panel, la ficha los da tal cual, con la orden corta, y sin «Regenerar»."""
+        self.orq_con_clave = True
+        self.assertFalse(os.path.exists(self.ruta_claves()))
+        r = self.p.pedir("GET", "/puntos/p001", cookie=self.ana)
+        h = r.texto
+        self.assertEqual(h.count("user=vpn7ad2d8 password=%s " % CLAVE), 2)
+        self.assertIn("/interface ovpn-client set [find name=ids-vpn] password=%s verify-server-certificate=yes disabled=no" % CLAVE, h)
+        self.assertNotIn("El panel no tiene la clave vigente", h)
+        self.assertNotIn("&lt;CLAVE-VPN&gt;", h)
         self.assertEqual(r.cab("Cache-Control"), "no-store")
 
     def test_con_otro_usuario_no_pone_una_clave_que_no_es_suya(self):

@@ -2456,9 +2456,15 @@ def ficha(h, pid, mensaje="", codigo=200, ok=False, extra_espejo=""):
     # (la del alta o la ultima regenerada). Sin ella, se dice y se ofrece regenerarla.
     r = cliente().pedir("punto.comandos", {"pid": pid}, quien="panel:%s" % _usuario(d), ip=_ip(d))
     cmds = (r.get("datos") or {}).get("comandos") if r.get("codigo") == "OK" else None
-    # la huella de la clave vigente: un orquestador viejo no la da (None) y entonces solo se mira
-    # el usuario; si la da y no es la de la clave guardada (regenerada por la CLI), no se pone
-    cmds_txt, puesta = con_clave_vpn(cmds, pid, (r.get("datos") or {}).get("clave_id"))
+    # Desde 2026-10-16 el orquestador guarda la clave cifrada y da los comandos ya con ella (y la
+    # clave aparte). Si no la tiene (orquestador viejo, sin clave maestra), la pone el panel con la
+    # suya: la huella de la clave vigente decide (un orquestador viejo no la da y solo se mira el
+    # usuario; si no es la de la clave guardada, regenerada por la CLI, no se pone)
+    dd = r.get("datos") or {}
+    if cmds and isinstance(dd.get("clave"), str) and dd["clave"] and PLACEHOLDER_VPN not in cmds:
+        cmds_txt, puesta = cmds, dd["clave"]
+    else:
+        cmds_txt, puesta = con_clave_vpn(cmds, pid, dd.get("clave_id"))
     if not cmds:
         vpn_html = aviso("No se pudieron obtener los comandos: %s" % _orq.traducir(r.get("codigo"), r.get("mensaje")),
                          "amb")
