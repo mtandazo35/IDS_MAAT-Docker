@@ -85,12 +85,14 @@ def main():
               es_mio2("192.168.1.10") is False)
         print()
 
-    # (capacidad nueva) el generador, sin MIS_REDES, usa las redes de abonados del punto
+    # (capacidad nueva) el generador, sin MIS_REDES: lo privado SIEMPRE (decision del dueño 2026-10-16:
+    # las VPN reciben todo lo privado) mas los prefijos adicionales del punto
     es_mio3 = cargar("suricata-html-report", {}, ["198.51.100.0/24"])
-    check("generador: sin MIS_REDES valen las redes del punto (198.51.100.0/24 entra)",
+    check("generador: sin MIS_REDES valen los prefijos adicionales del punto (198.51.100.0/24 entra)",
           es_mio3("198.51.100.7") is True)
-    check("generador: y entonces una privada que no es del punto NO entra",
-          es_mio3("10.0.0.67") is False)
+    check("generador: y lo privado siempre (10.0.0.67 entra aunque no este en los adicionales)",
+          es_mio3("10.0.0.67") is True)
+    check("generador: lo publico fuera de los adicionales no entra", es_mio3("192.0.2.23") is False)
 
     print("TODO OK" if not fallos else "%d fallo(s)" % fallos)
     return 1 if fallos else 0
@@ -98,7 +100,7 @@ def main():
 
 class Legado(unittest.TestCase):
     def test_legado(self):
-        """Tipo: conservacion + capacidad nueva (redes del punto) (prueba heredada de suricata-ids-lab). es_mi_cpe(): solo las IPs de TUS redes pueden ir a la cuarentena de CPEs."""
+        """Tipo: conservacion + capacidad nueva (redes del punto: lo privado siempre + adicionales, 2026-10-16) (prueba heredada de suricata-ids-lab). es_mi_cpe(): solo las IPs de TUS redes pueden ir a la cuarentena de CPEs."""
         _comun.correr_main(self, main)
 
 

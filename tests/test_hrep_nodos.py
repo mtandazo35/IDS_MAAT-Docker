@@ -332,15 +332,16 @@ class Lectura(Entorno):
         self.assertEqual(self.cpes(self.salida("p001", "cuarentena.json")), [("p001", "10.0.0.5")])
 
     def test_mis_redes_salen_del_punto(self):
-        """Capacidad nueva: sin MIS_REDES en conf/panel.conf, los abonados son las `redes`
-        del punto (172.16.5.5 no es de p001 y no entra en cuarentena); con MIS_REDES manda
-        el .conf."""
+        """Capacidad nueva: sin MIS_REDES en conf/panel.conf, los abonados son lo privado (siempre)
+        más los prefijos adicionales del punto: 172.16.5.5 sí lo es (decisión del dueño 2026-10-16) y
+        203.0.113.5, público y fuera de los adicionales, no; con MIS_REDES manda el .conf."""
         self.tres_cnc("p001", src="172.16.5.5")
-        self.ok("60", "--nodo", "p001")
-        self.assertEqual(self.salida("p001", "cuarentena.json")["candidatos"], [])
-        self.global_("conf/panel.conf", "MIS_REDES=172.16.0.0/12\n")
+        self.tres_cnc("p001", src="203.0.113.5")
         self.ok("60", "--nodo", "p001")
         self.assertEqual(self.cpes(self.salida("p001", "cuarentena.json")), [("p001", "172.16.5.5")])
+        self.global_("conf/panel.conf", "MIS_REDES=203.0.113.0/24\n")
+        self.ok("60", "--nodo", "p001")
+        self.assertEqual(self.cpes(self.salida("p001", "cuarentena.json")), [("p001", "203.0.113.5")])
 
     def test_campos_capturados_con_html_se_escapan(self):
         """Correccion de defecto / caso §10.5 «HTML/JS en campos capturados»: una firma, un

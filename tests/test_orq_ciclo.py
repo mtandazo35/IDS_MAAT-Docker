@@ -210,7 +210,7 @@ class Idempotencia(unittest.TestCase):
 
     def test_redes_invalidas(self):
         for redes in (["0.0.0.0/0"], ["100.64.0.0/10"], ["10.210.5.0/24"], ["192.0.2.0/24"],
-                      ["no-es-red"], [], ["10.%d.0.0/24" % i for i in range(65)]):
+                      ["no-es-red"], ["10.%d.0.0/24" % i for i in range(65)]):   # [] ya vale: sin adicionales
             r = self.orq.atender(A.peticion("punto.crear", {"nombre": "x1", "redes_abonados": redes}))
             self.assertEqual(r["codigo"], "INVALIDO", redes)
 

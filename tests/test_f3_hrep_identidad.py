@@ -46,21 +46,23 @@ class Entrantes(Entorno):
 
 
 class RedesPorPunto(Entorno):
-    PUNTOS = {"p001": {"nombre": "Nodo A", "redes": ["10.0.0.0/24"]},
-              "p002": {"nombre": "Nodo B", "redes": ["172.16.0.0/24"]}}
+    # los prefijos del punto son solo los ADICIONALES (lo privado va siempre, decision del dueño 2026-10-16)
+    PUNTOS = {"p001": {"nombre": "Nodo A", "redes": []},
+              "p002": {"nombre": "Nodo B", "redes": ["203.0.113.0/24"]}}
 
     def test_todos_juzga_cada_evento_con_las_redes_de_su_punto(self):
-        """Corrección de defecto (A-14): p001 (10.0.0.0/24) ve 172.16.0.9, que es de la red de p002.
-        En «Todos» no es candidato de p001 (igual que en el informe de p001); un CPE de verdad de
-        cada punto sí lo es."""
-        self.tres_cnc("p001", src="172.16.0.9")
+        """Corrección de defecto (A-14): p001 ve 203.0.113.9, que es un prefijo adicional (público)
+        de p002 y no de p001: en «Todos» no es candidato de p001 (igual que en el informe de p001);
+        un CPE de verdad de cada punto sí lo es. Lo privado que llega por el espejo de un punto es
+        abonado de ESE punto (decisión del dueño 2026-10-16)."""
+        self.tres_cnc("p001", src="203.0.113.9")
         self.tres_cnc("p001", src="10.0.0.5")
-        self.tres_cnc("p002", src="172.16.0.7")
+        self.tres_cnc("p002", src="203.0.113.7")
         self.ok("60", "--nodo", "p001")
         self.ok("60", "--todos")
         self.assertEqual(self.cpes(self.salida("p001", "cuarentena.json")), [("p001", "10.0.0.5")])
         self.assertEqual(self.cpes(self.salida("_todos", "cuarentena.json")),
-                         [("p001", "10.0.0.5"), ("p002", "172.16.0.7")])
+                         [("p001", "10.0.0.5"), ("p002", "203.0.113.7")])
 
     def test_mis_redes_global_sigue_valiendo_para_todos(self):
         """Conservación: con MIS_REDES en conf/panel.conf, esas redes valen para todos los puntos."""

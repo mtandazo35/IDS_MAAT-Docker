@@ -2726,12 +2726,12 @@ class Orquestador:
                 "mem_disponible_mb": mem["disponible"], "caben": caben(vivos, mem)}
 
     # ---- estado.json --------------------------------------------------------------------------
-    def _redes_espejo(self, p, cfg):
-        if cfg is None:
-            return list(p["redes"])
+    def _redes_espejo(self, p):
+        """redes_espejo del punto para estado.json; sin configuracion legible, sus prefijos (nunca
+        tumba estado.json)."""
         try:
-            return redes_espejo(p["redes"], cfg)
-        except ErrorOrden:
+            return redes_espejo(p["redes"], config())
+        except (ErrorOrden, OSError, ValueError):
             return list(p["redes"])
 
     def construir_estado(self, con_puntos=True):
@@ -2819,7 +2819,7 @@ class Orquestador:
             # lo que necesita el panel para hablar con el MikroTik y montar su espejo
             # redes = prefijos ADICIONALES del punto; redes_espejo = lo que va al MikroTik (siempre lo
             # privado y el CGNAT sin lo reservado, mas los adicionales)
-            "redes": list(p["redes"]), "redes_espejo": self._redes_espejo(p, cfg),
+            "redes": list(p["redes"]), "redes_espejo": self._redes_espejo(p),
             "api_puerto": p["api_puerto"], "sensor": p["sensor"],
             "mk": p["mk"], "tzsp_puerto": TZSP_PUERTO,
             "contenedores": cont, "netns": ns,

@@ -194,7 +194,9 @@ class SinFirewallNiRutas(unittest.TestCase):
                 self.assertFalse([c for c in todas if c.startswith(("/ip firewall", "/ip route"))
                                   or "place-before" in c or "in-interface=" in c], todas)
 
-    def test_vpn_que_verifica_y_usuario_api_limitado_al_sensor(self):
+    def test_vpn_que_verifica_y_sin_usuario_api(self):
+        """La VPN verifica al servidor; el script ya no crea el grupo ni el usuario de la API (el
+        user, 2026-10-16: «lo de la vpn está bien, toca sacar el user que crea»)."""
         for ros, api, txt in self.textos():
             for titulo in ("RouterOS v7", "RouterOS v6"):
                 with self.subTest(ros=ros, api=api, bloque=titulo):
@@ -204,15 +206,7 @@ class SinFirewallNiRutas(unittest.TestCase):
                     o = props(ovpn[0])
                     self.assertEqual((o["name"], o["verify-server-certificate"], o["add-default-route"],
                                       o["connect-to"]), ("ids-vpn", "yes", "no", "ids.empresa.example"))
-                    grupo = [c for c in cmds if c.startswith("/user group add ")]
-                    usuario = [c for c in cmds if c.startswith("/user add ")]
-                    self.assertEqual((len(grupo), len(usuario)), (1, 1), cmds)
-                    self.assertEqual(props(grupo[0]), {"name": "ids-api", "policy": "read,write,api"})
-                    u = props(usuario[0])
-                    self.assertEqual((u["name"], u["group"], u["address"]),
-                                     ("ids-api", "ids-api", "%s/32" % self.SENSOR))
-                    # el grupo existe antes que el usuario que lo usa
-                    self.assertLess(cmds.index(grupo[0]), cmds.index(usuario[0]))
+                    self.assertEqual([c for c in cmds if c.startswith("/user")], [], cmds)
 
     def test_el_espejo_no_las_toma_por_suyas(self):
         """mikrotik_init (panel) retira del filter solo lo que reconoce como del espejo. Las reglas

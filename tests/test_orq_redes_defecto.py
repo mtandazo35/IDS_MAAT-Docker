@@ -88,9 +88,9 @@ class AltaSinRedes(unittest.TestCase):
 
     def test_adicional_publico_va_al_espejo_y_el_privado_no_se_repite(self):
         """Capacidad nueva: un rango público se suma a lo privado; uno privado ya va incluido."""
-        A.crear(self, self.orq, {"nombre": "norte", "redes_abonados": ["198.51.100.0/24", "10.12.0.0/16"]})
+        A.crear(self, self.orq, {"nombre": "norte", "redes_abonados": ["203.0.113.0/24", "10.12.0.0/16"]})
         est = self.orq.escribir_estado()["puntos"]["p001"]
-        esperado = self.mod.redes_espejo([], self.mod.config()) + ["198.51.100.0/24"]
+        esperado = self.mod.redes_espejo([], self.mod.config()) + ["203.0.113.0/24"]
         self.assertEqual(sorted(est["redes_espejo"]), sorted(esperado))
         self.assertNotIn("10.12.0.0/16", est["redes_espejo"])     # cubierto por las privadas
 
