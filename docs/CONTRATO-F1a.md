@@ -81,7 +81,7 @@ Reglas del contrato:
 | 19 | §5.14 (e INSTANCIA §10.5): logrotate con `maxage 3`, `rotate 4`, `compress`, `delaycompress`; unos 5 GB por punto | **F2:** `rotate -1`, `dateext` con `dateformat -%Y%m%d-%H%M%S`, `nocompress`, sin `maxage`. El orquestador comprime los rotados (con 2 min sin escribirse) conservando su mtime, poda **por fecha** lo que tiene más de 30 días y, con `/srv/ids` por debajo del 15 % libre, borra antes de tiempo los rotados más viejos de cualquier punto (cada borrado en `orq.jsonl`); `estado.json` publica la retención efectiva por punto (§5.10) | CONTRATO-F2 §9: el objetivo son 30 días; `rotate`/`maxage` cuentan ficheros y no garantizan días, y logrotate/gzip ponían al `.gz` la hora de compresión (Eventos salta ficheros por mtime) |
 | 20 | §0.1: `punto.threshold` fuera de F1a (reservada) | **F2:** orden de cola `punto.threshold {pid, contenido}` (§5.11) | CONTRATO-F2 §6: las exclusiones del panel llegan a Suricata |
 | 21 | §2.1: `master.key` `root:root 0400`; el panel sin clave maestra | **F2:** `root:10500 0440`, montada en el panel en `/run/secrets/master_key:ro` (`IDS_MASTER_KEY`); `ids-orq panel aplicar` se niega si no existe (Docker crearía un directorio) | CONTRATO-F2 §10.3: el panel corre como 10500 sin capacidades y descifra sus secretos con ella |
-| 22 | §5.11: reserva del panel 1024 MiB | **F2:** `RESERVA_PANEL_MB = 1536` (compose `mem_limit` y admisión) | CONTRATO-F2 §6: el dashboard heredado y el generador por nodo (`RLIMIT_AS` 1 GiB, de uno en uno) |
+| 22 | §5.11: reserva del panel 1024 MiB | **F2:** `RESERVA_PANEL_MB = 1536` (compose `mem_reservation`, sin tope duro desde 2026-10-16, y admisión) | CONTRATO-F2 §6: el dashboard heredado y el generador por nodo (`RLIMIT_AS` 1 GiB, de uno en uno) |
 | 23 | §3 (fila 16 de §0.2): fail2ban cuenta todos los `ovpn-auth: rechazado` salvo `freno-global`; §5.13: 6 líneas | solo `motivo=formato` y `motivo=usuario`; §5.13 con 8 líneas (añade una de cada), casan la 5.ª y la 6.ª; orden inmediata `vpn.desbanear {ip}` (`ids-orq vpn desbanear <ip>`); el freno global de `ovpn-auth` no frena a la última IP aceptada durante 24 h | auditoría VPN-04/VPN-08 (2026-10-14): tras «Regenerar la clave VPN» el MikroTik reintentaba con la vieja y acababa baneado en todos los puertos hasta 1 semana |
 | 24 | §4.4: `max-clients 2`, sin `hand-window` (60 s) | `max-clients 16` y `hand-window 20`, sin `duplicate-cn` | auditoría VPN-03: las conexiones sin autenticar ocupan plaza y no llegan a fail2ban; 2 `nc` colgados dejaban fuera al MikroTik |
 | 25 | §3: certificado de servidor `CN=server-<pid>`; §5.12: el script sin CA ni verificación del servidor | `OU=server-<pid>`, `CN=<NOMBRE_DNS>`, `subjectAltName=DNS:<NOMBRE_DNS>`; el script importa la CA del VPS (`ids-maat-ca-<pid>`) y pone `verify-server-certificate=yes` en v6 y v7; añade `drop` de `input` y `forward` desde `ids-vpn` debajo del `accept` de la API (quitados después, fila 27); `punto.vpn.regenerar` renueva un certificado sin el nombre | auditoría VPN-01/VPN-02: el router no verificaba al servidor y no aislaba `ids-vpn`; RouterOS compara `connect-to` con el CN o el SAN |
@@ -127,11 +127,12 @@ IDS_MAAT-Docker/
 │               └── feeds.json                         fuentes de feeds (URL, tipo, licencia)
 ├── orquestador/                                      C
 │   ├── ids_orq.py                                    servicio + CLI, un solo módulo, stdlib
-│   └── plantillas/{compose.yml.tmpl, server.conf.tmpl, ids_host.nft.tmpl}
+│   ├── ids-actualizar.sh                             botón «Actualizar» (ids-actualizar.service, ACTUALIZACIONES §4.1)
+│   └── plantillas/{compose.yml.tmpl, server.conf.tmpl, ids_host.nft.tmpl, core.yml.tmpl (panel, F1b)}
 ├── host/                                             C
 │   ├── systemd/{ids-host-fw.service, ids-orq.service, ids-reglas.service, ids-reglas.timer,
 │   │            ids-logrotate.service, ids-logrotate.timer, ids-actualizar.service}
-│   ├── fail2ban/{jail.d/10-ids.local.tmpl, filter.d/ids-vpn.conf}
+│   ├── fail2ban/{jail.d/10-ids.local.tmpl, filter.d/ids-vpn.conf, filter.d/sshd.local.tmpl}
 │   ├── docker/daemon.json
 │   ├── logrotate/ids-maat.conf
 │   ├── journald/90-ids.conf                           límites de ritmo y tamaño del journal (VPN-15)
@@ -340,8 +341,8 @@ services:
       - /srv/ids/ctl/p003/vpn:/run/ids-ctl
     logging: { driver: journald, options: { tag: ids-vpn } }
     cpuset: "0-1"
-    mem_limit: 192m
-    memswap_limit: 192m
+    mem_reservation: 192m                 # sin tope duro (2026-10-16): reserva blanda
+    oom_score_adj: -800                   # la VPN, la última en caer si el VPS se queda sin memoria
     pids_limit: 64
     healthcheck:
       test: ["CMD", "/usr/local/bin/salud-vpn"]
@@ -370,8 +371,8 @@ services:
       - /srv/ids/ctl/p003/suricata:/run/suricata
     cpuset: "2"
     cpus: 1
-    mem_limit: 900m
-    memswap_limit: 900m
+    mem_reservation: 900m                 # reserva blanda (la de la admisión); el freno son los memcaps
+    oom_score_adj: 500                    # cae el primero si el VPS se queda sin memoria
     pids_limit: 256
     stop_grace_period: 30s
     healthcheck:
@@ -394,7 +395,9 @@ Reglas de render (decidido en el contrato):
 - `cpuset` del `vpn`: `"0-1"` si el host tiene ≥ 4 CPU; si no, se omite la clave.
 - `cpuset` de `suricata`: las `hilos` CPU libres más bajas a partir de la 2, asignadas por orden de
   `N`. Si no quedan, `"2-<ncpu-1>"` compartido. Con ≤ 2 CPU se omite. `cpus` = `hilos` siempre.
-- `mem_limit` de `suricata` sale de la tabla de perfiles (§4.6.2). Del `vpn`, fijo `192m`.
+- `mem_reservation` de `suricata` sale de la tabla de perfiles (`reserva_mb`, §4.6.2). Del `vpn`,
+  fijo `192m`. Desde 2026-10-16 no hay `mem_limit` ni `memswap_limit` (sin tope duro);
+  `oom_score_adj` es fijo: −800 en el `vpn` y 500 en `suricata`.
 - `API_PUERTO` es `8728` solo con la excepción explícita del punto.
 - Se arranca con `docker compose -p ids-<pid> -f /srv/ids/puntos/<pid>/compose.yml up -d --pull never`.
   Las imágenes se descargan antes, por digest.
@@ -493,7 +496,7 @@ con `str.replace` y **falla** si sobra o falta algún marcador respecto a `plant
 | `@@SPM_ALGO@@` | `hs` | `hs` con Hyperscan; si no, `bm` |
 | `@@FLOW_MEMCAP@@` | `64mb` | perfil |
 | `@@STREAM_MEMCAP@@` | `64mb` | perfil |
-| `@@REASSEMBLY_MEMCAP@@` | `256mb` | perfil |
+| `@@REASSEMBLY_MEMCAP@@` | `128mb` | perfil |
 | `@@DEFRAG_MEMCAP@@` | `32mb` | perfil |
 
 Lo que la plantilla trae **fijo** (B): `threshold-file: /etc/ids/suricata/threshold.config`;
@@ -511,11 +514,11 @@ desactivados.
 
 #### 4.6.2 Perfiles (cifras iniciales, se corrigen con las mediciones de F1a)
 
-| Perfil | `RULE_PATH` | `DETECT_PROFILE` | `SGH_MPM_CONTEXT` | memcaps flow/stream/reassembly/defrag | `mem_limit` | Por defecto |
+| Perfil | `RULE_PATH` | `DETECT_PROFILE` | `SGH_MPM_CONTEXT` | memcaps flow/stream/reassembly/defrag | `mem_reservation` (`reserva_mb`) | Por defecto |
 |---|---|---|---|---|---|---|
-| `reducido` | `/reglas/current/reducido` | `medium` | `auto` | 64mb/64mb/256mb/32mb | `900m` | **sí** |
-| `completo-low` | `/reglas/current/completo` | `low` | `single` | 64mb/64mb/256mb/32mb | `1300m` | — |
-| `completo` | `/reglas/current/completo` | `medium` | `auto` | 64mb/64mb/256mb/32mb | `1700m` | — |
+| `reducido` | `/reglas/current/reducido` | `medium` | `auto` | 64mb/64mb/128mb/32mb | `900m` | **sí** |
+| `completo-low` | `/reglas/current/completo` | `low` | `single` | 64mb/64mb/128mb/32mb | `1300m` | — |
+| `completo` | `/reglas/current/completo` | `medium` | `auto` | 64mb/64mb/128mb/32mb | `1700m` | — |
 
 La tabla vive **solo** en `ids_orq.py` (constante `PERFILES`). B no la duplica: sus pruebas
 renderizan con valores propios.
@@ -882,7 +885,7 @@ código `CANCELADA` y quedan en `orq.jsonl`; nunca se ejecutan (los `pid` no se 
 
 | Orden | Parámetros | Encola | Devuelve en `datos` |
 |---|---|---|---|
-| `punto.crear` | `nombre`, `redes_abonados[]` (≤ 64, IPv4 CIDR; opcional desde 2026-10-15: sin ella, `redes_por_defecto`, lo privado y el CGNAT menos las redes reservadas), `perfil` (def. `reducido`), `hilos` 1–2 (def. 1), `ros_version` 6/7 (def. 7), `compat_v6` `no`/`seclevel0`/`legacy`, `api_puerto` 8729/8728, `origen_ip?`, `pid?`, `n?` | sí | `pid`, `n`, `puerto`, `tun_net`, `usuario`, `clave` (solo la primera vez), `comandos` |
+| `punto.crear` | `nombre`, `redes_abonados[]` (≤ 64, IPv4 CIDR; opcional desde 2026-10-15: sin ella, `redes_por_defecto`, lo privado y el CGNAT menos las redes reservadas), `perfil` (def. `reducido`), `hilos` 1–2 (def. 1), `ros_version` 6/7 (def. 7), `compat_v6` `no`/`seclevel0`/`legacy`, `api_puerto` 8729/8728, `origen_ip?`, `pid?`, `n?` | sí | `pid`, `n`, `puerto`, `tun_net`, `usuario`, `clave` y `comandos` con la clave puesta. La clave va en el primer `op.estado` que lee el resultado (no se guarda en `orq.db`); un `punto.crear` nuevo de un punto que ya existe («ya existe», `ya_entregada`) la vuelve a dar si el orquestador la tiene cifrada y es la vigente (2026-10-16), y si no, `comandos` con `<CLAVE-VPN>` |
 | `punto.borrar` | `pid`, `confirmar` (= nombre) | sí | — |
 | `punto.arrancar` / `punto.parar` / `punto.reiniciar` | `pid`, `parte` ∈ vpn/suricata/todo | sí | `observado` |
 | `punto.ajustar` | `pid`, `perfil?`, `hilos?`, `redes_abonados?`, `compat_v6?`, `ros_version?`, `origen_ip?` | sí | lo recreado |
@@ -1117,6 +1120,7 @@ de verdad, la búsqueda se saltaría las horas anteriores. Con el timer cada 5 m
 | `ids-orq.service` | `After=docker.service ids-host-fw.service`, `Requires=docker.service`, `ExecStart=/usr/local/bin/ids-orq servicio`, `Restart=always`, `RuntimeDirectory=ids-orq`, encierro de ORQUESTADOR §1.1 |
 | `ids-reglas.service` / `.timer` | `ExecStart=/usr/local/bin/ids-orq reglas actualizar`; `OnCalendar=*-*-* 08:15:00 UTC` (03:15 en UTC−5), `RandomizedDelaySec=10m`, `Persistent=true` |
 | `ids-logrotate.service` / `.timer` | §5.14; `OnCalendar=*:0/5` |
+| `ids-actualizar.service` | `Type=oneshot`, sin `[Install]` (la arranca `sistema.actualizar` con `systemctl start --no-block`), `After=docker.service network-online.target`, `ExecStart=/usr/local/lib/ids-orq/ids-actualizar.sh --pedido`, `TimeoutStartSec=50min`, `UMask=0022`; fuera del encierro de `ids-orq`, porque lo reinicia (ACTUALIZACIONES §4.1) |
 
 ---
 
@@ -1234,9 +1238,11 @@ Pasos (idempotente: se puede volver a ejecutar para cambiar gestión/proxy):
    sin solapes entre gestión, `<tun-base>.0.0/16` y `10.210.0.0/16`. `--tun-base` solo se acepta
    si todavía no hay puntos.
 2. **Respaldo** en `/root/backups/ids-maat-install-<ts>.tar.gz` de `/etc/ssh/sshd_config*`,
-   `/etc/docker/`, `/srv/ids/fw/`, `/etc/fail2ban/`, `/etc/systemd/journald.conf.d/` y
-   `/etc/ids-maat/` antes de tocar nada (desde 2026-10-15 también `/etc/localtime`, como enlace, y
-   `/etc/timezone`).
+   `/etc/docker/`, `/srv/ids/fw/`, `/etc/fail2ban/`, `/etc/systemd/journald.conf.d/`,
+   `/etc/ids-maat/` (**sin `master.key`**), `/srv/ids/panel/`, `/srv/ids/estado/` (`orq.db`),
+   `/srv/ids/pki/` y `/srv/ids/puntos/` antes de tocar nada (desde 2026-10-15 también
+   `/etc/localtime`, como enlace, y `/etc/timezone`). El tar queda 0600; si no se puede leer o lleva
+   la clave maestra, el instalador se para sin tocar nada.
 3. Paquetes: `nftables fail2ban python3 python3-systemd openssl logrotate curl ca-certificates`
    (más `systemd-timesyncd` y, desde 2026-10-15, `tzdata`).
    **Nunca** `iptables-persistent`/`netfilter-persistent` ni `ufw`. `systemctl disable --now nftables`.

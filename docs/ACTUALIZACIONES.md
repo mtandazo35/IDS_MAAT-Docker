@@ -162,6 +162,11 @@ que actualice el **panel y el orquestador**, sin tocar los puntos, y que salga d
    - el resultado también va a `orq.jsonl` (`sistema.actualizar`).
 7. Los puntos (vpn y suricata) **no se tocan**. Siguen con sus imágenes de `imagenes.json` y su
    configuración hasta un `ids-orq punto reconfigurar <pid>`.
+8. El host **tampoco**: fail2ban, journald, sysctl y los módulos del kernel los instala `install.sh`,
+   no este botón. Al terminar bien, el script compara esos ficheros del commit con los instalados
+   (`host_pendiente`) y, si alguno difiere, la actualización acaba igual en OK pero con el aviso
+   «host sin actualizar (…): vuelve a ejecutar install.sh» (entre paréntesis, lo que difiere) en
+   `actualizacion.json`, en su log y en `orq.jsonl`.
 
 A mano, desde la consola: `ids-orq actualizar <commit>` (pasa por la cola). Volver a ejecutar
 `install.sh` con una release deja otra vez las imágenes firmadas de esa release.

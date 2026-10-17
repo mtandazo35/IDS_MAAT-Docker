@@ -152,10 +152,10 @@ aprendido en `suricata-ids-lab` y de la auditoría del diseño.
 | Componente | Qué es | Puntos clave |
 |---|---|---|
 | **Panel** (`panel-web`, `panel-worker`) | dos servicios de compose con la misma imagen y uid 10500 | `web` sirve las páginas y `/api/v1` por HTTP, detrás del proxy inverso externo; `worker` ingiere los eve, genera reportes, reconcilia, aplica políticas y hace el diagnóstico. Lee los eve, el estado del receptor y `estado.json` en ro; escribe sus tres SQLite. Habla con cada MikroTik por su relé y pide los cambios al orquestador. Sin `docker.sock`, sin capacidades, sin la CA. Salida a internet solo para AbuseIPDB, Groq y Telegram. [PLAN-PANEL](PLAN-PANEL.md) |
-| **Orquestador** (`ids-orq`) | servicio systemd del host, Python stdlib, con CLI | el único que toca Docker, el nft del host, la PKI, logrotate y los respaldos. Compose generado por punto, cola en serie, admisión de RAM, supervisión (netns, salud, reinicios), `estado.json` cada 15 s, avisos propios por Telegram. [ORQUESTADOR](ORQUESTADOR.md) |
+| **Orquestador** (`ids-orq`) | servicio systemd del host, Python stdlib, con CLI | el único que toca Docker, el nft del host, la PKI, logrotate y los respaldos. Compose generado por punto, cola en serie, admisión de RAM, supervisión (netns, salud, reinicios), `estado.json` cada 15 s; avisos propios por Telegram (diseño, sin implementar: ORQUESTADOR §9). [ORQUESTADOR](ORQUESTADOR.md) |
 | **`vpn`** (uno por punto) | s6-overlay v3; dueño del netns | entrypoint: tabla nft → veth → tabla de ingreso → servicios. OpenVPN TCP, `tzsp-decap` (escucha en 0.0.0.0, filtra nft, latido cada 30 s), relé hacia `:8729`. Logs en journald (`ids-vpn`) para fail2ban. [INSTANCIA](INSTANCIA.md) |
 | **`suricata`** (uno por punto) | af-packet sobre `ids-mon` | espera a `ids-mon` antes de arrancar; yaml completo del punto (`sensor-name = pid`); escribe el eve en su volumen; reglas y feeds en ro; el socket de control solo lo usa el orquestador. [INSTANCIA](INSTANCIA.md) |
-| **Reglas y feeds** | `/srv/ids/reglas` (releases + `current`) y `/srv/ids/feeds` | una descarga diaria en un contenedor efímero; validación única; reinicio en serie. [INSTANCIA](INSTANCIA.md) §11 |
+| **Reglas y feeds** | `/srv/ids/reglas` (releases + `current`); los feeds van dentro de cada release (`releases/<ts>/feeds/`) | una descarga diaria en un contenedor efímero; validación única; reinicio en serie. [INSTANCIA](INSTANCIA.md) §11 |
 | **Firewall del host** | `inet ids_host`, servicio propio antes de Docker | `input` drop; SSH solo desde gestión; panel solo desde las IP del proxy; puertos VPN abiertos con freno; `forward` que solo descarta. [RED](RED-Y-FIREWALL.md) §7 |
 | **fail2ban** | jaulas `sshd` e `ids-vpn` | `journalmatch` correcto en Debian 13; la de OpenVPN banea en `forward`; las redes de gestión no van en `ignoreip`. [RED](RED-Y-FIREWALL.md) §9 |
 
@@ -164,7 +164,7 @@ aprendido en `suricata-ids-lab` y de la auditoría del diseño.
 ```
 /etc/ids-maat/{master.key,orq_token,avisos.conf}
 /srv/ids/estado/{orq.db,orq.jsonl}   /srv/ids/pki/ (0700)   /srv/ids/fw/
-/srv/ids/reglas/  /srv/ids/feeds/    /srv/ids/panel/ (bases, reportes, respaldos de routers)
+/srv/ids/reglas/ (releases/<ts>/ con sus feeds, y current)   /srv/ids/panel/ (bases, reportes, respaldos de routers)
 /srv/ids/puntos/<pid>/  (compose, vpn/, suricata/suricata.yaml, threshold.config)
 /srv/ids/datos/<pid>/   (eve.json, dns.json)          → panel ro (montaje del padre)
 /srv/ids/run/<pid>/     (api.sock, tzsp.json) + estado.json → panel ro (montaje del padre)
@@ -299,7 +299,9 @@ Detalle, entidades, retenciones y secretos: [DATOS.md](DATOS.md).
 - **Secretos:** las claves API y los tokens van cifrados con AES-256-GCM (con AAD por punto). La
   clave maestra está fuera de `/data` y se respalda aparte ([DATOS.md](DATOS.md) §6).
 - **Auditoría:** una cadena de hashes global y otra por punto, ancladas cada día en el diario del
-  orquestador. Llevan `op_id` y nunca secretos.
+  orquestador. Llevan `op_id` y nunca secretos. **Diseño, sin implementar:** hoy el panel escribe
+  una línea por acción en su `bitacora.log` (texto, sin cadena de hashes) y `bitacora.anclar` es
+  una orden reservada del orquestador, que contesta «no disponible» ([DATOS.md](DATOS.md) §7).
 - **Si se compromete el panel:**
   - puede hablar con la API de los MikroTik (por diseño) y dar órdenes fijas;
   - no puede usar Docker, leer la CA, entrar en la red de un punto ni llegar a un abonado;
@@ -321,7 +323,7 @@ carga su propio ruleset. Estimación, **a medir en el canario (F1a)**:
 
 - **`reducido` es el perfil por defecto del alta.** `completo` solo donde quepa. Las cifras y la
   lista exacta de reglas se fijan con las mediciones de F1a (decisión e).
-- **Reservas:** host ~1 GB, panel ~1 GB y **una sola reserva** para el `suricata -T` efímero. La
+- **Reservas:** host ~1 GB, panel ~1,5 GB (`RESERVA_PANEL_MB` 1536) y **una sola reserva** para el `suricata -T` efímero. La
   cola en serie garantiza que solo hay uno a la vez.
 - **El orquestador niega** crear un punto, o subirle el perfil, si no cabe, y dice cuántos caben
   con cada perfil. El panel muestra la capacidad restante.

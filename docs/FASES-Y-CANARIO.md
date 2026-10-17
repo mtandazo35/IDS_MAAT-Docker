@@ -157,7 +157,8 @@ Reglas para todas las fases:
   - con el túnel caído se anota por dónde sale el TZSP (sin ruta del IDS, sigue la ruta por defecto
     del router; el operador decide si lo evita);
   - una ruta estática del CHR dentro de `100.64.N.0/24` deshabilita el mangle y avisa;
-  - con el panel parado, un punto en error llega por Telegram desde el orquestador.
+  - con el panel parado, un punto en error llega por Telegram desde el orquestador (diseño, sin
+    implementar: [ORQUESTADOR.md](ORQUESTADOR.md) §9).
 - **Hecho cuando:** tras una baja no queda ninguna fila ni archivo del punto, y un operador sin
   consola da de alta, pausa y da de baja un punto solo desde la
   web, y todo queda en la bitácora unido por `op_id`.

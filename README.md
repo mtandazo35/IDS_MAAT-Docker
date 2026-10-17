@@ -9,8 +9,9 @@ OpenVPN y su propio Suricata.
 - Por la VPN de cada punto solo entran el espejo de trafico (TZSP), la API del MikroTik y su ping al sensor; el panel y SSH solo
   desde las redes de gestion.
 - Alta de un punto desde el panel: crea los contenedores y entrega el `/interface
-  ovpn-client` para RouterOS v6 y v7 (con la CA del VPS y el usuario de la API; sin reglas
-  de firewall ni rutas, que gestiona el operador).
+  ovpn-client` para RouterOS v6 y v7 (con la CA del VPS; sin reglas de firewall ni rutas, que
+  gestiona el operador). El usuario de la API no va en esos comandos: lo crea el operador a mano en
+  el router si quiere usar la API (docs/OPERACION.md §1.2).
 
 ## ⚡ Quick install (one-liner)
 
