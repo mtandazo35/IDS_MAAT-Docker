@@ -120,11 +120,40 @@ class HuellaNucleo(_Nucleo):
     def test_fijada_sola_antes_se_sigue_usando(self):
         """Conservación: un routers.json de antes (CERT_FP sin quién la confirmó) conecta como hasta
         ahora; la ficha la marca «automatica»."""
-        self.d.guardar_routers([{"id": "p001", "CERT_FP": self.fp}])
+        self.d.guardar_routers([{"id": "p001", "CERT_FP": self.fp}], huella=True)
         r = self.d.router_por_id("p001")
         self.assertEqual(self.d.huella_estado(r), "automatica")
         self.conectar().close()
         self.assertEqual(len(_logins(self.srv)), 1)
+
+    def test_con_8728_no_intenta_tls_y_dice_por_que(self):
+        """Corrección de defecto (revisión 2026-10-15, C7): con la API en claro (8728) el saludo
+        TLS fallaba culpando al TLS; ahora mk_conectar dice la causa y no abre nada."""
+        d = self.d.cargar_mk_de(self.d.router_por_id("p001"))
+        d["PORT"] = "8728"
+        antes = self.aperturas
+        with self.assertRaises(IOError) as cm:
+            self.d.mk_conectar(d)
+        self.assertIn("8728", str(cm.exception))
+        self.assertIn("API-SSL", str(cm.exception))
+        self.assertEqual(self.aperturas, antes)
+        self.assertEqual(_logins(self.srv), [])
+
+    def test_guardar_otra_cosa_no_pisa_la_huella_confirmada_entre_medias(self):
+        """Corrección de defecto (revisión 2026-10-15, C9): la ficha lee los routers, otro admin
+        confirma la huella en ese momento y luego se guarda la foto vieja (usuario, clave): la
+        huella confirmada se quedaba en blanco. Solo olvidarla (huella=True) la escribe."""
+        rs = self.d.cargar_routers()                     # foto de antes, sin huella
+        self.d.confirmar_huella("p001", self.fp, "ana")  # otro admin, a la vez
+        for r in rs:
+            r["USER"] = "ids-api-2"
+        self.d.guardar_routers(rs)
+        g = self.guardados()
+        self.assertEqual(g["p001"]["CERT_FP"], self.fp)
+        self.assertEqual(g["p001"]["CERT_FP_QUIEN"], "ana")
+        self.assertEqual(g["p001"]["USER"], "ids-api-2")            # lo demás sí se guarda
+        self.d.guardar_routers([{"id": "p001", "CERT_FP": ""}], huella=True)
+        self.assertEqual(self.guardados()["p001"]["CERT_FP"], "")     # olvidarla sí la escribe
 
     def test_distinta_no_hay_login_y_el_registro_lo_dice_una_vez(self):
         self.d.confirmar_huella("p001", "00" * 32, "ana")
@@ -306,7 +335,7 @@ class SinCertificado(_Nucleo):
     def test_huella_vieja_de_api_anonima_se_respeta(self):
         """Conservación: un router que se fijó sin certificado (sha256 de nada) sigue conectando."""
         probados, enviado = self.ssl_falso(None)
-        self.d.guardar_routers([{"id": "p001", "CERT_FP": hashlib.sha256(b"").hexdigest()}])
+        self.d.guardar_routers([{"id": "p001", "CERT_FP": hashlib.sha256(b"").hexdigest()}], huella=True)
         self.conectar().close()
         self.assertEqual(probados[0], "ADH:@SECLEVEL=0")
         self.assertTrue(any(b"/login" in x for x in enviado))
@@ -469,7 +498,7 @@ class FichaHuella(_Panel):
         self.assertRegex(self.bitacora(), r"resultado=reconfirmada .*antes=abababab")
 
     def test_fijada_automaticamente_se_marca_sin_bloquear(self):
-        self.p.d.guardar_routers([{"id": "p001", "CERT_FP": self.presenta}])
+        self.p.d.guardar_routers([{"id": "p001", "CERT_FP": self.presenta}], huella=True)
         h = self.get("/puntos/p001")
         self.assertIn("Fijada automáticamente", h)
         self.assertIn("Revisar la huella", h)
@@ -485,7 +514,10 @@ class FichaHuella(_Panel):
             json.dump(e, f)
         h = self.get("/puntos/p002")
         self.assertIn("API sin TLS (puerto 8728)", h)
-        self.assertIn("Se recomienda API-SSL", h)
+        # revisión 2026-10-15, C7: con 8728 el panel no conecta (habla siempre API-SSL); antes
+        # decía que «la clave va protegida solo por el túnel», como si funcionara
+        self.assertIn("<b>no conecta</b>", h)
+        self.assertNotIn("protegida solo por el túnel", h)
         self.assertNotIn("La huella coincide: confirmar", h)
 
     def test_solo_admin(self):

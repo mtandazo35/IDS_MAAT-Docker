@@ -71,7 +71,7 @@ class Red:
         return Resp()
 
 
-def entorno(tmp, red, mias=("10.", "1.1.1."), nunca=()):
+def entorno(tmp, red, mias=("10.", "1.1.1."), nunca=(), publicas=()):
     # panel portado (CONTRATO-F2 §2, §10.3): `nodos` y `secretos` REALES; la clave de
     # AbuseIPDB se guarda cifrada en feeds.conf y solo se descifra para hacer la peticion
     nod, sec = _comun.panel(os.path.join(tmp, "_panel"))
@@ -80,6 +80,7 @@ def entorno(tmp, red, mias=("10.", "1.1.1."), nunca=()):
           "urllib": types.SimpleNamespace(request=red, error=urllib.error, parse=urllib.parse),
           "es_mi_cpe": lambda ip: any(ip.startswith(m) for m in mias),
           "nunca_bloquear": lambda ip: ip in nunca,
+          "es_publica_declarada": lambda ip: (ip + "/32") if ip in publicas else "",
           "bitacora": lambda *a, **k: None}
     for n in ARBOL.body:
         nombre = getattr(n, "name", None) or (
@@ -126,6 +127,13 @@ def main():
     ns2["aidb_set"]("K"); ns2["aidb_set_reportar"](True)
     ok, det = ns2["aidb_denunciar"]("9.9.9.9", firma="x")
     check("una IP de 'Nunca bloquear' tampoco", not ok and red.llamadas == [], det)
+    # tu IP publica de NAT declarada en Consultar IP, aunque NO este en MIS_REDES (revision
+    # 2026-10-15, P1: la doc lo prometia y el codigo no lo miraba)
+    ns3 = entorno(tempfile.mkdtemp(), red, publicas=("203.0.113.7",))
+    ns3["aidb_set"]("K"); ns3["aidb_set_reportar"](True)
+    ok, det = ns3["aidb_denunciar"]("203.0.113.7", firma="x")
+    check("una IP publica DECLARADA como tuya tampoco", not ok and red.llamadas == [], det)
+    check("y dice que es una de tus publicas declaradas", "públicas declaradas" in det, det)
 
     # --- 3) denuncia buena ---
     ok, det = ns["aidb_denunciar"]("8.8.8.8", firma="ET SCAN Potential SSH Scan from 203.0.113.9",

@@ -860,17 +860,20 @@ function pjPasos(j){var h='';(j.pasos||[]).forEach(function(p){var e=p.estado===
  return h?'<ol class=pjpasos>'+h+'</ol>':'';}
 function pjProgreso(j){var t=j.delante?('En cola: '+j.delante+' operación(es) delante.'):(j.etapa?('Paso actual: '+j.etapa+((j.avance&&String(j.etapa).indexOf(j.avance)<0)?' ('+j.avance+')':'')):'Esperando…');
  return (j.aviso?"<p class=pwarn>"+pjEsc(j.aviso)+"</p>":'')+"<p class=pjest>"+pjEsc(t)+"</p>"+(j.porcentaje!=null?"<progress max=100 value='"+(+j.porcentaje||0)+"'></progress>":"<progress></progress>")+pjPasos(j);}
+var PJLOGIN='La sesión caducó: vuelve a entrar';
+function pjLogin(r){return r.redirected||((r.headers&&r.headers.get('content-type'))||'').indexOf('json')<0;}
 function pjSeguir(id,pinta,fin){var t0=Date.now();function mira(){var t=Date.now();
  fetch('/operaciones/'+id+'?json=1',{credentials:'same-origin',cache:'no-store'})
- .then(function(r){if(r.status===404)throw 'nf';if(!r.ok)throw r.status;return r.json();})
+ .then(function(r){if(r.status===404)throw 'nf';if(!r.ok)throw r.status;if(pjLogin(r))throw 'login';return r.json();})
  .then(function(j){if(j.terminada){fin(j);return;}pinta(j);setTimeout(mira,((Date.now()-t>1500)||(Date.now()-t0>60000))?5000:2000);})
  .catch(function(e){if(e==='nf'){fin({terminada:true,ok:false,mensaje:'Esa operación ya no existe o no la pediste tú.'});return;}
+  if(e==='login'){fin({terminada:true,ok:false,mensaje:PJLOGIN+' (la operación sigue en el servidor).'});return;}
   pinta({etapa:'sin respuesta del panel; se reintenta en 5 s'});setTimeout(mira,5000);});}mira();}
 function pjPost(f,extra,ok,mal){var d=new URLSearchParams(new FormData(f));d.set('ajax','1');for(var k in extra){d.set(k,extra[k]);}
  fetch(f.getAttribute('action'),{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:d.toString()})
- .then(function(r){return r.json();})
+ .then(function(r){if(r.ok&&pjLogin(r))throw 'login';return r.json();})
  .then(function(j){if(j.token&&f.elements.op)f.elements.op.value=j.token;ok(j);})
- .catch(function(){mal('No se pudo hablar con el panel. Vuelve a intentarlo.');});}
+ .catch(function(e){mal(e==='login'?PJLOGIN+'.':'No se pudo hablar con el panel. Vuelve a intentarlo.');});}
 var PJTIT={'panel.baja':'Dar de baja el punto'};
 function pjTrabajo(id,orden,nota){var tit=PJTIT[orden]||'Operación',n=nota?"<p class=hint>"+pjEsc(nota)+"</p>":'';
  pjAbrir(tit,n+pjEspera('Empezando…'),PJSEG,id);
@@ -902,8 +905,8 @@ function popSeguir(id){pjSeguir(id,function(j){var v=document.getElementById('op
  function(j){var c=document.getElementById('opcuerpo');if(c)c.innerHTML=j.html||('<p>'+pjEsc(j.mensaje)+'</p>');if(!j.ok)aviso(j.titulo_fin||'La operación no terminó bien',j.mensaje||'');});}
 function pjHuella(forzar){var e=document.getElementById('phuellabox');if(!e||(!forzar&&!e.hasAttribute('data-pedir')))return;
  fetch('/puntos/'+e.getAttribute('data-pid')+'/huella',{credentials:'same-origin',cache:'no-store'})
- .then(function(r){return r.json();}).then(function(j){if(j.html){e.outerHTML=j.html;}else{var c=document.getElementById('phuella');if(c)c.textContent=j.texto||'sin dato';}})
- .catch(function(){var c=document.getElementById('phuella');if(c)c.textContent='no se pudo leer';});}
+ .then(function(r){if(r.ok&&pjLogin(r))throw 'login';return r.json();}).then(function(j){if(j.html){e.outerHTML=j.html;}else{var c=document.getElementById('phuella');if(c)c.textContent=j.texto||'sin dato';}})
+ .catch(function(x){var c=document.getElementById('phuella');if(c)c.textContent=(x==='login'?PJLOGIN.toLowerCase():'no se pudo leer');});}
 function pjRetomar(){pjHuella();var e=document.getElementById('pjretomar');if(!e)return;var L=[];
  try{L=JSON.parse(e.getAttribute('data-ops')||'[]');}catch(x){L=[];}
  L.forEach(function(o){if(String(o.orden).indexOf('panel.')===0){pjTrabajo(o.id,o.orden);}else{pjOrq(o.id,o.orden);}});}
@@ -918,8 +921,11 @@ def aviso(texto, tipo="err"):
     return "<div class='aviso %s'>%s</div>" % (tipo, esc(texto))
 
 
-def pagina(d, titulo, cuerpo, refresco=0):
+def pagina(d, titulo, cuerpo, refresco=0, refresco_sin_js=0):
     meta = "<meta http-equiv=refresh content=%d>" % refresco if refresco else ""
+    if refresco_sin_js:
+        # solo sin JavaScript: con JS la pagina sigue el JSON y no se recarga entera
+        meta += "<noscript><meta http-equiv=refresh content=%d></noscript>" % refresco_sin_js
     # Sin la ruta «← Ajustes / Puntos» de arriba (puesta el 2026-10-14 y quitada a peticion del
     # user el 2026-10-15): se vuelve con «Volver a Puntos» de cada pagina y con Ajustes, que la
     # barra ya marca.
@@ -1829,7 +1835,8 @@ def pagina_op(h, op_id):
                   "<p class=hint>Esta página sigue el avance sola, sin recargarse.</p></div>"
                   "<script>document.addEventListener('DOMContentLoaded',function(){popSeguir('%s');});</script>"
                   % esc(op_id))
-        return _html_privado(h, pagina(d, "Operación", cuerpo))
+        # sin JS no avanzaria nunca (revision 2026-10-15, B4): ahi si, recarga cada 5 s
+        return _html_privado(h, pagina(d, "Operación", cuerpo, refresco_sin_js=5))
     _anotar_op(op_id, vista=True)
     return _html_privado(h, pagina(d, "Operación", tit + "<div id=opcuerpo>" + _cuerpo_fin(d, vm) + "</div>"))
 
@@ -2666,9 +2673,9 @@ def huella_caja(d, pid, p, rt, presentada="", error="", pedir=False):
     presenta ahora el router, si se sabe; `pedir`: la ficha la trae por fetch (GET
     /puntos/<pid>/huella) y sustituye esta caja."""
     if str(p.get("api_puerto") or "") == "8728":
-        return ("<p class=hint>Este punto usa la API sin TLS (puerto 8728): no hay certificado ni huella que "
-                "comprobar y la clave de <code>ids-api</code> va protegida solo por el túnel. Se recomienda "
-                "API-SSL (puerto 8729).</p>")
+        return ("<p class=hint>Este punto usa la API sin TLS (puerto 8728) y el panel habla siempre API-SSL: "
+                "con 8728 <b>no conecta</b>. Hace falta un punto con API-SSL (puerto 8729, el servicio "
+                "<code>api-ssl</code> del router).</p>")
     if hasattr(d, "huella_fijada"):
         fijada = d.huella_fijada(rt)
     else:
@@ -2823,7 +2830,7 @@ def accion_api(h, pid, form, ajax=False):
                     "estado del orquestador).", 409, False, "")
         if acc == "olvidar_huella":
             r.update({"CERT_FP": "", "CERT_FP_QUIEN": "", "CERT_FP_CUANDO": ""})
-            d.guardar_routers(rs)
+            d.guardar_routers([r], huella=True)
             _bit(d, "PUNTO-API", pid=pid, objetivo="huella", resultado="olvidada")
             return ("Huella olvidada: el panel conecta con este router sin exigir certificado.", 200, True, "")
         r["USER"] = user
@@ -2831,7 +2838,7 @@ def accion_api(h, pid, form, ajax=False):
             r["PASS"] = form["pass"]             # guardar_routers la cifra (router:<pid>:PASS)
         r["ENABLED"] = "1" if form.get("enabled") else "0"
         try:
-            d.guardar_routers(rs)
+            d.guardar_routers([r])               # solo este punto; la huella no se toca aqui
         except Exception as e:
             return "No se pudo guardar: %s" % str(e)[:160], 500, False, ""
         if acc != "probar":

@@ -334,7 +334,7 @@ class DestinoMalo(Base):
         todos y quitar borraba la marca aunque p002 lo conservara. Ahora el registro dice en
         que puntos esta y solo se quita la marca de los que confirman."""
         d, dst = self.d, "203.0.113.77"
-        d.destino_bloqueable = lambda ip: (True, "")   # RFC 5737 no es «global»: aqui da igual
+        d.destino_bloqueable = lambda ip, propias=None: (True, "")   # RFC 5737 no es «global»: aqui da igual
         self.p.caidos.add("p002")
         self.p.pedir("POST", "/cuarentena/destino/bloquear?nodo=p001", {"ip": dst}, "olga")
         self.assertEqual(d.cargar_enviados(d.MK_SENT_DST)[dst]["puntos"], ["p001"])

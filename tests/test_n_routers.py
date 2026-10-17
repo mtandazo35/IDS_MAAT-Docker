@@ -242,7 +242,7 @@ class APIporRele(Base):
     def test_huella_distinta_se_rechaza_sin_mandar_la_clave(self):
         """Tipo: conservación (TOFU del heredado). Con otra huella fijada la conexion se corta
         antes del /login: la clave no sale."""
-        self.d.guardar_routers([{"id": "p001", "CERT_FP": "00" * 32}])
+        self.d.guardar_routers([{"id": "p001", "CERT_FP": "00" * 32}], huella=True)
         with self.assertRaises(RuntimeError):
             self.d.mk_conectar(self.d.cargar_mk_de(self.d.router_por_id("p001")))
         self.assertFalse(any(w and w[0] == "/login" for w in self.srv.recibido))

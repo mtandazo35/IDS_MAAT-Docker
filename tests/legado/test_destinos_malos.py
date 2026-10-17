@@ -36,7 +36,7 @@ DASH = extraer.fuente("DASH")
 ARBOL = extraer.arbol("DASH")
 
 PIEZAS = ("DESTINOS_FILE", "MK_SENT_DST", "DST_CONFIABLES", "cargar_destinos_malos",
-          "destino_bloqueable", "destinos_malos",
+          "destino_bloqueable", "destinos_malos", "_redes_publicas_propias", "_en_redes",
           "ros_lista", "_RE_ROS_RARO",
           "DST_FEED_OK", "DST_FEED_TOPE", "destinos_feed", "destinos_rsc",
           "cargar_publicas",
@@ -83,7 +83,8 @@ def entorno(tmp, enviados=(), confiables=()):
         if nom in PIEZAS:
             exec(ast.get_source_segment(DASH, n) or "", ns)
     with open(ns["PUBLICAS_CONF"], "w", encoding="utf-8") as f:
-        json.dump({"nodos": {"p001": ["190.0.2.0/24"]}}, f)
+        # 190.0.3.0/24: publica declarada que NO esta en MIS_REDES (revision 2026-10-15, Q14)
+        json.dump({"nodos": {"p001": ["190.0.2.0/24", "190.0.3.0/24"]}}, f)
     return ns
 
 
@@ -109,6 +110,9 @@ DESTINOS = {
     # rango de documentacion: no es publica
     "203.0.113.5": {"alertas": 700, "cpes": 4, "fuente": "feodo", "categoria": "c2-activo",
                     "pais": "XX", "firma": ""},
+    # una publica TUYA declarada (Consultar IP), fuera de MIS_REDES: jamas
+    "190.0.3.9": {"alertas": 600, "cpes": 5, "fuente": "feodo", "categoria": "c2-activo",
+                  "pais": "EC", "firma": ""},
 }
 
 
@@ -131,6 +135,13 @@ def main():
           not ns["destino_bloqueable"]("203.0.113.5")[0])
     check("una cadena que no es IP tampoco", not ns["destino_bloqueable"]("basura")[0])
     check("una publica ajena si", ns["destino_bloqueable"]("1.1.1.1")[0])
+    # tu IP publica DECLARADA en Consultar IP aunque no este en MIS_REDES (Q14: solo el
+    # preventivo la miraba)
+    ok5, porque5 = ns["destino_bloqueable"]("190.0.3.9")
+    check("una publica DECLARADA como tuya no se bloquea", not ok5, porque5)
+    check("y se dice que es de tus publicas declaradas", "públicas declaradas" in porque5, porque5)
+    check("pero quitar siempre se puede (sin ese freno)",
+          ns["destino_bloqueable"]("190.0.3.9", propias=[])[0])
 
     # --- que se propone ---
     lst = {x["ip"]: x for x in ns["destinos_malos"]()}
@@ -140,6 +151,7 @@ def main():
           "9.9.9.9" not in lst, list(lst))
     check("ni la IP de tus redes", "10.6.1.10" not in lst, list(lst))
     check("ni el rango de documentacion", "203.0.113.5" not in lst, list(lst))
+    check("ni tu publica declarada", "190.0.3.9" not in lst, list(lst))
     check("se dice cuantos CPEs lo contactan, que es lo que mide el daño",
           lst["1.1.1.1"]["cpes"] == 12, lst["1.1.1.1"])
     check("y de que feed viene", lst["1.1.1.1"]["fuente"] == "feodo", lst["1.1.1.1"])

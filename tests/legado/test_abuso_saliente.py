@@ -120,6 +120,8 @@ def main():
                       "ENTRANTES_FILE", "BL_LISTA", "BL_MIN_ALERTAS", "BL_MIN_DESTINOS",
                       "BL_TOPE", "_REP_CACHE", "_REP_MAX", "rep_fuente", "cargar_entrantes",
                       "blocklist_borde", "blocklist_rsc", "blocklist_reglas",
+                      # tus publicas declaradas tampoco se cortan (revision 2026-10-15, Q14)
+                      "_redes_publicas_propias", "_en_redes", "cargar_publicas", "PUBLICAS_CONF",
                       # la tabla de atacantes con detalle (dueño, que hizo, feeds; 2026-10-16)
                       "BL_VISTAS", "FEEDS_IP_INFO", "rep_fuentes", "_JS_DUENOS",
                       "ros_lista", "_RE_ROS_RARO",
@@ -325,7 +327,11 @@ def main():
         "10.6.1.10": {"alertas": 5000, "destinos": 80, "pais": "EC", "firma": "z"},
         # un rango de documentacion no es publico: no se bloquea aunque golpee
         "203.0.113.50": {"alertas": 900, "destinos": 40, "pais": "XX", "firma": "w"},
+        # tu IP publica declarada (tu NAT), fuera de MIS_REDES: golpea fuerte y NO se corta
+        "1.0.0.1": {"alertas": 950, "destinos": 50, "pais": "EC", "firma": "v"},
     }}, open(ENT, "w", encoding="utf-8"))
+    with open(d["PUBLICAS_CONF"], "w", encoding="utf-8") as fh:
+        json.dump({"nodos": {"p001": ["1.0.0.0/30"]}}, fh)
     io = __import__("io")
     with io.open(os.path.join(tmp, "reputation.lst"), "w", encoding="utf-8") as fh:
         fh.write("9.9.9.9\tfeodo\n")
@@ -340,6 +346,7 @@ def main():
     check("un rango de documentacion no se bloquea: no es una IP publica",
           "203.0.113.50" not in bl, list(bl))
     check("una IP de TUS redes no se bloquea nunca", "10.6.1.10" not in bl, list(bl))
+    check("ni tu publica declarada, aunque golpee fuerte", "1.0.0.1" not in bl, list(bl))
     check("se dice por que esta cada una",
           bl["1.1.1.1"]["alertas"] == 900 and bl["1.1.1.1"]["destinos"] == 40,
           bl["1.1.1.1"])

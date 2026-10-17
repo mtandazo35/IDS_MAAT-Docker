@@ -212,9 +212,13 @@ class PanelP:
                     out.append(r)
                 return out
 
-            def guardar_routers(lst):
+            def guardar_routers(lst, huella=False):
+                # como el real: la huella solo con huella=True (C9)
                 for r in lst:
-                    guardados[r["id"]] = {k: r[k] for k in ("USER", "PASS", "ENABLED", "CERT_FP") if k in r}
+                    g = guardados.setdefault(r["id"], {})
+                    g.update({k: r[k] for k in ("USER", "PASS", "ENABLED") if k in r})
+                    if huella and "CERT_FP" in r:
+                        g["CERT_FP"] = r["CERT_FP"]
                 return lst
             d.cargar_routers = cargar_routers
             d.guardar_routers = guardar_routers

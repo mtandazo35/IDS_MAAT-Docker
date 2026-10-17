@@ -1189,11 +1189,17 @@ def cargar_routers():
         salida.append(base)
     return salida
 
-def guardar_routers(lst):
+_CAMPOS_HUELLA = ("CERT_FP", "CERT_FP_QUIEN", "CERT_FP_CUANDO")
+
+def guardar_routers(lst, huella=False):
     """Guarda lo del usuario de cada router con permisos 600, con la clave CIFRADA. Se
     fusiona con lo que ya hay (un router que no viene en `lst` conserva lo suyo) y se
     borra lo de los pids que ya no son puntos. Una clave en claro de una version vieja
-    se acepta al leer y aqui queda cifrada."""
+    se acepta al leer y aqui queda cifrada.
+
+    La huella (CERT_FP*) solo se escribe con `huella=True` (olvidarla). La fija
+    confirmar_huella bajo el cerrojo; si aqui se copiara, un `lst` leido antes con
+    cargar_routers() la pisaria con la foto vieja (revision 2026-10-15, C9)."""
     vivos = set(nodos.pids())
     with _ROUTERS_LOCK:
         guardados = {k: v for k, v in _routers_guardados().items() if k in vivos}
@@ -1203,7 +1209,7 @@ def guardar_routers(lst):
                 continue
             g = dict(guardados.get(pid) or {})
             for k in CAMPOS_USUARIO:
-                if k == "PASS" or k not in r:
+                if k == "PASS" or k not in r or (k in _CAMPOS_HUELLA and not huella):
                     continue
                 g[k] = str(r.get(k) or "")
             if r.get("PASS"):
@@ -1562,6 +1568,10 @@ def mk_conectar(d, timeout=6):
     pid = nodos.exigir_pid(d.get("ROUTER_ID") or "")
     host = "unix:" + nodos.api_sock(pid)
     port = int(d.get("PORT") or 8729)
+    if port == 8728:
+        # el saludo TLS contra la API en claro fallaria igual, pero culpando al TLS (revision
+        # 2026-10-15, C7): se dice la causa de verdad
+        raise IOError("el punto usa la API sin TLS (8728) y el panel solo habla API-SSL (8729)")
     # La API-SSL va sin certificado (decision del dueno 2026-10-15): sin huella fijada se hace
     # /login con lo que presente el router, anonimo (ADH) o con certificado, y la clave de ids-api
     # va protegida por el tunel OpenVPN del punto. Con la huella de un certificado fijada en la
@@ -2009,7 +2019,9 @@ def reglas_de_accion(cat, accion, lista, params=None):
             acc = {"action": "redirect", "to-ports": "53"}   # al resolutor del propio router
         return [(T_NAT, dict(base, protocol="udp", **acc)), (T_NAT, dict(base, protocol="tcp", **acc))]
     if accion == "limitar":
-        lim = (p.get("limite") or "").strip()
+        # max-limit de una queue tree es UN valor: «2M/2M» (subida/bajada) es de queue simple y
+        # RouterOS lo rechaza aqui; un valor guardado asi se queda con el primero
+        lim = (p.get("limite") or "").strip().split("/", 1)[0]
         if not lim:
             return []
         mk = "suricata-" + cat
@@ -3420,9 +3432,27 @@ def cargar_destinos_malos():
     except (OSError, ValueError, AttributeError):
         return {}
 
-def destino_bloqueable(ip):
-    """SOLO IPs publicas. Una privada aqui seria una IP de tu propia red: bloquearla
-    como destino dejaria sin servicio a tus abonados entre si."""
+def _redes_publicas_propias():
+    """Tus publicas declaradas (Consultar IP -> Tus IPs publicas) como redes, leidas UNA vez.
+    es_publica_declarada() relee el disco en cada llamada: en un bucle eso costaba 3,8 s por
+    apertura de Cuarentena, medido."""
+    propias = []
+    for _rid, _ents in cargar_publicas().items():
+        for _e in _ents:
+            try:
+                propias.append(ipaddress.ip_network(_e, strict=False))
+            except ValueError:
+                pass
+    return propias
+
+def _en_redes(o, redes):
+    return any(o.version == n.version and o in n for n in redes)
+
+def destino_bloqueable(ip, propias=None):
+    """SOLO IPs publicas AJENAS. Una privada aqui seria una IP de tu propia red: bloquearla
+    como destino dejaria sin servicio a tus abonados entre si; una publica tuya declarada (tu
+    NAT) cortaria a todos los que salen por ella. `propias`: esas publicas ya resueltas (un
+    bucle las pasa para no releer el disco por cada IP); None = se leen aqui."""
     try:
         o = ipaddress.ip_address(ip)
     except ValueError:
@@ -3431,15 +3461,18 @@ def destino_bloqueable(ip):
         return False, "no es una IP pública"
     if es_mi_cpe(ip):
         return False, "es de tus redes"
+    if _en_redes(o, _redes_publicas_propias() if propias is None else propias):
+        return False, "es una de tus IPs públicas declaradas"
     return True, ""
 
 def destinos_malos(solo_confiables=True):
     """Destinos fichados que TUS CPEs estan contactando, listos para decidir."""
     env = cargar_enviados(MK_SENT_DST)
     dest_ok = _dest_ok_set()
+    propias = _redes_publicas_propias()
     out = []
     for ip, d in cargar_destinos_malos().items():
-        ok, _porque = destino_bloqueable(ip)
+        ok, _porque = destino_bloqueable(ip, propias)
         if not ok or ip in dest_ok:
             continue                       # ya marcado como falso positivo: no se propone
         cat = d.get("categoria", "")
@@ -3480,23 +3513,15 @@ def destinos_feed(tope=DST_FEED_TOPE):
     if not buenas:
         return []
     dest_ok = _dest_ok_set()
-    # Las publicas declaradas, resueltas UNA vez. es_publica_declarada() las releia del
-    # disco por cada linea del feed: 3,8 s por apertura de Cuarentena, medido.
-    propias = []
-    for _rid, _ents in cargar_publicas().items():
-        for _e in _ents:
-            try:
-                propias.append(ipaddress.ip_network(_e, strict=False))
-            except ValueError:
-                pass
+    # Las publicas declaradas, resueltas UNA vez (no IP a IP: ver _redes_publicas_propias).
+    propias = _redes_publicas_propias()
     mias = mis_redes()
     def _propia(txt):
         try:
             a = ipaddress.ip_address(txt)
         except ValueError:
             return False
-        return (any(a.version == n.version and a in n for n in mias)
-                or any(a.version == n.version and a in n for n in propias))
+        return _en_redes(a, mias) or _en_redes(a, propias)
     out = []
     f = os.path.join(os.path.dirname(FEEDS_META), "reputation.lst")
     try:
@@ -3542,6 +3567,7 @@ def blocklist_borde(tope=BL_TOPE):
     miles de IPs, llena la RAM del router y mete falsos positivos de sitios que tus
     abonados visitan. Lo que nos golpea a nosotros es corto y es el que importa."""
     out = []
+    propias = _redes_publicas_propias()
     for ip, d in sorted(cargar_entrantes().items(),
                         key=lambda kv: int(kv[1].get("alertas", 0)), reverse=True):
         if len(out) >= tope:
@@ -3550,8 +3576,8 @@ def blocklist_borde(tope=BL_TOPE):
             o = ipaddress.ip_address(ip)
         except ValueError:
             continue
-        if not o.is_global or es_mi_cpe(ip) or nunca_bloquear(ip):
-            continue               # nunca lo propio ni la allowlist
+        if not o.is_global or es_mi_cpe(ip) or nunca_bloquear(ip) or _en_redes(o, propias):
+            continue               # nunca lo propio (tus redes y tus publicas) ni la allowlist
         al = int(d.get("alertas", 0)); ds = int(d.get("destinos", 0))
         fuente = rep_fuente(ip)    # ademas en un feed de reputacion: confianza alta
         if not (fuente or (al >= BL_MIN_ALERTAS and ds >= BL_MIN_DESTINOS)):
@@ -7113,6 +7139,10 @@ def aidb_denunciar(ip, firma="", dport="", proto="", n=0, quien="?"):
     if es_mi_cpe(ip):
         # denunciar tu propio rango te mete a VOS en las listas negras
         return False, f"{ip} es de TUS redes: eso se corrige adentro, no se denuncia"
+    _pub = es_publica_declarada(ip)
+    if _pub:
+        # tu rango de NAT (Consultar IP -> Tus IPs públicas): mismo motivo, aunque no esté en MIS_REDES
+        return False, f"{ip} es una de tus IPs públicas declaradas ({_pub}): no se denuncia"
     if nunca_bloquear(ip):
         return False, f"{ip} está en la lista 'Nunca bloquear'"
     ahora = time.time()
@@ -11207,7 +11237,7 @@ def _card_listas(m):
                       for v in ACCIONES_POR_CAT[cat])
         extra = ""
         if cat in ("minado", "p2p"):
-            extra += ("<input type=text name=limite_%s class=acclim value=\"%s\" placeholder='límite: 2M o 2M/2M' "
+            extra += ("<input type=text name=limite_%s class=acclim value=\"%s\" placeholder='límite: p. ej. 2M' "
                       "style='display:%s'>" % (cat, esc(m.get("ACCION_LIMITE_" + cat.upper(), "")),
                                                "inline-block" if acc == "limitar" else "none"))
         if cat == "dns":
@@ -11634,7 +11664,8 @@ def perfil_page(msg="", ok=False, edit_user=None):
             "<div class=hint>Apagado por defecto. Con esto activado, cada atacante de la sección "
             "<b>Ataques entrantes</b> muestra un botón <b>Denunciar</b>; <b>nunca</b> se denuncia solo, "
             "siempre lo pulsa una persona. Es una acción <b>pública y a tu nombre</b>. Nunca se denuncian "
-            "IPs de tus redes ni de la lista 'Nunca bloquear', el comentario va <b>sin ninguna IP</b> "
+            "IPs de tus redes, tus IPs públicas declaradas ni las de la lista 'Nunca bloquear', el "
+            "comentario va <b>sin ninguna IP</b> "
             "(ni la tuya) y la misma IP no se repite antes de 24 h.</div>"
             "<div class=actions><button class=primary type=submit>Guardar</button></div></form>")
         b_groq = _bloque(
@@ -12831,8 +12862,7 @@ reciente: no hay instantáneas viejas que abrir.</td></tr>
 <tr><td><b>Reporte</b></td><td>El <b>informe de 3 días: conducta por abonado</b>. Agrupa a los CPEs
 por categoría de abuso (primero lo que hay que cortar: botnet, escaneo, fuerza bruta) y de cada uno da
 alertas, firmas, destinos, puertos, dominios consultados y cuándo se le vio. Arriba, el filtro por IP o
-firma, <b>Generar informe PDF</b> (de 1, 3, 7 o 30 días) para mandárselo al cliente y <b>Descargar
-CSV</b>. Se explica en
+firma y <b>Generar informe PDF</b> (de 1, 3, 7 o 30 días) para mandárselo al cliente. Se explica en
 "Abuso saliente: el número que hay que poder enseñar".</td></tr>
 <tr><td><b>Eventos</b></td><td>Buscador de los <b>eventos de Suricata</b> del nodo elegido (o de
 todos): por fecha y hora, firma (texto o SID), severidad, IP origen o destino, puerto, protocolo y tipo de
@@ -13228,7 +13258,8 @@ leen. Va ahí porque responde a la misma pregunta que el paginador y se usa al t
 y sale <b>aunque haya una sola página</b>: si no, al elegir 100 desaparecería el paginador y con
 él la única forma de volver a 10. El tamaño de página y el filtro viajan juntos: cambiar uno no
 borra el otro.</p>
-<p>El <b>CSV</b> (botón <b>Descargar CSV</b> del Reporte) usa punto y coma y lleva BOM, que es lo que abre Excel en español sin pedir
+<p>El <b>CSV</b> de todos los abonados (sin paginar) se descarga en <code>/conducta.csv</code>: no tiene
+botón en la barra, que se quitó para dejarla corta. Usa punto y coma y lleva BOM, que es lo que abre Excel en español sin pedir
 nada. Las firmas que traen <code>;</code> o comillas van entrecomilladas: sin eso se corren
 las columnas y el cliente termina leyendo el dato de otro abonado.</p>
 <p>La pestaña <b>Histórico</b> ya no es una lista de archivos: es la <b>tendencia del abuso que sale
@@ -14044,8 +14075,9 @@ en rojo (puede ser una suplantación o un certificado cambiado en el router) y e
 clave; el Registro lo apunta una vez. Si lo cambiaste tú, compara el nuevo en el router y pulsa
 <b>Volver a confirmar</b>. <b>Olvidar la huella</b> la borra y el panel vuelve a conectar sin exigir
 certificado (hazlo también si le quitaste el certificado al router).</li>
-<li><b>Puerto 8728</b> (API sin TLS): no hay certificado ni huella, y la clave va protegida solo por el
-túnel. La ficha recomienda API-SSL (8729).</li>
+<li><b>Puerto 8728</b> (API sin TLS): el panel habla siempre API-SSL, así que con un punto creado con
+8728 <b>no conecta</b> (la ficha y <b>Probar la conexión</b> lo dicen). Hace falta API-SSL (8729), el
+puerto con el que el panel crea los puntos.</li>
 </ul>
 <h3>Desbanear la IP del MikroTik</h3>
 <p>El servidor banea con fail2ban (jaula <code>ids-vpn</code>) la IP que insiste en la VPN con un usuario
@@ -18185,7 +18217,9 @@ def cuarentena_page(msg="", es_admin=False):
                  ) if es_admin else ""
         sec_manual = ("<div class='seccion'><div class='shead'><div><h2>Enviados manualmente</h2>"
                       "<p class='sub'>IPs que pusiste a mano (p.ej. desde Top orígenes) y no son candidatos actuales. "
-                      "Con auto-mantener <b>no</b> se liberan solas: quítalas tú aquí cuando quieras.</p></div></div>"
+                      "Salen solas cuando ya no tienen ninguna alerta como origen; con alertas, aunque sean de "
+                      "riesgo bajo, se quedan. Las que se escribieron a mano en el router no se tocan. También "
+                      "puedes quitarlas tú aquí.</p></div></div>"
                       + barra +
                       "<div class='card'><table class='orden'><thead><tr>" + selth +
                       "<th>CPE (IP origen)</th><th>Lista</th>"
@@ -18221,8 +18255,12 @@ def cuarentena_page(msg="", es_admin=False):
         # la cuarentena no caduca por tiempo (2026-10-14): sale cuando el CPE deja de atacar
         auto_txt = (" Las IPs entran <b>sin caducidad</b> y salen solas cuando el CPE <b>deja de enviar "
                     "virus</b>.")
-        estado = (f"<div class='banner ok'><b>MikroTik habilitado.</b> Puedes enviar cada CPE a su address-list "
-                  f"(infectados &rarr; <code>{esc(m.get('LIST',''))}</code>, DNS &rarr; <code>{esc(m.get('LIST_DNS',''))}</code>) "
+        # cada CPE va a la lista de SU categoria (lista_de_categoria), no a LIST (revision
+        # 2026-10-15, E7)
+        estado = (f"<div class='banner ok'><b>MikroTik habilitado.</b> Puedes enviar cada CPE a la address-list "
+                  f"de su categoría (<code>{esc(lista_de_categoria('botnet'))}</code>, "
+                  f"<code>{esc(lista_de_categoria('escaneo'))}</code>, <code>{esc(lista_de_categoria('dns'))}</code>…; "
+                  f"los nombres se cambian en Ajustes &rarr; MikroTik) "
                   f"en el MikroTik de cada nodo; el MikroTik decide con tus reglas. Reversible con <b>Quitar</b>.{auto_txt}</div>")
     elif en and not conf_ok:
         estado = ("<div class='banner err'><b>Falta configurar la conexión.</b> Marcaste <b>Permitir enviar</b>, pero "
@@ -19626,8 +19664,9 @@ class H(BaseHTTPRequestHandler):
                 if _a in ACCIONES_POR_CAT.get(_cat, ()):
                     m["ACCION_" + _cat.upper()] = _a
                 if _cat in ("minado", "p2p"):
-                    _lim = (q.get("limite_" + _cat, [""])[0] or "").strip()[:24]
-                    if re.match(r"^\d+[kKmMgG]?(/\d+[kKmMgG]?)?$", _lim):
+                    # un solo valor (max-limit de queue tree); «2M/2M» se queda en «2M»
+                    _lim = (q.get("limite_" + _cat, [""])[0] or "").strip()[:24].split("/", 1)[0]
+                    if re.match(r"^\d+[kKmMgG]?$", _lim):
                         m["ACCION_LIMITE_" + _cat.upper()] = _lim
                     else:
                         m.pop("ACCION_LIMITE_" + _cat.upper(), None)
@@ -20271,10 +20310,12 @@ class H(BaseHTTPRequestHandler):
             if not self._operador():
                 return self._prohibido()
             ip = (q.get("ip", [""])[0]).strip()
-            ok_d, porque = destino_bloqueable(ip)
+            quitar = ruta.endswith("/quitar")
+            # quitar siempre tiene que poder: sin el freno de tus publicas declaradas (la IP pudo
+            # bloquearse antes de declararla)
+            ok_d, porque = destino_bloqueable(ip, propias=[] if quitar else None)
             if not ok_d:
                 return self._redirect(cuar_aviso_url(f"{ip}: {porque}"))
-            quitar = ruta.endswith("/quitar")
             # Operacion MULTIPUNTO declarada: el destino es malo para todos los abonados, asi
             # que va a cada punto, con resultado POR PUNTO y registro por punto (auditoria
             # A-07): la marca de un punto solo se quita si SU router lo confirma, y un punto

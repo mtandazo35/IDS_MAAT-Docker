@@ -193,6 +193,10 @@ def main():
     li = R("p2p", "limitar", "clientes-p2p", {"limite": "2M"})
     check("limitar con limite = marca de conexion + marca de paquete + cola", [x[0] for x in li] == [T_MANGLE, T_MANGLE, T_QUEUE]
           and li[2][1]["max-limit"] == "2M" and li[1][1]["new-packet-mark"] == "suricata-p2p", li)
+    # revision 2026-10-15, Q16: «2M/2M» es de queue simple; en la max-limit de una queue tree
+    # RouterOS lo rechaza. Un valor guardado asi sale como «2M».
+    li2 = R("p2p", "limitar", "clientes-p2p", {"limite": "2M/2M"})
+    check("un limite guardado como 2M/2M va a la cola como 2M", li2[2][1]["max-limit"] == "2M", li2)
     check("nada = vacio", R("otros", "nada", "l") == [], "")
     check("los defectos son las reglas probadas del ISP: botnet solo-web, dns protegido, escaneo frenado",
           ns["accion_de_clase"]("botnet", {}) == "solo-web" and ns["accion_de_clase"]("dns", {}) == "dns-protegido"

@@ -144,7 +144,10 @@ class Avance(_Base):
         r = self.p.pedir("POST", "/puntos/p001/reiniciar", {"op": tok}, cookie=self.ana)
         self.responder([{"estado": "en_curso", "paso": "parar", "avance": "1/3", "pasos": []}])
         h = self.get(r.cab("Location"))
-        self.assertNotIn("http-equiv=refresh", h)
+        # con JS no se recarga entera; sin JS (noscript) sí, o no avanzaría nunca (revisión
+        # 2026-10-15, B4)
+        self.assertNotIn("http-equiv=refresh", re.sub(r"<noscript>.*?</noscript>", "", h, flags=re.S))
+        self.assertIn("<noscript><meta http-equiv=refresh content=5></noscript>", h)
         self.assertIn("popSeguir('%s')" % tok, h)
         self.assertIn("id=opvivo", h)
         self.assertIn("Paso actual: parar (1/3)", h)

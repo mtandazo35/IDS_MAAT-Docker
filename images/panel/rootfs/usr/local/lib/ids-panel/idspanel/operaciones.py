@@ -93,8 +93,10 @@ class Operaciones:
             o = self._ops.get(op_id)
             if o is None:
                 return False
+            # solo lo que cambia: `vista=True` se anota en cada visita a la pagina y reescribir el
+            # fichero entero sin cambios no aporta nada (revision 2026-10-15, B6)
             nuevos = {k: v for k, v in campos.items()
-                      if k in ANOTABLES and (sobrescribir or k not in o)}
+                      if k in ANOTABLES and (sobrescribir or k not in o) and o.get(k) != v}
             if nuevos:
                 o.update(nuevos)
                 self._guardar()
