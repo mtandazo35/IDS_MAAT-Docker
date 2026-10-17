@@ -9454,7 +9454,7 @@ def _vuelta_refrescador(estado):
     # historial: barato porque es incremental (solo lo nuevo desde la marca).
     # Va ANTES del informe para que el informe lea una base ya al dia. Una base por punto.
     # la ingesta del historial va en su propio hilo (_hist_hilo): con mucho DNS, o con el atraso
-    # tras una parada, tardaba minutos y en ese tiempo no se regeneraba ningun informe (205.235.2.159,
+    # tras una parada, tardaba minutos y en ese tiempo no se regeneraba ningun informe (un VPS de producción,
     # 2026-10-16: casi una hora sin informes nuevos en ningun punto)
     # reporte de varios dias: caro (recorre los rotados), asi que espaciado; el boton
     # de la pestana lo adelanta poniendo FORCE_CONDUCTA
@@ -15836,7 +15836,7 @@ def hist_podar(c=None, pid=None):
         # (rowid NOT IN una subconsulta correlacionada con ORDER BY n LIMIT) reordenaba el grupo
         # entero por cada fila: con un abonado de 21 955 destinos en un dia no terminaba nunca (470 GB
         # leidos de historial.db y el refrescador parado: sin informes nuevos en ningun punto,
-        # 205.235.2.159, 2026-10-16). Con ROW_NUMBER() esa misma base se recorta en 0,47 s.
+        # un VPS de producción, 2026-10-16). Con ROW_NUMBER() esa misma base se recorta en 0,47 s.
         c.execute("""DELETE FROM detalle WHERE rowid IN (
                        SELECT rowid FROM (
                          SELECT rowid, ROW_NUMBER() OVER (

@@ -132,7 +132,7 @@ class Estructura(unittest.TestCase):
         self.assertEqual(s["checksum-validation"], "no")
         self.assertEqual((s["midstream"], s["async-oneside"], s["bypass"]), ("true", "true", "yes"))
         self.assertEqual(s["reassembly"]["memcap"], "256mb")
-        # espejo de 10 KB por conexion (205.235.2.157, 2026-10-16): no se llega a mas
+        # espejo de 10 KB por conexion (un VPS de producción, 2026-10-16): no se llega a mas
         self.assertEqual(s["reassembly"]["depth"], "64kb")
         self.assertEqual(self.cfg["flow"]["memcap"], "64mb")
         self.assertEqual(self.cfg["defrag"]["memcap"], "32mb")

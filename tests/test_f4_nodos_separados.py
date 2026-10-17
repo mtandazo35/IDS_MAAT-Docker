@@ -612,7 +612,7 @@ class AuthKeyAbuseCh(Base):
 
 class HistPodar(Base):
     def test_recorta_el_top_sin_atascarse(self):
-        """Corrección de defecto (205.235.2.159, 2026-10-16): un abonado con miles de destinos en un día
+        """Corrección de defecto (un VPS de producción, 2026-10-16): un abonado con miles de destinos en un día
         dejaba hist_podar sin terminar (subconsulta correlacionada: el grupo se reordenaba por cada fila)
         y el refrescador parado, sin informes nuevos en ningún punto. Ahora es una pasada: queda el top
         HIST_TOP de cada (día, CPE, tipo) y el resto de grupos intacto."""
@@ -683,7 +683,7 @@ class AbonadosSinAdicionales(Entorno):
 
 
 class HiloHistorial(Base):
-    """La ingesta del historial va en su propio hilo (205.235.2.159, 2026-10-16: con mucho DNS, o el
+    """La ingesta del historial va en su propio hilo (un VPS de producción, 2026-10-16: con mucho DNS, o el
     atraso tras una parada, el refrescador pasaba minutos ingiriendo y no regeneraba ningún informe)."""
 
     def test_el_refrescador_ya_no_ingiere(self):
