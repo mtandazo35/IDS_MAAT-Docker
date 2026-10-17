@@ -43,6 +43,22 @@ class ModalEmpresa(unittest.TestCase):
         self.assertIn("onclick=closem()>Cancelar</button>", m)
         self.assertIn("PNG, JPG, SVG o WebP", m)
 
+    def test_nombre_en_blanco_por_defecto_y_se_respeta(self):
+        """Corrección de defecto (el user, 2026-10-16: «por defecto está dejando el nombre de la empresa la
+        IP; eso no debe ir y no deja dejar en blanco»): sin empresa.json, o guardado en blanco, el nombre
+        va vacío aunque IDS_EMPRESA (el nombre DNS del servidor) sea su IP; los avisos sí la usan."""
+        viejo = os.environ.get("IDS_EMPRESA")
+        os.environ["IDS_EMPRESA"] = "203.0.113.10"
+        self.addCleanup(lambda: os.environ.pop("IDS_EMPRESA", None) if viejo is None
+                        else os.environ.__setitem__("IDS_EMPRESA", viejo))
+        for guardado in (None, ""):
+            if guardado is not None:
+                self.guardar_empresa(guardado, "")
+            h, m = self.modal()
+            self.assertRegex(m, r'<input id=enombre type=text name=nombre maxlength=60 value=""')
+            self.assertNotIn("203.0.113.10", h)
+        self.assertEqual(self.p.d._hostname(), "203.0.113.10")      # los avisos dicen qué servidor es
+
     def test_sin_logo_no_ofrece_quitarlo(self):
         self.guardar_empresa("ISP Ejemplo", "")
         _h, m = self.modal()

@@ -4707,8 +4707,9 @@ SENSOR_FILE = "sensor.json"     # por nodo: nodos/<pid>/sensor.json (medir_senso
 REPORT_CONF = nodos.ruta("conf", "report.conf")   # comparte TELEGRAM_TOKEN (cifrado)/CHAT_ID con el informe
 
 def _hostname():
-    """Nombre que sale en los avisos: el de la empresa (IDS_EMPRESA o Ajustes). En el
-    contenedor el nombre de la maquina es el id del contenedor y no le dice nada a nadie."""
+    """Nombre que sale en los avisos: el de la empresa (Ajustes) o, si está en blanco, el del servidor
+    (IDS_EMPRESA = su nombre DNS). En el contenedor el nombre de la maquina es el id del contenedor y
+    no le dice nada a nadie."""
     try:
         n = (cargar_empresa().get("nombre") or "").strip()
     except Exception:
@@ -8863,15 +8864,17 @@ def buscar_usuario(user):
 EMPRESA_FILE = nodos.ruta("conf", "empresa.json")
 
 def cargar_empresa():
-    """Nombre y logo. Sin fichero, el nombre es el de IDS_EMPRESA (lo pone el instalador)."""
+    """Nombre y logo de la empresa (Ajustes -> Empresa). Vacíos por defecto y se respeta el blanco:
+    IDS_EMPRESA es el nombre DNS del servidor (sin --nombre, su IP pública) y no un nombre de
+    empresa; antes salía en la franja y en el formulario y no se podía dejar en blanco (el user,
+    2026-10-16). El nombre del servidor sigue sirviendo para los avisos (_hostname)."""
     try:
         d = json.load(open(EMPRESA_FILE, encoding="utf-8"))
         if isinstance(d, dict):
-            return {"nombre": d.get("nombre", "") or (os.environ.get("IDS_EMPRESA") or "").strip()[:80],
-                    "logo": d.get("logo", "")}
+            return {"nombre": str(d.get("nombre", "") or "")[:80], "logo": d.get("logo", "")}
     except (OSError, ValueError):
         pass
-    return {"nombre": (os.environ.get("IDS_EMPRESA") or "").strip()[:80], "logo": ""}
+    return {"nombre": "", "logo": ""}
 
 # La version es la de la imagen del contenedor. El boton «Actualizar» (Ajustes -> Version y la
 # barra) busca en GitHub lo nuevo de main, pero la actualizacion la hace el orquestador
