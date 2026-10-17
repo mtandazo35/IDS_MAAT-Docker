@@ -145,7 +145,8 @@ class Recarga(unittest.TestCase):
         self.assertEqual(r.status, 303)
         self.assertGreaterEqual(time.time() - t, 0.5)
         seg, h = self.recarga()
-        self.assertEqual(seg, "20")
+        self.assertIsNone(seg)                        # ya no se recarga entera (el user, 2026-10-16)
+        self.assertIn(self.p.d._JS_ENVIVO, h)         # vuelve a «En vivo» normal, no al «generando…»
         self.assertNotIn("generando 30 min", h)
         self.assertNotIn("class='wpend'", h)
 
