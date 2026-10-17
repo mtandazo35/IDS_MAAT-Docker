@@ -27,7 +27,9 @@ ARBOL = ast.parse(DASH)
 # REPORT_CONF: en el panel portado el .conf legacy (IGNORAR_*) es nodos.ruta("conf",
 # "report.conf") en vez del literal /etc/suricata-report.conf
 PIEZAS = ("EXCL_FILE", "REPORT_CONF", "cargar_exclusiones", "guardar_exclusiones",
-          "exclusiones_page")
+          "exclusiones_page",
+          # «Nunca bloquear» vive en Exclusiones (2026-10-16): la pagina lee su lista
+          "NUNCA_FILE", "cargar_nunca")
 
 fallos = 0
 

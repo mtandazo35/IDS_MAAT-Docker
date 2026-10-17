@@ -11854,12 +11854,11 @@ def perfil_page(msg="", ok=False, edit_user=None):
             "Doble señal para confirmar infección</label>"
             "<div class=hint>Exige <b>2 indicios independientes</b> (repetición, varias firmas, fan-out, volumen) "
             "o una señal abrumadora antes de marcar un CPE como infectado. Menos falsos positivos.</div></div>"
-            "<div class=field><label>Nunca bloquear (una IP o CIDR por línea; con <code>p001|</code> delante, solo en ese punto)</label>"
-            "<textarea name=nunca rows=3 style='width:100%;box-sizing:border-box;font:12px ui-monospace,Consolas,monospace;"
-            "padding:8px;border:1px solid #d7d6d2;border-radius:8px' "
-            f"placeholder='192.0.2.10&#10;198.51.100.0/24&#10;p001|10.0.0.5'>{esc(cargar_nunca())}</textarea>"
-            "<div class=hint>Estas IPs/redes <b>jamás</b> entran a cuarentena (infra, DNS, clientes críticos), "
-            "ni por política ni a mano.</div></div>"
+            # «Nunca bloquear» vive en Exclusiones, junto a lo que no se muestra (el user, 2026-10-16:
+            # aqui parecia repetido con Exclusiones). El guardado de esta tarjeta ya no la toca.
+            "<div class=field><label>Nunca bloquear</label>"
+            "<div class=hint>Las IPs/redes que <b>jamás</b> van a cuarentena están ahora en "
+            "<a href='/exclusiones#nunca'>Exclusiones &rarr; Nunca bloquear</a>.</div></div>"
             + _card_politicas(m) +
             "<div class=actions>"
             "<button class=primary type=submit>Guardar</button>"
@@ -12514,10 +12513,28 @@ def exclusiones_page(msg="", ok=False, edit_idx=None):
                           for pt in nodos.puntos()) + "</select>")
     es_edit = "1" if ed else "0"       # con esto el modal se abre solo al pulsar Editar
     btn_txt = "Guardar cambios" if ed else "Agregar"
+    # «Nunca bloquear» (antes en Ajustes → MikroTik; el user, 2026-10-16, lo veia repetido con esto).
+    # NO es una exclusion: la IP se sigue viendo con todas sus alertas; solo se impide cortarla.
+    nunca_html = (
+        "<h2 id=nunca style='margin-top:30px'>Nunca bloquear</h2>"
+        "<div class=card><p class=sub style='margin:0 0 10px'>No es lo mismo que una exclusión: estas IPs "
+        "<b>se siguen viendo</b> en el panel y en los reportes con todas sus alertas, pero <b>jamás</b> van "
+        "a cuarentena en el MikroTik (ni por política ni a mano) ni a la lista para cortar atacantes de "
+        "internet. Es para tu infraestructura y tus clientes críticos: los vigilas, pero nunca se cortan.</p>"
+        "<form method=post action='/exclusiones'><input type=hidden name=accion value=nunca>"
+        "<textarea name=nunca rows=4 style='width:100%;box-sizing:border-box;font:12px ui-monospace,Consolas,"
+        "monospace;padding:8px;border:1px solid #d7d6d2;border-radius:8px' "
+        "placeholder='192.0.2.10&#10;198.51.100.0/24&#10;p001|10.0.0.5'>" + html.escape(cargar_nunca())
+        + "</textarea><div class=hint style='margin-top:4px'>Una IP o CIDR por línea. Con el punto delante "
+        "(<code>p001|10.0.0.5</code>) vale solo en ese punto: la misma IP privada puede ser otro abonado en "
+        "otro nodo.</div>"
+        "<div style='margin-top:10px'><button type=submit class=primary>Guardar</button></div></form></div>")
     body = f"""<!doctype html><html lang=es><head><meta charset=utf-8><link rel=icon type=image/png href=/favicon.ico>
 <meta name=viewport content='width=device-width,initial-scale=1'><title>Suricata</title>
 <style>{BASE_CSS}
 main{{max-width:1360px;padding:20px 28px 40px}}.sub{{margin:0 0 18px}}h2{{font-size:15px;margin:24px 0 10px}}
+.excual{{padding:12px 16px;margin:0 0 18px;font-size:13px;color:#33322f;line-height:1.5}}
+.excual ul{{margin:6px 0;padding-left:20px}}.excual li{{margin:3px 0}}
 .card{{padding:18px}}
 form.add{{display:grid;grid-template-columns:130px 1fr;gap:10px 12px;align-items:center}}
 label{{font-size:13px;color:#52514e;font-weight:600}}
@@ -12568,8 +12585,18 @@ padding:5px 10px 5px 5px;background:#fafbfc;cursor:pointer;max-width:100%}}
  label{{margin-top:6px}}
  .hint,button[type=submit].primary{{grid-column:1}}
 }}</style></head><body>{nav("/exclusiones")}<main>
-<h1>Exclusiones</h1><p class=sub>IPs que no quieres que aparezcan en el panel ni en los reportes
-(tus DNS, tu monitoreo SNMP, etc.). Se aplica al instante.</p>
+<h1>Exclusiones</h1>
+<div class="card excual"><b>¿Cuál uso?</b> Las dos son excepciones, pero hacen cosas distintas:
+<ul>
+<li><b>Exclusión</b> (la tabla de abajo): la IP <b>no se ve</b>. Sus alertas no salen en el panel ni en
+los reportes y no cuentan para nada. Para el ruido que ya conoces: tu DNS (puerto 53), tu monitoreo SNMP
+(161), un falso positivo de una firma concreta.</li>
+<li><b><a href="#nunca">Nunca bloquear</a></b> (más abajo): la IP <b>se sigue viendo</b> con todas sus
+alertas, pero el panel <b>nunca la corta</b>: no va a cuarentena en el MikroTik, ni por política ni a
+mano. Para tu infraestructura y tus clientes críticos: los vigilas sin arriesgarte a dejarlos sin
+servicio.</li>
+</ul>
+Los dos cambios se aplican al instante.</div>
 {banner}
 <div class=exhead><h2>Exclusiones activas</h2>
 <button type=button class=primary onclick="abrirEx()">+ Agregar exclusión</button></div>
@@ -12603,6 +12630,7 @@ pase por ella.</p>
 <p class=sub style="margin:16px 0 0">Ejemplos: tu DNS interno como <b>Destino</b> puerto <b>53</b>; tu servidor de
 monitoreo como <b>Origen</b> puerto <b>161</b>. Así quitas el ruido sin perder de vista lo demás que hagan esas IPs.</p>
 </div></div>
+{nunca_html}
 <h2 style="margin-top:30px">Copia de seguridad</h2>
 <div class="card eximp">
 <p class=sub style="margin:0 0 14px">Guarda tus exclusiones en un archivo <code>.json</code> (respaldo o para pasarlas a otro
@@ -13887,9 +13915,12 @@ por su culpa. Los destinos confiables se guardan en la configuración del panel
 (<code>/srv/ids/panel/conf/</code>).</p>
 
 <h2>Allowlist "nunca bloquear"</h2>
-<p>En <b>Ajustes &rarr; MikroTik</b>, campo <b>Nunca bloquear</b> (solo administrador), puedes definir
-IPs/CIDR que <b>jamás</b> van a cuarentena (tu infraestructura, clientes críticos), aunque disparen
-alertas: una IP o CIDR por línea. Valen para <b>todos los nodos</b>; con el punto delante
+<p>En <b>Exclusiones &rarr; Nunca bloquear</b> (solo administrador; antes estaba en Ajustes &rarr;
+MikroTik), puedes definir IPs/CIDR que <b>jamás</b> van a cuarentena (tu infraestructura, clientes
+críticos), aunque disparen alertas: una IP o CIDR por línea. <b>No es una exclusión</b>: una exclusión
+hace que la IP no se vea; aquí la IP se sigue viendo en el panel y en los reportes con todas sus
+alertas, y solo se impide cortarla. Al guardar, el panel dice cuántas líneas descartó por no ser una IP
+o red válida. Valen para <b>todos los nodos</b>; con el punto delante
 (<code>p001|192.0.2.10</code>) valen <b>solo en ese punto</b>, porque la misma IP privada puede ser otro
 abonado en otro nodo. Se guardan en la configuración del panel (<code>/srv/ids/panel/conf/</code>) y las
 respetan las políticas, el barrido rápido y el envío a mano.</p>
@@ -13898,7 +13929,8 @@ respetan las políticas, el barrido rápido y el envío a mano.</p>
 <p>El apartado <b>Exclusiones</b> (en el menú de arriba) sirve para que ciertas IPs propias
 no aparezcan en el panel ni en los reportes. Típico: tu servidor DNS y tu servidor de
 monitoreo, que generan mucho tráfico normal (consultas DNS, sondeos SNMP) y ensucian las
-estadísticas sin ser un ataque.</p>
+estadísticas sin ser un ataque. En la misma página, más abajo, está <b>Nunca bloquear</b>, que es otra
+cosa: la IP se sigue viendo, pero nunca se manda a cuarentena (ver "Allowlist nunca bloquear").</p>
 <p><b>Cómo funciona:</b> por cada alerta, si coincide con una regla de exclusión, se descarta
 antes de contarla. Se aplica en los tres lados a la vez (resumen de 24h, feed en vivo e
 informe de texto) y surte efecto al instante, sin reiniciar nada.</p>
@@ -19630,7 +19662,10 @@ class H(BaseHTTPRequestHandler):
             except OSError as ex:
                 return self._html(perfil_page(f"No se pudo guardar: {ex}", ok=False))
             conf_dash_set("DOBLE_SENAL", "1" if q.get("doble") else "0")   # doble senal (lo lee el generador)
-            guardar_nunca(q.get("nunca", [""])[0])                         # allowlist 'nunca bloquear'
+            # «Nunca bloquear» se edita en Exclusiones: esta tarjeta ya no trae el campo, y guardarla
+            # sin el lo borraria entero. Solo si llega (un formulario viejo abierto en otra pestaña)
+            if "nunca" in q:
+                guardar_nunca(q.get("nunca", [""])[0])
             bitacora("CONFIG-MIKROTIK", "doble_senal=%s" % ("si" if q.get("doble") else "no"))
             if _err_reglas:
                 return self._html(perfil_page(
@@ -20833,6 +20868,23 @@ class H(BaseHTTPRequestHandler):
     def _post_exclusiones(self, q):
         import ipaddress
         accion = q.get("accion", [""])[0]
+        if accion == "nunca":
+            # «Nunca bloquear» (antes en Ajustes → MikroTik). guardar_nunca descarta lo que no es IP
+            # o CIDR: se dice cuanto, para que una linea mal escrita no desaparezca sin aviso
+            def _entradas(txt):
+                return [l.split("#", 1)[0].strip() for l in (txt or "").splitlines()
+                        if l.split("#", 1)[0].strip()]
+            pedidas = _entradas(q.get("nunca", [""])[0])
+            antes = len(_entradas(cargar_nunca()))
+            guardar_nunca(q.get("nunca", [""])[0])
+            quedan = len(_entradas(cargar_nunca()))
+            bitacora("NUNCA-BLOQUEAR", "entradas=%d antes=%d descartadas=%d" % (quedan, antes, len(pedidas) - quedan))
+            if len(pedidas) > quedan:
+                return self._html(exclusiones_page(
+                    "«Nunca bloquear» guardado con %d entrada(s); %d línea(s) descartada(s) por no ser una IP "
+                    "o red válida." % (quedan, len(pedidas) - quedan),
+                    ok=False))
+            return self._html(exclusiones_page("«Nunca bloquear» guardado: %d entrada(s)." % quedan, ok=True))
         # trabajar solo con las reglas propias (no las legacy del .conf); incluir vencidas
         # para que los indices coincidan con lo que muestra exclusiones_page.
         propias = [r for r in cargar_exclusiones(incluir_vencidas=True) if r.get("motivo") != "(conf)"]
