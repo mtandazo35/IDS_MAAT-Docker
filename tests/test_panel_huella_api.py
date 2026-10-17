@@ -415,6 +415,21 @@ class _Panel(unittest.TestCase):
 
 
 class FichaHuella(_Panel):
+    def test_sin_javascript_la_huella_se_lee_en_su_pagina(self):
+        """Corrección de defecto (revisión 2026-10-15, B5): sin JavaScript la ficha se quedaba en
+        «comprobando…» y no había forma de confirmar la huella. El enlace <noscript> lleva a
+        /puntos/<pid>/huella?ver=1: la misma caja en una página, con el botón de confirmar."""
+        h = self.get("/puntos/p001")
+        self.assertIn("<noscript> <a href='/puntos/p001/huella?ver=1'>Leer la huella ahora</a></noscript>", h)
+        self.assertEqual(self.leidas, [])                         # la ficha no la lee: la pide el JS
+        pag = self.get("/puntos/p001/huella?ver=1")
+        self.assertTrue(pag.lstrip().lower().startswith("<!doctype html"), pag[:80])
+        self.assertIn("Volver a la ficha", pag)
+        self.assertIn("c3c3 c3c3 c3c3 c3c3", pag)
+        self.assertIn("La huella coincide: confirmar", pag)
+        self.assertIn("name=huella value='%s'" % self.presenta, pag)
+        self.assertEqual(self.leidas, ["p001"])
+
     def test_sin_huella_se_ve_y_se_confirma(self):
         """La ficha la pide por fetch; el JSON trae la huella en bloques, el comando de RouterOS y
         «La huella coincide: confirmar»; confirmar vuelve a leerla y la guarda con quién."""

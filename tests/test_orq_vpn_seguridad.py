@@ -3,8 +3,9 @@
 - VPN-01: el script del MikroTik lleva la CA del VPS (nunca una clave) y verify-server-certificate=yes
   en v6 y v7; el certificado de servidor lleva NOMBRE_DNS y «Regenerar» renueva los de antes.
 - Sin firewall ni rutas (decisión del dueño, 2026-10-15; sustituye al aislamiento de VPN-02): el
-  script solo crea el ovpn-client y el usuario ids-api limitado al sensor, y la limpieza del espejo
-  no toca lo que dejaron las altas de antes ni las reglas del operador.
+  script solo crea el ovpn-client (con la CA del VPS); el usuario de la API lo crea el operador a mano
+  desde el 2026-10-16. La limpieza del espejo no toca lo que dejaron las altas de antes ni las reglas
+  del operador.
 - VPN-03: server.conf con plazas para conexiones a medio negociar y hand-window corto.
 - VPN-05: Suricata sin NET_ADMIN.
 - VPN-13: el estado toma la sesión autenticada más reciente, no una conexión a medio negociar.

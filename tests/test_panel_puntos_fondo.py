@@ -24,7 +24,9 @@ import re
 import sys
 import threading
 import time
+import types
 import unittest
+from unittest import mock
 
 TESTS = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(TESTS, "fixtures", "panel2"))
@@ -287,6 +289,31 @@ class Baja(_Base):
         self.assertEqual(self.p.orq.ordenes("punto.borrar"), [])
         self.assertNotIn("p001", self.p.d._PREBAJA)
 
+    def test_otro_admin_con_el_router_ocupado_recibe_409(self):
+        """Corrección de defecto (revisión 2026-10-15, B3): el segundo clic de OTRO administrador se
+        enganchaba al trabajo ajeno y acababa en un 404 confuso (solo quien pide una operación ve su
+        avance). Ahora: 409 «Router ocupado», sin trabajo nuevo ni orden; la baja de ana sigue."""
+        tok = self.token(self.ficha(), "borrar")
+        _r, j, _dt = self.ajax("/puntos/p001/borrar", {"confirmar": "norte", "limpiar_router": "1", "op": tok})
+        tid = j["trabajo"]
+        esperar(lambda: str(self.estado(tid).get("etapa") or "").startswith("IPs quitadas"))
+        us = self.p.d.cargar_usuarios()
+        salt, h = self.p.d._hash_pw("clave-de-prueba-1")
+        us.append({"user": "eva", "salt": salt, "hash": h, "role": "admin", "activo": True})
+        self.p.d.guardar_usuarios(us)
+        eva = self.p.entrar("eva")
+        tok2 = self.token(self.p.pedir("GET", "/puntos/p001", cookie=eva).texto, "borrar")
+        r = self.p.pedir("POST", "/puntos/p001/borrar",
+                         {"confirmar": "norte", "limpiar_router": "1", "op": tok2, "ajax": "1"}, cookie=eva)
+        self.assertEqual(r.status, 409, r.texto[:300])
+        j2 = json.loads(r.texto)
+        self.assertEqual(j2["titulo"], "Router ocupado")
+        self.assertIn("Otro administrador está usando el router de este punto", j2["error"])
+        self.assertNotIn("trabajo", j2)
+        self.para.set()
+        self.assertTrue(self.fin(tid)["ok"])
+        self.assertEqual([x["op_id"] for x in self.p.orq.ordenes("punto.borrar")], [tok])   # solo la de ana
+
     def test_nombre_que_no_coincide(self):
         """Por fetch, sin el nombre exacto: 400 en JSON (para el modal), ni trabajo ni orden."""
         r, j, _dt = self.ajax("/puntos/p001/borrar", {"confirmar": "sur"})
@@ -401,6 +428,32 @@ class Retomar(_Base):
         self.assertTrue(self.estado(tid)["terminada"])          # lo que hace el JS al retomarlo
         self.assertNotIn("<div id=pjretomar", self.ficha())
         self.assertNotIn("<div id=pjretomar", self.ficha("p002"))      # el de otro punto no
+
+    def test_sin_hilo_la_operacion_se_cierra_y_el_router_queda_libre(self):
+        """Corrección de defecto (revisión 2026-10-15, B7): si Thread.start() fallaba (sin memoria,
+        demasiados hilos), _TRAB_EN_CURSO apuntaba para siempre a un trabajo que nunca corría y el
+        router del punto quedaba «ocupado». Ahora la operación se cierra con FALLO y queda libre."""
+        pw = self.p.pw
+
+        class SinHilo:
+            def __init__(self, *a, **k):
+                pass
+
+            def start(self):
+                raise RuntimeError("can't start new thread")
+        with mock.patch.object(pw, "threading", types.SimpleNamespace(Thread=SinHilo)):
+            tid, nuevo = pw.lanzar_trabajo(self.p.d, "p001", "panel.baja", "ana", "127.0.0.1", lambda a: {})
+        self.assertTrue(nuevo)
+        rec = pw.ops().obtener(tid)
+        self.assertTrue(rec["terminada"])
+        self.assertEqual(rec["codigo"], "FALLO")
+        self.assertIn("no pudo arrancar el trabajo", rec["mensaje"])
+        self.assertNotIn("p001", pw._TRAB_EN_CURSO)
+        tid2, nuevo2 = pw.lanzar_trabajo(self.p.d, "p001", "panel.baja", "ana", "127.0.0.1",
+                                         lambda a: {"ok": True, "mensaje": "hecho", "resultado": {}})
+        self.assertTrue(nuevo2)                                    # el router está libre otra vez
+        self.assertNotEqual(tid2, tid)
+        esperar(lambda: pw.ops().obtener(tid2).get("terminada"))
 
     def test_trabajo_de_un_panel_que_se_reinicio(self):
         """Un trabajo abierto de otro proceso (el panel se reinició a mitad) no se queda «en curso»
