@@ -22,7 +22,7 @@ import extraer  # noqa: E402
 RAIZ = extraer.RAIZ
 
 DASH = extraer.fuente("DASH")
-ARBOL = ast.parse(DASH)
+ARBOL = extraer.arbol("DASH")
 
 # REPORT_CONF: en el panel portado el .conf legacy (IGNORAR_*) es nodos.ruta("conf",
 # "report.conf") en vez del literal /etc/suricata-report.conf

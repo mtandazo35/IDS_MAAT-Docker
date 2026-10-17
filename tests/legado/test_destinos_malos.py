@@ -33,7 +33,7 @@ import extraer  # noqa: E402
 RAIZ = extraer.RAIZ
 
 DASH = extraer.fuente("DASH")
-ARBOL = ast.parse(DASH)
+ARBOL = extraer.arbol("DASH")
 
 PIEZAS = ("DESTINOS_FILE", "MK_SENT_DST", "DST_CONFIABLES", "cargar_destinos_malos",
           "destino_bloqueable", "destinos_malos",

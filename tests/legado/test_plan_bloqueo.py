@@ -32,7 +32,7 @@ import extraer  # noqa: E402
 RAIZ = extraer.RAIZ
 
 DASH = extraer.fuente("DASH")
-ARBOL = ast.parse(DASH)
+ARBOL = extraer.arbol("DASH")
 
 PIEZAS = ("PUERTOS_NOMBRE", "que_es_puerto", "perfil_abuso", "plan_bloqueo_html", "reglas_puertos", "IA_PLAN_SISTEMA",
           "ia_plan_bloqueo", "ia_activa", "_RE_IP", "_ia_huella", "_ia_cache",

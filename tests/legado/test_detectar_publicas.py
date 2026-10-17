@@ -61,7 +61,7 @@ import extraer  # noqa: E402
 RAIZ = extraer.RAIZ
 
 DASH = extraer.fuente("DASH")
-ARBOL = ast.parse(DASH)
+ARBOL = extraer.arbol("DASH")
 TMP = tempfile.TemporaryDirectory()
 
 # + _router_destino y _router_de_pid REALES (CONTRATO-F2 §3, §10.1)

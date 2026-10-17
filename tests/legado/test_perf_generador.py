@@ -27,7 +27,7 @@ import _comun  # noqa: E402  (pone tests/legado en sys.path)
 import extraer  # noqa: E402
 RAIZ = extraer.RAIZ
 GEN = extraer.fuente("HREP")
-ARBOL = ast.parse(GEN)
+ARBOL = extraer.arbol("HREP")
 
 fallos = 0
 

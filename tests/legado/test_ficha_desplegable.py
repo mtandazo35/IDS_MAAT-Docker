@@ -24,7 +24,7 @@ import extraer  # noqa: E402
 RAIZ = extraer.RAIZ
 
 DASH = extraer.fuente("DASH")
-ARBOL = ast.parse(DASH)
+ARBOL = extraer.arbol("DASH")
 
 PIEZAS = ("RANGO_TOPE", "_RANGO_JS", "rango_detalle_html", "ficha_ip_html",
           "AIDB_CATS", "AIDB_REMEDIO",

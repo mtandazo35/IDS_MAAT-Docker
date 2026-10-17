@@ -24,7 +24,7 @@ import extraer  # noqa: E402
 RAIZ = extraer.RAIZ
 
 DASH = extraer.fuente("DASH")
-ARBOL = ast.parse(DASH)
+ARBOL = extraer.arbol("DASH")
 
 PIEZAS = ("PUBLICAS_CONF", "cargar_publicas", "origen_publicas", "guardar_publicas",
           "cubrir_publicas", "guardar_publicas_de", "publicas_texto",

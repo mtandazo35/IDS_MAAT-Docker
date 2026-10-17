@@ -28,7 +28,7 @@ import extraer  # noqa: E402
 RAIZ = extraer.RAIZ
 
 DASH = extraer.fuente("DASH")
-ARBOL = ast.parse(DASH)
+ARBOL = extraer.arbol("DASH")
 
 PIEZAS = ("_SELLO_VISTO", "_SELLO_CADA", "_sello", "_CONF_CACHE", "_REDES_CACHE",
           "conf", "mis_redes", "es_mi_cpe",

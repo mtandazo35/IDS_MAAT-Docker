@@ -23,6 +23,7 @@ y deja en un directorio los mismos artefactos:
 Uso:  python tests/legado/extraer.py <directorio_destino>
 """
 import ast
+import functools
 import os
 import re
 import sys
@@ -53,6 +54,22 @@ def fuente(nombre):
     """Texto del programa `nombre` (binario viejo, marcador del heredoc o fichero nuevo)."""
     with open(ruta(nombre), encoding="utf-8") as f:
         return f.read()
+
+
+def arbol(nombre):
+    """Arbol ast de fuente(nombre), UNO por fichero y proceso, compartido por todas las
+    pruebas: es SOLO PARA LEER (recorrerlo, get_source_segment), nadie puede cambiarlo.
+
+    El de dashboard.py ocupa 40-80 MB. Cuando cada modulo de prueba guardaba el suyo con
+    `ARBOL = ast.parse(DASH)`, descubrir la suite costaba ~1,85 GB y cada proceso del
+    corredor en paralelo acababa con su copia: OOM en el VPS de produccion (2026-10-16/17)."""
+    return _arbol(ruta(nombre))
+
+
+@functools.lru_cache(maxsize=None)
+def _arbol(camino):
+    with open(camino, encoding="utf-8") as f:
+        return ast.parse(f.read())
 
 
 def heredoc(src, nombre):

@@ -36,7 +36,7 @@ import extraer  # noqa: E402
 RAIZ = extraer.RAIZ
 
 DASH = extraer.fuente("DASH")
-ARBOL = ast.parse(DASH)
+ARBOL = extraer.arbol("DASH")
 
 # router_defecto e IFACE_BASE desaparecen en el panel portado (CONTRATO-F2 §3, §4); los
 # routers salen de los puntos y routers.json guarda lo del usuario por pid, con la clave

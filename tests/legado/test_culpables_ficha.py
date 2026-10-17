@@ -27,7 +27,7 @@ import extraer  # noqa: E402
 RAIZ = extraer.RAIZ
 
 DASH = extraer.fuente("DASH")
-ARBOL = ast.parse(DASH)
+ARBOL = extraer.arbol("DASH")
 
 PIEZAS = ("AIDB_SENAL", "AIDB_CIEGAS", "senal_de_categorias", "_cats_int",
           "por_que_sin_culpables", "culpables_por_senal", "culpables_de",

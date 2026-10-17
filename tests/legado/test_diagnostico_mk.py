@@ -25,7 +25,7 @@ import extraer  # noqa: E402
 RAIZ = extraer.RAIZ
 
 DASH = extraer.fuente("DASH")
-ARBOL = ast.parse(DASH)
+ARBOL = extraer.arbol("DASH")
 TMP = tempfile.TemporaryDirectory()
 
 # + _router_destino y sensor_del_punto REALES (CONTRATO-F2 §3/§4)

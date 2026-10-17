@@ -38,7 +38,7 @@ import _comun  # noqa: E402  (pone tests/legado en sys.path)
 import extraer  # noqa: E402
 RAIZ = extraer.RAIZ
 DASH = extraer.fuente("DASH")
-ARBOL = ast.parse(DASH)
+ARBOL = extraer.arbol("DASH")
 
 AVISOS = ("_REP_AVISOS", "_REP_AVISOS_TTL", "rep_aviso_guardar", "rep_aviso_tomar",
           "rep_aviso_url", "cuar_aviso_url")

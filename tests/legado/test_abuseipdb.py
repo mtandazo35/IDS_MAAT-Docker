@@ -36,7 +36,7 @@ import extraer  # noqa: E402
 RAIZ = extraer.RAIZ
 
 DASH = extraer.fuente("DASH")
-ARBOL = ast.parse(DASH)
+ARBOL = extraer.arbol("DASH")
 
 PIEZAS = ("FEEDS_CONF", "FEEDS_SECRETOS", "SECRETOS_AVISO", "_feeds_conf_crudo",
           "clave_cpe", "ip_de", "rid_de", "AIDB_CACHE", "AIDB_ESTADO", "AIDB_TTL_LIMPIA", "AIDB_TTL_SUCIA",

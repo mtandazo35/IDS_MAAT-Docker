@@ -31,7 +31,7 @@ import extraer  # noqa: E402
 RAIZ = extraer.RAIZ
 
 DASH = extraer.fuente("DASH")
-ARBOL = ast.parse(DASH)
+ARBOL = extraer.arbol("DASH")
 
 PIEZAS = ("_AIDB_MEM", "_aidb_sello", "_aidb_cache", "_aidb_guardar_cache")
 

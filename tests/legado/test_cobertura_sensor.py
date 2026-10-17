@@ -29,7 +29,7 @@ import extraer  # noqa: E402
 RAIZ = extraer.RAIZ
 
 DASH = extraer.fuente("DASH")
-ARBOL = ast.parse(DASH)
+ARBOL = extraer.arbol("DASH")
 
 # TZSP_ESTADO ya no existe en el panel portado (CONTRATO-F2 §10.6: RUN/<pid>/tzsp.json)
 PIEZAS = ("COBERTURA_MUDO", "COBERTURA_RECHAZO", "cobertura_tzsp",

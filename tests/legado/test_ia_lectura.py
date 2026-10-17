@@ -27,7 +27,7 @@ import extraer  # noqa: E402
 RAIZ = extraer.RAIZ
 
 DASH = extraer.fuente("DASH")
-ARBOL = ast.parse(DASH)
+ARBOL = extraer.arbol("DASH")
 
 PIEZAS = ("GROQ_URL", "IA_CACHE", "IA_ESTADO", "IA_CUOTA", "IA_TIMEOUT", "IA_CACHE_MAX",
           "_IA_LOCK", "_RE_IP", "IA_SISTEMA", "ia_activa", "_ia_estado",

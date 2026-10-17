@@ -29,7 +29,7 @@ import extraer  # noqa: E402
 RAIZ = extraer.RAIZ
 
 DASH = extraer.fuente("DASH")
-ARBOL = ast.parse(DASH)
+ARBOL = extraer.arbol("DASH")
 
 PIEZAS = ("CAT_CPE", "CAT_OTROS", "_card_listas",
           "ACCIONES", "ACCIONES_POR_CAT", "ACCION_DEFECTO", "accion_de_clase")

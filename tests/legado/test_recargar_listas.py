@@ -41,7 +41,7 @@ RAIZ = extraer.RAIZ
 import test_acciones_router as base          # RouterFalso: la API de RouterOS de mentira
 
 DASH = extraer.fuente("DASH")
-ARBOL = ast.parse(DASH)
+ARBOL = extraer.arbol("DASH")
 
 PIEZAS = ("_mk_ips_listas_en", "_mk_ips_listas", "_rid_entrada", "mk_sync_enviados", "recargar_listas",
           "cargar_enviados", "_ttl_efectivo", "ACCIONES_POR_CAT",

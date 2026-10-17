@@ -26,7 +26,7 @@ import extraer  # noqa: E402
 RAIZ = extraer.RAIZ
 
 DASH = extraer.fuente("DASH")
-ARBOL = ast.parse(DASH)
+ARBOL = extraer.arbol("DASH")
 
 PIEZAS = ("DNSBL_SENAL", "_DNSBL_SIN_CULPABLE", "senal_de_listas",
           "culpables_por_senal", "culpables_lista_html")

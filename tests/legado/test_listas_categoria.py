@@ -27,7 +27,7 @@ import extraer  # noqa: E402
 RAIZ = extraer.RAIZ
 
 DASH = extraer.fuente("DASH")
-ARBOL = ast.parse(DASH)
+ARBOL = extraer.arbol("DASH")
 
 PIEZAS = ("CAT_CPE", "CAT_OTROS", "_CPES_CACHE", "_CPES_LOCK", "_cpes_de_reporte",
           "cuarentena_json", "clave_cpe", "rid_de",

@@ -34,7 +34,7 @@ import extraer  # noqa: E402
 RAIZ = extraer.RAIZ
 
 DASH = extraer.fuente("DASH")
-ARBOL = ast.parse(DASH)
+ARBOL = extraer.arbol("DASH")
 
 PIEZAS = ("CONDUCTA_FILE", "CONDUCTA_DIAS", "CONDUCTA_TOPE", "CONDUCTA_MAX",
           "CONDUCTA_CADA", "_CD_TS", "_cd_abrir", "_cd_ts", "_cd_top", "_cd_podar",

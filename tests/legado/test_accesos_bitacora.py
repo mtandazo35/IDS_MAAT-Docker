@@ -24,7 +24,7 @@ import extraer  # noqa: E402
 RAIZ = extraer.RAIZ
 
 DASH = extraer.fuente("DASH")
-ARBOL = ast.parse(DASH)
+ARBOL = extraer.arbol("DASH")
 
 # (adaptada, 2026-10-14) Accesos y Bitacora son ahora un solo Registro: log_page y bitacora_page
 # lo abren con su filtro, asi que entran sus piezas

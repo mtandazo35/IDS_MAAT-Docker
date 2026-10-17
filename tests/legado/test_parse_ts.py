@@ -22,7 +22,7 @@ import extraer  # noqa: E402
 RAIZ = extraer.RAIZ
 
 GEN = extraer.fuente("HREP")
-ARBOL = ast.parse(GEN)
+ARBOL = extraer.arbol("HREP")
 
 PIEZAS = ("parse_ts", "_parse_ts_lento", "_TS_CACHE", "_TS_CACHE_MAX", "TZ_EC")
 

@@ -28,7 +28,7 @@ import extraer  # noqa: E402
 RAIZ = extraer.RAIZ
 
 DASH = extraer.fuente("DASH")
-ARBOL = ast.parse(DASH)
+ARBOL = extraer.arbol("DASH")
 
 PIEZAS = ("PUBLICAS_CONF", "PUB_HIST", "PUB_HIST_DIAS", "PUB_UMBRAL_AVISO", "_PUB_LOCK",
           "AIDB_SENAL", "AIDB_CATS", "AIDB_CUOTA", "AIDB_CUOTA_BLOQUE", "AIDB_PREFIJO_MIN",

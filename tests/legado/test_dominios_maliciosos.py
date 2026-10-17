@@ -37,7 +37,7 @@ def check(d, c, e=""):
 
 
 def piezas(nombres, extra=None):
-    arbol = ast.parse(GEN)
+    arbol = extraer.arbol("HREP")
     ns = {"json": json, "os": os, "time": time, "html": __import__("html"),
           "Counter": Counter, "defaultdict": defaultdict}
     ns.update(extra or {})
@@ -74,7 +74,7 @@ def main():
     # tope de dominios: los nuevos se descartan, los ya vistos siguen sumando
     ns["MAX_DOM"] = 2
     exec("def _apuntar_dominio(dom, src, dst, por):\n" + "\n".join(
-        l for l in ast.get_source_segment(GEN, [n for n in ast.parse(GEN).body
+        l for l in ast.get_source_segment(GEN, [n for n in extraer.arbol("HREP").body
                                                  if getattr(n, "name", "") == "_apuntar_dominio"][0]).split("\n")[1:]), ns)
     ns["_apuntar_dominio"]("tercero.example", "r1|10.0.0.1", "", "feed: x")
     ns["_apuntar_dominio"]("malo.example", "r1|10.0.0.1", "", "feed: x")

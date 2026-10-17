@@ -27,7 +27,7 @@ import extraer  # noqa: E402
 RAIZ = extraer.RAIZ
 
 DASH = extraer.fuente("DASH")
-ARBOL = ast.parse(DASH)
+ARBOL = extraer.arbol("DASH")
 
 PIEZAS = ("GROQ_URL", "FEEDS_SECRETOS", "SECRETOS_AVISO", "_feeds_conf_crudo", "_feeds_conf_get", "_feeds_conf_set", "groq_key", "groq_configurada",
           "groq_set", "groq_modelo", "groq_set_modelo", "groq_modelos", "groq_probar")

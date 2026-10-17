@@ -40,7 +40,7 @@ import extraer  # noqa: E402
 RAIZ = extraer.RAIZ
 
 DASH = extraer.fuente("DASH")
-ARBOL = ast.parse(DASH)
+ARBOL = extraer.arbol("DASH")
 
 PIEZAS = ("HIST_DB", "HIST_DIAS", "HIST_TOP", "HIST_CADA", "CONDUCTA_DIAS",
           "CONDUCTA_TOPE", "_cd_abrir", "_CD_TS", "_cd_ts", "_cd_top",

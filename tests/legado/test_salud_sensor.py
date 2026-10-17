@@ -28,7 +28,7 @@ import extraer  # noqa: E402
 RAIZ = extraer.RAIZ
 
 DASH = extraer.fuente("DASH")
-ARBOL = ast.parse(DASH)
+ARBOL = extraer.arbol("DASH")
 
 PIEZAS = ("SALUD_DROPS", "SALUD_EVE_MUDO", "SALUD_DISCO", "SALUD_COBERTURA",
           "suricata_stats", "salud_memcaps")

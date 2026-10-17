@@ -19,7 +19,7 @@ TMP = tempfile.TemporaryDirectory()
 # funciones reales del panel para guardarlo y para leerlo
 _DASH = extraer.fuente("DASH")
 AV = {"time": time, "secrets": secrets, "urllib": urllib}
-for _n in ast.parse(_DASH).body:
+for _n in extraer.arbol("DASH").body:
     _nom = getattr(_n, "name", None) or (getattr(_n.targets[0], "id", "")
                                          if isinstance(_n, ast.Assign) and _n.targets else "")
     if _nom in ("_REP_AVISOS", "_REP_AVISOS_TTL", "rep_aviso_guardar", "rep_aviso_tomar",

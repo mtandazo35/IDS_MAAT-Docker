@@ -104,7 +104,7 @@ def piezas(ns, nombres, fichero="DASH"):
     copia. Devuelve `ns`."""
     import ast
     src = extraer.fuente(fichero)
-    for n in ast.parse(src).body:
+    for n in extraer.arbol(fichero).body:
         nombre = getattr(n, "name", None) or (
             getattr(n.targets[0], "id", "") if isinstance(n, ast.Assign) and n.targets else "")
         if nombre in nombres:

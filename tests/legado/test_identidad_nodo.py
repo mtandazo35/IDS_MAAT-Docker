@@ -24,7 +24,7 @@ import _comun  # noqa: E402  (pone tests/legado en sys.path)
 import extraer  # noqa: E402
 
 REP = extraer.fuente("HREP")
-ARBOL = ast.parse(REP)
+ARBOL = extraer.arbol("HREP")
 
 PIEZAS = ("MULTI_ROUTER", "nombre_router", "clave_cpe", "_chip_nodo", "ip_de", "rid_de")
 
