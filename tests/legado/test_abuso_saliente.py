@@ -120,6 +120,8 @@ def main():
                       "ENTRANTES_FILE", "BL_LISTA", "BL_MIN_ALERTAS", "BL_MIN_DESTINOS",
                       "BL_TOPE", "_REP_CACHE", "_REP_MAX", "rep_fuente", "cargar_entrantes",
                       "blocklist_borde", "blocklist_rsc", "blocklist_reglas",
+                      # la tabla de atacantes con detalle (dueño, que hizo, feeds; 2026-10-16)
+                      "BL_VISTAS", "FEEDS_IP_INFO", "rep_fuentes", "_JS_DUENOS",
                       "ros_lista", "_RE_ROS_RARO",
                       # CONTRATO-F2 §1/§3: rutas por nodo, nodo en los enlaces, clave pid|ip
                       "cuarentena_json", "_salida_ctx", "_CPES_LOCK", "qs_nodo",
@@ -136,6 +138,12 @@ def main():
                       "CFG": {"PORT": "5637"},
                       "ip_del_sensor": lambda hacia="": "10.0.0.9",
                       "FEEDS_META": os.path.join(tmp, "reputation.meta"),
+                      "cargar_feeds_meta": lambda: {},
+                      "traducir": lambda s: s,
+                      # dueños: cache vacia (la tabla deja el hueco que la pagina pide a /duenos)
+                      "duenos": type("D", (), {"cargar": staticmethod(lambda: {}),
+                                               "vigente": staticmethod(lambda e: bool(e)),
+                                               "consultable": staticmethod(lambda ip: True)}),
                       "mis_redes": lambda: ["10.0.0.0/8"]})
     # CONTRATO-F2 §3: acciones.json es global (PANEL/estado); metricas.json, cuarentena.json
     # y entrantes.json son salidas del generador DEL PUNTO (PANEL/nodos/<pid>/)
@@ -335,6 +343,10 @@ def main():
     check("se dice por que esta cada una",
           bl["1.1.1.1"]["alertas"] == 900 and bl["1.1.1.1"]["destinos"] == 40,
           bl["1.1.1.1"])
+    check("y en que feeds esta (todos, no solo uno)",
+          bl["9.9.9.9"]["fuentes"] == ["feodo"] and bl["1.1.1.1"]["fuentes"] == [], bl)
+    check("un entrantes.json sin puertos ni ultima no rompe: [] y 0",
+          bl["1.1.1.1"]["puertos"] == [] and bl["1.1.1.1"]["ultima"] == 0, bl["1.1.1.1"])
 
     # la tabla de la pagina va con todas las columnas centradas (el user, 2026-10-13)
     hp = d["historico_page"](7)

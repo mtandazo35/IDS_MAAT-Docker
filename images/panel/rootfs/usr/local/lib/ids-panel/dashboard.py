@@ -3308,8 +3308,31 @@ BL_LISTA = "suricata-atacantes"
 BL_MIN_ALERTAS = 20        # por debajo de esto es ruido de fondo de internet
 BL_MIN_DESTINOS = 3        # que golpee a varios: uno solo puede ser un falso positivo
 BL_TOPE = 20000            # cada entrada ocupa RAM en el router: no se manda una barbaridad
+BL_VISTAS = 10             # las que enseña Histórico (y cuyo dueño puede pedir a /duenos)
 
-_REP_CACHE = {"mtime": 0, "ips": {}}
+# Que es cada feed de IPs, para quien no sabe que es «cins» (el user, 2026-10-16: «debemos dar mas
+# detalles»): nombre, que mete en su lista y su web. Las claves son las de feeds_update.IPF; uno que
+# no este aqui sale con su clave tal cual.
+FEEDS_IP_INFO = {
+    "feodo": ("Feodo Tracker", "servidores de control (C2) de botnets activos, de abuse.ch",
+              "https://feodotracker.abuse.ch/"),
+    "cins": ("CINS Army", "IPs que la red de sensores de CINS (Sentinel IPS) ha visto atacando",
+             "https://cinsscore.com/"),
+    "spamhaus-drop": ("Spamhaus DROP", "redes secuestradas o en manos de delincuentes",
+                      "https://www.spamhaus.org/drop/"),
+    "abuseipdb": ("AbuseIPDB", "IPs denunciadas por muchos administradores, con confianza de "
+                  "abuso del 100 %", "https://www.abuseipdb.com/"),
+    "et-compromised": ("ET Compromised", "equipos comprometidos que se han visto atacando, de "
+                       "Proofpoint Emerging Threats", "https://rules.emergingthreats.net/blockrules/"),
+    "tor-exit": ("Salida de Tor", "salidas de la red Tor: es contexto, no prueba de ataque",
+                 "https://check.torproject.org/"),
+    "threatfox-c2": ("ThreatFox", "servidores de control (C2) de malware, con su puerto, de abuse.ch",
+                     "https://threatfox.abuse.ch/"),
+}
+
+# ips: la fuente de cada IP (la ultima linea manda, como siempre); mas: solo las IPs que estan en
+# VARIAS fuentes, con todas en el orden del archivo (son pocas: no vale duplicar las 300 000)
+_REP_CACHE = {"mtime": 0, "ips": {}, "mas": {}}
 _REP_MAX = 300000          # tope duro: el archivo de feeds puede ser enorme
 
 def rep_fuente(ip):
@@ -3322,6 +3345,7 @@ def rep_fuente(ip):
         return ""
     if mt != _REP_CACHE["mtime"]:
         ips = {}
+        mas = {}
         try:
             with open(f, encoding="utf-8") as fh:
                 for n, linea in enumerate(fh):
@@ -3329,12 +3353,27 @@ def rep_fuente(ip):
                         break
                     ind, _tab, fuente = linea.strip().partition("	")
                     if ind and "/" not in ind:
-                        ips[ind] = fuente or "feed"
+                        fuente = fuente or "feed"
+                        previa = ips.get(ind)
+                        if previa and previa != fuente:
+                            todas = mas.setdefault(ind, [previa])
+                            if fuente not in todas:
+                                todas.append(fuente)
+                        ips[ind] = fuente
         except OSError:
             return ""
         _REP_CACHE["ips"] = ips
+        _REP_CACHE["mas"] = mas
         _REP_CACHE["mtime"] = mt
     return _REP_CACHE["ips"].get(ip, "")
+
+def rep_fuentes(ip):
+    """Todos los feeds en los que esta una IP ([] si en ninguno). rep_fuente da solo uno: una IP
+    que esta en CINS y en ET Compromised a la vez es mas fiable que la que esta en uno solo."""
+    f = rep_fuente(ip)              # de paso, recarga la cache si el archivo cambio
+    if not f:
+        return []
+    return list(_REP_CACHE["mas"].get(ip) or [f])
 
 _REP_CAT_CACHE = {"mtime": 0, "cats": {}}
 
@@ -3517,9 +3556,17 @@ def blocklist_borde(tope=BL_TOPE):
         fuente = rep_fuente(ip)    # ademas en un feed de reputacion: confianza alta
         if not (fuente or (al >= BL_MIN_ALERTAS and ds >= BL_MIN_DESTINOS)):
             continue
+        # puertos y ultima: los escribe el generador en entrantes.json; un archivo sin ellos da
+        # [] y 0, y la tabla pone «-»
+        try:
+            ultima = int(d.get("ultima") or 0)
+        except (TypeError, ValueError):
+            ultima = 0
         out.append({"ip": ip, "alertas": al, "destinos": ds,
                     "pais": d.get("pais", ""), "firma": d.get("firma", ""),
-                    "fuente": fuente or ""})
+                    "fuente": fuente or "", "fuentes": rep_fuentes(ip) if fuente else [],
+                    "puertos": [str(p) for p in (d.get("puertos") or [])][:10],
+                    "ultima": ultima})
     return out
 
 def blocklist_rsc(lista=BL_LISTA, ttl="1d"):
@@ -12730,8 +12777,9 @@ qué ataques se le denuncian".</td></tr>
 <tr><td><b>Histórico</b></td><td>El <b>abuso saliente día a día</b>: ataques, tendencia, CPEs, por qué
 atacan y por qué puerto, y cuántos se pusieron en cuarentena y se liberaron. Del nodo que se mira (o de
 todos). Su título es <b>Abuso saliente</b> y al final lleva el diagnóstico del MikroTik (ver "Protección en
-el MikroTik: qué le falta"). Se guarda solo el reporte más reciente: no hay
-instantáneas viejas que abrir.</td></tr>
+el MikroTik: qué le falta") y las IPs de internet que más te atacan, con su dueño, qué hicieron y en
+qué feeds están (ver "Cortar a los que te atacan desde internet"). Se guarda solo el reporte más
+reciente: no hay instantáneas viejas que abrir.</td></tr>
 <tr><td><b>Reporte</b></td><td>El <b>informe de 3 días: conducta por abonado</b>. Agrupa a los CPEs
 por categoría de abuso (primero lo que hay que cortar: botnet, escaneo, fuerza bruta) y de cada uno da
 alertas, firmas, destinos, puertos, dominios consultados y cuándo se le vio. Arriba, el filtro por IP o
@@ -13164,6 +13212,23 @@ guarda 15 días.</li>
 <li>La tendencia necesita el <b>doble del periodo</b> en datos para poder comparar (14 días con 7, 60
 con 30...); antes de eso lo dice.</li>
 </ul>
+<h3>Cortar a los que te atacan desde internet</h3>
+<p>Al final de <b>Histórico</b> salen las <b>10 IPs de internet que más atacan tu red</b>, de las que
+van a la lista <code>suricata-atacantes</code>. De cada una se ve:</p>
+<ul>
+<li><b>Dueño</b>: la empresa u operador de esa IP, como en Top orígenes. Si todavía no se sabe sale
+«&hellip;» y la página lo pregunta al abrirse (DNS inverso o RDAP; se recuerda 7 días).</li>
+<li><b>Qué hizo</b>: el tipo de ataque («Escaneo Telnet», «Fuerza bruta»&hellip;) y los puertos que
+golpeó. La firma de Suricata entera sale al pasar el ratón.</li>
+<li><b>Última vez</b>: cuándo fue su última alerta («hace 5 min»; la hora exacta, al pasar el ratón).
+Si hace horas que no aparece, ya dejó de atacar.</li>
+<li><b>Feed</b>: <b>todos</b> los feeds de reputación en los que está (CINS Army, ET Compromised,
+AbuseIPDB&hellip;), no solo uno: una IP fichada en varios es más segura de cortar. <b>ninguno</b>
+quiere decir que no está en ningún feed y entra por lo que hizo: 20 alertas o más contra 3 equipos
+tuyos o más.</li>
+</ul>
+<p>Debajo de la tabla se explica <b>qué es cada feed</b> que aparece en ella: qué mete en su lista,
+cuántas IPs trae, cuándo se bajó por última vez y el enlace a su web.</p>
 
 <h2>Consultar IP o red: qué ataques se le denuncian</h2>
 <p>La pestaña <b>Consultar IP</b> responde algo que los feeds no responden: no solo <i>si</i> una IP
@@ -16975,12 +17040,109 @@ def historico_page(dias_n=7):
     # --- cortar a los que nos atacan desde internet ---------------------------------
     bl = blocklist_borde()
     bl_html = ""
+    hay_pend = False
     if bl:
         con_feed = sum(1 for x in bl if x["fuente"])
+        vistas = bl[:BL_VISTAS]
+        _ahora = time.time()
+        _cache_d = duenos.cargar()      # solo la cache: lo que falte lo pide la pagina a /duenos
+        _meta_f = cargar_feeds_meta().get("sources") or {}
+
+        def _hace(t):
+            if not t:
+                return "-"
+            s = max(0, int(_ahora - t))
+            if s < 60:
+                return "hace un momento"
+            if s < 3600:
+                return "hace %d min" % (s // 60)
+            if s < 86400:
+                return "hace %d h" % (s // 3600)
+            return "hace %d día%s" % (s // 86400, "" if s // 86400 == 1 else "s")
+
+        def _ultima(t):
+            # «hace 5 min» se lee de un vistazo; la hora exacta (la del panel), al pasar el raton
+            if not t:
+                return "<td>-</td>"
+            return "<td title='%s'>%s</td>" % (time.strftime("%d/%m %H:%M", time.localtime(t)), _hace(t))
+
+        def _dueno(ip):
+            # las mismas insignias que Top origenes; si no esta en la cache, el hueco que rellena
+            # _JS_DUENOS (y /duenos solo contesta las IPs de esta tabla y las del Top)
+            ent = _cache_d.get(ip)
+            if duenos.vigente(ent) and ent.get("via") != "error":
+                org = ent.get("org") or "-"
+                if org in ("-", "sin PTR"):
+                    return ("<span class='obadge none' title='Sin DNS inverso ni operador "
+                            "identificable'>sin PTR</span>")
+                if ent.get("legit"):
+                    return (f"<span class='obadge ok' title='Empresa grande conocida por su DNS "
+                            f"inverso (nube, CDN): el ataque sale de una máquina alojada ahí'>{esc(org)}</span>")
+                if ent.get("via") == "rdap":
+                    return ("<span class='obadge unk' title='Operador de red del bloque IP (RDAP); "
+                            f"no tiene DNS inverso'>&#127760; {esc(org)}</span>")
+                return ("<span class='obadge unk' title='Dominio del dueño según DNS inverso'>"
+                        f"{esc(org)}</span>")
+            if duenos.consultable(ip):
+                return (f"<span class='obadge pend' data-dueno='{esc(ip)}' title='Consultando el "
+                        "dueño…'>&hellip;</span>")
+            return "-"
+
+        def _hizo(x):
+            # la firma traducida («Escaneo Telnet») y los puertos que golpeo; la firma entera, al
+            # pasar el raton
+            firma = x.get("firma") or ""
+            pu = x.get("puertos") or []
+            if not firma and not pu:
+                return "-"
+            cat = traducir(firma) if firma else ""
+            pts = ("puerto " if len(pu) == 1 else "puertos ") + ", ".join(pu[:5])
+            if len(pu) > 5:
+                pts += " +%d" % (len(pu) - 5)
+            return ((f"<span title='{esc(firma)}'>{esc(cat)}</span>" if cat else "")
+                    + (f"<div class=blsub>{esc(pts)}</div>" if pu else ""))
+
+        def _feeds(x):
+            fs = x.get("fuentes") or ([x["fuente"]] if x.get("fuente") else [])
+            if not fs:
+                return (f"<span class='obadge none' title='No está en ningún feed: entra por lo que "
+                        f"hizo ({BL_MIN_ALERTAS} alertas o más contra {BL_MIN_DESTINOS} equipos tuyos o "
+                        "más)'>ninguno</span>")
+            out = []
+            for k in fs:
+                nom, que, _url = FEEDS_IP_INFO.get(k, (k, "", ""))
+                # Tor es contexto, no prueba: gris, como en el resto del panel
+                cls = "none" if (_meta_f.get(k) or {}).get("categoria") == "anonimizador" else "bad"
+                ttl = nom + (": " + que if que else "")
+                out.append(f"<span class='obadge {cls}' title='{esc(ttl)}'>{esc(nom)}</span>")
+            return " ".join(out)
+
+        def _leyenda(k):
+            nom, que, url = FEEDS_IP_INFO.get(k, (k, "", ""))
+            m = _meta_f.get(k) or {}
+            datos = []
+            if int(m.get("count") or 0):
+                datos.append("%s IPs en su lista" % format(int(m["count"]), ","))
+            if m.get("fetched_valid"):
+                datos.append("bajada " + _hace(m["fetched_valid"]))
+            host = url.split("/")[2] if url.count("/") >= 2 else url
+            return ("<li><b>" + esc(nom) + "</b>" + (": " + esc(que) if que else "")
+                    + (" (" + "; ".join(datos) + ")" if datos else "")
+                    + (f" &middot; <a href='{esc(url)}' target=_blank rel='noopener noreferrer'>"
+                       f"{esc(host)}</a>" if url else "")
+                    + "</li>")
+
         top = "".join(
-            f"<tr><td class=mono>{esc(x['ip'])}</td><td>{esc(x['pais'])}</td>"
+            f"<tr><td class=mono>{esc(x['ip'])}</td><td>{_dueno(x['ip'])}</td>"
+            f"<td>{esc(x['pais'])}</td><td>{_hizo(x)}</td>"
             f"<td class=num>{x['alertas']:,}</td><td class=num>{x['destinos']:,}</td>"
-            f"<td>{esc(x['fuente'] or '')}</td></tr>" for x in bl[:10])
+            f"{_ultima(x.get('ultima'))}<td>{_feeds(x)}</td></tr>" for x in vistas)
+        _usados = list(dict.fromkeys(k for x in vistas for k in (x.get("fuentes") or [])))
+        ley = "".join(_leyenda(k) for k in _usados)
+        if any(not x.get("fuentes") for x in vistas):
+            ley += (f"<li><b>ninguno</b>: no está en ningún feed; entra en la lista por lo que hizo, "
+                    f"{BL_MIN_ALERTAS} alertas o más contra {BL_MIN_DESTINOS} equipos tuyos o más.</li>")
+        hay_pend = "data-dueno=" in top
         bl_html = (
             "<section class='card cardp'><h2 style='font-size:15px;margin:0 0 4px'>"
             "Cortar a los que te atacan desde internet</h2>"
@@ -16992,10 +17154,15 @@ def historico_page(dias_n=7):
               "el que ensucia tus públicas.</p>"
             # todas las columnas centradas, como la tabla de Detalle (el user, 2026-10-13): con
             # IP y Pais a la izquierda y los numeros a la derecha la fila no se leia de un vistazo
-            "<div class=tablewrap><table class=tcentro><thead><tr><th>IP</th><th>País</th>"
-            "<th class=num>Alertas</th><th class=num>Destinos</th><th>Feed</th></tr></thead>"
+            "<div class=tablewrap><table class=tcentro><thead><tr><th>IP</th><th>Dueño</th>"
+            "<th>País</th><th>Qué hizo</th>"
+            "<th class=num>Alertas</th><th class=num>Destinos</th><th>Última vez</th>"
+            "<th>Feed</th></tr></thead>"
             f"<tbody>{top}</tbody></table></div>"
-            + (f"<p class=hint>Las 10 peores de {len(bl):,}.</p>" if len(bl) > 10 else "")
+            + (f"<p class=hint>Las {BL_VISTAS} peores de {len(bl):,}.</p>" if len(bl) > BL_VISTAS else "")
+            # que es cada feed de la tabla: «cins» a secas no le decia nada a nadie
+            + (f"<p class=hint style='margin:10px 0 2px'>Qué es cada feed de la tabla:</p>"
+               f"<ul class=feedley>{ley}</ul>" if ley else "")
             + "</section>")
 
     diag_html = ""
@@ -17050,6 +17217,19 @@ def historico_page(dias_n=7):
             # sin el, titulo, textos, tablas y porcentajes tocaban el borde (el user, 2026-10-13)
             ".cardp{padding:18px 22px}"
             ".tcentro th,.tcentro td{text-align:center!important}"
+            # la tabla de atacantes: con dueño, que hizo y feeds ya no cabe en un movil; se
+            # desliza dentro de la tarjeta en vez de salirse. Insignias como en Top origenes.
+            ".cardp .tablewrap{overflow-x:auto}"
+            ".cardp td{vertical-align:middle}"
+            ".cardp .obadge{display:inline-block;font-size:12px;font-weight:700;padding:2px 9px;"
+            "border-radius:12px;line-height:1.35;margin:1px 0;max-width:220px;overflow-wrap:anywhere}"
+            ".cardp .obadge.ok{background:#e6f4ea;color:#1a7f37;border:1px solid #b7e0c2}"
+            ".cardp .obadge.unk{background:#fdf0e6;color:#a15c12;border:1px solid #f2d3ad}"
+            ".cardp .obadge.none{background:#f1f1ef;color:#6b6a66;border:1px solid #e0dfda}"
+            ".cardp .obadge.pend{background:#f6f7f9;color:#9a9a95;border:1px dashed #d7d6d2;font-weight:600}"
+            ".cardp .obadge.bad{background:#fdecec;color:#b52a2a;border:1px solid #f3c4c4}"
+            ".blsub{font-size:11.5px;color:#8a8a86;margin-top:2px;white-space:nowrap}"
+            ".feedley{margin:0;padding-left:18px;font-size:12.5px;color:#52514e;line-height:1.5}"
             ".diagl{display:flex;gap:10px;align-items:flex-start;border-top:1px solid #f0efec;"
             "padding:9px 0;font-size:13px}"
             ".diagfix{background:#f8f9fa;border:1px solid #eaecf0;border-radius:6px;"
@@ -17073,7 +17253,10 @@ def historico_page(dias_n=7):
             + _grafico(serie, esc) + "</section>"
             + f"<div class=doscol>{_tabla('cats', 'Por qué atacan')}{_tabla('puertos', 'Por qué puerto salen')}</div>"
             + reglas_html
-            + "</main></body></html>")
+            + "</main>"
+            # los dueños que aun no estan en la cache se piden al abrir (como en Top origenes)
+            + (_JS_DUENOS if hay_pend else "")
+            + "</body></html>")
     return wrap(body, refresh=False, active="/historico")
 
 def _salud_html():
@@ -18981,10 +19164,14 @@ class H(BaseHTTPRequestHandler):
             return self._json(estado_ventana())
         if path == "/duenos":
             # dueño de las IP que el Top dejo pendientes, solo al abrir la pestana (no al generar).
-            # Solo las que el Top actual pide: el panel no consulta IPs arbitrarias para nadie
+            # Solo las que el Top actual pide, y las de la tabla de atacantes de Histórico (del
+            # mismo nodo, el de la sesion): el panel no consulta IPs arbitrarias para nadie
             _qd = urllib.parse.parse_qs(self.path.split("?", 1)[1]) if "?" in self.path else {}
+            _pedidas = _qd.get("ip", [])
             _pend = set(re.findall(r"data-dueno='([0-9.]+)'", partes_top()[1]))
-            _r = duenos.resolver([ip for ip in _qd.get("ip", []) if ip in _pend], espera=DUENOS_ESPERA)
+            if any(ip not in _pend for ip in _pedidas):
+                _pend |= {x["ip"] for x in blocklist_borde(tope=BL_VISTAS)}
+            _r = duenos.resolver([ip for ip in _pedidas if ip in _pend], espera=DUENOS_ESPERA)
             return self._json({ip: {"org": e.get("org", "-"), "legit": bool(e.get("legit")),
                                     "via": e.get("via", "")} for ip, e in _r.items()})
         if path == "/top":
