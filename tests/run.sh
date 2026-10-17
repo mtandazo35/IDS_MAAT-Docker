@@ -1,8 +1,8 @@
 #!/bin/bash
 # ids-maat — runner de pruebas (CONTRATO-F1a §8.1). Sin lista que mantener: descubre todo.
 #   tests/run.sh [--imagenes] [--integracion]
-#   1. python tests/correr.py (unittest de tests/ y tests/legado/, un módulo por proceso en todos los
-#      núcleos; IDS_PROCESOS=1 en serie; como root, en un cgroup con IDS_TOPE_MEMORIA, 3G por
+#   1. python tests/correr.py (unittest de tests/ y tests/legado/, un módulo por proceso en los
+#      núcleos, hasta 4; IDS_PROCESOS=1 en serie; como root, en un cgroup con IDS_TOPE_MEMORIA, 3G por
 #      defecto; python3, python o "py -3")
 #   2. cada tests/test_*.sh con bash
 #   3. --imagenes:    cada tests/imagen/test_*.sh       (Docker Linux, IDS_IMG_VPN, IDS_IMG_SURICATA)
@@ -44,7 +44,7 @@ PASADAS=0
 echo "== unittest ($PY): tests/test_*.py y tests/legado/test_*.py, con las omisiones y su motivo"
 # IDS_OBLIGATORIAS=linux|root: las de tests/obligatorias.txt no pueden omitirse.
 # IDS_RESUMEN=<fichero>: resumen en Markdown (en GitHub Actions, $GITHUB_STEP_SUMMARY).
-# IDS_PROCESOS=<n>: módulos en paralelo; por defecto todos los núcleos, 1 = en serie.
+# IDS_PROCESOS=<n>: módulos en paralelo; por defecto los núcleos hasta 4 (la memoria), 1 = en serie.
 ARGS_PY=()
 [ -n "${IDS_OBLIGATORIAS:-}" ] && ARGS_PY+=(--obligatorias "$IDS_OBLIGATORIAS")
 [ -n "${IDS_RESUMEN:-}" ] && ARGS_PY+=(--resumen "$IDS_RESUMEN")

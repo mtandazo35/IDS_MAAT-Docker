@@ -1287,9 +1287,11 @@ tests/run.sh [--imagenes] [--integracion]
 Un .sh que sale con 77 cuenta como OMITIDA. Sale con 1 si falla alguna.
 ```
 
-El paso 1 lo hace `tests/correr.py`, que **desde 2026-10-16** reparte los módulos entre todos los
-núcleos (un módulo entero por proceso, en su orden de siempre; `IDS_PROCESOS=1` o `--procesos 1` lo
-corre en serie): en la VPS de 8 núcleos la suite pasaba de ~16 min en uno solo. Como root, `run.sh`
+El paso 1 lo hace `tests/correr.py`, que **desde 2026-10-16** reparte los módulos entre los núcleos,
+hasta 4 (un módulo entero por proceso, en su orden de siempre; `IDS_PROCESOS=<n>` o `--procesos <n>`
+cambia el número, `1` lo corre en serie): en la VPS de 8 núcleos la suite pasaba de ~16 min en uno
+solo; con 4, ~4 min (1366 pruebas en 256 s en el .152, 2026-10-17). No más de 4 por la memoria: cada
+proceso acaba en ~600 MB y con 4 el cgroup llega a ~2,3 GB de sus 3G. Como root, `run.sh`
 la mete en un cgroup con tope de memoria (`IDS_TOPE_MEMORIA`, 3G por defecto; `0` sin tope): el
 2026-10-16, sin él, la suite en paralelo agotó la memoria del VPS de producción y el kernel mató a
 Suricata. El scope lleva `OOMPolicy=continue`: si el tope mata a un proceso de pruebas, el resto

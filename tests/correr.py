@@ -3,8 +3,9 @@
   python tests/correr.py [--procesos N] [--obligatorias linux|root] [--resumen FICHERO]
 
 - Descubre `tests/test_*.py` y `tests/legado/test_*.py` (paquete `legado`).
-- `--procesos N`: reparte los MÓDULOS de prueba entre N procesos; por defecto, todos los núcleos (el
-  user, 2026-10-16: la suite tardaba 16 min en un solo núcleo de los 8 del VPS). Un módulo entero va
+- `--procesos N`: reparte los MÓDULOS de prueba entre N procesos; por defecto, los núcleos hasta 4
+  (el user, 2026-10-16: la suite tardaba 16 min en un solo núcleo de los 8 del VPS; con 4, 4 min y
+  la memoria dentro del tope de run.sh: ver PROCESOS_MAX). Un módulo entero va
   a un mismo proceso y sus pruebas corren en el orden de siempre, así que setUpClass y los TMP que
   algunos módulos de legado crean al importarse no se comparten entre procesos. Si un proceso muere,
   lo que quedaba se repite en serie y la corrida falla diciéndolo. `--procesos 1` = en serie.
@@ -41,7 +42,11 @@ except ImportError:                          # sin Linux no hay ru_maxrss: no se
     resource = None
 
 TESTS = os.path.dirname(os.path.abspath(__file__))
-PLATAFORMAS = ("linux", "root")       # sin Windows desde 2026-10-15 (decisión del dueño)
+# Procesos por defecto: los núcleos, hasta 4. Medido en el .152 (2026-10-17): cada proceso acaba en
+# ~600 MB (copia lo que el padre importó) y con 4 el cgroup de run.sh llega a 2,3 GB de sus 3G; con
+# 8 el tope empezaría a matar procesos. Más con --procesos / IDS_PROCESOS.
+PROCESOS_MAX = 4
+PLATAFORMAS =("linux", "root")       # sin Windows desde 2026-10-15 (decisión del dueño)
 # qué columnas de obligatorias.txt aplica cada plataforma («todas» siempre)
 INCLUYE = {"linux": ("linux",), "root": ("linux", "root")}
 MODULO_OMITIDO = "unittest.loader.ModuleSkipped."
@@ -316,8 +321,9 @@ def main(argv=None, raiz=TESTS):
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     p.add_argument("--obligatorias", choices=PLATAFORMAS)
     p.add_argument("--resumen")
-    p.add_argument("--procesos", type=int, default=os.cpu_count() or 1,
-                   help="procesos en paralelo (por defecto, todos los núcleos; 1 = en serie)")
+    p.add_argument("--procesos", type=int, default=min(os.cpu_count() or 1, PROCESOS_MAX),
+                   help="procesos en paralelo (por defecto, los núcleos hasta %d; 1 = en serie)"
+                   % PROCESOS_MAX)
     p.add_argument("-v", "--verbose", action="store_true")
     a = p.parse_args(argv)
     if raiz not in sys.path:

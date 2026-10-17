@@ -16,6 +16,7 @@ import sys
 import tempfile
 import textwrap
 import unittest
+from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import correr  # noqa: E402
@@ -93,13 +94,14 @@ class Paralelo(unittest.TestCase):
                 f.write(textwrap.dedent(codigo))
 
     def correr(self, procesos):
-        """(código de salida, stdout+stderr, {marca: {pids}}) de correr.main sobre la suite de juguete."""
-        marcas = os.path.join(self.tmp, "marcas-%d" % procesos)
-        os.makedirs(marcas)
+        """(código de salida, stdout+stderr, {marca: {pids}}) de correr.main sobre la suite de juguete
+        (procesos=None: sin --procesos, el número por defecto)."""
+        marcas = tempfile.mkdtemp(prefix="marcas-", dir=self.tmp)
         os.environ["ZZPAR_DIR"] = marcas
         out, err = io.StringIO(), io.StringIO()
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
-            codigo = correr.main(["--procesos", str(procesos)], raiz=self.raiz)
+            codigo = correr.main([] if procesos is None else ["--procesos", str(procesos)],
+                                 raiz=self.raiz)
         pid = {}
         for f in os.listdir(marcas):
             marca, _, p = f.rpartition(".")
@@ -153,6 +155,14 @@ class Paralelo(unittest.TestCase):
         self.assertEqual(len(pid["m"]), 2)                         # murió en un hijo...
         self.assertIn(os.getpid(), pid["m"])                       # ...y se repitió aquí
         self.assertEqual(re.search(r"^Ran (\d+)", texto, re.M).group(1), "3")
+
+    def test_por_defecto_los_nucleos_hasta_4(self):
+        # medido en el .152 (2026-10-17): cada proceso acaba en ~600 MB; con 8 no cabe en el tope
+        self.juguete(JUGUETE)
+        for nucleos, procesos in ((16, 4), (2, 2)):
+            with mock.patch.object(os, "cpu_count", return_value=nucleos):
+                _c, texto, _pid = self.correr(None)
+            self.assertIn("(%d procesos)" % procesos, texto)
 
 
 if __name__ == "__main__":
