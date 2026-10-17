@@ -1287,6 +1287,11 @@ tests/run.sh [--imagenes] [--integracion]
 Un .sh que sale con 77 cuenta como OMITIDA. Sale con 1 si falla alguna.
 ```
 
+El paso 1 lo hace `tests/correr.py`, que **desde 2026-10-16** reparte los módulos entre todos los
+núcleos (un módulo entero por proceso, en su orden de siempre; `IDS_PROCESOS=1` o `--procesos 1` lo
+corre en serie): en la VPS de 8 núcleos la suite pasaba de ~16 min en uno solo. Mientras se trabaja
+se corren solo los ficheros de prueba del cambio; la suite completa, para pasar a `main`.
+
 Se corre en Linux, en la VPS. **Desde 2026-10-15** (decisión del dueño) no hay Windows (ni job
 `pruebas-windows` ni plataforma `windows` en `tests/obligatorias.txt`), GitHub solo hace lint y
 nada se ejecuta en el PC de desarrollo.
