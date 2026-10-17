@@ -45,7 +45,7 @@ PIEZAS = ("MK_CONF", "MK_SENT", "MK_SENT_DNS", "MK_LOG", "ROUTERS_CONF", "ROUTER
           "CAMPOS_ROUTER", "CAMPOS_USUARIO", "SECRETOS_AVISO", "_ROUTERS_LOCK", "_MK_CONEXION",
           "_ENV_LOCK",
           "_router_vacio", "_mk_globales", "_routers_guardados", "_asoc_router",
-          "cargar_routers", "guardar_routers", "publicar_routers_map",
+          "cargar_routers", "guardar_routers", "_CAMPOS_HUELLA", "publicar_routers_map",
           "router_por_id", "cargar_mk", "cargar_mk_de",
           "mk_configurado", "mk_listo", "_ttl_efectivo",
           "clave_cpe", "ip_de", "rid_de", "router_de_clave", "_suf_nodo",

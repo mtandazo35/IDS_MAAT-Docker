@@ -176,7 +176,7 @@ def main():
                           "nodos": nod, "secretos": sec},
                          ("ROUTERS_CONF", "CAMPOS_USUARIO", "_ROUTERS_LOCK", "SECRETOS_AVISO",
                           "_asoc_router", "_router_vacio", "_routers_guardados", "cargar_routers",
-                          "guardar_routers", "ROUTERS_MAP", "publicar_routers_map"))
+                          "guardar_routers", "_CAMPOS_HUELLA", "ROUTERS_MAP", "publicar_routers_map"))
     rs = ns_r["cargar_routers"]()
     for r in rs:
         if r["id"] == "p001":
