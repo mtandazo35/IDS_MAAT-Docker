@@ -15,6 +15,7 @@ Tipo «corrección de defecto»: fallan sin el arreglo.
 """
 
 import importlib
+import importlib.util
 import json
 import os
 import sys
@@ -157,9 +158,7 @@ class NuncaEnClaro(Base):
 
     def test_mismo_formato_que_el_panel(self):
         """La copia del panel (secretos.py) y la del orquestador se leen la una a la otra."""
-        try:
-            import cryptography  # noqa: F401
-        except ImportError:
+        if importlib.util.find_spec("cryptography") is None:
             self.skipTest("sin python3-cryptography")
         antes = os.environ.get("IDS_MASTER_KEY")
         os.environ["IDS_MASTER_KEY"] = str(self.e.ruta(self.mod.MASTER_KEY))
