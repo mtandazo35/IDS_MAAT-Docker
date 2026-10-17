@@ -48,7 +48,7 @@ class ModalEmpresa(unittest.TestCase):
         IP; eso no debe ir y no deja dejar en blanco»): sin empresa.json, o guardado en blanco, el nombre
         va vacío aunque IDS_EMPRESA (el nombre DNS del servidor) sea su IP; los avisos sí la usan."""
         viejo = os.environ.get("IDS_EMPRESA")
-        os.environ["IDS_EMPRESA"] = "203.0.113.10"
+        os.environ["IDS_EMPRESA"] = "198.51.100.77"
         self.addCleanup(lambda: os.environ.pop("IDS_EMPRESA", None) if viejo is None
                         else os.environ.__setitem__("IDS_EMPRESA", viejo))
         for guardado in (None, ""):
@@ -56,8 +56,8 @@ class ModalEmpresa(unittest.TestCase):
                 self.guardar_empresa(guardado, "")
             h, m = self.modal()
             self.assertRegex(m, r'<input id=enombre type=text name=nombre maxlength=60 value=""')
-            self.assertNotIn("203.0.113.10", h)
-        self.assertEqual(self.p.d._hostname(), "203.0.113.10")      # los avisos dicen qué servidor es
+            self.assertNotIn("198.51.100.77", h)
+        self.assertEqual(self.p.d._hostname(), "198.51.100.77")      # los avisos dicen qué servidor es
 
     def test_sin_logo_no_ofrece_quitarlo(self):
         self.guardar_empresa("ISP Ejemplo", "")
