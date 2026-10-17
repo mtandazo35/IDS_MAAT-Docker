@@ -797,6 +797,9 @@ _CSS = (
     # comandos del MikroTik: botones de copiar fuera y los bloques v7/v6 plegados debajo
     ".pcopias{display:flex;gap:8px;flex-wrap:wrap;margin:10px 0}"
     "details.pver{margin:6px 0}details.pver summary{cursor:pointer;font-weight:600;font-size:13px}"
+    # la cabecera del script como recomendaciones plegadas, en texto normal (no en un <pre>)
+    "details.precom{margin:8px 0}details.precom summary{cursor:pointer;font-weight:600;font-size:13px}"
+    "details.precom ul{margin:6px 0 0;padding-left:20px;font-size:13px;color:#52514e;line-height:1.5}"
     # avance sin recargar (trabajos del panel y operaciones del orquestador) y su modal
     ".pjspin{width:26px;height:26px;border:3px solid #e7e6e2;border-top-color:#2a78d6;border-radius:50%;"
     "animation:pjgira .9s linear infinite;margin:6px 0}@keyframes pjgira{to{transform:rotate(360deg)}}"
@@ -950,6 +953,29 @@ def avisos_script(texto):
             % esc(" ".join(x for x in lineas if x)))
 
 
+def recomendaciones_html(cabecera):
+    """La cabecera del script (los «# …» del orquestador: punto, puerto y tunel, que bloque conecta,
+    el reloj del router) como «Recomendaciones antes de pegar», plegada y en texto normal: en un <pre>
+    se leia como parte del script (el user, 2026-10-16). Una frase por punto; una linea que empieza en
+    minuscula sigue la frase anterior (el orquestador las corta a ~100 columnas). Las «# AVISO:» no van:
+    ya salen en rojo arriba (avisos_script)."""
+    items, nueva = [], True
+    for ln in str(cabecera or "").splitlines():
+        t = ln.lstrip("#").strip()
+        if not t or ln.startswith("# AVISO:"):
+            nueva = True
+            continue
+        if items and not nueva and t[:1].islower():
+            items[-1] += " " + t
+        else:
+            items.append(t)
+        nueva = False
+    if not items:
+        return ""
+    return ("<details class=precom><summary>Recomendaciones antes de pegar</summary><ul>%s</ul></details>"
+            % "".join("<li>%s</li>" % esc(x) for x in items))
+
+
 def ros_txt(ros_version):
     """RouterOS del punto en la ficha: con 6 (respaldo CBC) conectan los dos, 6.49+ y 7."""
     return {"6": "RouterOS 6.49+ o 7", "7": "RouterOS 7"}.get(str(ros_version), "-")
@@ -959,7 +985,8 @@ def comandos_html(texto, ros_version, prefijo):
     """Un boton «Copiar RouterOS 7/6» por version, fuera, y debajo los dos bloques plegados (el v7
     primero) por si se quieren mirar: se copia sin abrir el bloque (el user, 2026-10-16). Despues, el
     del certificado API-SSL si lo hay. Con ros_version 6 (respaldo CBC en el servidor) conectan los
-    dos y ninguno es «el declarado». Las lineas «# AVISO:» salen ademas destacadas arriba."""
+    dos y ninguno es «el declarado». Las lineas «# AVISO:» salen ademas destacadas arriba, y el resto
+    de la cabecera, como recomendaciones plegadas (recomendaciones_html)."""
     partes = _orq.partir_comandos(texto)
     if "todo" in partes:
         return avisos_script(texto) + _bloque(prefijo + "-todo", "Comandos para el MikroTik", partes["todo"])
@@ -968,9 +995,7 @@ def comandos_html(texto, ros_version, prefijo):
     except (TypeError, ValueError):
         ros = 7
     orden = ["v7", "v6"]
-    out = avisos_script(partes.get("cabecera", ""))
-    if partes.get("cabecera"):
-        out += "<pre class=cmd>%s</pre>" % esc(partes["cabecera"])
+    out = avisos_script(partes.get("cabecera", "")) + recomendaciones_html(partes.get("cabecera", ""))
     botones, bloques = [], []
     for i, k in enumerate(orden):
         ide = "%s-%s" % (prefijo, k)
