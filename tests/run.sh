@@ -57,12 +57,13 @@ ARGS_PY=()
 # correr.py repite en serie lo que quedaba y lo dice. Un systemd que no lo acepte se queda con el tope.
 TOPE=()
 if [ "${IDS_TOPE_MEMORIA:-3G}" != 0 ] && [ "$(id -u)" = 0 ] && command -v systemd-run >/dev/null 2>&1; then
-  for extra in "-p OOMPolicy=continue" ""; do
-    # shellcheck disable=SC2086 # $extra son dos palabras o ninguna, a propósito
-    if systemd-run --quiet --scope -p MemoryMax=64M $extra true >/dev/null 2>&1; then
-      # shellcheck disable=SC2086
-      TOPE=(systemd-run --quiet --scope -p "MemoryMax=${IDS_TOPE_MEMORIA:-3G}" -p MemorySwapMax=0 $extra --)
-      echo "   (en un cgroup con MemoryMax=${IDS_TOPE_MEMORIA:-3G}${extra:+, OOMPolicy=continue})"
+  for oom in continue ""; do
+    extra=()
+    [ -n "$oom" ] && extra=(-p "OOMPolicy=$oom")
+    if systemd-run --quiet --scope -p MemoryMax=64M ${extra[@]+"${extra[@]}"} true >/dev/null 2>&1; then
+      TOPE=(systemd-run --quiet --scope -p "MemoryMax=${IDS_TOPE_MEMORIA:-3G}" -p MemorySwapMax=0
+            ${extra[@]+"${extra[@]}"} --)
+      echo "   (en un cgroup con MemoryMax=${IDS_TOPE_MEMORIA:-3G}${oom:+, OOMPolicy=$oom})"
       break
     fi
   done
