@@ -20,15 +20,19 @@ ARNES = r"""
 const JS = %s;
 function correr(caso) {
   const ev = [];
-  const boton = {textContent: 'Copiar'};
-  const pre = {textContent: '/interface ovpn-client set [find name=ids-vpn] password=ABC disabled=no\n'};
+  const boton = {textContent: caso.etiqueta || 'Copiar'};
+  // el bloque puede ir plegado dentro de un <details> (se copia con el botón de fuera)
+  const det = {open: false};
+  const pre = {textContent: '/interface ovpn-client set [find name=ids-vpn] password=ABC disabled=no\n',
+               closest: caso.plegado ? (s) => (s === 'details' ? det : null) : undefined};
+  const timers = [];
   global.window = {isSecureContext: caso.seguro, getSelection: () => ({removeAllRanges() {},
                    addRange() { ev.push('seleccionado'); }})};
   // node >= 21 trae un `navigator` global de solo lectura: se redefine
   Object.defineProperty(globalThis, 'navigator', {configurable: true, writable: true,
     value: caso.clipboard ? {clipboard: {writeText: (t) => { ev.push('clipboard:' + t.length);
            return caso.clipboardFalla ? Promise.reject(new Error('no')) : Promise.resolve(); }}} : {}});
-  global.setTimeout = () => 0;
+  global.setTimeout = (f) => { timers.push(f); return 0; };
   global.aviso = (t, m) => ev.push('aviso:' + t);
   global.document = {
     getElementById: () => pre,
@@ -39,7 +43,11 @@ function correr(caso) {
     execCommand: (c) => { ev.push('exec:' + c); if (caso.execFalla) throw new Error('no'); return true; },
   };
   eval(JS.replace(/^<script>|<\/script>$/g, '') + ';pcopiar("x", boton);');
-  return new Promise((ok) => setImmediate(() => ok({ev, boton: boton.textContent})));
+  return new Promise((ok) => setImmediate(() => {
+    const durante = boton.textContent;
+    timers.forEach((f) => f());           // pasado el 1,5 s del «Copiado»
+    ok({ev, boton: durante, despues: boton.textContent, abierto: det.open});
+  }));
 }
 (async () => {
   const salida = {};
@@ -54,6 +62,9 @@ CASOS = {
     "https": {"seguro": True, "clipboard": True},
     "https_falla": {"seguro": True, "clipboard": True, "clipboardFalla": True},
     "nada_vale": {"seguro": False, "clipboard": False, "execFalla": True},
+    # el botón de fuera (el user, 2026-10-16): copia el bloque plegado sin abrirlo
+    "boton_externo": {"seguro": False, "clipboard": False, "etiqueta": "Copiar RouterOS 7", "plegado": True},
+    "nada_vale_plegado": {"seguro": False, "clipboard": False, "execFalla": True, "plegado": True},
 }
 
 
@@ -96,6 +107,17 @@ class Copiar(unittest.TestCase):
         self.assertIn("seleccionado", r["ev"])
         self.assertIn("aviso:No se pudo copiar", r["ev"])
         self.assertEqual(r["boton"], "Copiar")
+
+    def test_boton_de_fuera_copia_el_bloque_plegado_sin_abrirlo(self):
+        r = self.res["boton_externo"]
+        self.assertEqual(r["ev"], ["textarea", "exec:copy"])
+        self.assertEqual((r["boton"], r["despues"]), ("Copiado", "Copiar RouterOS 7"))   # vuelve su nombre
+        self.assertFalse(r["abierto"])
+
+    def test_si_nada_vale_abre_el_bloque_plegado_para_dejarlo_seleccionado(self):
+        r = self.res["nada_vale_plegado"]
+        self.assertIn("seleccionado", r["ev"])
+        self.assertTrue(r["abierto"])
 
 
 if __name__ == "__main__":

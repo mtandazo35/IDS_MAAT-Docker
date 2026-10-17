@@ -119,6 +119,26 @@ class Puntos(unittest.TestCase):
         with open(os.path.join(self.p.nodos.ESTADO, "operaciones.json"), encoding="utf-8") as f:
             self.assertNotIn("CLAVE-VPN-UNICA-7Q2", f.read())
 
+    def test_copiar_sin_abrir_el_bloque(self):
+        """Capacidad nueva (el user, 2026-10-16): un boton «Copiar RouterOS 7/6» fuera, que copia el
+        bloque sin abrirlo, y los dos bloques plegados debajo (antes solo se plegaba el v6)."""
+        tok = self._token()
+        self._crear(tok)
+        h = self.p.pedir("GET", "/operaciones/%s" % tok, cookie=self.ana).texto
+        m = re.search(r"<div class=pcopias>(.*?)</div>", h)
+        self.assertIsNotNone(m, h[-3000:])
+        self.assertIn("pcopiar('op-v7',this)\">Copiar RouterOS 7</button>", m.group(1))
+        self.assertIn("pcopiar('op-v6',this)\">Copiar RouterOS 6</button>", m.group(1))
+        # los botones van antes que los bloques, y los dos bloques plegados con su <pre> dentro
+        self.assertLess(h.index("<div class=pcopias>"), h.index("<details class=pver>"))
+        for v in ("7", "6"):
+            self.assertRegex(h, r"<details class=pver><summary>Ver el bloque de RouterOS %s</summary>"
+                                r"<div class=bloque>.*?<pre class=cmd id='op-v%s'>" % (v, v))
+        # ningun bloque de RouterOS queda a la vista: todos van dentro de su <details>
+        sueltos = re.findall(r"<div class=bloque><div class=bcab><b>RouterOS", h)
+        plegados = re.findall(r"</summary><div class=bloque><div class=bcab><b>RouterOS", h)
+        self.assertEqual((len(sueltos), len(plegados)), (2, 2))
+
     def test_formulario_invalido_no_llama(self):
         """Conservacion: validacion del nombre antes de pedir nada al orquestador."""
         tok = self._token()

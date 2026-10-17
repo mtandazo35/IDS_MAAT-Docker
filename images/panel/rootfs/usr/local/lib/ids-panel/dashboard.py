@@ -13939,7 +13939,10 @@ Un doble clic no crea dos puntos.</li>
 <li>El servidor crea la VPN y el Suricata del punto; se ve el avance paso a paso, con lo que tarda
 cada uno, sin que la página se recargue.</li>
 <li>Al terminar salen la clave de la VPN y los comandos para el MikroTik con la clave puesta. La ficha
-del punto los vuelve a dar completos cuando quieras; si la clave no llega, ver "La VPN de cada punto".</li>
+del punto los vuelve a dar completos cuando quieras; si la clave no llega, ver "La VPN de cada punto".
+Los botones <b>Copiar RouterOS 7</b> y <b>Copiar RouterOS 6</b> copian el bloque entero sin abrirlo; los
+bloques van plegados debajo (<b>Ver el bloque de RouterOS 7</b> / <b>6</b>) por si quieres mirarlos antes
+de pegarlos.</li>
 <li>Hasta que pegas los comandos en el router, el punto sale en <b>ámbar</b>, «esperando MikroTik»: es lo
 esperado, no un fallo.</li>
 <li>En la ficha: la clave de la <b>API</b>, <b>La huella coincide: confirmar</b> (tras compararla con la

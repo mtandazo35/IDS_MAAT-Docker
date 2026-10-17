@@ -794,6 +794,9 @@ _CSS = (
     ".vpill.amb{background:#fff7ed;color:#8a5a00}.vpill.amb i{background:#d4a000}"
     ".vpill.gris{background:#f1f1ef;color:#5f5e5a}.vpill.gris i{background:#9a9a95}"
     "details.plogs{margin:10px 0}details.plogs summary{cursor:pointer;font-weight:600;font-size:13px}"
+    # comandos del MikroTik: botones de copiar fuera y los bloques v7/v6 plegados debajo
+    ".pcopias{display:flex;gap:8px;flex-wrap:wrap;margin:10px 0}"
+    "details.pver{margin:6px 0}details.pver summary{cursor:pointer;font-weight:600;font-size:13px}"
     # avance sin recargar (trabajos del panel y operaciones del orquestador) y su modal
     ".pjspin{width:26px;height:26px;border:3px solid #e7e6e2;border-top-color:#2a78d6;border-radius:50%;"
     "animation:pjgira .9s linear infinite;margin:6px 0}@keyframes pjgira{to{transform:rotate(360deg)}}"
@@ -817,7 +820,9 @@ _JS = ("<script>function pcopiar(id,b){var e=document.getElementById(id);if(!e)r
        "a.style.position='fixed';a.style.top='0';a.style.left='0';a.style.opacity='0';"
        "document.body.appendChild(a);a.focus();a.select();a.setSelectionRange(0,t.length);"
        "try{r=document.execCommand('copy');}catch(x){r=false;}document.body.removeChild(a);return r;}"
-       "function mano(){try{var s=window.getSelection(),g=document.createRange();g.selectNodeContents(e);"
+       # el bloque puede estar plegado (se copia sin abrirlo): para dejarlo seleccionado hay que abrirlo
+       "function mano(){try{var dt=e.closest?e.closest('details'):null;if(dt)dt.open=true;"
+       "var s=window.getSelection(),g=document.createRange();g.selectNodeContents(e);"
        "s.removeAllRanges();s.addRange(g);}catch(x){}"
        "aviso('No se pudo copiar','El texto quedó seleccionado: pulsa Ctrl+C para copiarlo.');}"
        "if(window.isSecureContext&&navigator.clipboard&&navigator.clipboard.writeText){"
@@ -951,9 +956,10 @@ def ros_txt(ros_version):
 
 
 def comandos_html(texto, ros_version, prefijo):
-    """Bloques v7/v6 (el v7 primero, el v6 plegado) y el del certificado API-SSL, cada uno con Copiar.
-    Con ros_version 6 (respaldo CBC en el servidor) conectan los dos y ninguno es «el declarado». Las
-    lineas «# AVISO:» salen ademas destacadas arriba."""
+    """Un boton «Copiar RouterOS 7/6» por version, fuera, y debajo los dos bloques plegados (el v7
+    primero) por si se quieren mirar: se copia sin abrir el bloque (el user, 2026-10-16). Despues, el
+    del certificado API-SSL si lo hay. Con ros_version 6 (respaldo CBC en el servidor) conectan los
+    dos y ninguno es «el declarado». Las lineas «# AVISO:» salen ademas destacadas arriba."""
     partes = _orq.partir_comandos(texto)
     if "todo" in partes:
         return avisos_script(texto) + _bloque(prefijo + "-todo", "Comandos para el MikroTik", partes["todo"])
@@ -965,11 +971,15 @@ def comandos_html(texto, ros_version, prefijo):
     out = avisos_script(partes.get("cabecera", ""))
     if partes.get("cabecera"):
         out += "<pre class=cmd>%s</pre>" % esc(partes["cabecera"])
+    botones, bloques = [], []
     for i, k in enumerate(orden):
-        tit = "RouterOS %s" % k[1] + (" (la versión declarada de este punto)" if i == 0 and ros != 6 else "")
-        b = _bloque("%s-%s" % (prefijo, k), tit, partes.get(k, ""))
-        out += b if i == 0 else ("<details><summary>Ver el bloque de RouterOS %s</summary>%s</details>"
-                                 % (k[1], b))
+        ide = "%s-%s" % (prefijo, k)
+        decl = " (la versión declarada de este punto)" if i == 0 and ros != 6 else ""
+        botones.append("<button type=button class='btn%s' onclick=\"pcopiar('%s',this)\">Copiar RouterOS %s"
+                       "</button>" % ("" if i == 0 else " sec", esc(ide), k[1]))
+        bloques.append("<details class=pver><summary>Ver el bloque de RouterOS %s%s</summary>%s</details>"
+                       % (k[1], decl, _bloque(ide, "RouterOS %s" % k[1], partes.get(k, ""))))
+    out += "<div class=pcopias>%s</div>%s" % ("".join(botones), "".join(bloques))
     if partes.get("certificado"):
         out += _bloque(prefijo + "-cert", "Certificado API-SSL (una sola vez por router)", partes["certificado"])
     return out
