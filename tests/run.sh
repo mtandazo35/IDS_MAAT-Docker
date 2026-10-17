@@ -52,11 +52,20 @@ ARGS_PY=()
 # IDS_TOPE_MEMORIA=<n>: tope de memoria de las pruebas en un cgroup propio (systemd-run --scope,
 # como root); por defecto 3G, 0 = sin tope. El 2026-10-16 la suite agotó la memoria del VPS de
 # producción y el kernel mató a Suricata; con el tope, un exceso mata la suite y no los servicios.
+# OOMPolicy=continue: si el tope mata a un proceso de pruebas, systemd no para el scope entero (por
+# defecto lo para, OOMPolicy=stop: el 2026-10-17 la corrida acabó en «Terminated» sin resumen) y
+# correr.py repite en serie lo que quedaba y lo dice. Un systemd que no lo acepte se queda con el tope.
 TOPE=()
-if [ "${IDS_TOPE_MEMORIA:-3G}" != 0 ] && [ "$(id -u)" = 0 ] && command -v systemd-run >/dev/null 2>&1 \
-   && systemd-run --quiet --scope -p MemoryMax=64M true >/dev/null 2>&1; then
-  TOPE=(systemd-run --quiet --scope -p "MemoryMax=${IDS_TOPE_MEMORIA:-3G}" -p MemorySwapMax=0 --)
-  echo "   (en un cgroup con MemoryMax=${IDS_TOPE_MEMORIA:-3G})"
+if [ "${IDS_TOPE_MEMORIA:-3G}" != 0 ] && [ "$(id -u)" = 0 ] && command -v systemd-run >/dev/null 2>&1; then
+  for extra in "-p OOMPolicy=continue" ""; do
+    # shellcheck disable=SC2086 # $extra son dos palabras o ninguna, a propósito
+    if systemd-run --quiet --scope -p MemoryMax=64M $extra true >/dev/null 2>&1; then
+      # shellcheck disable=SC2086
+      TOPE=(systemd-run --quiet --scope -p "MemoryMax=${IDS_TOPE_MEMORIA:-3G}" -p MemorySwapMax=0 $extra --)
+      echo "   (en un cgroup con MemoryMax=${IDS_TOPE_MEMORIA:-3G}${extra:+, OOMPolicy=continue})"
+      break
+    fi
+  done
 fi
 # shellcheck disable=SC2086
 if ${TOPE[@]+"${TOPE[@]}"} $PY tests/correr.py "${ARGS_PY[@]}"; then
