@@ -6,6 +6,7 @@ Una tarjeta «Registro»; una tabla con los intentos de entrar (login.log) y lo 
 Fallos cruzado. /log y /bitacora siguen abriendo el registro, con su filtro.
 """
 import os
+import re
 import sys
 import unittest
 
@@ -69,6 +70,31 @@ class Registro(unittest.TestCase):
         self.assertEqual(t("THRESHOLD-FALLO"), ("configuracion", True))
         self.assertEqual(t("ERROR-PANEL"), ("sistema", True))       # lo hace el panel, no una persona
         self.assertEqual(t("INFORME-DIARIO"), ("sistema", False))
+
+    def test_detalle_largo_entero_y_dentro_del_recuadro(self):
+        """El user (2026-10-16, con captura): el Detalle salía cortado a la derecha. Tipo: corrección
+        de defecto. Con un op=<uuid> y una acción larga en la misma página la tabla salía más ancha
+        que el recuadro: el max-width de la celda no valía (en una celda de tabla el navegador lo
+        ignora). Ahora el Detalle parte cualquier palabra y el texto va entero, sin recortar."""
+        det = "punto=p001 resultado=OK op=63d09ea0-c314-4ac5-b300-bfc9ecb931f2"
+        with open(self.d.BITACORA_LOG, "a", encoding="utf-8", newline="\n") as f:
+            f.write("2026-10-14 09:50:00\tana\t192.0.2.7\tPUNTO-VPN-CLAVE-GUARDADA\t%s\n" % det)
+        _s, _c, h = self.p.pedir("GET", "/registro")
+        self.assertIn("<td class=det>%s</td>" % det, h)
+        regla = re.search(r"\.det\{([^}]*)\}", h).group(1)
+        self.assertIn("white-space:normal", regla)
+        self.assertIn("overflow-wrap:anywhere", regla)
+        self.assertNotIn("max-width", regla)
+
+    def test_en_el_modal_sin_marco_doble_y_mas_ancho(self):
+        """Dentro del modal de Ajustes la página va sin la tarjeta (el modal ya pone su marco) y el
+        modal del Registro es más ancho que el resto: ese ancho se lo queda el Detalle."""
+        sin_marco = ".card{border:0;box-shadow:none;padding:0;background:transparent}"
+        self.assertIn(sin_marco, self.p.pedir("GET", "/registro?embed=1")[2])
+        self.assertNotIn(sin_marco, self.p.pedir("GET", "/registro")[2])   # /registro suelta, con su tarjeta
+        _s, _c, a = self.p.pedir("GET", "/ajustes")
+        self.assertIn("<div class='aptbox ancho'>", a[a.index("id=m-registro"):][:400])
+        self.assertIn(".aptmodal .aptbox.ancho{max-width:1280px}", a)
 
 
 if __name__ == "__main__":

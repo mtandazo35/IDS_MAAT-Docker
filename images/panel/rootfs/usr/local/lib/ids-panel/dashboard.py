@@ -12357,7 +12357,7 @@ def perfil_page(msg="", ok=False, edit_user=None):
               + _mcard("dns", card_dns) + _mcard("feeds", card_feeds)
               + _mcard("update", card_update))
     if es_admin:
-        modals += _modal("registro", "<iframe class=aptframe data-src='/registro?embed=1'></iframe>")
+        modals += _modal("registro", "<iframe class=aptframe data-src='/registro?embed=1'></iframe>", "ancho")
     modals += _modal("doc", "<iframe class=aptframe data-src='/documentacion?embed=1'></iframe>")
     hubcss = ("<style>"
               ".aptmodal{display:none;position:fixed;inset:0;background:rgba(11,11,11,.5);z-index:90;align-items:center;justify-content:center;padding:24px;overflow:auto}"
@@ -12366,6 +12366,8 @@ def perfil_page(msg="", ok=False, edit_user=None):
               ".aptmodal .aptx{position:absolute;top:8px;right:8px;border:0;background:#eceae6;color:#33322f;width:30px;height:30px;border-radius:50%;font-size:19px;line-height:1;cursor:pointer;z-index:3}"
               ".aptmodal .aptx:hover{background:#e34948;color:#fff}"
               ".aptmodal .aptframe{width:100%;height:74vh;border:0;border-radius:8px;background:#fff}"
+              # el Registro es una tabla de 6 columnas: a 980 px el Detalle se quedaba con ~150 px
+              ".aptmodal .aptbox.ancho{max-width:1280px}"
               "</style>")
     ntf = aviso_modal(msg, "ok" if ok else "err")
     hubjs = ("<script>function openm(id){var mo=document.getElementById('m-'+id);if(!mo)return false;"
@@ -14624,14 +14626,23 @@ def registro_page(embed=False, tipo=""):
         ".search{width:240px;padding:8px 12px;border:1px solid #d7d6d2;border-radius:8px;font:14px system-ui}"
         ".twrap{overflow-x:auto;border:1px solid #eee;border-radius:10px}"
         ".ut{width:100%;border-collapse:collapse;font-size:13px;white-space:nowrap}"
-        ".ut th{text-align:left;color:#8a8a86;font-weight:600;padding:10px 12px;background:#fafafa;border-bottom:1px solid #eee}"
-        ".ut td{padding:8px 12px;border-bottom:1px solid #f2f1ee}"
+        ".ut th{text-align:left;color:#8a8a86;font-weight:600;padding:10px 10px;background:#fafafa;border-bottom:1px solid #eee}"
+        ".ut td{padding:8px 10px;border-bottom:1px solid #f2f1ee}"
         ".ut tbody tr:last-child td{border-bottom:0}.ut tbody tr:hover{background:#fafbfd}"
-        ".det{white-space:normal;color:#6b6a66;font-size:12px;max-width:360px}"
+        # Detalle es la unica columna que parte. El max-width que llevaba no valia: en una celda
+        # de tabla el navegador lo ignora, y con un op=<uuid> y una accion larga en la misma pagina
+        # la tabla salia mas ancha que el recuadro y el texto quedaba cortado a la derecha.
+        # overflow-wrap:anywhere deja partir cualquier palabra: la columna se queda con lo que
+        # sobra y nunca empuja la tabla.
+        ".det{white-space:normal;overflow-wrap:anywhere;color:#52514e;font-size:12px;line-height:1.45}"
         ".pager{display:flex;align-items:center;gap:12px;margin-top:12px;flex-wrap:wrap}"
         ".pager button{font:13px system-ui;padding:6px 12px;border:1px solid #d7d6d2;background:#fff;border-radius:8px;cursor:pointer;color:#0b0b0b}"
         ".pager button:hover:not(:disabled){background:#eef4fd;border-color:#2a78d6}"
-        ".pager button:disabled{opacity:.4;cursor:default}.pager #lpi{font-weight:600;font-size:13px;color:#52514e}")
+        ".pager button:disabled{opacity:.4;cursor:default}.pager #lpi{font-weight:600;font-size:13px;color:#52514e}"
+        # dentro del modal de Ajustes: sin el marco de la tarjeta ni el margen ancho de la pagina
+        # (el modal ya pone los suyos); ese ancho se lo queda la tabla
+        + ("main{padding:6px 4px 16px}.card{border:0;box-shadow:none;padding:0;background:transparent}"
+           if embed else ""))
     script = ("<script>(function(){var SIZE=50,page=0,"
               "rows=[].slice.call(document.querySelectorAll('#logbody tr')),q='',t=" + json.dumps(tipo) + ";"
               "function vale(r){if(t==='fallos'){if(!r.getAttribute('data-e'))return false;}"
