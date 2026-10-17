@@ -1869,11 +1869,15 @@ def _cuerpo_fin(d, vm):
     if vm.get("orden") == "punto.borrar":
         cuerpo += aviso("Punto borrado: se quitaron su VPN, su Suricata y sus datos del servidor y del panel.", "ok")
         # el script del alta ya no pone firewall ni rutas (decision del 2026-10-15): en el router
-        # queda la VPN, el usuario de la API y la CA; la ruta y las reglas solo las tienen los
-        # routers dados de alta con el script anterior (comentario EXACTO: no toca el `:espejo`)
-        cuerpo += ("<p class=hint>En el MikroTik quedan la interfaz <code>ids-vpn</code>, el usuario y el grupo "
-                   "<code>ids-api</code> y la CA del VPS que importó el alta. Quítalos a mano (Documentación "
-                   "&rarr; Puntos); la CA, con:</p>"
+        # queda la VPN y la CA (y el usuario de la API si lo creo el operador: el script ya no lo
+        # crea); la ruta y las reglas solo las tienen los routers dados de alta con el script
+        # anterior (comentario EXACTO: no toca el `:espejo`)
+        cuerpo += ("<p class=hint>En el MikroTik quedan la interfaz <code>ids-vpn</code>, la CA del VPS que "
+                   "importó el alta y el usuario de la API si lo creaste (p. ej. <code>ids-api</code>). Quítalos "
+                   "a mano (<a "
+                   "href='/documentacion?p=puntos-un-mikrotik-su-vpn-y-su-suricata' target=_blank rel=noopener>"
+                   "Documentación &rarr; Puntos: un MikroTik, su VPN y su Suricata</a>, apartado <b>Baja</b>); "
+                   "la CA, con:</p>"
                    "<pre class=cmd>/certificate remove [find name~\"^ids-maat-ca-%s\"]\n"
                    "/file remove [find name~\"^ids-maat-ca-%s\"]</pre>"
                    "<p class=hint>Si el router se dio de alta con el script anterior, lleva además una ruta y "
@@ -2882,7 +2886,8 @@ def confirmar_huella(d, pid, huella):
 # --------------------------------------------------------------------------------------------
 # Desbanear la IP del MikroTik (VPN-04)
 # --------------------------------------------------------------------------------------------
-# fail2ban (jaula ids-vpn) banea en todos los puertos del servidor. Cuando el router esta baneado
+# fail2ban (jaula ids-vpn) banea en todo lo que el servidor publica por Docker (la VPN de todos los
+# puntos y el panel; el SSH tiene su propia jaula, sshd). Cuando el router esta baneado
 # su tunel esta caido y estado.json ya no trae su IP: por eso el panel apunta la ultima IP desde la
 # que conecto (nodos/<pid>/mk-ip.json, que la baja borra con el resto de nodos/<pid>/).
 def _ruta_ip_mk(pid):
@@ -2939,7 +2944,7 @@ def desbanear_html(p, pid):
             "<input class=t name=ip value='%s' maxlength=45 autocomplete=off placeholder='IP pública del MikroTik' "
             "aria-label='IP pública del MikroTik'>"
             "<button class='btn sec' type=submit onclick=\"if(ask(this,'Desbanear IP del MikroTik','Se quita el ban "
-            "de fail2ban (jaula ids-vpn) a '+this.form.ip.value+' en todos los puertos del servidor. Si desde esa "
+            "de fail2ban (jaula ids-vpn) a '+this.form.ip.value+' en la VPN de todos los puntos y en el panel. Si desde esa "
             "IP algo sigue llamando con un usuario VPN que no existe, vuelve a banearse.','Desbanear'))"
             "pdesban(this.form);return false;\">Desbanear IP del MikroTik</button></form>"
             "<p class=hint>Si la IP del MikroTik quedó baneada por fail2ban (por ejemplo, porque detrás de la misma "

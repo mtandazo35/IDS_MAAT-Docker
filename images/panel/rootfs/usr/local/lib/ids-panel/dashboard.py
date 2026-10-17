@@ -13494,7 +13494,7 @@ Con ella activa, cada atacante de <b>Ataques entrantes</b> muestra un botón <b>
 <ul>
 <li><b>Nunca se denuncia solo.</b> Siempre lo pulsa una persona, y con confirmación.</li>
 <li><b>Nunca se denuncian IPs tuyas.</b> Ni las privadas de tus abonados ni tus rangos públicos de
-NAT (los declarados en <b>Consultar IP &rarr; Tus IPs públicas</b>): denunciar tu propio rango te mete a <b>vos</b> en las listas negras. Tampoco las de la lista
+NAT (los declarados en <b>Consultar IP &rarr; Tus IPs públicas</b>): denunciar tu propio rango te mete a <b>ti</b> en las listas negras. Tampoco las de la lista
 <b>Nunca bloquear</b>.</li>
 <li><b>El comentario no lleva ninguna IP</b>, ni la del atacante (ya va en su campo) ni la de la
 máquina atacada. Solo el nombre de la firma, el puerto y cuántas alertas hubo.</li>
@@ -13630,11 +13630,11 @@ bajo todavía se queda.</p>
 <li><b>Puntos &rarr; ficha del punto &rarr; API</b>: usuario, clave y <b>Permitir enviar</b>. Lo común a
 todos los nodos (nombres de las listas por categoría, acciones y políticas) está en Ajustes &rarr; MikroTik,
 que además resume la conexión de cada nodo.</li>
-<li>Confirma la <b>huella del certificado</b> de la API (ver "Puntos: un MikroTik, su VPN y su Suricata",
-apartado <b>La huella del certificado de la API</b>): hasta entonces el panel no le manda la clave de
-<code>ids-api</code> al router. Después pulsa <b>Probar la conexión</b>: si conecta, muestra el nombre
-(identity) del router. Si un día el router presenta otro certificado, la conexión se rechaza hasta que lo
-revises.</li>
+<li>Pulsa <b>Probar la conexión</b>: si conecta, muestra el nombre (identity) del router. Sin huella
+fijada el panel entra igual, presente el router certificado o no (la clave de <code>ids-api</code> va
+protegida por el túnel). Si le pusiste certificado a la API-SSL, puedes fijar su <b>huella</b> (opcional; ver "Puntos: un
+MikroTik, su VPN y su Suricata", apartado <b>La API del router: API-SSL sin certificado</b>): desde
+entonces, si un día el router presenta otro certificado, la conexión se rechaza hasta que lo revises.</li>
 <li>En <b>Cuarentena</b>, cada CPE candidato muestra <b>Enviar</b> (lo agrega a la lista de su
 categoría en el MikroTik de <b>su</b> nodo; debajo dice a cuál) y luego <b>Quitar</b> (lo saca). Todo queda en el registro de
 cuarentena del panel y en el <b>Registro</b>.</li>
@@ -13656,9 +13656,9 @@ Registro. Si el router falla con alguna, se te dice
 &#10007; según sale), porque cada una es una llamada al MikroTik y en bloque la pantalla se
 quedaba parada sin decir nada. Si una falla <b>no se detiene el resto</b>. Mientras corre, la
 ventana no se cierra, para no perder de vista el avance.</p>
-<p><b>Seguridad:</b> el usuario <code>ids-api</code> solo entra desde el sensor por el túnel, la
-conexión es <b>API-SSL</b> extremo a extremo con la huella confirmada, y el destino de cada acción es siempre
-el nodo de la IP (<code>punto|IP</code>), nunca el que tengas elegido en el selector. Si dejas el envío
+<p><b>Seguridad:</b> el panel habla con el router solo por el túnel (el usuario de la API lo creas tú en
+el router: mejor exclusivo y con <code>address=</code> la IP del sensor), la conexión es <b>API-SSL</b> (sin certificado por defecto) dentro del túnel (con huella fijada, se exige ese
+certificado), y el destino de cada acción es siempre el nodo de la IP (<code>punto|IP</code>), nunca el que tengas elegido en el selector. Si dejas el envío
 <b>deshabilitado</b>, la pestaña Cuarentena solo <b>sugiere</b> (no toca ese router).</p>
 
 <h3>5) Estados de la pestaña Cuarentena</h3>
@@ -13666,8 +13666,8 @@ el nodo de la IP (<code>punto|IP</code>), nunca el que tengas elegido en el sele
 <ul>
 <li><b style="color:#1a7f37">Verde &mdash; MikroTik habilitado</b>: marcaste <b>Permitir enviar</b> y la conexión
 (usuario y clave del nodo) está completa. Aparecen los botones <b>Enviar</b> por CPE y
-<b>&#9888; Enviar confirmados (N)</b>. El verde no prueba que el router conteste: eso lo dicen la
-huella confirmada y <b>Probar la conexión</b> de la ficha.</li>
+<b>&#9888; Enviar confirmados (N)</b>. El verde no prueba que el router conteste: eso lo dice
+<b>Probar la conexión</b> de la ficha.</li>
 <li><b style="color:#b52a2a">Rojo &mdash; Falta configurar la conexión</b>: marcaste <b>Permitir enviar</b>
 pero todavía falta el usuario o la clave. Completa la API del punto y pulsa
 <b>Probar la conexión</b>. Mientras tanto no se envía nada.</li>
@@ -13954,7 +13954,8 @@ alertas, y solo se impide cortarla. Al guardar, el panel dice cuántas líneas d
 o red válida. Valen para <b>todos los nodos</b>; con el punto delante
 (<code>p001|192.0.2.10</code>) valen <b>solo en ese punto</b>, porque la misma IP privada puede ser otro
 abonado en otro nodo. Se guardan en la configuración del panel (<code>/srv/ids/panel/conf/</code>) y las
-respetan las políticas, el barrido rápido y el envío a mano.</p>
+respetan las políticas, el barrido rápido, el envío a mano, <b>Enviar confirmados</b>, <b>Recargar las
+listas</b>, <code>/blocklist.rsc</code> y las denuncias a AbuseIPDB.</p>
 
 <h2>Módulo de Exclusiones</h2>
 <p>El apartado <b>Exclusiones</b> (en el menú de arriba) sirve para que ciertas IPs propias
@@ -13963,8 +13964,8 @@ monitoreo, que generan mucho tráfico normal (consultas DNS, sondeos SNMP) y ens
 estadísticas sin ser un ataque. En la misma página, más abajo, está <b>Nunca bloquear</b>, que es otra
 cosa: la IP se sigue viendo, pero nunca se manda a cuarentena (ver "Allowlist nunca bloquear").</p>
 <p><b>Cómo funciona:</b> por cada alerta, si coincide con una regla de exclusión, se descarta
-antes de contarla. Se aplica en los tres lados a la vez (resumen de 24h, feed en vivo e
-informe de texto) y surte efecto al instante, sin reiniciar nada.</p>
+antes de contarla. Se aplica a la vez en el resumen (En vivo, Top, Detalle) y en el informe de
+texto, sin reiniciar nada. Se nota en la siguiente generación (el resumen, cada 5 minutos).</p>
 <p><b>Campos al agregar una exclusión:</b></p>
 <table><tr><th>Campo</th><th>Qué es</th></tr>
 <tr><td>Tipo</td><td><b>Destino</b>: ignora el tráfico que va HACIA esa IP (p. ej. tu DNS).
@@ -14028,8 +14029,9 @@ túnel, qué bloque conecta y que el reloj del router esté en hora (con el relo
 rechaza el certificado del servidor).</li>
 <li>Hasta que pegas los comandos en el router, el punto sale en <b>ámbar</b>, «esperando MikroTik»: es lo
 esperado, no un fallo.</li>
-<li>En la ficha: la clave de la <b>API</b>, <b>La huella coincide: confirmar</b> (tras compararla con la
-del router) y <b>Probar conexión</b>. El espejo lo montas a mano en el MikroTik (ver «El espejo del
+<li>En la ficha, apartado <b>API</b>: el usuario y la clave de <code>ids-api</code> (lo creas tú en el
+router) y <b>Probar la conexión</b>. Si le pusiste un certificado a la API-SSL, además
+<b>La huella coincide: confirmar</b> tras compararla con la del router. El espejo lo montas a mano en el MikroTik (ver «El espejo del
 MikroTik»).</li>
 </ol>
 <h3>Si algo falla</h3>
@@ -14043,7 +14045,7 @@ cualquier otra operación.</li>
 </ul>
 <h3>La ficha del punto</h3>
 <p>Resumen (estado, salud por etapas, espejo, Suricata, alertas de 24 h y <b>retención efectiva</b>),
-VPN (comandos sin la clave), API (usuario, clave, probar, huella), Prefijos adicionales, Logs de la
+VPN (comandos con la clave, y el usuario y la clave a la vista), API (usuario, clave, probar, huella), Prefijos adicionales, Logs de la
 VPN y del Suricata, arrancar, parar, reiniciar, desbanear la IP del
 MikroTik y la baja. La huella del certificado del router se lee por el túnel: con el MikroTik sin
 conectar, la ficha dice «se comprobará cuando el MikroTik conecte»; conectado, la ficha abre sin
@@ -14081,15 +14083,17 @@ puerto con el que el panel crea los puntos.</li>
 </ul>
 <h3>Desbanear la IP del MikroTik</h3>
 <p>El servidor banea con fail2ban (jaula <code>ids-vpn</code>) la IP que insiste en la VPN con un usuario
-que no existe o con datos mal formados, y el ban corta <b>todos los puertos</b> del servidor para esa IP.
+que no existe o con datos mal formados, y el ban le corta a esa IP <b>todo lo que el servidor publica por
+Docker</b> (la VPN de todos los puntos y el panel). El SSH del servidor tiene su propia jaula
+(<code>sshd</code>).
 Una clave vieja o mal tecleada del propio MikroTik ya no lleva al ban: solo se frenan sus intentos y
 entra solo en unos minutos tras poner la buena. Si aun así el router quedó baneado (por ejemplo, un router
 viejo detrás de la misma IP pública), en la ficha, sección <b>Servicio</b>, <b>Desbanear IP del
 MikroTik</b> (solo administradores). Propone la IP desde la que está conectado o, si ya no conecta, la
 última conocida; se puede cambiar. Pide confirmación, el resultado sale en una ventana («desbaneada» o
 «no estaba baneada») y queda una línea en el Registro. Quita antes la causa: si no, vuelve a banearse.</p>
-<p>Lo que habla con el router o con la cola del orquestador va <b>en segundo plano</b>: el espejo (ver
-"El espejo del MikroTik"), los prefijos, <b>Probar la conexión</b> de la API y la baja muestran su avance
+<p>Lo que habla con el router o con la cola del orquestador va <b>en segundo plano</b>: los prefijos,
+<b>Probar la conexión</b> de la API y la baja muestran su avance
 y su resultado en una <b>ventana</b>, sin recargar la ficha ni poner avisos arriba. Si cierras la pestaña a
 mitad, al volver a la ficha se retoma el avance o se enseña el resultado una sola vez. Las páginas de
 operación (alta, arrancar, reiniciar...) también se actualizan solas sin recargarse; si una termina mal,
@@ -14101,21 +14105,21 @@ queda registrado: por eso Puntos y Eventos dicen la <b>retención efectiva</b> (
 eventos de verdad) y nunca prometen 30 días si hubo borrado anticipado.</p>
 <h3>Baja</h3>
 <p>En la ficha (o en <b>Eliminar</b> de la lista), escribiendo el nombre del punto. La limpieza del
-MikroTik va en segundo plano y se ve en una ventana («IPs quitadas 12 de 40» y, si una versión anterior
+MikroTik va en segundo plano y se ve en una ventana («IPs quitadas 12/40» y, si una versión anterior
 del panel montó el espejo, retirarlo: tus reglas a mano no se tocan); solo si
 el router quedó limpio se encola la baja y se pasa a su página de avance. Se borra todo el punto en el servidor (VPN, Suricata y
 eventos) y en el panel (sus reportes, su conexión y sus registros); queda una línea en el Registro. Los
 identificadores no se reutilizan. En el MikroTik quedan la interfaz <code>ids-vpn</code>, el usuario
-<code>ids-api</code>, la <b>CA del VPS</b> que importó el alta (los certificados no llevan comentario: se
+de la API si lo creaste (p. ej. <code>ids-api</code>), la <b>CA del VPS</b> que importó el alta (los certificados no llevan comentario: se
 buscan por su nombre, <code>ids-maat-ca-&lt;punto&gt;</code>) y lo que lleve el comentario
 <code>IDS ids-maat:&lt;punto&gt;:espejo</code> (el espejo, si no se retiró). En un router dado de alta con
 un script anterior queda también lo que lleva <code>IDS ids-maat:&lt;punto&gt;</code> (una ruta y reglas de
 <code>ids-vpn</code>; el script actual no pone ninguna). El <code>comment~</code> de abajo encuentra lo del
 alta y lo del espejo:</p>
-<pre><code>/ip firewall mangle remove [find comment~"ids-maat:p003"]
-/ip firewall filter remove [find comment~"ids-maat:p003"]
-/ip firewall address-list remove [find comment~"ids-maat:p003"]
-/ip route remove [find comment~"ids-maat:p003"]
+<pre><code>/ip firewall mangle remove [find comment~"ids-maat:p003(:|\\$)"]
+/ip firewall filter remove [find comment~"ids-maat:p003(:|\\$)"]
+/ip firewall address-list remove [find comment~"ids-maat:p003(:|\\$)"]
+/ip route remove [find comment~"ids-maat:p003(:|\\$)"]
 /interface ovpn-client remove [find name=ids-vpn]
 /user remove [find name=ids-api]
 /user group remove [find name=ids-api]
@@ -14124,16 +14128,17 @@ alta y lo del espejo:</p>
 <p>Si el router tiene el certificado <code>ids-promax</code> de un alta anterior, la baja no lo borra:
 puede usarlo otro servicio del router (si no lo usa nadie: <code>/certificate remove [find
 name=ids-promax]</code>).</p>
-<p>Y devolver a la regla fasttrack sus valores originales (si se retiró el espejo desde el panel antes de
-la baja, ya está hecho).</p>
+<p>Si una versión anterior del panel montó el espejo y no se retiró, devuelve también la regla fasttrack
+a sus valores originales.</p>
 <h3>Límites que conviene tener claros</h3>
 <ul>
 <li><b>La capacidad es del servidor.</b> Cada punto reserva su memoria; <b>Puntos</b> dice cuántos caben
 todavía.</li>
 <li><b>El espejo va por el túnel</b> y por UDP: con pérdida el IDS ve tráfico incompleto. La salud por
 etapas lo enseña (descartes, TZSP).</li>
-<li><b>Dar de baja un punto limpia antes su MikroTik</b>: retira el espejo (el fasttrack vuelve a como
-estaba) y saca de sus address-lists los CPEs en cuarentena y los destinos bloqueados. Si el router no
+<li><b>Dar de baja un punto limpia antes su MikroTik</b>: saca de sus address-lists los CPEs en cuarentena
+y los destinos bloqueados, y retira el espejo que hubiera montado una versión anterior del panel (el
+fasttrack vuelve a como estaba); el tuyo, a mano, no se toca. Si el router no
 responde, la baja no sigue; si ese router ya no existe, se desmarca la casilla y lo del router se quita a
 mano. Las reglas de acción por categoría (comentario <code>Suricata:</code>) se quedan: sin nadie en las
 listas no cortan nada.</li>
@@ -14186,8 +14191,8 @@ punto; después, en el router, pega las líneas de la CA del bloque nuevo y pon 
 <li>La página del resultado de Regenerar lo recuerda cuando el certificado se renovó.</li>
 </ul>
 <h3>Firewall y rutas del router: los gestionas tú</h3>
-<p>El script del router <b>no lleva reglas de firewall ni rutas</b>: crea la VPN (con la CA del VPS) y el
-usuario de la API, y nada más. Lo que entra por la interfaz <code>ids-vpn</code> y adónde llega lo decide tu
+<p>El script del router <b>no lleva reglas de firewall ni rutas</b>: crea la VPN (con la CA del VPS) y nada
+más. Lo que entra por la interfaz <code>ids-vpn</code> y adónde llega lo decide tu
 firewall: desde el túnel se alcanza lo que él permita. Si la cadena <code>input</code> de tu router acaba en
 <code>drop</code>, añade tú el <code>accept</code> de la API desde el sensor del punto (la <code>.1</code> del
 túnel, al puerto de la API-SSL); sin él, el panel no conecta. Tampoco hay ruta de respaldo: si el túnel
@@ -14209,10 +14214,11 @@ si tu <code>input</code> acaba en <code>drop</code>, deja puesto tu propio <code
 <ul>
 <li><b>Administrador</b>: acceso total (Puntos, exclusiones, MikroTik y políticas, feeds, actualizar
 reglas, gestionar usuarios y ver el Registro).</li>
-<li><b>Operador</b>: opera el día a día &mdash; ve todo y <b>gestiona la cuarentena</b> (enviar/quitar
-CPEs, excluir un destino de falso positivo, consultar o denunciar reputación). <b>No</b> toca
-Puntos, usuarios, conexión MikroTik, exclusiones de detección ni reglas. Cada acción suya queda en el
-<b>Registro</b>.</li>
+<li><b>Operador</b>: opera el día a día. Ve las pestañas de datos (En vivo, Top orígenes, Detalle,
+Cuarentena, Consultar IP, Histórico, Reporte, Eventos) y <b>gestiona la cuarentena</b> (enviar/quitar
+CPEs, excluir un destino de falso positivo, consultar o denunciar reputación). <b>No</b> ve Puntos,
+Exclusiones ni el Registro, y en Ajustes solo tiene su Perfil y la Documentación. No toca usuarios,
+conexión MikroTik ni reglas. Cada acción suya queda en el <b>Registro</b>.</li>
 <li><b>Solo lectura</b>: ve los paneles y reportes y cambia su propia clave; no opera cuarentena
 ni edita nada.</li>
 </ul>
@@ -14268,8 +14274,8 @@ lista; <code>ids-orq panel confianza ver</code> la muestra. Hace efecto al momen
 
 <h2>Registro: accesos y cambios en un solo sitio</h2>
 <p><b>Ajustes &rarr; Registro</b> (solo administrador) junta en una tabla, lo más nuevo primero. Sustituye
-a las antiguas pantallas Accesos y Bitácora; los enlaces viejos (<code>/log</code>, <code>/bitacora</code>)
-abren el Registro con su filtro.</p>
+a las antiguas pantallas Accesos y Bitácora; los enlaces viejos abren el Registro: <code>/log</code> con
+el filtro <b>Accesos</b> y <code>/bitacora</code> con todo.</p>
 <ul>
 <li><b>Accesos</b>: <b>quién intentó entrar</b> al panel. Los que entraron, los que fallaron la clave
 y las IPs bloqueadas por insistir. Es el único sitio donde se ven los intentos <b>fallidos</b>: es lo
@@ -14294,8 +14300,9 @@ salidas Tor no necesitan clave; abuse.ch (URLhaus/ThreatFox) y AbuseIPDB, sí.</
 <li><b>Para qué sirve</b> ese servicio en el panel.</li>
 <li><b>Cómo sacar la clave</b>, paso a paso, con botones &#8599; que abren la página exacta del servicio
 en otra pestaña (crear la cuenta, la página de claves...).</li>
-<li>Una <b>etiqueta de estado</b> arriba a la derecha: <i>sin configurar</i>, <i>válida &middot; comprobada
-14/10 09:30</i> o <i>rechazada</i>, según la <b>última comprobación</b> de la clave guardada.</li>
+<li>Una <b>etiqueta de estado</b> arriba a la derecha: <i>sin configurar</i>, <i>configurada &middot; sin
+comprobar</i>, <i>válida &middot; comprobada 14/10 09:30</i> o <i>rechazada &middot; 14/10 09:30</i>, según
+la <b>última comprobación</b> de la clave guardada. Al pasar el ratón sale lo que respondió el servicio.</li>
 </ul>
 <p>Botones de cada bloque:</p>
 <ul>
@@ -14436,7 +14443,8 @@ o <code>ids-orq estado</code></td></tr>
 <tr><td>Contenedores</td><td><code>docker ps</code>: <code>ids-core-panel</code>, y por punto
 <code>ids-&lt;punto&gt;-vpn</code> e <code>ids-&lt;punto&gt;-suricata</code></td></tr>
 <tr><td>Logs</td><td><code>docker logs ids-core-panel</code>; los de un punto, en su ficha (Logs) o con
-<code>ids-orq punto logs</code></td></tr>
+<code>ids-orq punto logs &lt;punto&gt; [--parte vpn|suricata] [--lineas N]</code> (por defecto, la VPN y 100
+líneas)</td></tr>
 <tr><td>Reglas</td><td><code>/srv/ids/reglas/current/</code>; actualizar: <code>ids-orq reglas actualizar</code></td></tr>
 <tr><td>Base GeoIP del mapa</td><td><code>/srv/ids/panel/geo/</code> (IP&rarr;país, offline; la renueva el panel cada 30 días) y la de la imagen en <code>/usr/local/share/ids-panel/geo/</code></td></tr>
 </table>"""
@@ -18265,7 +18273,7 @@ def cuarentena_page(msg="", es_admin=False):
     elif en and not conf_ok:
         estado = ("<div class='banner err'><b>Falta configurar la conexión.</b> Marcaste <b>Permitir enviar</b>, pero "
                   "aún falta <b>usuario o clave</b> de la API del MikroTik. Ve a <b>Puntos</b> (ficha &rarr; API), completa los datos "
-                  "y pulsa <b>Probar conexión</b>. Hasta entonces esta pestaña no envía nada.</div>")
+                  "y pulsa <b>Probar la conexión</b>. Hasta entonces esta pestaña no envía nada.</div>")
     else:
         estado = ("<div class='banner'><b>Modo sugerencia (dry-run).</b> No se envía nada al MikroTik. "
                   "Para activar el envío, configura la API y marca <b>Permitir enviar</b> en <b>Puntos</b> (ficha &rarr; API).</div>")

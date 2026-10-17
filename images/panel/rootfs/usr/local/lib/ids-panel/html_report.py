@@ -1900,8 +1900,8 @@ def mapa_ataques_section():
         "var b=panel.querySelector('.dclose');if(b)b.addEventListener('click',cerrar);}"
         "function abrir(iso){if(!panel)return;marcar(iso);fit(BBOX[iso]);panelDe(iso);guardarVista();}"
         "function cerrar(){if(panel)panel.style.display='none';marcar('');reset();guardarVista();}"
-        # --- la pagina se recarga sola cada 5 min: sin esto el mapa volvia al mundo entero
-        # y perdias el pais que estabas mirando ---
+        # --- En vivo redibuja el mapa al llegar un resumen nuevo (o al recargar): sin esto volvia
+        # al mundo entero y perdias el pais que estabas mirando ---
         "var MK='mapa:'+location.pathname,guardaPend=null;"
         "function guardarVista(){clearTimeout(guardaPend);guardaPend=setTimeout(function(){"
         "try{sessionStorage.setItem(MK,JSON.stringify({v:vb,s:sel}));}catch(e){}},300);}"
