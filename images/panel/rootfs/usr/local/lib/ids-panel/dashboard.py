@@ -173,7 +173,7 @@ def sesion_de(token):
 SESSIONS = _cargar_sesiones()
 
 # anti-fuerza-bruta del login: por IP de origen
-LOGIN_FAILS = {}       # ip -> [intentos, primer_ts]
+LOGIN_FAILS = {}       # ip -> [intentos, primer_ts, {usuario: intentos contra ese usuario}]
 LOGIN_EN_CURSO = {}    # ip -> claves comprobandose ahora mismo (cuentan como intentos)
 LOGIN_MAX = 8          # fallos permitidos por ventana
 LOGIN_WINDOW = 600     # ventana y duracion del bloqueo (segundos)
@@ -187,20 +187,22 @@ def login_bloqueado(ip):
         r = LOGIN_FAILS.get(ip)
         if not r:
             return 0
-        intentos, t0 = r
+        intentos, t0 = r[0], r[1]
         if time.time() - t0 > LOGIN_WINDOW:
             LOGIN_FAILS.pop(ip, None)
             return 0
         return int(LOGIN_WINDOW - (time.time() - t0)) if intentos >= LOGIN_MAX else 0
 
-def login_fallo(ip):
+def login_fallo(ip, user=""):
     with _LOGIN_LOCK:
         now = time.time()
+        u = (user or "")[:64]   # tope: un usuario valido tiene 32 como mucho (RE_USUARIO); el login admite 16 KiB
         r = LOGIN_FAILS.get(ip)
         if not r or now - r[1] > LOGIN_WINDOW:
-            LOGIN_FAILS[ip] = [1, now]
+            LOGIN_FAILS[ip] = [1, now, {u: 1}]
         else:
             r[0] += 1
+            r[2][u] = r[2].get(u, 0) + 1
         if len(LOGIN_FAILS) > 5000:   # poda de entradas viejas
             for k in [k for k, v in LOGIN_FAILS.items() if now - v[1] > LOGIN_WINDOW]:
                 LOGIN_FAILS.pop(k, None)
@@ -221,17 +223,30 @@ def login_reservar(ip):
         LOGIN_EN_CURSO[ip] = LOGIN_EN_CURSO.get(ip, 0) + 1
         return 0
 
-def login_soltar(ip, fallo):
+def login_soltar(ip, fallo, user=""):
     """Devuelve el intento apartado por login_reservar y, si la clave era mala, anota el fallo
-    en el mismo paso: no queda hueco en el que la plaza este libre y el fallo sin contar."""
+    (contra ese usuario) en el mismo paso: no queda hueco en el que la plaza este libre y el
+    fallo sin contar."""
     with _LOGIN_LOCK:
         if fallo:
-            login_fallo(ip)
+            login_fallo(ip, user)
         n = LOGIN_EN_CURSO.get(ip, 0) - 1
         if n > 0:
             LOGIN_EN_CURSO[ip] = n
         else:
             LOGIN_EN_CURSO.pop(ip, None)
+
+def login_ok(ip, user):
+    """Login correcto: quita de la IP solo los fallos contra ESE usuario. Antes se borraba el
+    contador entero y, con una cuenta cualquiera, se probaban claves de otra sin limite
+    (7 fallos contra admin, entrar con la propia, y vuelta a empezar)."""
+    with _LOGIN_LOCK:
+        r = LOGIN_FAILS.get(ip)
+        if not r:
+            return
+        r[0] -= r[2].pop((user or "")[:64], 0)
+        if r[0] <= 0:
+            LOGIN_FAILS.pop(ip, None)
 
 LOGIN_LOG = nodos.ruta("log", "login.log")
 
@@ -268,10 +283,11 @@ def login_recientes(n=40):
 def ips_bloqueadas():
     """IPs actualmente bloqueadas: (ip, segundos_restantes, intentos)."""
     res = []
-    for ip in list(LOGIN_FAILS.keys()):
-        s = login_bloqueado(ip)
-        if s > 0:
-            res.append((ip, s, LOGIN_FAILS[ip][0]))
+    with _LOGIN_LOCK:       # un login a la vez podia quitar la IP entre las dos lecturas
+        for ip in list(LOGIN_FAILS.keys()):
+            s = login_bloqueado(ip)
+            if s > 0:
+                res.append((ip, s, LOGIN_FAILS[ip][0]))
     return sorted(res, key=lambda x: -x[1])
 
 EXCL_FILE = nodos.ruta("conf", "exclusiones.json")
@@ -19832,9 +19848,9 @@ class H(BaseHTTPRequestHandler):
             except BaseException:
                 login_soltar(ip, False)     # sin veredicto: solo devuelve el intento apartado
                 raise
-            login_soltar(ip, not role)      # devuelve el intento y, si fallo, lo anota a la vez
+            login_soltar(ip, not role, u)   # devuelve el intento y, si fallo, lo anota a la vez
             if role:
-                LOGIN_FAILS.pop(ip, None)   # login correcto: limpia el contador
+                login_ok(ip, u)   # login correcto: limpia sus fallos, no los de otras cuentas
                 login_registrar(ip, u, "OK")
                 bitacora("LOGIN", f"rol={role}", quien=u, ip=ip)
                 token = sesion_abrir(u, role)   # se guarda sha256(token) con la marca de la clave

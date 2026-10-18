@@ -118,6 +118,31 @@ class Confianza(unittest.TestCase):
         t = self.p.pedir("POST", "/login", {"usuario": "ana", "clave": CLAVE}).texto
         self.assertIn("Demasiados intentos fallidos", t)
 
+    def test_entrar_con_otra_cuenta_no_borra_los_fallos_contra_admin(self):
+        """Antes un login correcto borraba todo el contador de la IP: con una cuenta de lectura
+        se probaban claves de admin sin limite (7 fallos, entrar con la propia, y otra vez)."""
+        self.d.LOGIN_FAILS.clear()
+        original = self.d.time.sleep
+        self.addCleanup(setattr, self.d.time, "sleep", original)
+        self.d.time.sleep = lambda s: None              # el freno de 1 s por fallo, fuera de la prueba
+        for _ in range(self.d.LOGIN_MAX - 1):
+            self.p.pedir("POST", "/login", {"usuario": "ana", "clave": "mala"})
+        self.p.entrar("luis")                           # entra con su cuenta: lo de ana sigue contando
+        self.p.pedir("POST", "/login", {"usuario": "ana", "clave": "mala"})
+        t = self.p.pedir("POST", "/login", {"usuario": "ana", "clave": CLAVE}).texto
+        self.assertIn("Demasiados intentos fallidos", t)
+
+    def test_entrar_borra_los_fallos_propios(self):
+        """Lo de siempre: quien se equivoca con su clave y luego entra no arrastra esos fallos."""
+        self.d.LOGIN_FAILS.clear()
+        original = self.d.time.sleep
+        self.addCleanup(setattr, self.d.time, "sleep", original)
+        self.d.time.sleep = lambda s: None
+        for _ in range(2):
+            for _ in range(self.d.LOGIN_MAX - 1):
+                self.p.pedir("POST", "/login", {"usuario": "luis", "clave": "mala"})
+            self.p.entrar("luis")                       # entra (si quedara bloqueado, falla aqui)
+
 
 def _devolver_tz(tz):
     if tz is None:
