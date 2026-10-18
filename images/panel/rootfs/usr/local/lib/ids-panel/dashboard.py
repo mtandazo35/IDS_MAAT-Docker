@@ -174,30 +174,64 @@ SESSIONS = _cargar_sesiones()
 
 # anti-fuerza-bruta del login: por IP de origen
 LOGIN_FAILS = {}       # ip -> [intentos, primer_ts]
+LOGIN_EN_CURSO = {}    # ip -> claves comprobandose ahora mismo (cuentan como intentos)
 LOGIN_MAX = 8          # fallos permitidos por ventana
 LOGIN_WINDOW = 600     # ventana y duracion del bloqueo (segundos)
+# leer y anotar bajo el mismo cerrojo: sin el, cien peticiones en paralelo leian el contador
+# a la vez (todas por debajo de LOGIN_MAX), probaban todas y el r[0] += 1 de unas pisaba el de otras
+_LOGIN_LOCK = threading.RLock()
 
 def login_bloqueado(ip):
     """Segundos restantes de bloqueo para esa IP, o 0 si puede intentar."""
-    r = LOGIN_FAILS.get(ip)
-    if not r:
-        return 0
-    intentos, t0 = r
-    if time.time() - t0 > LOGIN_WINDOW:
-        LOGIN_FAILS.pop(ip, None)
-        return 0
-    return int(LOGIN_WINDOW - (time.time() - t0)) if intentos >= LOGIN_MAX else 0
+    with _LOGIN_LOCK:
+        r = LOGIN_FAILS.get(ip)
+        if not r:
+            return 0
+        intentos, t0 = r
+        if time.time() - t0 > LOGIN_WINDOW:
+            LOGIN_FAILS.pop(ip, None)
+            return 0
+        return int(LOGIN_WINDOW - (time.time() - t0)) if intentos >= LOGIN_MAX else 0
 
 def login_fallo(ip):
-    now = time.time()
-    r = LOGIN_FAILS.get(ip)
-    if not r or now - r[1] > LOGIN_WINDOW:
-        LOGIN_FAILS[ip] = [1, now]
-    else:
-        r[0] += 1
-    if len(LOGIN_FAILS) > 5000:   # poda de entradas viejas
-        for k in [k for k, v in LOGIN_FAILS.items() if now - v[1] > LOGIN_WINDOW]:
-            LOGIN_FAILS.pop(k, None)
+    with _LOGIN_LOCK:
+        now = time.time()
+        r = LOGIN_FAILS.get(ip)
+        if not r or now - r[1] > LOGIN_WINDOW:
+            LOGIN_FAILS[ip] = [1, now]
+        else:
+            r[0] += 1
+        if len(LOGIN_FAILS) > 5000:   # poda de entradas viejas
+            for k in [k for k, v in LOGIN_FAILS.items() if now - v[1] > LOGIN_WINDOW]:
+                LOGIN_FAILS.pop(k, None)
+
+def login_reservar(ip):
+    """Aparta un intento de esa IP ANTES de la comprobacion (lenta) de la clave.
+
+    0 si puede probar, y el intento queda apartado hasta login_soltar; si no, los segundos
+    de espera. Los intentos en marcha cuentan como fallos hasta saber el resultado, asi que
+    nunca hay mas de LOGIN_MAX claves probandose o falladas por ventana."""
+    with _LOGIN_LOCK:
+        espera = login_bloqueado(ip)
+        if espera > 0:
+            return espera
+        r = LOGIN_FAILS.get(ip)
+        if (r[0] if r else 0) + LOGIN_EN_CURSO.get(ip, 0) >= LOGIN_MAX:
+            return 1                # el resto de la cuota se esta comprobando: se sabe enseguida
+        LOGIN_EN_CURSO[ip] = LOGIN_EN_CURSO.get(ip, 0) + 1
+        return 0
+
+def login_soltar(ip, fallo):
+    """Devuelve el intento apartado por login_reservar y, si la clave era mala, anota el fallo
+    en el mismo paso: no queda hueco en el que la plaza este libre y el fallo sin contar."""
+    with _LOGIN_LOCK:
+        if fallo:
+            login_fallo(ip)
+        n = LOGIN_EN_CURSO.get(ip, 0) - 1
+        if n > 0:
+            LOGIN_EN_CURSO[ip] = n
+        else:
+            LOGIN_EN_CURSO.pop(ip, None)
 
 LOGIN_LOG = nodos.ruta("log", "login.log")
 
@@ -19785,20 +19819,26 @@ class H(BaseHTTPRequestHandler):
             if u != u.lower() and not any(r.get("user") == u for r in cargar_usuarios()):
                 u = u.lower()
             # el bloqueo por fuerza bruta vale SIEMPRE: antes se apagaba con lista de confianza y,
-            # si la lista tenia un rango, cualquier equipo de ese rango probaba claves sin limite
-            espera = login_bloqueado(ip)
+            # si la lista tenia un rango, cualquier equipo de ese rango probaba claves sin limite.
+            # El intento se aparta ANTES de comprobar la clave (no al fallar): si no, las
+            # peticiones en paralelo pasaban todas mientras hubiera menos de LOGIN_MAX fallos
+            espera = login_reservar(ip)
             if espera > 0:
                 login_registrar(ip, u, "BLOQUEADO")
                 time.sleep(1)
                 return self._html(login_page(f"Demasiados intentos fallidos. Espera {espera//60 + 1} min e intenta de nuevo."))
-            role = verificar_login(u, p)
+            try:
+                role = verificar_login(u, p)
+            except BaseException:
+                login_soltar(ip, False)     # sin veredicto: solo devuelve el intento apartado
+                raise
+            login_soltar(ip, not role)      # devuelve el intento y, si fallo, lo anota a la vez
             if role:
                 LOGIN_FAILS.pop(ip, None)   # login correcto: limpia el contador
                 login_registrar(ip, u, "OK")
                 bitacora("LOGIN", f"rol={role}", quien=u, ip=ip)
                 token = sesion_abrir(u, role)   # se guarda sha256(token) con la marca de la clave
                 return self._redirect("/", cookie=f"sid={token}; Path=/; HttpOnly; SameSite=Strict; Max-Age={SESSION_TTL}{self._cookie_secure()}")
-            login_fallo(ip)
             login_registrar(ip, u, "FAIL")
             time.sleep(1)   # ralentiza la fuerza bruta
             return self._html(login_page("Usuario o clave incorrectos."))
