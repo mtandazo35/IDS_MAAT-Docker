@@ -20444,15 +20444,17 @@ class H(BaseHTTPRequestHandler):
                 claves_estado_set("groq", None)
                 bitacora("CONFIG-GROQ", "borrada")
                 return self._html(perfil_page("Clave de Groq borrada.", ok=True))
+            if not mod.isprintable():
+                # feeds.conf va una clave por linea: un salto (o cualquier caracter de control) en
+                # el nombre colaria lineas suyas, p. ej. la URL de una fuente, que se llevaria las
+                # claves de los feeds. Se mira ANTES de guardar nada, en los dos caminos
+                bitacora("CONFIG-GROQ", "modelo no guardado (nombre no válido)")
+                return self._html(perfil_page(
+                    "No se guardó: el nombre del modelo de Groq tiene que ir en una sola línea "
+                    "y sin caracteres de control.", ok=False))
             if not k.strip():
                 # sin clave nueva, pero puede venir solo un cambio de modelo
                 if mod and groq_configurada():
-                    if not mod.isprintable():
-                        # un salto de linea en el nombre seria una linea nueva en feeds.conf
-                        bitacora("CONFIG-GROQ", "modelo no guardado (nombre no válido)")
-                        return self._html(perfil_page(
-                            "No se guardó el modelo de Groq: el nombre no es válido "
-                            "(no puede llevar saltos de línea ni caracteres de control).", ok=False))
                     groq_set_modelo(mod)
                     bitacora("CONFIG-GROQ", "modelo " + mod)
                     return self._html(perfil_page("Modelo de Groq guardado: " + mod, ok=True))

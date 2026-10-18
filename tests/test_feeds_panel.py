@@ -2,8 +2,11 @@
 cifradas con la clave maestra, sin dataset ni recarga de Suricata. Las fuentes se sirven desde un HTTP
 local en 127.0.0.1 (feeds.conf permite cambiar cada URL): nada sale a internet."""
 
+import ast
+import contextlib
 import http.server
 import importlib.util
+import io
 import json
 import os
 import shutil
@@ -12,6 +15,7 @@ import sys
 import tempfile
 import threading
 import unittest
+import urllib.request
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
@@ -139,13 +143,20 @@ class Feeds(unittest.TestCase):
         self.assertEqual(self.meta()["sources"]["abuseipdb"]["estado"], "valido")
 
     def test_claves_cifradas_se_descifran_y_no_salen(self):
-        """Capacidad nueva (§10.3): la clave guardada cifrada llega en claro solo en la cabecera de
-        su fuente (Key para AbuseIPDB, Auth-Key para abuse.ch); nunca en la salida ni en meta."""
+        """Capacidad nueva (§10.3): la clave guardada cifrada se descifra (sus fuentes se bajan, no
+        quedan sin-clave) y nunca sale en la salida ni en meta. (adaptada, 2026-10-18: aqui feeds.conf
+        apunta las fuentes a un HTTP local, que no es su proveedor, asi que la clave ya no viaja; que
+        llegue en la cabecera de su proveedor lo prueba ClaveSoloASuProveedor.)"""
         r = self.correr()
         self.assertEqual(r.returncode, 0, r.stderr)
         cab = {ruta.split("?")[0]: h for ruta, h in Servidor.vistas}
-        self.assertEqual(cab["/aidb"].get("Key"), AIDB)
-        self.assertEqual(cab["/urlhaus"].get("Auth-Key"), ABUSECH)
+        src = self.meta()["sources"]
+        for fuente in ("abuseipdb", "urlhaus", "threatfox-c2"):
+            self.assertEqual(src[fuente]["estado"], "valido", fuente)
+        self.assertNotIn("Key", cab["/aidb"])
+        self.assertNotIn("Auth-Key", cab["/urlhaus"])
+        self.assertNotIn("Auth-Key", cab["/tfx-api"])
+        self.assertIn("fuera de su proveedor", r.stderr)
         self.assertNotIn("Key", cab["/feodo"])
         texto = r.stdout + r.stderr + (self.panel / "feeds" / "reputation.meta").read_text(encoding="utf-8")
         for secreto in (AIDB, ABUSECH):
@@ -178,6 +189,106 @@ class Feeds(unittest.TestCase):
         self.assertEqual((s["estado"], s["vigente"]), ("error", True))
         self.assertIn("198.51.100.20\tcins",
                       (self.panel / "feeds" / "reputation.lst").read_text(encoding="utf-8").splitlines())
+
+
+def piezas(*nombres, **extra):
+    """Piezas sueltas de feeds_update.py, sacadas con ast: importarlo entero bajaria los feeds."""
+    fuente = SCRIPT.read_text(encoding="utf-8")
+    ns = {"json": json, "sys": sys, "urllib": urllib}
+    ns.update(extra)
+    for n in ast.parse(fuente).body:
+        nom = getattr(n, "name", None) or (
+            getattr(n.targets[0], "id", "") if isinstance(n, ast.Assign) and n.targets else "")
+        if nom in nombres:
+            exec(ast.get_source_segment(fuente, n), ns)
+    return ns
+
+
+class _Resp(object):
+    def __init__(self, body):
+        self._b = body.encode("utf-8"); self.headers = {"Content-Type": "text/plain"}
+    def read(self): return self._b
+    def __enter__(self): return self
+    def __exit__(self, *a): return False
+
+
+class ClaveSoloASuProveedor(unittest.TestCase):
+    """Correccion de defecto (2026-10-18): feeds.conf puede cambiar la URL de cualquier fuente (y un
+    salto de linea colado en el modelo de Groq podia anadir una), y _fetch le ponia la clave de
+    abuse.ch o de AbuseIPDB a la URL que fuera. Ahora la clave solo va por https a su proveedor (o a
+    un subdominio suyo), tampoco tras una redireccion; a otra URL la fuente se baja sin clave."""
+
+    def setUp(self):
+        self.f = piezas("CABECERA", "PROVEEDOR", "_de_su_proveedor", "_RedirClave", "_fetch",
+                        _clave_de=lambda a: {"abusech": ABUSECH, "aidb": AIDB}.get(a, ""))
+
+    def test_solo_https_al_dominio_del_proveedor(self):
+        de = self.f["_de_su_proveedor"]
+        for url, auth in (("https://api.abuseipdb.com/api/v2/blacklist?plaintext&limit=10000", "aidb"),
+                          ("https://urlhaus.abuse.ch/downloads/hostfile/", "abusech"),
+                          ("https://threatfox-api.abuse.ch/api/v1/", "abusech"),
+                          ("HTTPS://API.AbuseIPDB.com:443/api/v2/blacklist", "aidb"),
+                          ("https://abuse.ch", "abusech")):
+            self.assertTrue(de(url, auth), url)
+        for url, auth in (("http://api.abuseipdb.com/api/v2/blacklist", "aidb"),      # sin https
+                          ("https://attacker.example/x", "abusech"),
+                          ("https://api.abuseipdb.com.attacker.example/", "aidb"),
+                          ("https://evilabuse.ch/", "abusech"),
+                          ("https://api.abuseipdb.com@attacker.example/", "aidb"),
+                          ("https://attacker.example#.abuse.ch", "abusech"),
+                          ("https://attacker.example?.abuse.ch", "abusech"),
+                          ("https://api.abuseipdb.com:8443/", "aidb"),
+                          ("https://[::1]/", "aidb"),
+                          ("https://urlhaus.abuse.ch/downloads/hostfile/", "aidb"),  # la de otro proveedor
+                          ("https://api.abuseipdb.com/", "")):
+            self.assertFalse(de(url, auth), url)
+
+    def _fetch(self, url, auth):
+        visto = {}
+
+        class _UR(object):
+            class Request(object):
+                def __init__(self, url, data=None, headers=None):
+                    visto["url"] = url; visto["headers"] = dict(headers or {})
+
+            @staticmethod
+            def urlopen(req, timeout=30):
+                return _Resp("192.0.2.1\n")
+        self.f["urllib"] = type("U", (), {"request": _UR})
+        self.f["_fetch"](url, auth)
+        return visto
+
+    def test_fetch_no_pone_la_clave_fuera_de_su_proveedor(self):
+        self.assertEqual(self._fetch("https://api.abuseipdb.com/api/v2/blacklist", "aidb")["headers"].get("Key"), AIDB)
+        self.assertEqual(self._fetch("https://urlhaus.abuse.ch/downloads/hostfile/", "abusech")["headers"].get("Auth-Key"),
+                         ABUSECH)
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            v = self._fetch("http://attacker.example/y?k={AUTH}", "aidb")
+            w = self._fetch("https://attacker.example/x/{AUTH}", "abusech")
+        self.assertNotIn("Key", v["headers"])
+        self.assertEqual(v["url"], "http://attacker.example/y?k=")            # ni en {AUTH}
+        self.assertNotIn("Auth-Key", w["headers"])
+        self.assertEqual(w["url"], "https://attacker.example/x/")
+        self.assertIn("fuera de su proveedor", err.getvalue())
+        for secreto in (AIDB, ABUSECH):
+            self.assertNotIn(secreto, err.getvalue())
+
+    def test_una_redireccion_fuera_del_proveedor_sale_sin_la_clave(self):
+        h = self.f["_RedirClave"]()
+        req = urllib.request.Request("https://api.abuseipdb.com/api/v2/blacklist",
+                                     headers={"Key": AIDB, "User-Agent": "suricata-feeds/2.0"})
+        fuera = h.redirect_request(req, None, 302, "Found", {}, "http://attacker.example/y")
+        self.assertFalse(fuera.has_header("Key"))
+        self.assertEqual(fuera.get_header("User-agent"), "suricata-feeds/2.0")   # lo demas sigue
+        dentro = h.redirect_request(req, None, 301, "Moved Permanently", {}, "https://www.abuseipdb.com/otra")
+        self.assertEqual(dentro.get_header("Key"), AIDB)
+        req = urllib.request.Request("https://urlhaus.abuse.ch/downloads/hostfile/", headers={"Auth-Key": ABUSECH})
+        fuera = h.redirect_request(req, None, 307, "Temporary Redirect", {}, "https://urlhaus.abuse.ch.attacker.example/")
+        self.assertFalse(fuera.has_header("Auth-key"))
+        # y es el manejador de redirecciones con el que baja el script
+        self.assertIn("urllib.request.install_opener(urllib.request.build_opener(_RedirClave))",
+                      SCRIPT.read_text(encoding="utf-8"))
 
 
 if __name__ == "__main__":

@@ -295,6 +295,42 @@ class Comprobar(unittest.TestCase):
         self.assertEqual(self.probar("nada", "x")[1]["estado"], "invalida")
 
 
+class ModeloDeGroqEnUnaLinea(unittest.TestCase):
+    """Correccion de defecto (2026-10-18): el modelo de Groq se guardaba tal cual en feeds.conf, y un
+    salto de linea en el campo anadia lineas propias (p. ej. URLHAUS_URL=, que feeds_update usaba con
+    la clave de abuse.ch). Ahora no se guarda nada; un nombre normal se guarda igual que antes."""
+
+    MALO = "llama\nURLHAUS_URL=https://attacker.example/x\r\nABUSEIPDB_URL=http://attacker.example/y"
+
+    def setUp(self):
+        self.p = Panel(http=True)
+        self.addCleanup(self.p.cerrar)
+        self.d = self.p.d
+        self.d.groq_modelos = lambda key="": []          # sin red: el campo del modelo queda de texto
+        self.d.groq_probar = lambda k: (None, "no se pudo comprobar ahora (sin red?)", [])
+        self.assertTrue(self.d.groq_set("gsk_" + "x" * 40))
+
+    def conf(self):
+        with open(self.d.FEEDS_CONF, encoding="utf-8") as f:
+            return f.read()
+
+    def test_un_salto_de_linea_no_cuela_lineas(self):
+        # solo el modelo, o con una clave nueva que Groq no puede validar (sin lista de modelos)
+        for k in ("", "gsk_" + "y" * 40):
+            txt = self.p.pedir("POST", "/feeds/groq", {"groqkey": k, "groqmodel": self.MALO})[2]
+            self.assertIn("tiene que ir en una sola línea", txt)
+            self.assertNotIn("_URL=", self.conf())
+        self.assertEqual(self.d.groq_modelo(), "")
+        self.assertEqual(self.d.groq_key(), "gsk_" + "x" * 40)          # la clave de antes sigue
+        self.assertFalse(self.d._feeds_conf_set("GROQ_MODEL", self.MALO))   # tampoco por debajo
+        self.assertNotIn("_URL=", self.conf())
+
+    def test_un_nombre_normal_se_guarda_como_siempre(self):
+        txt = self.p.pedir("POST", "/feeds/groq", {"groqkey": "", "groqmodel": "llama-3.3-70b-versatile"})[2]
+        self.assertIn("Modelo de Groq guardado: llama-3.3-70b-versatile", txt)
+        self.assertEqual(self.d.groq_modelo(), "llama-3.3-70b-versatile")
+
+
 @unittest.skipUnless(os.environ.get("IDS_PRUEBAS_RED") == "1", "sin red: IDS_PRUEBAS_RED=1 para comprobar los enlaces")
 class EnlacesVivos(unittest.TestCase):
     def test_cada_enlace_responde(self):

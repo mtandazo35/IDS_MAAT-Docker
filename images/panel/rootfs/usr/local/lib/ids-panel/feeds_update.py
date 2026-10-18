@@ -50,6 +50,40 @@ CABECERA = {"abusech": "Auth-Key", "aidb": "Key"}
 def _clave_de(auth):
     return CLAVES.get(auth, "")
 
+# Cada clave va SOLO a su proveedor: feeds.conf puede cambiar la URL de cualquier fuente, y una
+# URL que no sea https a ese dominio (o a un subdominio suyo) se baja sin la clave.
+PROVEEDOR = {"abusech": ("abuse.ch",), "aidb": ("abuseipdb.com",)}
+
+def _de_su_proveedor(url, auth):
+    """La URL es https a un host del proveedor de esa clave? El host se corta como lo corta
+    urllib (hasta / ? o #) y solo vale con letras, digitos, puntos y guiones, y como mucho :443:
+    un usuario (@), un %, corchetes, otro puerto o cualquier otra cosa se quedan sin clave."""
+    if url[:8].lower() != "https://":
+        return False
+    host = url[8:]
+    for corte in "/?#":
+        host = host.split(corte, 1)[0]
+    host = host.lower()
+    if host.endswith(":443"):
+        host = host[:-4]
+    if not host or any(c not in "abcdefghijklmnopqrstuvwxyz0123456789.-" for c in host):
+        return False
+    return any(host == d or host.endswith("." + d) for d in PROVEEDOR.get(auth, ()))
+
+class _RedirClave(urllib.request.HTTPRedirectHandler):
+    """Al seguir una redireccion urllib copia las cabeceras, tambien la de la clave, a la URL que
+    diga la respuesta (otro host, o http). La clave solo sigue si la URL nueva tambien es de su
+    proveedor; si no, la peticion redirigida sale sin ella."""
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        nueva = super().redirect_request(req, fp, code, msg, headers, newurl)
+        if nueva is not None:
+            for auth, cab in CABECERA.items():
+                if nueva.has_header(cab.capitalize()) and not _de_su_proveedor(newurl, auth):
+                    nueva.remove_header(cab.capitalize())     # urllib guarda "Auth-key", "Key"
+        return nueva
+
+urllib.request.install_opener(urllib.request.build_opener(_RedirClave))   # el de siempre + esto
+
 # fuente: (nombre, url, ttl_horas[caducidad], tipo[ip|dom], categoria, auth, min_min[intervalo minimo de descarga])
 # EDROP se ELIMINO como fuente aparte: se fusiono en Spamhaus DROP (abr-2024).
 # Feodo: lista RECOMENDADA (servidores C2 activos/recientes), refresca cada 5 min upstream.
@@ -83,6 +117,10 @@ DOMF = [
 def _fetch(url, auth="", post=None):
     hdrs = {"User-Agent": "suricata-feeds/2.0", "Accept": "text/plain, application/json"}
     clave = _clave_de(auth)
+    if clave and not _de_su_proveedor(url, auth):       # ni en la cabecera ni en {AUTH}
+        sys.stderr.write("una fuente con clave '%s' apunta fuera de su proveedor (o sin https): "
+                         "se baja sin la clave\n" % auth)
+        clave = ""
     if clave:
         hdrs[CABECERA.get(auth, "Auth-Key")] = clave    # abuse.ch: Auth-Key; AbuseIPDB: Key
     url = url.replace("{AUTH}", clave)                  # o clave en la URL, si la fuente la usa asi

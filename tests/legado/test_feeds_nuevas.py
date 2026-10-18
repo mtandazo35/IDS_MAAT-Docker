@@ -65,8 +65,9 @@ class _Resp(object):
 
 def main():
     # ================= FEEDS =================
+    # (adaptada: _fetch mira antes que la URL sea del proveedor de la clave)
     f = piezas(FEEDS, ("TFX_CONFIANZA_MIN", "_parse_ipport", "_parse_ip", "_parse_dom", "PARSERS",
-                       "CABECERA", "_fetch"),
+                       "CABECERA", "PROVEEDOR", "_de_su_proveedor", "_fetch"),
                {"CLAVES": {"abusech": "CLAVE-TEST", "aidb": ""},
                 "_clave_de": lambda a: {"abusech": "CLAVE-TEST"}.get(a, "")})
 
