@@ -11,6 +11,8 @@
 #   - existe la tabla `inet ids_punto` (un netns sin su firewall no es sano).
 # Nunca falla por falta de espejo, punto pausado ni MikroTik desconectado (el LISTEN está con o
 # sin cliente).
+# Punto directo (MODO=directo, sin VPN): no hay OpenVPN, así que no se miran ni su servicio ni el
+# LISTEN; el resto igual.
 # IDS_SVSTAT, IDS_SERVICIOS, IDS_TZSP, IDS_AHORA, IDS_SERVERCONF e IDS_PROC_TCP solo existen para
 # las pruebas.
 set -u
@@ -20,8 +22,15 @@ tzsp="${IDS_TZSP:-/run/ids/tzsp.json}"
 serverconf="${IDS_SERVERCONF:-/etc/ids/vpn/server.conf}"
 proc_tcp="${IDS_PROC_TCP:-/proc/net/tcp /proc/net/tcp6}"
 MIN_ARRIBA_S=5
+directo=no
+[ "${MODO:-vpn}" = "directo" ] && directo=si
 
-for s in openvpn tzsp-decap rele-api; do
+if [ "$directo" = si ]; then
+  requeridos="tzsp-decap rele-api"
+else
+  requeridos="openvpn tzsp-decap rele-api"
+fi
+for s in $requeridos; do
   estado="$("$svstat" -o up "$servicios/$s" 2>/dev/null || true)"
   if [ "$estado" != "true" ]; then
     echo "salud-vpn: servicio $s caído"
@@ -29,6 +38,8 @@ for s in openvpn tzsp-decap rele-api; do
   fi
 done
 
+# --- solo con VPN: OpenVPN estable y escuchando ---------------------------------------------
+if [ "$directo" != si ]; then
 arriba="$("$svstat" -o updownfor "$servicios/openvpn" 2>/dev/null || true)"
 case "$arriba" in
   ''|*[!0-9]*) ;;                      # sin dato: no se exige
@@ -56,6 +67,7 @@ if [ "$escucha" != si ]; then
   echo "salud-vpn: nadie escucha en ${puerto}/tcp"
   exit 1
 fi
+fi   # solo con VPN
 
 if ! mtime="$(stat -c %Y "$tzsp" 2>/dev/null)"; then
   echo "salud-vpn: no existe $tzsp"

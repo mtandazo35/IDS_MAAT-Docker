@@ -9,7 +9,7 @@ services:
     labels: { ids-maat.punto: "@@PID@@", ids-maat.parte: "vpn", ids-maat.version: "@@VERSION@@" }
     cap_drop: [ALL]
     cap_add: [NET_ADMIN, NET_RAW]
-    devices: ["/dev/net/tun:/dev/net/tun"]
+    @@LINEA_DEVICES@@
     security_opt: ["no-new-privileges:true"]
     read_only: true
     tmpfs: ["/run:exec,size=16m", "/tmp:size=16m"]
@@ -20,10 +20,12 @@ services:
       net.ipv4.conf.default.rp_filter: "1"
       net.ipv4.ipfrag_high_thresh: "67108864"
       net.ipv4.ipfrag_time: "15"
-    ports: ["@@PUERTO@@:1194/tcp"]
+    @@LINEA_PUERTOS@@
     networks: [punto]
     environment:
       PUNTO: "@@PID@@"
+      @@LINEA_MODO@@
+      @@LINEA_MK_IP@@
       N: "@@N@@"
       TUN_NET: "@@TUN_NET@@"
       TUN_SENSOR: "@@TUN_SENSOR@@"

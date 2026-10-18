@@ -192,6 +192,60 @@ class ConFalsos(unittest.TestCase):
             "arg=UNIX-LISTEN:/run/ids/api.sock,fork,unlink-early,mode=660,max-children=4",
             "arg=TCP:100.64.3.2:8728,connect-timeout=5"])
 
+    # --- punto directo (sin VPN, solo LAN; el user, 2026-10-18) ---------------------------------
+    DIRECTO = {"MODO": "directo", "MK_IP": "192.168.88.1"}
+
+    def test_run_openvpn_directo_no_arranca_openvpn(self):
+        """En directo el servicio se queda quieto (sleep) y openvpn ni se llama."""
+        marca = Path(self.dir.name) / "openvpn-llamado"
+        self.falso("openvpn", 'touch "%s"' % ruta_bash(marca))
+        self.falso_que_apunta("sleep")
+        p = self.ejecutar(S6RC / "openvpn" / "run", self.DIRECTO)
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        self.assertEqual([l for l in self.leido() if l.startswith("arg=")], ["arg=infinity"])
+        self.assertFalse(marca.exists())
+        self.assertIn("punto directo", p.stdout)
+
+    def test_run_tzsp_decap_directo_solo_desde_mk_ip(self):
+        self.falso_que_apunta("python3")
+        p = self.ejecutar(S6RC / "tzsp-decap" / "run", self.DIRECTO)
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertIn("env=TZSP_ALLOW=192.168.88.1/32", self.leido())
+
+    def test_run_tzsp_decap_directo_sin_mk_ip_deja_allow_invalido(self):
+        self.falso_que_apunta("python3")
+        p = self.ejecutar(S6RC / "tzsp-decap" / "run", {"MODO": "directo"}, quitar=("MK_IP",))
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertIn("env=TZSP_ALLOW=/32", self.leido())
+
+    def test_run_rele_api_directo(self):
+        self.falso_que_apunta("socat")
+        p = self.ejecutar(S6RC / "rele-api" / "run", self.DIRECTO)
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertIn("arg=TCP:192.168.88.1:8729,connect-timeout=5", self.leido())
+
+    def test_salud_directo_sin_openvpn_ni_listen(self):
+        """Sin OpenVPN (servicio quieto) y sin nada en el 1194: sano en directo."""
+        extra = self.preparar_salud(caido="openvpn", tcp=self.TCP_SIN_ESCUCHA, arriba="1")
+        extra["MODO"] = "directo"
+        p = self.salud(extra, 1760090010)
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+
+    def test_salud_directo_sigue_exigiendo_el_resto(self):
+        for s in ("tzsp-decap", "rele-api"):
+            with self.subTest(s):
+                extra = self.preparar_salud(caido=s)
+                extra["MODO"] = "directo"
+                p = self.salud(extra, 1760090010)
+                self.assertEqual(p.returncode, 1)
+                self.assertIn(s, p.stdout)
+        extra = self.preparar_salud(nft_ok=False)
+        extra["MODO"] = "directo"
+        self.assertEqual(self.salud(extra, 1760090010).returncode, 1)
+        extra = self.preparar_salud()
+        extra["MODO"] = "directo"
+        self.assertEqual(self.salud(extra, 1760090090).returncode, 1)     # latido viejo
+
     # --- salud-vpn --------------------------------------------------------------------------
     # /proc/net/tcp de un netns con OpenVPN escuchando en 0.0.0.0:1194 (04AA) y un cliente
     # conectado (ESTABLISHED, 01); y el de uno sin nada en LISTEN en ese puerto

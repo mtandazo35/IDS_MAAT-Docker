@@ -1,0 +1,19 @@
+table inet ids_punto
+delete table inet ids_punto
+table inet ids_punto {
+  chain input {
+    type filter hook input priority filter; policy drop;
+    iif lo accept
+    ct state established,related accept
+    iifname "eth0" ip saddr 192.168.88.1 udp dport 37008 counter accept comment "espejo TZSP (directo)"
+    counter comment "resto"
+  }
+  chain output {
+    type filter hook output priority filter; policy drop;
+    oif lo accept
+    ct state established,related accept
+    oifname "eth0" ip daddr 192.168.88.1 tcp dport 8729 accept comment "API via rele (directo)"
+    counter comment "resto"
+  }
+  chain forward { type filter hook forward priority filter; policy drop; }
+}

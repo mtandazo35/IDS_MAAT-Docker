@@ -503,6 +503,22 @@ def derivar(n, tun_base, pool=None):
             "cluster_id": 100 + n}
 
 
+# Punto «directo» (decision del user, 2026-10-18): sin VPN, para quien trabaja en la LAN. El MikroTik
+# manda el espejo a un puerto UDP propio del punto en el host (el del contenedor es TZSP_PUERTO) y el
+# panel llega a su API en su IP de la LAN. Solo LAN: la IP del MikroTik tiene que ser privada o CGNAT.
+MODOS = ("vpn", "directo")
+REDES_LAN = ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "100.64.0.0/10")
+
+
+def puerto_espejo(n):
+    """El puerto UDP del host por el que entra el espejo de un punto directo (37008 + N - 1)."""
+    return TZSP_PUERTO + n - 1
+
+
+def es_directo(p):
+    return (p.get("modo") or "vpn") == "directo"
+
+
 def formato_cpus(cpus):
     cpus = sorted(set(cpus))
     trozos = []
@@ -714,6 +730,7 @@ def render_compose(p, imgs, version, nc, raiz_host="/"):
     prefijo = "" if raiz_host in ("/", "") else raiz_host.replace("\\", "/").rstrip("/")
     vpn_cpu = cpuset_vpn(nc)
     sur_cpu = p.get("cpuset_suricata")
+    directo = es_directo(p)
     valores = {
         "PID": p["pid"], "N": p["n"], "PUERTO": p["puerto"], "TUN_NET": p["tun_net"],
         "TUN_SENSOR": p["sensor"], "TUN_MK": p["mk"], "API_PUERTO": p["api_puerto"],
@@ -723,9 +740,16 @@ def render_compose(p, imgs, version, nc, raiz_host="/"):
         "MEM_SURICATA": "%dm" % PERFILES[p["perfil"]]["reserva_mb"], "MEM_VPN": "%dm" % MEM_VPN_MB,
         "SUBRED": p["subred"],
     }
+    # un punto directo no lleva túnel: publica su puerto UDP del espejo en vez del de OpenVPN, no
+    # necesita /dev/net/tun y le dice al contenedor el modo y la IP del MikroTik en la LAN
     lineas = {
         "LINEA_CPUSET_VPN": '    cpuset: "%s"' % vpn_cpu if vpn_cpu else None,
         "LINEA_CPUSET_SURICATA": '    cpuset: "%s"' % sur_cpu if sur_cpu else None,
+        "LINEA_DEVICES": None if directo else '    devices: ["/dev/net/tun:/dev/net/tun"]',
+        "LINEA_PUERTOS": ('    ports: ["%s:%s/udp"]' % (p["puerto"], TZSP_PUERTO) if directo
+                          else '    ports: ["%s:1194/tcp"]' % p["puerto"]),
+        "LINEA_MODO": '      MODO: "directo"' if directo else None,
+        "LINEA_MK_IP": '      MK_IP: "%s"' % p["mk_ip"] if directo else None,
     }
     return renderizar(leer_plantilla("compose.yml.tmpl"), valores, lineas)
 
@@ -768,17 +792,37 @@ def _elems_ip(redes):
 
 
 def render_nft(cfg, puertos, origenes):
-    """puertos: lista de int; origenes: lista de (pid, puerto, ip)."""
+    """puertos: lista de int; origenes: lista de (pid, puerto, ip) o (pid, puerto, ip, proto). Sin
+    proto, «tcp»: el origen fijo de la VPN. «udp» es el espejo de un punto directo, que solo puede
+    venir de la IP del MikroTik."""
     puertos = sorted(set(int(x) for x in puertos))
     elementos = "elements = { %s } " % ", ".join(str(x) for x in puertos) if puertos else ""
-    lineas_origen = "\n".join(
-        '    meta l4proto tcp ct direction original ct status dnat ct original proto-dst %d '
-        'ip saddr != %s counter drop comment "origen fijo %s"' % (puerto, ip, pid)
-        for pid, puerto, ip in sorted(origenes))
+    def _linea(o):
+        pid, puerto, ip = o[:3]
+        proto = o[3] if len(o) > 3 else "tcp"
+        return ('    meta l4proto %s ct direction original ct status dnat ct original proto-dst %d '
+                'ip saddr != %s counter drop comment "%s %s"'
+                % (proto, puerto, ip, "espejo directo" if proto == "udp" else "origen fijo", pid))
+    lineas_origen = "\n".join(_linea(o) for o in sorted(origenes, key=lambda o: tuple(o[:3])))
     valores = {"GESTION": _elems_ip(cfg.redes_gestion), "PROXY": _elems_ip(cfg.panel_desde),
                "PUERTOS_VPN": elementos, "PUERTO_PANEL": cfg.puerto_panel}
     return renderizar(leer_plantilla("ids_host.nft.tmpl"), valores,
                       {"LINEAS_ORIGEN_FIJO": lineas_origen or None})
+
+
+def puertos_y_origenes(puntos):
+    """Lo que el firewall del host deja publicado: el puerto de cada punto (OpenVPN por TCP o, en
+    uno directo, el del espejo por UDP) y desde dónde. Un punto directo SIEMPRE lleva su origen: el
+    espejo solo entra desde la IP del MikroTik."""
+    puertos, origenes = [], []
+    for p in puntos:
+        puertos.append(p["puerto"])
+        if es_directo(p):
+            if p.get("mk_ip"):
+                origenes.append((p["pid"], p["puerto"], p["mk_ip"], "udp"))
+        elif p.get("origen_ip"):
+            origenes.append((p["pid"], p["puerto"], p["origen_ip"]))
+    return puertos, origenes
 
 
 def entorno_panel(cfg):
@@ -903,6 +947,43 @@ def lineas_ca_mikrotik(pid, ca_pem):
         "/certificate set [find name~\"^%s\"] trusted=yes\n"
         "/file remove [find name=\"%s\"]\n"
         % (nombre, fichero, cuerpo, fichero, nombre, fichero))
+
+
+IP_HOST_TTL_S = 300
+_ip_host_cache = {}
+
+
+def ip_host_hacia(ip, t=None):
+    """La IP del host por la que sale hacia `ip` (`ip -4 route get`): la que el MikroTik de un punto
+    directo pone de sniff-target y desde la que le llega el panel a la API. None si no se sabe.
+    Se guarda unos minutos: el estado la pide cada pocos segundos."""
+    t = ahora() if t is None else t
+    guardada = _ip_host_cache.get(ip)
+    if guardada and t - guardada[0] < IP_HOST_TTL_S:
+        return guardada[1]
+    r = ejecutar(["ip", "-4", "-o", "route", "get", str(ip)], timeout=10)
+    m = re.search(r"\bsrc (\d{1,3}(?:\.\d{1,3}){3})\b", r.out) if r.rc == 0 else None
+    valor = m.group(1) if m else None
+    _ip_host_cache[ip] = (t, valor)
+    return valor
+
+
+def comandos_directo(p, ip_host=None):
+    """Lo que el MikroTik de un punto directo necesita saber: no hay VPN que crear, solo adónde manda
+    el espejo y desde dónde le llega el panel a la API. Lo mismo en v6 y v7."""
+    host = ip_host or "<IP-DEL-HOST>"
+    return (
+        "# ids-maat %s (%s) · N=%s · conexión directa (sin VPN, solo LAN) · MikroTik %s\n"
+        "# Este punto no lleva VPN: no hay nada que pegar para conectarlo.\n"
+        "#\n"
+        "# Espejo (TZSP por UDP): en las reglas sniff-tzsp del MikroTik usa\n"
+        "#   sniff-target=%s sniff-target-port=%s\n"
+        "# Solo se acepta desde %s: si el router lo manda desde otra IP, no llega.\n"
+        "#\n"
+        "# API: el panel entra a la API-SSL (puerto %s) del MikroTik desde %s.\n"
+        "# Si el router filtra la entrada, deja pasar ese puerto desde esa IP.\n"
+        % (p["pid"], p["nombre"], p["n"], p["mk_ip"], host, p["puerto"], p["mk_ip"],
+           p["api_puerto"], host))
 
 
 def comandos_mikrotik(p, nombre_dns, clave=None, ca_pem=None, aviso_cert=None):
@@ -1948,7 +2029,8 @@ CREATE TABLE IF NOT EXISTS punto (
   ros_version INTEGER NOT NULL, compat_v6 TEXT NOT NULL, api_puerto INTEGER NOT NULL,
   origen_ip TEXT, redes TEXT NOT NULL, usuario TEXT, cpuset_suricata TEXT,
   imagen_vpn TEXT, imagen_suricata TEXT, deseado TEXT NOT NULL, estado TEXT NOT NULL,
-  paso_error TEXT, creado INTEGER NOT NULL, actualizado INTEGER NOT NULL, error_desde INTEGER);
+  paso_error TEXT, creado INTEGER NOT NULL, actualizado INTEGER NOT NULL, error_desde INTEGER,
+  modo TEXT, mk_ip TEXT);
 CREATE TABLE IF NOT EXISTS enfriamiento (n INTEGER PRIMARY KEY, hasta INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS op (
   seq INTEGER PRIMARY KEY AUTOINCREMENT, op_id TEXT NOT NULL UNIQUE, orden TEXT NOT NULL,
@@ -1975,7 +2057,8 @@ def abrir_db():
 
 # Columnas añadidas después de la primera versión del esquema: (tabla, columna, tipo). Un orq.db
 # anterior las recibe al abrirse (CREATE TABLE IF NOT EXISTS no toca una tabla que ya existe).
-COLUMNAS_NUEVAS = (("punto", "error_desde", "INTEGER"),)
+# modo: «vpn» (NULL en los puntos de antes) o «directo»; mk_ip: la IP del MikroTik en la LAN (directo)
+COLUMNAS_NUEVAS = (("punto", "error_desde", "INTEGER"), ("punto", "modo", "TEXT"), ("punto", "mk_ip", "TEXT"))
 
 
 def _quitar_privadas(redes):
@@ -2024,6 +2107,8 @@ def fila_a_punto(f, cfg_base=None):
         return None
     p = dict(f)
     p["redes"] = json.loads(p["redes"])
+    p["modo"] = p.get("modo") or "vpn"
+    p.setdefault("mk_ip", None)
     base = cfg_base or "100.64"
     p.update({k: v for k, v in derivar(p["n"], base).items() if k in ("tun_net", "tun_red", "sensor", "mk")})
     return p
@@ -2219,9 +2304,33 @@ def redes_espejo(redes, cfg):
     return [str(n) for n in ipaddress.collapse_addresses(nets)]
 
 
+def validar_mk_ip(valor, cfg):
+    """La IP del MikroTik de un punto directo: solo LAN (privada o CGNAT; el user, 2026-10-18) y que
+    no choque con lo que el VPS ya usa por dentro (túneles, pool de Docker, red del panel)."""
+    ip = ipaddress.IPv4Address(_ipv4(valor, "mk_ip"))
+    if not any(ip in ipaddress.IPv4Network(r) for r in REDES_LAN):
+        raise _inv("mk_ip: %s no es una IP privada; el punto directo es solo para la LAN (por "
+                   "internet, usa un punto con VPN)" % ip)
+    for red, desc in ((cfg.red_tuneles, "la base de túneles"), (cfg.pool, "el pool de Docker"),
+                      (ipaddress.IPv4Network(PANEL_RED), "la red del panel")):
+        if ip in red:
+            raise _inv("mk_ip: %s está dentro de %s (%s)" % (ip, desc, red))
+    return str(ip)
+
+
 def validar_crear(params, cfg):
     _solo(params, {"nombre", "redes_abonados", "perfil", "hilos", "ros_version", "compat_v6",
-                   "api_puerto", "origen_ip", "pid", "n"}, ("nombre",))
+                   "api_puerto", "origen_ip", "pid", "n", "modo", "mk_ip"}, ("nombre",))
+    modo = params.get("modo") or "vpn"
+    if modo not in MODOS:
+        raise _inv("modo debe ser " + " o ".join(MODOS))
+    if modo == "directo":
+        if not params.get("mk_ip"):
+            raise _inv("un punto directo necesita mk_ip: la IP del MikroTik en la LAN")
+        if params.get("origen_ip"):
+            raise _inv("origen_ip es de la VPN; un punto directo solo acepta el espejo desde mk_ip")
+    elif params.get("mk_ip"):
+        raise _inv("mk_ip solo vale con modo directo")
     nombre = params["nombre"]
     if not isinstance(nombre, str) or not RE_NOMBRE.match(nombre):
         raise _inv("nombre inválido (^[a-z0-9][a-z0-9-]{1,30}$)")
@@ -2240,7 +2349,8 @@ def validar_crear(params, cfg):
            "api_puerto": _int(params.get("api_puerto", 8729), "api_puerto", validos=(8729, 8728)),
            "origen_ip": _ipv4(params["origen_ip"], "origen_ip") if params.get("origen_ip") else None,
            "pid": _pid(params["pid"]) if params.get("pid") else None,
-           "n": _int(params["n"], "n", rango=(1, N_MAX)) if params.get("n") is not None else None}
+           "n": _int(params["n"], "n", rango=(1, N_MAX)) if params.get("n") is not None else None,
+           "modo": modo, "mk_ip": validar_mk_ip(params["mk_ip"], cfg) if modo == "directo" else None}
     return out
 
 
@@ -2932,6 +3042,14 @@ class Orquestador:
         cum = su.get("alertas")
         if inicio is not None and (su.get("stats_edad_s") is None or t - su["stats_edad_s"] < inicio):
             cum = None
+        # un punto directo: el MikroTik manda el espejo a la IP del host (sensor) y al puerto UDP
+        # del punto, y es él mismo (mk) en su IP de la LAN; no hay cliente VPN
+        directo = es_directo(p)
+        if directo:
+            sensor, mk, tzsp_puerto, vpn_cliente = ip_host_hacia(p["mk_ip"], t), p["mk_ip"], p["puerto"], None
+        else:
+            sensor, mk, tzsp_puerto = p["sensor"], p["mk"], TZSP_PUERTO
+            vpn_cliente = leer_status_openvpn(ruta("/srv/ids/run/%s/openvpn-status.log" % pid))
         return {
             "nombre": p["nombre"], "n": p["n"], "puerto": p["puerto"], "tun_net": p["tun_net"],
             "perfil": p["perfil"], "hilos": p["hilos"], "ros_version": p["ros_version"],
@@ -2943,12 +3061,13 @@ class Orquestador:
             # redes = prefijos ADICIONALES del punto; redes_espejo = lo que va al MikroTik (siempre lo
             # privado y el CGNAT sin lo reservado, mas los adicionales)
             "redes": list(p["redes"]), "redes_espejo": self._redes_espejo(p),
-            "api_puerto": p["api_puerto"], "sensor": p["sensor"],
+            "api_puerto": p["api_puerto"], "sensor": sensor,
             # el origen fijo de la VPN (null = cualquiera): la ficha lo muestra o lo recomienda (C6)
             "origen_ip": p.get("origen_ip") or None,
-            "mk": p["mk"], "tzsp_puerto": TZSP_PUERTO,
+            "modo": p["modo"], "mk_ip": p.get("mk_ip"),
+            "mk": mk, "tzsp_puerto": tzsp_puerto,
             "contenedores": cont, "netns": ns,
-            "vpn_cliente": leer_status_openvpn(ruta("/srv/ids/run/%s/openvpn-status.log" % pid)),
+            "vpn_cliente": vpn_cliente,
             "tzsp": tz, "suricata": su, "avisos": avisos,
             # CONTRATO-F2 §9: desde qué fecha hay eventos y si hubo borrado antes de tiempo
             "retencion": retencion,
@@ -3387,15 +3506,10 @@ class Orquestador:
     # ---- piezas comunes -----------------------------------------------------------------------
     def regenerar_fw(self, excluir=None):
         cfg = config()
-        puertos, origenes = [], []
-        for p in self.puntos():
-            if p["pid"] == excluir or p["estado"] == "borrando":
-                continue
-            if not ruta("/srv/ids/puntos/%s" % p["pid"]).is_dir():
-                continue
-            puertos.append(p["puerto"])
-            if p.get("origen_ip"):
-                origenes.append((p["pid"], p["puerto"], p["origen_ip"]))
+        puertos, origenes = puertos_y_origenes(
+            p for p in self.puntos()
+            if p["pid"] != excluir and p["estado"] != "borrando"
+            and ruta("/srv/ids/puntos/%s" % p["pid"]).is_dir())
         texto = render_nft(cfg, puertos, origenes)
         d = asegurar_dir(ruta("/srv/ids/fw"), 0o700)
         actual = d / "ids_host.nft"
@@ -3421,8 +3535,9 @@ class Orquestador:
         for v in viejos[:-MAX_RESPALDOS_FW]:
             v.unlink()
 
-    def puerto_ocupado(self, puerto):
-        r = ejecutar(["ss", "-Hltn"], timeout=30)
+    def puerto_ocupado(self, puerto, proto="tcp"):
+        # TCP: quien escucha (LISTEN); UDP: cualquier socket ligado a ese puerto
+        r = ejecutar(["ss", "-Hlun" if proto == "udp" else "-Hltn"], timeout=30)
         for linea in r.out.splitlines():
             c = linea.split()
             if len(c) >= 4 and c[3].rsplit(":", 1)[-1] == str(puerto):
@@ -3700,7 +3815,9 @@ class Orquestador:
     def comandos(self, p, nombre_dns, clave=None):
         """comandos_mikrotik con la CA del VPS y, si el MikroTik rechazaría el certificado que usa
         el `vpn` del punto (sin NOMBRE_DNS, de antes de VPN-01, o no firmado por la CA actual), el
-        aviso de regenerar en la cabecera."""
+        aviso de regenerar en la cabecera. Un punto directo no lleva VPN: comandos_directo."""
+        if es_directo(p):
+            return comandos_directo(p, ip_host_hacia(p["mk_ip"]))
         crt = ruta("/srv/ids/puntos/%s/vpn/server.crt" % p["pid"])
         motivo = problema_cert(crt, nombre_dns)
         aviso = {None: None, "nombre": AVISO_CERT_VIEJO, "ca": AVISO_CERT_OTRA_CA}[motivo]
@@ -3710,6 +3827,7 @@ class Orquestador:
     def _datos_punto(self, p, clave=None, ya=False):
         cfg = config()
         d = {"pid": p["pid"], "n": p["n"], "puerto": p["puerto"], "tun_net": p["tun_net"],
+             "modo": p["modo"], "mk_ip": p.get("mk_ip"),
              "usuario": p["usuario"], "nombre": p["nombre"], "perfil": p["perfil"],
              "hilos": p["hilos"], "cpuset": p.get("cpuset_suricata"),
              "reserva": "%dm" % PERFILES[p["perfil"]]["reserva_mb"],
@@ -3736,6 +3854,7 @@ class Orquestador:
                          and p["hilos"] == prm["hilos"] and p["ros_version"] == prm["ros_version"]
                          and p["compat_v6"] == prm["compat_v6"] and p["api_puerto"] == prm["api_puerto"]
                          and (p["origen_ip"] or None) == prm["origen_ip"]
+                         and p["modo"] == prm["modo"] and (p.get("mk_ip") or None) == prm["mk_ip"]
                          and prm["pid"] in (None, p["pid"]) and prm["n"] in (None, p["n"]))
                 if not igual or p["estado"] == "creando":
                     raise ErrorOrden("CONFLICTO", "ya existe un punto %s con otros datos (%s)"
@@ -3756,8 +3875,11 @@ class Orquestador:
                         if imgs["dev"] else "«docker pull %s» (o vuelve a ejecutar install.sh)" % faltan[0])
                 raise ErrorOrden("FALLO", "falta la imagen %s: ejecuta %s" % (", ".join(faltan), como))
             # C4: la CA va en el script del MikroTik; si no sirve, el alta fallaría al final con la
-            # clave ya generada y perdida. Si aún no existe la crea el paso «certificado».
-            self._validar_ca(si_existe=True)
+            # clave ya generada y perdida. Si aún no existe la crea el paso «certificado». Un punto
+            # directo no lleva VPN ni CA.
+            directo = prm["modo"] == "directo"
+            if not directo:
+                self._validar_ca(si_existe=True)
             # D11: la admisión de RAM también ANTES de reservar el pid (los pid no se reutilizan:
             # un alta que no cabe no debe gastar uno). Se repite tras asignar, como siempre.
             mem = meminfo()
@@ -3768,8 +3890,12 @@ class Orquestador:
         with ctx.paso("asignar"):
             n = self.asignar_n(prm["n"])
             der = derivar(n, cfg.tun_base, cfg.pool)
-            if self.puerto_ocupado(der["puerto"]):
-                raise ErrorOrden("CONFLICTO_PUERTO", "el puerto %d/tcp está ocupado en el host" % der["puerto"],
+            # el puerto publicado: OpenVPN por TCP o, en un punto directo, el del espejo por UDP
+            proto = "udp" if directo else "tcp"
+            if directo:
+                der["puerto"] = puerto_espejo(n)
+            if self.puerto_ocupado(der["puerto"], proto):
+                raise ErrorOrden("CONFLICTO_PUERTO", "el puerto %d/%s está ocupado en el host" % (der["puerto"], proto),
                                  {"n": n, "puerto": der["puerto"]})
             nc = ncpu()
             cpuset = cpuset_suricata(nc, prm["hilos"], self._ocupadas())
@@ -3779,16 +3905,17 @@ class Orquestador:
                 db.execute(
                     "INSERT INTO punto (pid, nombre, n, puerto, subred, cluster_id, perfil, hilos, "
                     "ros_version, compat_v6, api_puerto, origen_ip, redes, usuario, cpuset_suricata, "
-                    "imagen_vpn, imagen_suricata, deseado, estado, creado, actualizado) "
-                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'activo','creando',?,?)",
+                    "imagen_vpn, imagen_suricata, deseado, estado, creado, actualizado, modo, mk_ip) "
+                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'activo','creando',?,?,?,?)",
                     (pid, prm["nombre"], n, der["puerto"], der["subred"], der["cluster_id"],
                      prm["perfil"], prm["hilos"], prm["ros_version"], prm["compat_v6"],
                      prm["api_puerto"], prm["origen_ip"], json.dumps(prm["redes_abonados"]), None,
-                     cpuset, imgs["vpn"], imgs["suricata"], t, t))
+                     cpuset, imgs["vpn"], imgs["suricata"], t, t, prm["modo"], prm["mk_ip"]))
             ctx.pid = pid
             p = self.punto(pid)
             ctx.deshacer = lambda: self.limpiar_punto(self.punto(pid) or p, enfriar=False)
-            ctx.registrar("%s N=%d puerto %d subred %s" % (pid, n, der["puerto"], der["subred"]))
+            ctx.registrar("%s N=%d puerto %d/%s subred %s%s" % (pid, n, der["puerto"], proto, der["subred"],
+                                                               " (directo, MikroTik %s)" % prm["mk_ip"] if directo else ""))
         with ctx.paso("admisión de RAM"):
             mem = meminfo()
             otros = [(x["perfil"], x["hilos"]) for x in self.puntos() if x["pid"] != pid]
@@ -3797,22 +3924,34 @@ class Orquestador:
                                  {"caben": caben(otros, mem)})
         with ctx.paso("directorios"):
             self.crear_dirs(pid)
+        # los tres pasos de la VPN no hacen nada en un punto directo (se quedan en la lista para
+        # que el progreso del alta sea el mismo en los dos modos)
+        clave = None
         with ctx.paso("certificado"):
-            self.instalar_cert(pid, cfg.nombre_dns)
-            self._validar_ca()
+            if directo:
+                ctx.registrar("punto directo: sin certificado")
+            else:
+                self.instalar_cert(pid, cfg.nombre_dns)
+                self._validar_ca()
         with ctx.paso("usuario VPN"):
-            usuario = nuevo_usuario()
-            clave = nueva_clave()
-            self.escribir_usuarios(p, usuario, clave)
-            escribir_atomico(ruta("/srv/ids/puntos/%s/vpn/ccd/%s" % (pid, usuario)), render_ccd(der["mk"]),
-                             modo=0o644)
-            self.x("UPDATE punto SET usuario=? WHERE pid=?", (usuario, pid))
-            self.guardar_clave_vpn(pid, clave)
-            p = self.punto(pid)
+            if directo:
+                ctx.registrar("punto directo: sin usuario VPN")
+            else:
+                usuario = nuevo_usuario()
+                clave = nueva_clave()
+                self.escribir_usuarios(p, usuario, clave)
+                escribir_atomico(ruta("/srv/ids/puntos/%s/vpn/ccd/%s" % (pid, usuario)), render_ccd(der["mk"]),
+                                 modo=0o644)
+                self.x("UPDATE punto SET usuario=? WHERE pid=?", (usuario, pid))
+                self.guardar_clave_vpn(pid, clave)
+                p = self.punto(pid)
         with ctx.paso("server.conf"):
-            escribir_atomico(ruta("/srv/ids/puntos/%s/vpn/server.conf" % pid),
-                             render_server_conf(pid, der["tun_red"], prm["ros_version"], prm["compat_v6"]),
-                             modo=0o644)
+            if directo:
+                ctx.registrar("punto directo: sin OpenVPN")
+            else:
+                escribir_atomico(ruta("/srv/ids/puntos/%s/vpn/server.conf" % pid),
+                                 render_server_conf(pid, der["tun_red"], prm["ros_version"], prm["compat_v6"]),
+                                 modo=0o644)
         with ctx.paso("suricata.yaml"):
             info_tmpl = plantilla_suricata(imgs["suricata"])
             self.escribir_yaml(p, imgs["suricata"], info_tmpl)
@@ -3987,6 +4126,10 @@ class Orquestador:
                                "depende de esa orden" % f["op_id"])
                 return {"recreado": [], "sustituida_por": f["op_id"], "depende_de": f["op_id"]}
         cfg = config()
+        directo = es_directo(p)
+        if directo and prm.get("origen_ip"):
+            raise ErrorOrden("INVALIDO", "%s es un punto directo: el espejo solo entra desde la IP del "
+                                         "MikroTik (%s), no lleva origen de VPN" % (pid, p.get("mk_ip")))
         nuevo = dict(p)
         if "redes_abonados" in prm:
             nuevo["redes"] = prm["redes_abonados"]
@@ -4004,11 +4147,13 @@ class Orquestador:
         cambia_redes = nuevo["redes"] != p["redes"]
         cambia_home = home_net(nuevo["redes"]) != home_net(p["redes"])
         cambia_sur = cambia_motor or cambia_home
-        cambia_vpn = any(nuevo[k] != p[k] for k in ("compat_v6", "ros_version"))
+        # en un punto directo no hay OpenVPN que reconfigurar: la versión de RouterOS solo se guarda
+        cambia_ros = any(nuevo[k] != p[k] for k in ("compat_v6", "ros_version"))
+        cambia_vpn = cambia_ros and not directo
         cambia_fw = (nuevo.get("origen_ip") or None) != (p.get("origen_ip") or None)
-        solo_prefijos = cambia_redes and not (cambia_sur or cambia_vpn or cambia_fw)
+        solo_prefijos = (cambia_redes or (cambia_ros and directo)) and not (cambia_sur or cambia_vpn or cambia_fw)
         recreado = []
-        if not (cambia_sur or cambia_vpn or cambia_fw or cambia_redes):
+        if not (cambia_sur or cambia_vpn or cambia_fw or cambia_redes or cambia_ros):
             ctx.mensaje = "sin cambios"
             return {"recreado": []}
         imgs = imagenes()
@@ -4053,10 +4198,11 @@ class Orquestador:
                             nuevo["ros_version"], nuevo.get("origen_ip"), nuevo.get("cpuset_suricata"),
                             ahora(), pid))
         if solo_prefijos:
-            with ctx.paso("guardar prefijos (Suricata sin reiniciar)"):
+            with ctx.paso("guardar prefijos (Suricata sin reiniciar)" if cambia_redes else "guardar"):
                 guardar()
             ctx.mensaje = ("prefijos guardados; Suricata no se reinicia: ya analiza todas las redes "
-                           "privadas y CGNAT")
+                           "privadas y CGNAT" if cambia_redes else
+                           "guardado; un punto directo no tiene VPN que reiniciar")
             return {"recreado": []}
         guardar()
         if cambia_vpn:
@@ -4125,7 +4271,9 @@ class Orquestador:
                                  % (", ".join(faltan), faltan[0]))
             nuevo = dict(p, imagen_vpn=imgs["vpn"], imagen_suricata=imgs["suricata"])
             info_tmpl = plantilla_suricata(imgs["suricata"])
-            textos = {"server.conf": render_server_conf(pid, p["tun_red"], p["ros_version"], p["compat_v6"]),
+            # un punto directo no tiene server.conf (None: ni se compara ni se escribe)
+            textos = {"server.conf": None if es_directo(p) else
+                      render_server_conf(pid, p["tun_red"], p["ros_version"], p["compat_v6"]),
                       "suricata.yaml": self.render_yaml(nuevo, imgs["suricata"], info_tmpl),
                       "compose.yml": render_compose(nuevo, imgs, cfg.version, ncpu(), raiz_host=raiz())}
             actuales = {}
@@ -4134,7 +4282,8 @@ class Orquestador:
                     actuales[nombre] = (base / rel).read_text(encoding="utf-8")
                 except OSError:
                     actuales[nombre] = None
-            cambios = [nombre for nombre, _, _ in self.FICHEROS_RECONFIGURAR if textos[nombre] != actuales[nombre]]
+            cambios = [nombre for nombre, _, _ in self.FICHEROS_RECONFIGURAR
+                       if textos[nombre] is not None and textos[nombre] != actuales[nombre]]
             cambios += ["imagen %s" % parte for parte in ("vpn", "suricata")
                         if (p.get("imagen_%s" % parte) or "") != imgs[parte]]
         if not cambios:
@@ -4213,6 +4362,8 @@ class Orquestador:
         lleva verify-server-certificate=yes y el MikroTik rechazaría el viejo."""
         p = self._p_o_noexiste(prm["pid"])
         pid = p["pid"]
+        if es_directo(p):
+            raise ErrorOrden("INVALIDO", "%s es un punto directo: no tiene VPN ni clave que regenerar" % pid)
         cfg = config()
         # C4: antes de tocar el certificado o la clave: con una CA que no sirve para el script, la
         # orden fallaba al final con la clave nueva ya escrita y sin entregar
@@ -4691,6 +4842,16 @@ def formato_estado(sis, puntos, t=None):
 
 
 def formato_creado(d):
+    if d.get("modo") == "directo":
+        return "\n".join([
+            ("OK punto %s ya existía" if d.get("ya_entregada") else "OK punto %s creado") % d["pid"],
+            "  nombre       %s" % d["nombre"],
+            "  N            %s" % d["n"],
+            "  conexión     directa, sin VPN (solo LAN) · MikroTik %s" % d["mk_ip"],
+            "  espejo       %s/udp" % d["puerto"],
+            "  perfil       %s · hilos %s · cpuset %s · reserva %s" % (d["perfil"], d["hilos"],
+                                                                      d.get("cpuset") or "-", d["reserva"]),
+            d["comandos"].rstrip("\n")])
     return "\n".join([
         ("OK punto %s ya existía" if d.get("ya_entregada") else "OK punto %s creado") % d["pid"],
         "  nombre       %s" % d["nombre"],
@@ -4729,6 +4890,8 @@ def construir_parser():
     c.add_argument("--compat-v6", nargs="?", const="seclevel0", choices=("seclevel0", "legacy"))
     c.add_argument("--api-puerto", type=int, choices=(8729, 8728))
     c.add_argument("--origen-ip")
+    c.add_argument("--modo", choices=MODOS, help="vpn (por defecto) o directo: sin VPN, solo LAN")
+    c.add_argument("--mk-ip", help="punto directo: la IP del MikroTik en la LAN")
     b = ps.add_parser("borrar", parents=[comun])
     b.add_argument("pid")
     b.add_argument("--confirmar", required=True)
@@ -4806,7 +4969,7 @@ def orden_desde_args(a):
             p = {"nombre": a.nombre}
             for k, v in (("redes_abonados", a.redes), ("perfil", a.perfil), ("hilos", a.hilos),
                          ("ros_version", a.ros), ("compat_v6", a.compat_v6), ("api_puerto", a.api_puerto),
-                         ("origen_ip", a.origen_ip)):
+                         ("origen_ip", a.origen_ip), ("modo", a.modo), ("mk_ip", a.mk_ip)):
                 if v is not None:
                     p[k] = v
             return "punto.crear", p
@@ -4977,11 +5140,8 @@ def fw_render(aplicar=False):
         if aplicar:
             orq.regenerar_fw()
             return 0
-        for p in orq.puntos():
-            if ruta("/srv/ids/puntos/%s" % p["pid"]).is_dir():
-                puertos.append(p["puerto"])
-                if p.get("origen_ip"):
-                    origenes.append((p["pid"], p["puerto"], p["origen_ip"]))
+        puertos, origenes = puertos_y_origenes(
+            p for p in orq.puntos() if ruta("/srv/ids/puntos/%s" % p["pid"]).is_dir())
     texto = render_nft(cfg, puertos, origenes)
     d = asegurar_dir(ruta("/srv/ids/fw"), 0o700)
     if aplicar:

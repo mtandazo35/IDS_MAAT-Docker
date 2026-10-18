@@ -93,6 +93,69 @@ class TextoNft(unittest.TestCase):
         self.assertEqual(render.nft_mon(), esperado)
 
 
+DIRECTO = {"MODO": "directo", "MK_IP": "192.168.88.1"}
+
+
+class Directo(unittest.TestCase):
+    """Punto directo (sin VPN, solo LAN; el user, 2026-10-18): el MikroTik manda el espejo y atiende
+    la API en su IP de la LAN."""
+
+    def test_entorno_directo(self):
+        cfg = render.validar(entorno(**DIRECTO))
+        self.assertEqual(cfg["modo"], "directo")
+        self.assertEqual(str(cfg["mk_ip"]), "192.168.88.1")
+
+    def test_sin_modo_es_vpn(self):
+        """Los compose de antes no traen MODO: siguen siendo puntos con VPN."""
+        cfg = render.validar(entorno())
+        self.assertEqual(cfg["modo"], "vpn")
+        self.assertIsNone(cfg["mk_ip"])
+        self.assertEqual(render.nft_punto(cfg), (ay.FIXTURES / "ids_punto_p003.nft").read_text(encoding="utf-8"))
+
+    def test_ips_de_lan_validas(self):
+        for ip in ("10.0.0.1", "172.16.5.9", "172.31.255.254", "192.168.1.1", "100.100.0.1"):
+            with self.subTest(ip=ip):
+                render.validar(entorno(MODO="directo", MK_IP=ip))
+
+    def test_ips_malas(self):
+        """Solo LAN: una IP publica, la del tunel del punto o algo que no es una IP, fuera."""
+        for ip, txt in (("8.8.8.8", "privada"), ("203.0.113.5", "privada"), ("172.32.0.1", "privada"),
+                        ("100.64.3.5", "TUN_NET"), ("", "MK_IP"), ("192.168.1.01", "MK_IP"),
+                        ("192.168.1.0/24", "MK_IP")):
+            with self.subTest(ip=ip):
+                with self.assertRaises(render.ErrorEntorno) as cm:
+                    render.validar(entorno(MODO="directo", MK_IP=ip))
+                self.assertIn(txt, str(cm.exception))
+        with self.assertRaises(render.ErrorEntorno):
+            render.validar(entorno(MODO="directo", MK_IP=None))
+
+    def test_modo_malo_y_mk_ip_sin_directo(self):
+        with self.assertRaises(render.ErrorEntorno) as cm:
+            render.validar(entorno(MODO="lan"))
+        self.assertIn("MODO", str(cm.exception))
+        with self.assertRaises(render.ErrorEntorno) as cm:
+            render.validar(entorno(MK_IP="192.168.88.1"))
+        self.assertIn("MK_IP", str(cm.exception))
+
+    def test_nft_directo_exacto(self):
+        esperado = (ay.FIXTURES / "ids_punto_p003_directo.nft").read_text(encoding="utf-8")
+        self.assertEqual(render.nft_punto(render.validar(entorno(**DIRECTO))), esperado)
+
+    def test_nft_directo_sin_tun0_ni_openvpn(self):
+        txt = render.nft_punto(render.validar(entorno(API_PUERTO="8728", TZSP_PUERTO="40000", **DIRECTO)))
+        self.assertIn('iifname "eth0" ip saddr 192.168.88.1 udp dport 40000 counter accept', txt)
+        self.assertIn('oifname "eth0" ip daddr 192.168.88.1 tcp dport 8728 accept', txt)
+        for nada in ("tun0", "1194", "100.64", "flush"):
+            self.assertNotIn(nada, txt)
+
+    def test_cli_validar_dice_directo(self):
+        p = subprocess.run([sys.executable, str(ay.RENDER), "validar"],
+                           env={**os.environ, **entorno(**DIRECTO), "PYTHONUTF8": "1"},
+                           capture_output=True, text=True, encoding="utf-8", timeout=30)
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertIn("directo, MikroTik 192.168.88.1", p.stderr)
+
+
 # Lo que imprime `nft list table` (nftables 1.1) de las tablas de los fixtures: otra forma,
 # comillas en iif/oif y contadores. test_vpn_arranque.sh lo compara con ay.comparar_nft.
 LISTADO_PUNTO = """table inet ids_punto {

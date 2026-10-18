@@ -4,6 +4,12 @@
 # modo 0600 propio, así que se crea aquí 0640 (grupo 10500 por el setgid de /run/ids) y OpenVPN
 # solo lo trunca y lo reescribe, sin cambiar el modo.
 exec 2>&1
+# Punto directo (sin VPN, solo LAN): no hay OpenVPN. El servicio se queda quieto para que el árbol
+# de s6 sea el mismo en los dos modos; salud-vpn no lo mira en directo.
+if [ "${MODO:-vpn}" = "directo" ]; then
+  echo "openvpn: punto directo, sin VPN"
+  exec sleep infinity
+fi
 umask 027
 estado=/run/ids/openvpn-status.log
 if ! { : >> "$estado" && chmod 0640 "$estado"; }; then

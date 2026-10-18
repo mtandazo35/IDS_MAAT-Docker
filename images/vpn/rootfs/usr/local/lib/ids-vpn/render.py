@@ -16,6 +16,11 @@ import sys
 
 RE_PUNTO = re.compile(r"p\d{3}")
 RE_ENTERO = re.compile(r"0|[1-9][0-9]*")
+# Un punto «directo» no lleva VPN: el MikroTik manda el espejo y atiende la API en su IP de la LAN
+# (decision del user, 2026-10-18: solo LAN). MK_IP tiene que ser privada o CGNAT.
+MODOS = ("vpn", "directo")
+REDES_LAN = tuple(ipaddress.IPv4Network(r) for r in
+                  ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "100.64.0.0/10"))
 
 
 class ErrorEntorno(ValueError):
@@ -77,6 +82,20 @@ def validar(env):
     tzsp_puerto = _entero(env, "TZSP_PUERTO", 1, 65535)
     tzsp_bytes = _entero(env, "TZSP_BYTES", 0)
 
+    # sin MODO, «vpn»: los compose de antes no lo traen
+    modo = env.get("MODO", "") or "vpn"
+    if modo not in MODOS:
+        raise ErrorEntorno(f"MODO={modo!r} debe ser vpn o directo")
+    mk_ip = None
+    if modo == "directo":
+        mk_ip = _ipv4(env, "MK_IP")
+        if not any(mk_ip in r for r in REDES_LAN):
+            raise ErrorEntorno(f"MK_IP={mk_ip} no es una IP privada: el punto directo es solo para la LAN")
+        if mk_ip in tun_net:
+            raise ErrorEntorno(f"MK_IP={mk_ip} está dentro de TUN_NET={tun_net}")
+    elif env.get("MK_IP"):
+        raise ErrorEntorno("MK_IP solo vale con MODO=directo")
+
     return {
         "punto": punto,
         "n": n,
@@ -86,11 +105,15 @@ def validar(env):
         "api_puerto": int(api_txt),
         "tzsp_puerto": tzsp_puerto,
         "tzsp_bytes": tzsp_bytes,
+        "modo": modo,
+        "mk_ip": mk_ip,
     }
 
 
 def nft_punto(cfg):
     """Texto exacto de la tabla `inet ids_punto` (§4.7). Nunca `flush ruleset`."""
+    if cfg.get("modo") == "directo":
+        return nft_punto_directo(cfg)
     mk = cfg["tun_mk"]
     return (
         "table inet ids_punto\n"
@@ -112,6 +135,34 @@ def nft_punto(cfg):
         "    oif lo accept\n"
         "    ct state established,related accept\n"
         f'    oifname "tun0" ip daddr {mk} tcp dport {cfg["api_puerto"]} accept comment "API via rele"\n'
+        '    counter comment "resto"\n'
+        "  }\n"
+        "  chain forward { type filter hook forward priority filter; policy drop; }\n"
+        "}\n"
+    )
+
+
+def nft_punto_directo(cfg):
+    """La tabla de un punto directo: sin OpenVPN ni tun0. El espejo entra por eth0 (el DNAT del
+    puerto UDP del punto en el host) y solo desde la IP del MikroTik; la API sale por eth0 solo
+    hacia ella."""
+    mk = cfg["mk_ip"]
+    return (
+        "table inet ids_punto\n"
+        "delete table inet ids_punto\n"
+        "table inet ids_punto {\n"
+        "  chain input {\n"
+        "    type filter hook input priority filter; policy drop;\n"
+        "    iif lo accept\n"
+        "    ct state established,related accept\n"
+        f'    iifname "eth0" ip saddr {mk} udp dport {cfg["tzsp_puerto"]} counter accept comment "espejo TZSP (directo)"\n'
+        '    counter comment "resto"\n'
+        "  }\n"
+        "  chain output {\n"
+        "    type filter hook output priority filter; policy drop;\n"
+        "    oif lo accept\n"
+        "    ct state established,related accept\n"
+        f'    oifname "eth0" ip daddr {mk} tcp dport {cfg["api_puerto"]} accept comment "API via rele (directo)"\n'
         '    counter comment "resto"\n'
         "  }\n"
         "  chain forward { type filter hook forward priority filter; policy drop; }\n"
@@ -146,8 +197,9 @@ def main(argv=None, env=None, salida=None, errores=None):
         print(f"render.py: entorno inválido: {e}", file=errores)
         return 1
     if orden == "validar":
-        print(f"render.py: entorno válido para {cfg['punto']} (N={cfg['n']}, túnel {cfg['tun_net']})",
-              file=errores)
+        donde = (f"directo, MikroTik {cfg['mk_ip']}" if cfg["modo"] == "directo"
+                 else f"túnel {cfg['tun_net']}")
+        print(f"render.py: entorno válido para {cfg['punto']} (N={cfg['n']}, {donde})", file=errores)
     elif orden == "nft-punto":
         salida.write(nft_punto(cfg))
     else:

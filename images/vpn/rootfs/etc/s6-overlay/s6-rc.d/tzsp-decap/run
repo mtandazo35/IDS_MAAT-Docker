@@ -1,10 +1,15 @@
 #!/bin/sh
-# tzsp-decap (longrun): CONTRATO-F1a §5.4. Un solo origen (TUN_MK) y una sola interfaz.
-# Si TUN_MK falta o no es válido, TZSP_ALLOW es inválido y el receptor no arranca.
+# tzsp-decap (longrun): CONTRATO-F1a §5.4. Un solo origen y una sola interfaz: TUN_MK (el
+# MikroTik por la VPN) o, en un punto directo, MK_IP (su IP de la LAN).
+# Si falta o no es válido, TZSP_ALLOW es inválido y el receptor no arranca.
 exec 2>&1
 umask 027
 TZSP_PORT="${TZSP_PUERTO:-}"
-TZSP_ALLOW="${TUN_MK:-}/32"
+if [ "${MODO:-vpn}" = "directo" ]; then
+  TZSP_ALLOW="${MK_IP:-}/32"
+else
+  TZSP_ALLOW="${TUN_MK:-}/32"
+fi
 TZSP_OUT_IF=ids-in
 TZSP_ESTADO=/run/ids/tzsp.json
 TZSP_BYTES="${TZSP_BYTES:-}"
