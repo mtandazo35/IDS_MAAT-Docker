@@ -1154,6 +1154,15 @@ def imagenes_ausentes(imgs, partes=("vpn", "suricata")):
             if ejecutar(["docker", "image", "inspect", "--format", "{{.Id}}", imgs[parte]], timeout=60).rc != 0]
 
 
+def imagen_admite_directo(imagen):
+    """¿La imagen vpn sabe hacer un punto directo? Lo dice su etiqueta `ids-maat.modos` (desde
+    2026-10-18). Una imagen anterior no la tiene: arrancaría OpenVPN sin server.conf y el alta
+    fallaría al final, en «esperar salud»."""
+    r = ejecutar(["docker", "image", "inspect", "--format", '{{index .Config.Labels "ids-maat.modos"}}', imagen],
+                 timeout=60)
+    return r.rc == 0 and "directo" in [x.strip() for x in r.out.strip().split(",")]
+
+
 def digest12(imagen):
     m = re.search(r"@sha256:([0-9a-f]{64})$", imagen)
     if m:
@@ -3886,6 +3895,10 @@ class Orquestador:
             directo = prm["modo"] == "directo"
             if not directo:
                 self._validar_ca(si_existe=True)
+            elif not imagen_admite_directo(imgs["vpn"]):
+                raise ErrorOrden("CONFLICTO", "la imagen vpn de este servidor no sabe hacer puntos directos (es "
+                                              "anterior): actualiza el IDS a la versión que los trae o crea el "
+                                              "punto por VPN")
             # D11: la admisión de RAM también ANTES de reservar el pid (los pid no se reutilizan:
             # un alta que no cabe no debe gastar uno). Se repite tras asignar, como siempre.
             mem = meminfo()

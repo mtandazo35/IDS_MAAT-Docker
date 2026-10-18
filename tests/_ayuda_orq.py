@@ -142,6 +142,7 @@ class SistemaFalso:
         self.claves_panel = []    # claves que «imprimió» el ids-panel simulado
         self.forzar_parte = {}    # parte -> {"estado", "salud"} al crearla o arrancarla
         self.imagenes_faltan = set()   # referencias que `docker image inspect` no encuentra
+        self.modos_vpn = "vpn,directo"  # etiqueta ids-maat.modos de la imagen vpn ("" = anterior)
         self.baneadas = set()          # IPs baneadas en la jaula ids-vpn (fail2ban-client simulado)
 
     def __call__(self, args, entrada=None, timeout=600):
@@ -286,6 +287,8 @@ class SistemaFalso:
         if sub == "image":
             if a[2:3] == ["inspect"] and a[-1] in self.imagenes_faltan:
                 return 1, "", "Error response from daemon: No such image: %s\n" % a[-1]
+            if any("ids-maat.modos" in x for x in a):        # etiqueta de la imagen vpn
+                return 0, self.modos_vpn + "\n", ""
             return 0, "sha256:" + "d" * 64 + "\n", ""
         if sub == "create":
             return 0, "id\n", ""

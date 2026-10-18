@@ -92,6 +92,19 @@ class Alta(unittest.TestCase):
                 self.assertIn(txt, r["mensaje"])
         self.assertIsNone(self.orq.punto("p001"))
 
+    def test_imagen_vpn_anterior_no_crea_un_directo(self):
+        """Una imagen vpn de antes (sin la etiqueta ids-maat.modos) arrancaría OpenVPN sin server.conf:
+        el alta se para al principio, con el motivo, y no gasta pid. Por VPN sigue creando."""
+        self.s.modos_vpn = ""
+        r = A.crear(self, self.orq, LAN, "CONFLICTO")
+        self.assertIn("no sabe hacer puntos directos", r["mensaje"])
+        self.assertIsNone(self.orq.punto("p001"))
+        r = A.crear(self, self.orq, {"nombre": "vpn1"})
+        self.assertEqual(r["resultado"]["pid"], "p001")
+        # la imagen nueva lo declara
+        docker = (A.REPO / "images" / "vpn" / "Dockerfile").read_text(encoding="utf-8")
+        self.assertIn('ids-maat.modos="vpn,directo"', docker)
+
     def test_puerto_udp_ocupado(self):
         self.s.puertos_ocupados.add(37008)
         r = A.crear(self, self.orq, LAN, "CONFLICTO_PUERTO")

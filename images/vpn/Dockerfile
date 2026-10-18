@@ -9,9 +9,12 @@ ARG S6_OVERLAY_VERSION=3.2.0.2
 ARG S6_OVERLAY_NOARCH_SHA256=6dbcde158a3e78b9bb141d7bcb5ccb421e563523babbe2c64470e76f4fd02dae
 ARG S6_OVERLAY_X86_64_SHA256=59289456ab1761e277bd456a95e737c06b03ede99158beb24f12b165a904f478
 
+# ids-maat.modos: los modos de punto que sabe hacer la imagen (el orquestador no crea un punto
+# directo sobre una imagen anterior, que no lo tiene)
 LABEL org.opencontainers.image.source="https://github.com/mtandazo35/IDS_MAAT-Docker" \
       org.opencontainers.image.version="${VERSION}" \
-      ids-maat.componente="vpn"
+      ids-maat.componente="vpn" \
+      ids-maat.modos="vpn,directo"
 
 ENV S6_KEEP_ENV=1 \
     S6_BEHAVIOUR_IF_STAGE2_FAILS=2 \
