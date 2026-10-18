@@ -88,7 +88,7 @@ class Estado(unittest.TestCase):
             self.assertIsInstance(c["inicio"], int)
         self.assertEqual(p["vpn_cliente"], {"conectado": True, "desde": 1760077000, "ip_real": "203.0.113.45",
                                             "usuario": "vpn3a9f2c", "viejo": False})
-        self.assertEqual(p["tzsp"], {"edad_s": 12, "rx": 1200, "tx": 1180, "rechazados": 20})
+        self.assertEqual(p["tzsp"], {"edad_s": 12, "rx": 1200, "tx": 1180, "rechazados": 20, "visto_s": None})
         self.assertEqual(p["suricata"]["reglas_cargadas"], 18234)
         self.assertEqual(p["suricata"]["kernel_packets"], 98765)
         self.assertEqual(p["suricata"]["stats_edad_s"], 14)

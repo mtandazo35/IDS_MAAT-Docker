@@ -6,7 +6,9 @@ chocar con lo interno), lo que se genera (compose sin /dev/net/tun ni OpenVPN, p
 MK_IP; sin certificado, usuario ni server.conf), el firewall del host (puerto publicado y espejo
 solo desde la IP del MikroTik), el estado, los comandos y las órdenes que no aplican."""
 
+import json
 import sys
+import time
 import unittest
 from pathlib import Path
 
@@ -110,6 +112,14 @@ class Alta(unittest.TestCase):
         self.assertEqual((est["modo"], est["mk_ip"], est["mk"], est["sensor"], est["tzsp_puerto"]),
                          ("directo", "192.168.88.1", "192.168.88.1", "192.168.88.10", 37008))
         self.assertIsNone(est["vpn_cliente"])
+        self.assertIsNone(est["tzsp"]["visto_s"])               # aún no llegó espejo
+        # «conectado» en un punto directo = llega espejo del MikroTik (tzsp-decap apunta cuándo)
+        t = int(time.time())
+        self.e.ruta("/srv/ids/run/p001/tzsp.json").write_text(json.dumps(
+            {"ts": t - 3, "rx": 10, "tx": 10, "rechazados": 0, "ultimo_visto": {"192.168.88.1": t - 7}}),
+            encoding="utf-8")
+        est = self.orq.construir_estado()["puntos"]["p001"]
+        self.assertIn(est["tzsp"]["visto_s"], (7, 8))
 
     def test_comandos_sin_ruta_al_mikrotik(self):
         self.s._ip = lambda a: (2, "", "RTNETLINK answers: Network is unreachable")

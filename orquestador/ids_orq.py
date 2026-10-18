@@ -1335,12 +1335,18 @@ def leer_status_openvpn(path, t=None):
 
 
 def leer_tzsp(path, t):
+    """El latido de tzsp-decap. `visto_s`: segundos desde el último espejo ACEPTADO (del origen
+    autorizado; null si aún no llegó ninguno). En un punto directo es lo que dice si el MikroTik
+    está conectado: no hay cliente VPN que mirar."""
     try:
         d = json.loads(leer_de_contenedor(path, TOPE_TZSP).decode("utf-8"))
+        vistos = [int(x) for x in (d.get("ultimo_visto") or {}).values()
+                  if isinstance(x, (int, float)) and not isinstance(x, bool)]
         return {"edad_s": max(0, t - int(d.get("ts", 0))), "rx": int(d.get("rx", 0)),
-                "tx": int(d.get("tx", 0)), "rechazados": int(d.get("rechazados", 0))}
+                "tx": int(d.get("tx", 0)), "rechazados": int(d.get("rechazados", 0)),
+                "visto_s": max(0, t - max(vistos)) if vistos else None}
     except (OSError, ValueError, TypeError, AttributeError):
-        return {"edad_s": None, "rx": None, "tx": None, "rechazados": None}
+        return {"edad_s": None, "rx": None, "tx": None, "rechazados": None, "visto_s": None}
 
 
 def _ts_suricata(txt):

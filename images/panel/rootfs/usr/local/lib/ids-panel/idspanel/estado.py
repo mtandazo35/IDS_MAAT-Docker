@@ -103,7 +103,13 @@ def semaforo(p):
         c = cont.get(parte) or {}
         if c.get("estado") not in (None, "running") or c.get("salud") == "unhealthy":
             return "rojo"
-    if avisos or estado in ("creando", "borrando") or not (p.get("vpn_cliente") or {}).get("conectado"):
+    if p.get("modo") == "directo":
+        # sin VPN (punto directo): conectado = llega el espejo de su MikroTik (hace menos de 2 min)
+        visto = (p.get("tzsp") or {}).get("visto_s")
+        conectado = isinstance(visto, (int, float)) and not isinstance(visto, bool) and visto < 120
+    else:
+        conectado = bool((p.get("vpn_cliente") or {}).get("conectado"))
+    if avisos or estado in ("creando", "borrando") or not conectado:
         return "ambar"
     return "verde"
 

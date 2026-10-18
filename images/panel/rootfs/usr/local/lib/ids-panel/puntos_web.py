@@ -69,7 +69,7 @@ ESTADOS = {"creando": "creando", "activo": "activo", "parado": "parado", "error"
            "borrando": "borrando"}
 AVISOS = {
     "SIN-ESPEJO": "No llega el espejo del MikroTik desde hace 10 min o más",
-    "ESPEJO-NO-LLEGA": "El espejo llega a la VPN pero Suricata no ve paquetes",
+    "ESPEJO-NO-LLEGA": "El espejo llega al receptor del punto pero Suricata no ve paquetes",
     "NETNS-DISTINTO": "VPN y Suricata quedaron en redes distintas (el orquestador lo corrige)",
     "REINICIOS": "3 o más reinicios en la última hora",
     "DISCO": "Queda poco disco libre en el servidor (< 15 %): pueden borrarse eventos antes de 30 días",
@@ -176,14 +176,36 @@ ROS_ALTA = 6
 PERFIL_ALTA = "reducido"
 
 
+# Conexión directa (sin VPN): solo LAN (el user, 2026-10-18). La IP del MikroTik, privada o CGNAT;
+# el orquestador además la saca de sus redes internas (túneles, Docker, panel).
+REDES_LAN = tuple(ipaddress.IPv4Network(r) for r in
+                  ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "100.64.0.0/10"))
+
+
 def validar_formulario_punto(f):
-    """(params para punto.crear, mensaje de error). Solo el nombre: prefijos, RouterOS y perfil no
-    se preguntan (si llegan, se ignoran)."""
+    """(params para punto.crear, mensaje de error). El nombre y la conexión: por VPN (lo de siempre)
+    o directa por la LAN con la IP del MikroTik. Prefijos, RouterOS y perfil no se preguntan (si
+    llegan, se ignoran)."""
     nombre = (f.get("nombre") or "").strip()
     if not RE_NOMBRE.match(nombre):
         return None, ("El nombre solo admite minúsculas, números y guiones, de 2 a 31 caracteres, "
                       "empezando por letra o número (p. ej. norte).")
-    return {"nombre": nombre, "perfil": PERFIL_ALTA, "ros_version": ROS_ALTA}, ""
+    params = {"nombre": nombre, "perfil": PERFIL_ALTA, "ros_version": ROS_ALTA}
+    modo = (f.get("modo") or "vpn").strip()
+    if modo not in ("vpn", "directo"):
+        return None, "Elige cómo se conecta el MikroTik: por VPN o directo por la red local."
+    if modo == "directo":
+        txt = (f.get("mk_ip") or "").strip()
+        try:
+            ip = ipaddress.IPv4Address(txt)
+        except ValueError:
+            return None, ("Para la conexión directa pon la IP del MikroTik en la red local "
+                          "(p. ej. 192.168.88.1).")
+        if not any(ip in r for r in REDES_LAN):
+            return None, ("La conexión directa es solo para la red local: %s es una IP pública. Pon la "
+                          "IP privada del MikroTik o crea el punto por VPN." % ip)
+        params.update(modo="directo", mk_ip=str(ip))
+    return params, ""
 
 
 def validar_redes(texto):
@@ -245,19 +267,28 @@ def salud(fn, pid):
                        "detalle": str(e.get("detalle") or "")})
     est = str(s.get("estado") or "desconocido")
     return {"estado": est if est in SALUD_TXT else "desconocido", "etapas": etapas,
-            "nota": str(s.get("nota") or s.get("detalle") or "")}
+            "nota": str(s.get("nota") or s.get("detalle") or ""), "directo": bool(s.get("directo"))}
+
+
+def salud_texto(sal):
+    """El texto del estado de salud. Un punto directo no tiene VPN: «desconectada» es su receptor
+    del espejo caído, no «VPN caída»."""
+    est = (sal or {}).get("estado", "desconocido")
+    if est == "desconectada" and (sal or {}).get("directo"):
+        return "receptor caído"
+    return SALUD_TXT.get(est, est)
 
 
 def salud_chip(sal):
     est = sal.get("estado", "desconocido")
     return ("<span class=pchip style='background:%s'>%s</span>"
-            % (SALUD_COLOR.get(est, "#9a9a95"), esc(SALUD_TXT.get(est, est))))
+            % (SALUD_COLOR.get(est, "#9a9a95"), esc(salud_texto(sal))))
 
 
 def salud_etapas_html(sal):
     if not sal.get("etapas"):
         return ("<div class=hint>Sin medición por etapas todavía: estado <b>%s</b>.</div>"
-                % esc(SALUD_TXT.get(sal.get("estado"), sal.get("estado"))))
+                % esc(salud_texto(sal)))
     out = "<ul class=etapas>"
     for e in sal["etapas"]:
         out += ("<li><span class=edot style='background:%s'></span><b>%s</b> &middot; %s%s</li>"
@@ -665,9 +696,23 @@ def _contenedor(c):
     return {"healthy": "sano", "unhealthy": "enfermo", "starting": "arrancando"}.get(sal, "en marcha")
 
 
+def es_directo(p):
+    """Punto «directo» (sin VPN, solo LAN; el user, 2026-10-18): el MikroTik manda el espejo al host
+    por la red local y el panel llega a su API en su IP de la LAN."""
+    return (p or {}).get("modo") == "directo"
+
+
+# un punto directo cuenta como conectado si el espejo de su MikroTik llegó hace menos de esto
+ESPEJO_VIVO_S = 120
+
+
 def mk_conectado(p):
     """El MikroTik tiene el tunel arriba segun estado.json. Un openvpn-status.log viejo
-    (`vpn_cliente.viejo`) no es «conectado» aunque diga que si."""
+    (`vpn_cliente.viejo`) no es «conectado» aunque diga que si. En un punto directo no hay tunel:
+    conectado = llega su espejo (tzsp.visto_s, del receptor)."""
+    if es_directo(p):
+        visto = ((p or {}).get("tzsp") or {}).get("visto_s")
+        return isinstance(visto, (int, float)) and not isinstance(visto, bool) and visto < ESPEJO_VIVO_S
     vc = (p or {}).get("vpn_cliente") or {}
     return bool(vc.get("conectado")) and not vc.get("viejo")
 
@@ -699,12 +744,19 @@ def situacion_vpn(p):
     if sal == "unhealthy":
         return {"clave": "caida", "texto": "caída", "motivo": "contenedor vpn enfermo (unhealthy)"}
     if mk_conectado(p):
+        if es_directo(p):
+            return {"clave": "conectada", "texto": "conectado",
+                    "motivo": "llega el espejo del MikroTik %s (directo, sin VPN)" % (p.get("mk_ip") or "?")}
         ip = (p.get("vpn_cliente") or {}).get("ip_real")
         return {"clave": "conectada", "texto": "conectado",
                 "motivo": "MikroTik conectado desde %s" % (ip or "?")}
     if sal == "starting":
         return {"clave": "arrancando", "texto": "arrancando",
                 "motivo": "contenedor vpn arrancando (comprobando su salud)"}
+    if es_directo(p):
+        return {"clave": "esperando", "texto": "esperando MikroTik",
+                "motivo": "receptor listo: esperando el espejo del MikroTik %s (directo, sin VPN)"
+                          % (p.get("mk_ip") or "?")}
     viejo = " (el registro de la VPN no se actualiza: dato viejo)" if (p.get("vpn_cliente") or {}).get("viejo") else ""
     return {"clave": "esperando", "texto": "esperando MikroTik",
             "motivo": "VPN lista: esperando a que el MikroTik conecte" + viejo}
@@ -1051,7 +1103,7 @@ def _kpis(total, operativos, vpn, alertas):
     return ("<div class='tw-mb-4 tw-grid tw-grid-cols-[repeat(2,minmax(0,1fr))] tw-gap-3 lg:tw-grid-cols-[repeat(4,minmax(0,1fr))]'>"
             + k("Puntos", _num(total), "registrados", "tw-text-ink")
             + k("Operativos", "%s / %s" % (_num(operativos), _num(total)), "salud por etapas", sano)
-            + k("VPN conectadas", "%s / %s" % (_num(vpn), _num(total)), "túneles activos",
+            + k("MikroTik conectados", "%s / %s" % (_num(vpn), _num(total)), "por VPN o directo",
                 "tw-text-ok" if total and vpn == total else "tw-text-warn")
             + k("Alertas 24 h", _num(alertas), "todos los puntos", "tw-text-ink")
             + "</div>")
@@ -1128,12 +1180,12 @@ def lista(h, consulta):
         viejo = aviso("El estado tiene %s: el orquestador no lo está actualizando (debería ser cada 15 s)."
                       % _edad(edad_est), "amb")
     cuerpo = (
-        "<div class=ptit><div><h1>Puntos</h1><p class=sub>Cada punto es un MikroTik con su propia VPN y su "
-        "propio Suricata. Cola del orquestador: %s &middot; pendientes: %s &middot; caben más puntos: %s</p></div>"
+        "<div class=ptit><div><h1>Puntos</h1><p class=sub>Cada punto es un MikroTik con su propia VPN (o "
+        "directo por la red local) y su propio Suricata. Cola del orquestador: %s &middot; pendientes: %s &middot; caben más puntos: %s</p></div>"
         "<div class=ptbtns><a class='btn sec' href='/ajustes'>Volver a Ajustes</a>"
         "<a class=btn href='/puntos/nuevo' onclick='palta();return false;'>Agregar punto</a></div></div>%s%s"
         "<div class='card tablewrap'><table><thead><tr><th>Punto</th><th>Estado</th><th>Salud por etapas</th>"
-        "<th>VPN</th><th>Espejo</th><th>Suricata</th><th class=num>Alertas 24 h</th>"
+        "<th>Conexión</th><th>Espejo</th><th>Suricata</th><th class=num>Alertas 24 h</th>"
         "<th>Retención efectiva</th><th>Acciones</th></tr></thead><tbody>%s</tbody></table></div>"
         "<p class=hint>Retención: el objetivo es %d días de eventos por punto; la columna dice desde cuando "
         "hay datos de verdad (si el disco se llena, se borran antes los más viejos y aquí se ve). La "
@@ -1225,6 +1277,32 @@ _TXT_ALTA = ("<p class=hint>Los prefijos de abonados se ponen solos (todas las r
              "si hace falta, se cambian luego en la ficha del punto.</p>")
 
 
+_JS_MODO = ("<script>function paltaModo(f){var d=f.querySelector('input[name=modo]:checked'),"
+            "b=f.querySelector('.pmkip');if(b)b.hidden=!(d&&d.value==='directo');}</script>")
+
+
+def _campos_conexion(v=None, ocultar=True):
+    """Cómo se conecta el MikroTik (el user, 2026-10-18): por VPN, lo de siempre, o directo por la red
+    local con su IP. La IP solo se ve con «Directa» (`ocultar`: el modal; la página sin JavaScript la
+    enseña siempre)."""
+    v = v or {}
+    directo = v.get("modo") == "directo"
+    fila = "display:flex;gap:6px;align-items:baseline;margin:4px 0;font-weight:400"
+    return (
+        "<label class=l>Conexión del MikroTik</label>"
+        "<label style='%s'><input type=radio name=modo value=vpn%s onchange='paltaModo(this.form)'> "
+        "<span>Por VPN <span class=hint>(recomendado: el MikroTik puede estar en cualquier sitio)</span></span></label>"
+        "<label style='%s'><input type=radio name=modo value=directo%s onchange='paltaModo(this.form)'> "
+        "<span>Directa, sin VPN <span class=hint>(solo si el MikroTik está en la misma red local que este "
+        "servidor)</span></span></label>"
+        "<div class=pmkip%s><label class=l>IP del MikroTik en la red local <span class=hint>(privada, p. ej. "
+        "192.168.88.1)</span></label>"
+        "<input class=t name=mk_ip maxlength=15 autocomplete=off inputmode=decimal value='%s'>"
+        "<p class=hint>Sin VPN, el espejo va sin cifrar por la red local y solo se acepta desde esa IP.</p></div>"
+        % (fila, "" if directo else " checked", fila, " checked" if directo else "",
+           " hidden" if ocultar and not directo else "", esc(v.get("mk_ip") or "")))
+
+
 def _caben_html(cap):
     caben = (cap or {}).get(PERFIL_ALTA)
     if not isinstance(caben, int):
@@ -1244,12 +1322,13 @@ def modal_alta(cap):
         "<input type=hidden name=op value='%s'>%s"
         "<input class=t name=nombre id=paltan required maxlength=31 autocomplete=off "
         "pattern='[a-z0-9][a-z0-9\\-]{1,30}' title='minúsculas, números y guiones, de 2 a 31 caracteres' "
-        "oninput='this.value=this.value.toLowerCase()'>"
+        "oninput='this.value=this.value.toLowerCase()'>%s"
         "<p class=pwarn id=paltaerr hidden></p>%s%s"
         "<div class=acciones><button class='btn sec' type=button onclick='paltano()'>Cancelar</button>"
-        "<button class=btn type=submit>Crear punto</button></div></form></div>"
-        "<script>function palta(){var n=document.getElementById('paltan');"
+        "<button class=btn type=submit>Crear punto</button></div></form></div>%s"
+        "<script>function palta(){var n=document.getElementById('paltan'),f=document.getElementById('paltaf');"
         "document.getElementById('paltaerr').hidden=true;n.value='';"
+        "f.modo.value='vpn';f.mk_ip.value='';paltaModo(f);"
         "document.getElementById('paltaov').style.display='flex';n.focus();}"
         "function paltano(){document.getElementById('paltaov').style.display='none';}"
         "function paltaMal(f,m){var b=f.querySelector('button[type=submit]'),e=document.getElementById('paltaerr');"
@@ -1260,7 +1339,7 @@ def modal_alta(cap):
         "paltaMal(f,j.error||'Sin respuesta del panel.');},function(m){paltaMal(f,m);});return false;}"
         "document.addEventListener('keydown',function(e){if(e.key==='Escape')paltano();});"
         "if(/[?&]alta=1/.test(location.search))document.addEventListener('DOMContentLoaded',palta);</script>"
-        % (esc(str(uuid.uuid4())), _TXT_NOMBRE, _caben_html(cap), _TXT_ALTA))
+        % (esc(str(uuid.uuid4())), _TXT_NOMBRE, _campos_conexion(), _caben_html(cap), _TXT_ALTA, _JS_MODO))
 
 
 def form_nuevo(h, valores=None, mensaje="", codigo=200):
@@ -1272,15 +1351,17 @@ def form_nuevo(h, valores=None, mensaje="", codigo=200):
     cuerpo = (
         "<div class=ptit><h1>Agregar punto</h1><a class='btn sec' href='/puntos'>Volver a Puntos</a></div>"
         "<p class=sub>Un punto es un MikroTik que manda una copia de su tráfico (el "
-        "espejo) al sensor por una VPN propia. Al crearlo, el servidor prepara su VPN y su Suricata y te da "
-        "los comandos para pegar en el MikroTik: sirven para RouterOS 6.49 o superior y para RouterOS 7.</p>%s%s"
+        "espejo) al sensor por una VPN propia o, si está en la misma red local que este servidor, directo "
+        "y sin VPN. Al crearlo, el servidor prepara su Suricata (y su VPN, si la lleva) y te da "
+        "los comandos para el MikroTik: sirven para RouterOS 6.49 o superior y para RouterOS 7.</p>%s%s"
         "<form method=post action='/puntos/nuevo' class=card onsubmit=\"var b=this.querySelector('button');"
         "if(b){b.disabled=true;b.textContent='Creando...';}\">"
         "<input type=hidden name=op value='%s'>%s"
-        "<input class=t name=nombre required maxlength=31 value='%s'>%s"
+        "<input class=t name=nombre required maxlength=31 value='%s'>%s%s"
         "<div class=acciones><button class=btn type=submit>Crear punto</button>"
-        "<a class='btn sec' href='/puntos'>Cancelar</a></div></form>"
-        % (aviso(mensaje), _caben_html(cap), esc(token), _TXT_NOMBRE, esc(v.get("nombre", "")), _TXT_ALTA))
+        "<a class='btn sec' href='/puntos'>Cancelar</a></div></form>%s"
+        % (aviso(mensaje), _caben_html(cap), esc(token), _TXT_NOMBRE, esc(v.get("nombre", "")),
+           _campos_conexion(v, ocultar=False), _TXT_ALTA, _JS_MODO))
     return h._html(pagina(d, "Agregar punto", cuerpo), codigo)
 
 
@@ -1312,7 +1393,9 @@ def crear(h, form):
         return h._json({"op_id": op_id}) if ajax else h._redirect("/operaciones/%s" % op_id)
     r = cliente().pedir("punto.crear", params, quien="panel:%s" % usuario, ip=_ip(d), op_id=op_id)
     _bit(d, "PUNTO-CREAR", objetivo=params["nombre"], resultado=r.get("codigo"),
-         extra="perfil=%s ros=%s op=%s" % (params["perfil"], params["ros_version"], op_id))
+         extra="perfil=%s ros=%s%s op=%s" % (params["perfil"], params["ros_version"],
+                                              " directo mk=%s" % params["mk_ip"] if params.get("modo") == "directo" else "",
+                                              op_id))
     if r.get("codigo") in ("ACEPTADA", "OK"):
         return h._json({"op_id": op_id}) if ajax else h._redirect("/operaciones/%s" % op_id)
     ops().quitar(op_id)
@@ -1685,6 +1768,8 @@ def _entrega_clave(orden, codigo, res):
     (el orquestador la tenia solo en memoria y se reinicio antes de que el panel la pidiera)."""
     if orden not in ORDENES_CON_CLAVE or codigo != "OK":
         return None
+    if res.get("modo") == "directo":            # sin VPN no hay clave que entregar
+        return None
     if res.get("clave"):
         return "mostrada"
     if res.get("ya_entregada"):
@@ -1889,7 +1974,18 @@ def _cuerpo_fin(d, vm):
                    % (esc(pid), esc(pid), esc(pid), esc(pid), esc(pid)))
         return cuerpo
     r = vm.get("resultado") or {}
-    if r.get("clave"):
+    # un punto directo (sin VPN): no hay clave ni comandos que pegar; solo los datos del espejo
+    directo = r.get("modo") == "directo" or bool(
+        pid and nodos.pid_valido(pid) and es_directo(nodos.punto(pid)))
+    if vm.get("orden") == "punto.crear" and directo:
+        cuerpo += aviso(("Ese punto ya existía con los mismos datos. " if (r.get("ya_entregada") or vm.get("ya_existia"))
+                         else "Listo. ")
+                        + "Es un punto directo, sin VPN: no hay nada que pegar en el MikroTik para "
+                        "conectarlo. Solo falta su espejo, con los datos de abajo (también en la ficha, "
+                        "Conexión).", "ok")
+        if r.get("comandos"):
+            cuerpo += "<pre class=cmd>%s</pre>" % esc(r["comandos"])
+    elif r.get("clave"):
         cuerpo += aviso("Listo. La clave de la VPN ya va puesta en los comandos de abajo y la ficha del punto "
                         "los vuelve a dar completos." if vm.get("clave_guardada") else
                         "Listo. Copia ahora la clave: el panel no la pudo guardar (falta la clave maestra) y no "
@@ -2458,7 +2554,13 @@ def ficha(h, pid, mensaje="", codigo=200, ok=False, extra_espejo=""):
     vc = p.get("vpn_cliente") or {}
     cont = p.get("contenedores") or {}
     sit = situacion_vpn(p)
-    if sit["clave"] == "conectada":
+    directo = es_directo(p)
+    if directo:
+        # sin VPN (el user, 2026-10-18): «conectado» = llega su espejo por la red local
+        mk_txt = ("%s &middot; directo, sin VPN" % esc(p.get("mk_ip") or "?")
+                  + {"conectada": " &middot; llega su espejo",
+                     "esperando": " &middot; esperando su espejo"}.get(sit["clave"], ""))
+    elif sit["clave"] == "conectada":
         mk_txt = "conectado desde %s" % esc(vc.get("ip_real") or "?")
     elif sit["clave"] == "esperando":
         mk_txt = "esperando a que conecte" + (" (dato de la VPN viejo)" if vc.get("viejo") else "")
@@ -2481,15 +2583,20 @@ def ficha(h, pid, mensaje="", codigo=200, ok=False, extra_espejo=""):
             ("Estado", esc(ESTADOS.get(p.get("estado"), p.get("estado") or "sin datos"))
              + "".join("<div class=pwarn>%s</div>" % esc(AVISOS.get(x, x)) for x in (p.get("avisos") or []))),
             ("Salud", salud_chip(sal)),
-            ("VPN", pill_vpn(p) + " " + esc(_contenedor(cont.get("vpn"))) + " &middot; MikroTik " + mk_txt),
+            ("Conexión" if directo else "VPN",
+             pill_vpn(p) + " " + esc(_contenedor(cont.get("vpn"))) + " &middot; MikroTik " + mk_txt),
             ("Espejo", ("%.0f paq/s" % pps if pps is not None else "sin medida")
              + (" &middot; último hace %s" % _edad(ahora - ultimo) if ultimo else "")),
             ("Suricata", esc(_contenedor(cont.get("suricata"))) + " &middot; %s / %s paquetes vistos/descartados"
              % (_num(su.get("kernel_packets")), _num(su.get("kernel_drops")))),
             ("Alertas 24 h", "<a href='/eventos?nodo=%s'>%s</a>" % (esc(pid), alertas_24h_html(pid, ahora, p)[0])),
             ("Retención efectiva", retencion_html(retencion(pid, p), ahora)),
-            ("Puerto VPN / red del túnel", esc("%s/tcp · %s" % (p.get("puerto") or "-", p.get("tun_net") or "-"))),
-        ) + ((("Origen de la VPN", origen_html(pid, p)),) if "origen_ip" in p else ()) + (
+        ) + ((("Espejo directo", esc("a %s:%s/udp · solo desde %s · API en %s:%s"
+                                     % (p.get("sensor") or "?", p.get("tzsp_puerto") or "-", p.get("mk_ip") or "?",
+                                        p.get("mk_ip") or "?", p.get("api_puerto") or 8729))),)
+             if directo else
+             (("Puerto VPN / red del túnel", esc("%s/tcp · %s" % (p.get("puerto") or "-", p.get("tun_net") or "-"))),)
+             + ((("Origen de la VPN", origen_html(pid, p)),) if "origen_ip" in p else ())) + (
             ("Perfil / RouterOS", esc("%s · %s" % (p.get("perfil") or "-", ros_txt(p.get("ros_version"))))),
             ("Prefijos espejados", "todas las redes privadas y el CGNAT" + (
                 " + " + esc(", ".join(p.get("redes") or [])) if p.get("redes") else "")),
@@ -2507,7 +2614,15 @@ def ficha(h, pid, mensaje="", codigo=200, ok=False, extra_espejo=""):
         cmds_txt, puesta = cmds, dd["clave"]
     else:
         cmds_txt, puesta = con_clave_vpn(cmds, pid, dd.get("clave_id"))
-    if not cmds:
+    if directo:
+        # sin VPN no hay nada que pegar para conectar: los datos del espejo y de la API
+        vpn_html = (("<p class=hint>Este punto no lleva VPN: el MikroTik manda el espejo por la red local y el "
+                     "panel entra a su API por la misma red. No hay nada que pegar para conectarlo; en las reglas "
+                     "del espejo del MikroTik usa estos datos.</p><pre class=cmd>%s</pre>" % esc(cmds))
+                    if cmds else
+                    aviso("No se pudieron obtener los datos del espejo: %s"
+                          % _orq.traducir(r.get("codigo"), r.get("mensaje")), "amb"))
+    elif not cmds:
         vpn_html = aviso("No se pudieron obtener los comandos: %s" % _orq.traducir(r.get("codigo"), r.get("mensaje")),
                          "amb")
     elif puesta:
@@ -2547,13 +2662,14 @@ def ficha(h, pid, mensaje="", codigo=200, ok=False, extra_espejo=""):
         "<div class=acciones><button class=btn type=submit>Guardar</button>"
         "<button class='btn sec' type=submit name=accion value=probar onclick='return papiProbar(this)'>"
         "Probar la conexión</button></div></form>"
-        "<p class=hint>La conexión va por el relé del túnel del punto (API-SSL, puerto %s del router), sin "
+        "<p class=hint>La conexión va por %s (API-SSL, puerto %s del router), sin "
         "certificado salvo que fijes uno abajo. La clave se guarda cifrada con la clave maestra y no se "
         "vuelve a mostrar.</p>%s"
         % (esc(pid), campo_token(), esc(rt.get("USER", "")), "(guardada)" if rt.get("PASS") else "",
            "dejar vacío para conservar" if rt.get("PASS") else "clave del usuario ids-api",
-           " checked" if rt.get("ENABLED") == "1" else "", esc(p.get("api_puerto") or 8729),
-           caja_huella))
+           " checked" if rt.get("ENABLED") == "1" else "",
+           ("la red local directa a %s" % esc(p.get("mk_ip") or "?")) if directo else "el relé del túnel del punto",
+           esc(p.get("api_puerto") or 8729), caja_huella))
     # Espejo: ya no hay seccion (el espejo lo monta el operador a mano en el MikroTik, el user
     # 2026-10-16); lo que traiga extra_espejo (el resultado de una accion de la API) sale tras la API
     # Prefijos
@@ -2586,15 +2702,18 @@ def ficha(h, pid, mensaje="", codigo=200, ok=False, extra_espejo=""):
         txt_regenerar += (" Este punto tiene el certificado del servidor de antes de la verificación: también se "
                           "renueva, y en el router hay que pegar las líneas de la CA del VPS y activar "
                           "verify-server-certificate=yes además de poner la clave nueva.")
+    # un punto directo no tiene VPN: arranca y para su receptor del espejo, y no hay clave que regenerar
+    parte = "el receptor del espejo" if directo else "la VPN"
     serv = "".join(
         "<form method=post action='/puntos/%s/%s' onsubmit=\"return ask(this,'%s','%s','%s'%s)\">%s"
         "<button class='btn sec' type=submit>%s</button></form>"
         % (esc(pid), acc, tit, txt, tit, ",'danger'" if acc == "parar" else "", campo_token(), tit)
         for acc, tit, txt in (
-            ("arrancar", "Arrancar", "Arranca la VPN y el Suricata del punto."),
-            ("reiniciar", "Reiniciar", "Reinicia la VPN y el Suricata del punto: el espejo se corta unos segundos."),
-            ("parar", "Parar", "Para la VPN y el Suricata del punto: deja de vigilarse hasta que lo arranques."),
-            ("regenerar", "Regenerar la clave VPN", txt_regenerar)))
+            ("arrancar", "Arrancar", "Arranca %s y el Suricata del punto." % parte),
+            ("reiniciar", "Reiniciar", "Reinicia %s y el Suricata del punto: el espejo se corta unos segundos." % parte),
+            ("parar", "Parar", "Para %s y el Suricata del punto: deja de vigilarse hasta que lo arranques." % parte),
+            ("regenerar", "Regenerar la clave VPN", txt_regenerar))
+        if not (directo and acc == "regenerar"))
     baja = (
         "<div class=card style='border-color:#f3c4c4'><h2>Dar de baja el punto</h2>"
         "<p>Quita del servidor su VPN, su Suricata y <b>todos sus datos</b>, y del panel sus salidas, su "
@@ -2613,20 +2732,23 @@ def ficha(h, pid, mensaje="", codigo=200, ok=False, extra_espejo=""):
     cuerpo = (
         "<div class=ptit><h1>%s <span class=hint>%s</span></h1><a class='btn sec' href='/puntos'>Volver a "
         "Puntos</a></div>%s%s%s"
-        "<nav class=secnav><a href='#resumen'>Resumen</a><a href='#vpn'>VPN</a><a href='#api'>API</a>"
+        "<nav class=secnav><a href='#resumen'>Resumen</a><a href='#vpn'>%s</a><a href='#api'>API</a>"
         "<a href='#prefijos'>Prefijos</a><a href='/puntos/%s/logs?parte=vpn'>Logs</a>"
         "<a href='#baja'>Baja</a></nav>"
         "<section class=card id=resumen><h2>Resumen</h2><div class=datos>%s</div>%s"
         "<h3 style='font-size:14px'>Salud por etapas</h3>%s</section>"
         "<section class=card><h2>Servicio</h2><div class=acciones>%s</div>%s</section>"
-        "<section class=card id=vpn><h2>VPN: comandos para el MikroTik</h2>%s</section>"
+        "<section class=card id=vpn><h2>%s</h2>%s</section>"
         "<section class=card id=api><h2>API del MikroTik</h2>%s</section>"
         "%s"
         "<section class=card id=prefijos><h2>Prefijos adicionales</h2>%s</section>"
         "<div id=baja>%s</div>%s"
         % (esc(nombre), esc(pid), aviso(mensaje, "ok" if ok else "err"), caja_error,
            "" if p else aviso("El punto aún no aparece en el estado del orquestador (se actualiza cada 15 s).", "info"),
-           esc(pid), datos, cobertura_html(cobertura_prefijos(pid, p, ahora)), salud_etapas_html(sal), serv, desbanear_html(p, pid), vpn_html, api_html, extra_espejo,
+           "Conexión" if directo else "VPN", esc(pid), datos, cobertura_html(cobertura_prefijos(pid, p, ahora)),
+           salud_etapas_html(sal), serv, desbanear_html(p, pid),
+           "Conexión directa: datos para el MikroTik" if directo else "VPN: comandos para el MikroTik",
+           vpn_html, api_html, extra_espejo,
            pref_html, baja,
            _retomar_html(d, pid)))
     # lleva la clave de la VPN: ni el navegador ni un proxy la guardan (como la pagina de la operacion)
@@ -2947,7 +3069,10 @@ def ip_mikrotik(p):
 
 def desbanear_html(p, pid):
     """El formulario «Desbanear IP del MikroTik» de la ficha (solo admin): la IP por defecto es la
-    del tunel o la ultima conocida, editable; ask() y el resultado en un modal."""
+    del tunel o la ultima conocida, editable; ask() y el resultado en un modal. Un punto directo no
+    tiene VPN ni jaula de fail2ban: nada."""
+    if es_directo(p):
+        return ""
     ip, cuando = ip_mikrotik(p)
     if ip and cuando and not mk_conectado(p):
         de = "la última desde la que conectó el MikroTik (%s)" % time.strftime("%d/%m/%Y %H:%M", time.localtime(cuando))

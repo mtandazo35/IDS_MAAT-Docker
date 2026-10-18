@@ -5393,6 +5393,8 @@ def medir_sensor(pid=None):
         if o["nivel"] in ("warn", "down"):
             o["nivel"] = "warn"
             o["titulo"] = ("Creando el punto" if _sit == "creando" else
+                           "Esperando al MikroTik: todavía no llega su espejo (punto directo, sin VPN)"
+                           if puntos_web.es_directo(p) else
                            "Esperando al MikroTik: todavía no conectó por la VPN (sin espejo aún)")
     mal = o["nivel"] in ("warn", "down") and not o.get("esperando_mk")
     era_mal = prev.get("alert_estado", "ok") in ("warn", "down")
@@ -5545,17 +5547,27 @@ def salud_punto(pid):
     # contenedor sano: `salud` manda sobre `running` (un vpn unhealthy en marcha es una VPN caida)
     cv = cont.get("vpn") or {}
     mk = puntos_web.mk_conectado(p)
+    # punto directo (sin VPN, solo LAN; el user, 2026-10-18): la etapa 1 es que llegue el espejo de su
+    # MikroTik al receptor; no hay túnel ni cliente VPN
+    directo = puntos_web.es_directo(p)
     vpn_vivo = _vivo(cont, "vpn")
     vpn_ok = mk and vpn_vivo
     # tras el alta (o mientras se crea) lo que depende del MikroTik esta «pendiente», no en fallo
     pend = p.get("estado") == "creando" or (vpn_vivo and not mk)
     _sal_vpn = cv.get("salud")
-    et["vpn"] = _etapa(vpn_ok,
-                       ("conectada desde %s" % vc.get("ip_real")) if vpn_ok else
-                       ("contenedor vpn %s%s, MikroTik %s" % (
-                           cv.get("estado", "?"), ("/%s" % _sal_vpn) if _sal_vpn not in (None, "", "none") else "",
-                           "conectado" if mk else ("sin dato reciente" if vc.get("viejo") else "sin conectar"))),
-                       desde=vc.get("desde"))
+    if directo:
+        et["vpn"] = _etapa(vpn_ok,
+                           ("llega el espejo de %s (directo, sin VPN)" % p.get("mk_ip")) if vpn_ok else
+                           ("receptor %s%s, MikroTik %s %s" % (
+                               cv.get("estado", "?"), ("/%s" % _sal_vpn) if _sal_vpn not in (None, "", "none") else "",
+                               p.get("mk_ip") or "?", "con espejo" if mk else "sin espejo todavía")))
+    else:
+        et["vpn"] = _etapa(vpn_ok,
+                           ("conectada desde %s" % vc.get("ip_real")) if vpn_ok else
+                           ("contenedor vpn %s%s, MikroTik %s" % (
+                               cv.get("estado", "?"), ("/%s" % _sal_vpn) if _sal_vpn not in (None, "", "none") else "",
+                               "conectado" if mk else ("sin dato reciente" if vc.get("viejo") else "sin conectar"))),
+                           desde=vc.get("desde"))
     if pend:
         _pendiente(et["vpn"])
     # 2) TZSP: el receptor late y le llega espejo del origen permitido
@@ -5632,13 +5644,17 @@ def salud_punto(pid):
             et["suricata"]["detalle"])
     elif not mk and _sal_vpn == "starting":
         estado, motivo = "arrancando", "contenedor vpn arrancando (comprobando su salud)"
+    elif not mk and directo:
+        estado, motivo = "esperando", ("receptor listo: esperando el espejo del MikroTik %s (en sus reglas "
+                                       "sniff-tzsp, los datos de la ficha del punto, Conexión)" % p.get("mk_ip"))
     elif not mk:
         estado, motivo = "esperando", ("VPN lista: esperando a que el MikroTik conecte (pega en el router "
                                        "los comandos de la ficha del punto)")
     elif tz_ok and kp is None:
         estado, motivo = "sin datos", "llega el espejo pero el Suricata no publica sus estadísticas"
     elif not (tz_ok and isinstance(kp, int) and kp > 0):
-        estado, motivo = "sin datos", "VPN arriba pero no llega espejo procesado"
+        estado, motivo = "sin datos", ("llega espejo del MikroTik pero no se procesa" if directo
+                                       else "VPN arriba pero no llega espejo procesado")
     else:
         # con espejo, si buena parte es de redes fuera de los prefijos el punto no es «operativo»
         # aunque todas las etapas esten bien: sale sano y sin alertas (lab, p001, 2026-10-15)
@@ -5648,10 +5664,12 @@ def salud_punto(pid):
             estado, motivo = "operativa", "todas las etapas al día"
         else:
             estado, motivo = "degradada", ", ".join(malas + ([fuera] if fuera else []))
-    etapas = [dict(et[k], id=k, nombre=nom) for k, nom in _ETAPAS]
+    etapas = [dict(et[k], id=k, nombre="Espejo del MikroTik (directo)" if directo and k == "vpn" else nom)
+              for k, nom in _ETAPAS]
     return {"pid": pid, "nombre": nodos.nombre(pid), "estado": estado, "motivo": motivo,
             "nota": motivo, "etapas": etapas, "etapas_por_id": et, "captura": captura,
-            "retencion": retencion_efectiva(pid), "avisos": list(p.get("avisos") or [])}
+            "retencion": retencion_efectiva(pid), "avisos": list(p.get("avisos") or []),
+            "directo": directo}
 POL_NOTIF = nodos.ruta("estado", "politica-notif.json")   # dedupe de la accion 'notificar'
 POL_ACCIONES = ("nada", "cuarentena", "dns", "notificar")   # valores heredados por banda
 # Politica por CLASE: para cada clase de abuso, desde que riesgo se actua. El destino es
@@ -9766,7 +9784,7 @@ def _selector_nodo(active):
         ops.append('<option value="%s"%s>%s (%s) &middot; %s</option>'
                    % (html.escape(p["pid"]), " selected" if p["pid"] == actual else "",
                       html.escape(p.get("nombre") or p["pid"]), html.escape(p["pid"]),
-                      html.escape(puntos_web.SALUD_TXT.get(sal["estado"], sal["estado"]))))
+                      html.escape(puntos_web.salud_texto(sal))))
     punto = ('<span class=nsdot style="background:%s" title="Salud del nodo"></span>' % color) if color else ""
     return ('<form method=get action="%s" class=nodosel>%s<label for=nodosel>Nodo</label>'
             '<select id=nodosel name=nodo onchange="this.form.submit()">%s</select>'
@@ -14224,7 +14242,8 @@ fila), nunca al que tengas elegido en el selector. En «Todos» las acciones mas
 </ul>
 <h3>Alta</h3>
 <ol>
-<li><b>Puntos &rarr; Agregar punto</b> abre una ventana que pide <b>solo el nombre</b>. No se preguntan
+<li><b>Puntos &rarr; Agregar punto</b> abre una ventana que pide <b>el nombre</b> y la <b>conexión</b>:
+por VPN (lo normal) o directa por la red local (ver «Conexión directa, sin VPN»). No se preguntan
 los prefijos (salen todas las redes privadas y el CGNAT; se cambian luego en la ficha), ni la versión: la
 VPN vale para RouterOS 6.49+ y 7 (los comandos traen el bloque de cada una) y el perfil es el reducido.
 Un doble clic no crea dos puntos.</li>
@@ -14244,6 +14263,26 @@ router) y <b>Probar la conexión</b>. Si le pusiste un certificado a la API-SSL,
 <b>La huella coincide: confirmar</b> tras compararla con la del router. El espejo lo montas a mano en el MikroTik (ver «El espejo del
 MikroTik»).</li>
 </ol>
+<h3>Conexión directa, sin VPN (solo red local)</h3>
+<p>Si el MikroTik está en la <b>misma red local</b> que este servidor, al agregar el punto puedes elegir
+<b>Directa, sin VPN</b> y poner la <b>IP del MikroTik en la red local</b> (privada, p. ej.
+<code>192.168.88.1</code>). Una IP pública se rechaza: por internet, usa la VPN. Lo que cambia:</p>
+<ul>
+<li>No hay VPN, ni clave, ni comandos que pegar para conectarlo. La ficha (apartado <b>Conexión</b>) da los
+datos del espejo: en las reglas <code>sniff-tzsp</code> del MikroTik, <code>sniff-target</code> es la IP de
+este servidor en esa red y <code>sniff-target-port</code> el puerto UDP propio del punto (37008 el primero,
+37009 el siguiente...).</li>
+<li>El servidor solo acepta el espejo de ese punto desde la IP del MikroTik: si el router lo manda desde
+otra, no llega.</li>
+<li>El panel entra a la API del MikroTik directo por la red local, desde la IP de este servidor: si el
+router filtra la entrada, deja pasar el 8729 desde ella.</li>
+<li>El punto sale <b>conectado</b> cuando llega su espejo (en los últimos 2 minutos); hasta entonces,
+«esperando MikroTik» en ámbar. En la salud por etapas la primera es <b>Espejo del MikroTik (directo)</b>
+y, si cae el contenedor que recibe el espejo, sale «receptor caído».</li>
+<li><b>Sin VPN, el espejo va sin cifrar</b> por la red local: por eso solo se permite con IPs privadas. La
+conexión se elige al crear el punto y no se cambia: para pasar a VPN, o cambiar la IP del MikroTik, se da
+de baja y se crea otro.</li>
+</ul>
 <h3>Si algo falla</h3>
 <ul>
 <li>Si una operación (el alta, arrancar, reiniciar o cambiar los prefijos) termina mal, su página dice
