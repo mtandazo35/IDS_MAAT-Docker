@@ -252,7 +252,12 @@ LOGIN_LOG = nodos.ruta("log", "login.log")
 
 def login_registrar(ip, user, estado):
     """Deja constancia de cada intento: fecha, IP, usuario y estado (OK/FAIL/BLOQUEADO)."""
-    user = (user or "")[:40].replace("\t", " ").replace("\n", " ").replace("\r", " ")
+    # una linea por intento: un tabulador o un salto en CUALQUIER campo (tambien los que
+    # splitlines() corta al leer, como \v, \x85 o \u2028) no puede fabricar otro registro
+    sep = r"[\t\n\r\v\f\x1c-\x1e\x85\u2028\u2029]"
+    user = re.sub(sep, " ", (user or "")[:40])
+    ip = re.sub(sep, " ", (ip or "?")[:45])
+    estado = re.sub(sep, " ", str(estado))
     ts = datetime.now(TZ_EC).strftime("%Y-%m-%d %H:%M:%S")
     try:
         # tope de tamano: si pasa de ~1 MB, conserva solo las ultimas 1000 lineas
@@ -262,7 +267,7 @@ def login_registrar(ip, user, estado):
             with open(LOGIN_LOG, "w", encoding="utf-8") as f:
                 f.writelines(ult)
         with open(LOGIN_LOG, "a", encoding="utf-8") as f:
-            f.write(f"{ts}\t{(ip or '?')[:45]}\t{user}\t{estado}\n")
+            f.write(f"{ts}\t{ip}\t{user}\t{estado}\n")
     except OSError:
         pass
 
