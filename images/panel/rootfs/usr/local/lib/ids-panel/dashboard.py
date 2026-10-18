@@ -1918,10 +1918,11 @@ ACCIONES = {
     "cortar":        "Cortar todo",
     "solo-web":      "Solo navegación (DNS, web 80/443 y hora)",
     "sin-correo":    "Sin correo saliente (25/465/587/2525)",
-    "dns-protegido": "DNS protegido (Quad9, sin DoT, tope 50/s)",
-    "redirigir-dns": "Redirigir DNS a tu resolutor",
-    "frenar-escaneo": "Frenar escaneo (tope 30 SYN/s)",
+    "dns-protegido": "DNS protegido (Quad9, sin DoT/DoQ, tope 50/s)",
+    "redirigir-dns": "Redirigir DNS a tu resolutor (sin DoT/DoQ)",
+    "frenar-escaneo": "Frenar escaneo (tope 30 SYN/s y escaneo de puertos)",
     "limitar":       "Limitar ancho de banda",
+    "cortar-mineria": "Cortar puertos de minería (stratum)",
     "propias":       "Mis reglas (pegadas en RouterOS)",
 }
 ACCIONES_POR_CAT = {
@@ -1930,7 +1931,7 @@ ACCIONES_POR_CAT = {
     "fuerza":  ("cortar", "solo-web", "propias", "nada"),
     "spam":    ("sin-correo", "cortar", "propias", "nada"),
     "dns":     ("dns-protegido", "redirigir-dns", "cortar", "propias", "nada"),
-    "minado":  ("limitar", "cortar", "propias", "nada"),
+    "minado":  ("limitar", "cortar-mineria", "cortar", "propias", "nada"),
     "p2p":     ("limitar", "cortar", "propias", "nada"),
     "otros":   ("nada", "cortar", "propias"),
 }
@@ -1941,6 +1942,8 @@ ACCIONES_POR_CAT = {
 ACCION_DEFECTO = {"botnet": "solo-web", "escaneo": "frenar-escaneo", "fuerza": "cortar", "spam": "sin-correo",
                   "dns": "dns-protegido", "minado": "nada", "p2p": "nada", "otros": "nada"}
 DNS_PROTEGIDO_DEFECTO = "9.9.9.9"     # Quad9: resuelve y bloquea dominios de malware
+# puertos stratum habituales de las pools de mineria (TCP). No son todos: es lo comun
+PUERTOS_MINERIA = "3333,4444,5555,7777,14433,14444"
 T_RAW, T_NAT, T_MANGLE, T_QUEUE = "/ip/firewall/raw", "/ip/firewall/nat", "/ip/firewall/mangle", "/queue/tree"
 T_FILTER = "/ip/firewall/filter"
 _TABLA_RSC = {T_RAW: "/ip firewall raw", T_NAT: "/ip firewall nat", T_FILTER: "/ip firewall filter",
@@ -2019,7 +2022,12 @@ def reglas_de_accion(cat, accion, lista, params=None):
                 (T_RAW, {"chain": ch, "action": "drop", "_desc": "Bloquear exceso"}),
                 (T_RAW, dict({"chain": "prerouting", "action": "jump", "jump-target": ch, "src-address-list": lista,
                               "protocol": "udp", "dst-port": "53", "_arriba": "1",
-                              "_desc": "Revisar clientes"}, **wan))]
+                              "_desc": "Revisar clientes UDP"}, **wan)),
+                # el tope tambien por TCP (el user, 2026-10-18: UDP y TCP). Va al final para no
+                # renumerar las reglas que ya estan en los routers
+                (T_RAW, dict({"chain": "prerouting", "action": "jump", "jump-target": ch, "src-address-list": lista,
+                              "protocol": "tcp", "dst-port": "53", "_arriba": "1",
+                              "_desc": "Revisar clientes TCP"}, **wan))]
     if accion == "frenar-escaneo":
         ch = "SURICATA-ESCANEO-TOPE"
         return [(T_RAW, {"chain": ch, "action": "return", "dst-limit": "30,60,src-address/10s",
@@ -2027,16 +2035,37 @@ def reglas_de_accion(cat, accion, lista, params=None):
                 (T_RAW, {"chain": ch, "action": "drop", "_desc": "Bloquear exceso"}),
                 (T_RAW, dict({"chain": "prerouting", "action": "jump", "jump-target": ch, "src-address-list": lista,
                               "protocol": "tcp", "tcp-flags": "syn,!ack", "_arriba": "1",
-                              "_desc": "Revisar clientes"}, **wan))]
+                              "_desc": "Revisar clientes TCP"}, **wan)),
+                # escaneo de PUERTOS por TCP y UDP: psd («port scan detection») es sin estado y vale
+                # en raw. 21,3s,3,1 = en 3 s, peso 21 con 3 por puerto bajo (<1024) y 1 por alto:
+                # ~7 puertos bajos o 21 altos distintos. El tope de SYN de arriba no ve el UDP, y un
+                # tope de paquetes UDP cortaria juegos, llamadas y QUIC (el user, 2026-10-18)
+                (T_RAW, dict({"chain": "prerouting", "action": "drop", "src-address-list": lista,
+                              "psd": "21,3s,3,1", "_arriba": "1",
+                              "_desc": "Escaneo de puertos TCP/UDP"}, **wan))]
     if accion == "redirigir-dns":
+        # igual que DNS protegido: arriba del todo, solo lo que entra por la LAN, y sin DoT/DoQ
+        # (sin cortarlos, el equipo infectado se salta la redireccion con DNS cifrado)
         ip = (p.get("dns_ip") or "").strip()
-        base = {"chain": "dstnat", "src-address-list": lista, "dst-port": "53"}
+        base = {"chain": "dstnat", "src-address-list": lista, "dst-port": "53", "_arriba": "1"}
         if ip:
             acc = {"action": "dst-nat", "to-addresses": ip, "to-ports": "53"}
         else:
             acc = {"action": "redirect", "to-ports": "53"}   # al resolutor del propio router
-        return [(T_NAT, dict(base, protocol="udp", _desc="DNS UDP al resolutor", **acc)),
-                (T_NAT, dict(base, protocol="tcp", _desc="DNS TCP al resolutor", **acc))]
+        return [(T_NAT, dict(base, protocol="udp", _desc="DNS UDP al resolutor", **acc, **wan)),
+                (T_NAT, dict(base, protocol="tcp", _desc="DNS TCP al resolutor", **acc, **wan)),
+                (T_RAW, dict({"chain": "prerouting", "action": "drop", "src-address-list": lista,
+                              "protocol": "tcp", "dst-port": "853,8853,9953", "_arriba": "1",
+                              "_desc": "Bloquear DNS cifrado TCP"}, **wan)),
+                (T_RAW, dict({"chain": "prerouting", "action": "drop", "src-address-list": lista,
+                              "protocol": "udp", "dst-port": "784,853,8853,9953", "_arriba": "1",
+                              "_desc": "Bloquear DNS cifrado UDP"}, **wan))]
+    if accion == "cortar-mineria":
+        # puertos tipicos de las pools (stratum) por TCP, solo para los de la lista de minado.
+        # No es todo: hay pools en cualquier puerto o en 443 con TLS (para eso, «Cortar todo»)
+        return [(T_RAW, {"chain": "prerouting", "action": "drop", "src-address-list": lista,
+                         "protocol": "tcp", "dst-port": PUERTOS_MINERIA, "_arriba": "1",
+                         "_desc": "Bloquear puertos de mineria"})]
     if accion == "limitar":
         # max-limit de una queue tree es UN valor: «2M/2M» (subida/bajada) es de queue simple y
         # RouterOS lo rechaza aqui; un valor guardado asi se queda con el primero
@@ -2044,7 +2073,11 @@ def reglas_de_accion(cat, accion, lista, params=None):
         if not lim:
             return []
         mk = "suricata-" + cat
-        return [(T_MANGLE, {"chain": "prerouting", "src-address-list": lista, "action": "mark-connection",
+        # connection-mark=no-mark: se marca la conexion una vez y no en cada paquete. Ojo: con
+        # fasttrack (sin connection-mark=no-mark en SU regla) las conexiones aceleradas se saltan
+        # el mangle y la cola; la vista previa lo avisa (_aviso_fasttrack)
+        return [(T_MANGLE, {"chain": "prerouting", "src-address-list": lista, "connection-mark": "no-mark",
+                            "action": "mark-connection",
                             "new-connection-mark": mk, "passthrough": "yes", "_desc": "Marcar conexiones"}),
                 (T_MANGLE, {"chain": "prerouting", "connection-mark": mk, "action": "mark-packet",
                             "new-packet-mark": mk, "passthrough": "no", "_desc": "Marcar paquetes"}),
@@ -2431,6 +2464,31 @@ def _plan(cat, deseadas, existentes):
     return acciones
 
 
+def _aviso_fasttrack(s_, leidas=None):
+    """Aviso para «Limitar» si el router acelera conexiones con fasttrack: las aceleradas se saltan
+    el mangle y la queue tree parent=global y el limite no se aplica (manual de MikroTik). Solo si
+    hay una regla fasttrack-connection activa SIN connection-mark=no-mark; sin fasttrack, nada (no
+    todos los routers lo usan). La regla es del operador: el panel no la toca, dice la orden.
+    "" tambien si no se pudo leer el filter (el plan no se para por esto)."""
+    try:
+        if leidas is not None and T_FILTER in leidas:
+            filas = leidas[T_FILTER]
+        else:
+            filas = _mk_print_estricto(s_, T_FILTER + "/print",
+                                       [".id", "chain", "action", "connection-mark", "disabled", "comment"])
+    except Exception:
+        return ""
+    ft = [f for f in filas if f.get("action") == "fasttrack-connection"
+          and str(f.get("disabled", "false")).lower() not in ("true", "yes")
+          and (f.get("connection-mark") or "") != "no-mark"]
+    if not ft:
+        return ""
+    return ("Este router usa fasttrack: las conexiones aceleradas se saltan el mangle y la cola, y el "
+            "límite NO se les aplica. Para que valga, su regla de fasttrack tiene que dejar fuera las "
+            "conexiones marcadas: /ip firewall filter set [find action=fasttrack-connection] "
+            "connection-mark=no-mark (el panel no toca esa regla).")
+
+
 def _plan_en(s_, cat, accion=None, m=None, verificar=True, leidas=None):
     """El plan de una clase sobre una conexion YA abierta (el diagnostico lo llama ocho
     veces con el mismo socket: un login por router, no por clase).
@@ -2455,6 +2513,11 @@ def _plan_en(s_, cat, accion=None, m=None, verificar=True, leidas=None):
         aviso = "Falta el límite (ACCION_LIMITE_%s, p.ej. 2M): sin el no se aplica nada." % cat.upper()
     existentes = _reglas_nuestras(s_, cat, deseadas, leidas)
     acciones = _plan(cat, deseadas, existentes)
+    if accion == "limitar" and deseadas:
+        # solo si ESE router usa fasttrack: no todos lo usan (el user, 2026-10-18)
+        _ft = _aviso_fasttrack(s_, leidas)
+        if _ft:
+            aviso = ((aviso + " ") if aviso else "") + _ft
     ver = []
     if verificar and deseadas:
         ver = verificar_reglas(deseadas, lista)
@@ -11393,7 +11456,7 @@ def _card_listas(m):
         "<h3 style='margin:18px 0 2px;font-size:15px'>Listas por tipo de abuso y qué hace el router con cada una</h3>"
         "<p class=sub2 style='margin:0 0 10px'>Cada CPE va a la address-list de <b>su</b> "
         "categoría, y debajo eliges <b>la acción</b> que el router aplica a esa lista: una "
-        "plantilla (cortar, solo navegación, sin correo, redirigir DNS, limitar) o <b>tus "
+        "plantilla (cortar, solo navegación, sin correo, DNS protegido o redirigido, frenar escaneo, limitar, cortar minería) o <b>tus "
         "propias reglas</b> pegadas tal cual de RouterOS (usa <code>{LISTA}</code> donde "
         "vaya la lista; el comentario lo pone el panel). <b>Guarda</b> primero; después "
         "<i>Ver / aplicar en el router</i> enseña las líneas exactas que se van a crear, "
@@ -13825,15 +13888,29 @@ entra en la cadena el tráfico que <b>sale</b> de un abonado de la lista (un <co
 que hable por 443 sigue hablando.</td></tr>
 <tr><td><b>Sin correo saliente</b></td><td>corta 25/465/587/2525 (spam) y nada más.</td></tr>
 <tr><td><b>DNS protegido</b></td><td>la del ISP: el 53 (udp y tcp) a un resolutor que filtra (Quad9
-9.9.9.9 por defecto, o la IP que pongas), corte de DNS cifrado y puertos alternativos (853, 8853, 9953 y
-784 en udp) y tope de 50 consultas/s por cliente con ráfaga de 100.</td></tr>
+9.9.9.9 por defecto, o la IP que pongas), corte de DNS cifrado (DoT 853 por TCP y DoQ 853 por UDP, más los
+puertos alternativos 8853, 9953 y 784) y tope de 50 consultas/s por cliente con ráfaga de 100, <b>por UDP y
+por TCP</b>. El DNS por HTTPS (DoH, en el 443) no se puede cortar por puerto.</td></tr>
 <tr><td><b>Frenar escaneo</b></td><td>la del ISP: tope de 30 SYN nuevos por segundo por cliente (ráfaga
-60); lo que pase de ahí se descarta. El cliente sigue navegando.</td></tr>
-<tr><td><b>Redirigir DNS</b></td><td>fuerza el 53 a tu resolutor (dst-nat a la IP que pongas; vacío =
-<code>redirect</code> al propio router, que entonces debe resolver).</td></tr>
-<tr><td><b>Limitar</b></td><td>marca de conexión + marca de paquete + cola (<code>queue tree</code>) con el
-límite que pongas (p.ej. <code>2M</code>: la <code>max-limit</code> de una <code>queue tree</code> lleva un
-solo valor; <code>2M/2M</code> es la forma de las <code>queue simple</code>). Sin límite no se aplica.</td></tr>
+60); lo que pase de ahí se descarta. Además, el <b>escaneo de puertos por TCP y UDP</b> con el detector
+<code>psd=21,3s,3,1</code> de RouterOS: si en 3 segundos el cliente prueba muchos puertos distintos (unos 7
+por debajo del 1024 o 21 por encima), esos paquetes se descartan. No se pone un tope general de UDP: cortaría
+juegos, llamadas y QUIC. El cliente sigue navegando.</td></tr>
+<tr><td><b>Redirigir DNS</b></td><td>fuerza el 53 (udp y tcp) a tu resolutor (dst-nat a la IP que pongas;
+vacío = <code>redirect</code> al propio router, que entonces debe resolver). Como DNS protegido: va arriba del
+todo, solo para lo que entra por la LAN (<code>!WAN</code>) y corta el DNS cifrado (DoT/DoQ), porque si no el
+equipo infectado se salta la redirección.</td></tr>
+<tr><td><b>Limitar</b></td><td>marca de conexión (una vez por conexión, <code>connection-mark=no-mark</code>)
++ marca de paquete + cola (<code>queue tree</code>) con el límite que pongas (p.ej. <code>2M</code>: la
+<code>max-limit</code> de una <code>queue tree</code> lleva un solo valor; <code>2M/2M</code> es la forma de las
+<code>queue simple</code>). Sin límite no se aplica. <b>Ojo con el fasttrack</b>: si el router lo usa, las
+conexiones aceleradas se saltan el mangle y la cola y el límite no se les aplica. La vista previa lo avisa
+solo en los routers que lo usan, con la orden para arreglarlo (<code>connection-mark=no-mark</code> en su
+regla de fasttrack); el panel no toca esa regla.</td></tr>
+<tr><td><b>Cortar puertos de minería</b></td><td>solo para criptominado: corta por TCP los puertos
+habituales de las pools (stratum: 3333, 4444, 5555, 7777, 14433, 14444). Limitar el ancho de banda no frena
+a un minero, que gasta poco. No es todo: hay pools en otros puertos o en el 443 con TLS; para cortarlo del
+todo, <b>Cortar todo</b>.</td></tr>
 <tr><td><b>Mis reglas</b></td><td>pegas tu bloque de RouterOS tal cual (tablas <code>raw</code>, <code>nat</code>,
 <code>filter</code>, <code>mangle</code>, <code>queue tree</code>). Escribe <code>{{LISTA}}</code> donde vaya la
 address-list de la clase; el <code>comment</code> lo pone el panel y <code>place-before=0</code> significa

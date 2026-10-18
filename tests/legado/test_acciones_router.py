@@ -44,10 +44,10 @@ def check(d, c, e=""):
 
 PIEZAS = ("ACCIONES", "ACCIONES_POR_CAT", "ACCION_DEFECTO", "T_RAW", "T_NAT", "T_MANGLE", "T_QUEUE", "T_FILTER",
           "_RSC_TABLA", "REGLAS_DIR", "_RE_KV", "_CADENAS_BASE", "_ACCIONES_TABLA", "_TERMINALES", "_NO_CRITERIO",
-          "_PROTO_CON_PUERTO", "_LISTAS_IF_SISTEMA", "verificar_reglas", "_mk_contar", "verificar_en_router", "lineas_verificacion", "_RE_FIND_COMMENT", "_RE_FIND_CHAIN", "DNS_PROTEGIDO_DEFECTO", "reglas_desde_rsc", "cargar_reglas_propias", "guardar_reglas_propias",
+          "_PROTO_CON_PUERTO", "_LISTAS_IF_SISTEMA", "verificar_reglas", "_mk_contar", "verificar_en_router", "lineas_verificacion", "_RE_FIND_COMMENT", "_RE_FIND_CHAIN", "DNS_PROTEGIDO_DEFECTO", "PUERTOS_MINERIA", "reglas_desde_rsc", "cargar_reglas_propias", "guardar_reglas_propias",
           "_TABLA_RSC", "_PROPS_TABLA", "RESPALDOS_MK", "_MK_CONEXION", "accion_de_clase", "reglas_de_accion",
           "_com_regla", "_cod_regla", "_prefijo_regla", "_rsc_val", "rsc_de", "_reglas_nuestras", "_params_accion",
-          "_plan", "_plan_en", "plan_reglas", "_mk_print_todo", "_mk_print", "respaldar_firewall", "aplicar_reglas",
+          "_plan", "_aviso_fasttrack", "_plan_en", "plan_reglas", "_mk_print_todo", "_mk_print", "respaldar_firewall", "aplicar_reglas",
           "quitar_reglas", "_aplicar_en", "guardar_mk", "_mk_globales", "estado_reglas",
           "ErrorLecturaMK", "_mk_print_estricto")
 
@@ -209,13 +209,33 @@ def main():
     check("sin-correo = drop tcp 25,465,587,2525 (como la del ISP)", sc[0][1]["dst-port"] == "25,465,587,2525" and sc[0][1]["protocol"] == "tcp", sc)
     rd = R("dns", "redirigir-dns", "clientes-dns-malware", {"dns_ip": ""})
     check("redirigir sin IP = redirect al propio router, udp y tcp",
-          [x[1]["action"] for x in rd] == ["redirect", "redirect"] and {x[1]["protocol"] for x in rd} == {"udp", "tcp"}, rd)
+          [x[1]["action"] for x in rd[:2]] == ["redirect", "redirect"] and {x[1]["protocol"] for x in rd[:2]} == {"udp", "tcp"}, rd)
+    # 2026-10-18: igualada a DNS protegido (arriba, !WAN y sin DoT/DoQ)
+    rdw = R("dns", "redirigir-dns", "clientes-dns-malware", {"dns_ip": "", "wan": "WAN"})
+    check("  y como DNS protegido: arriba, solo desde la LAN, y corta DoT/DoQ por TCP y UDP",
+          len(rdw) == 4 and all(x[1].get("_arriba") == "1" and x[1].get("in-interface-list") == "!WAN" for x in rdw)
+          and [(x[0], x[1]["action"], x[1].get("protocol")) for x in rdw[2:]]
+          == [(T_RAW, "drop", "tcp"), (T_RAW, "drop", "udp")]
+          and "853" in rdw[2][1]["dst-port"].split(",") and "853" in rdw[3][1]["dst-port"].split(","), rdw)
     rd2 = R("dns", "redirigir-dns", "l", {"dns_ip": "192.0.2.53"})
     check("redirigir con IP = dst-nat a esa IP", rd2[0][1]["action"] == "dst-nat" and rd2[0][1]["to-addresses"] == "192.0.2.53", rd2)
     check("limitar sin limite no genera nada", R("p2p", "limitar", "l", {"limite": ""}) == [], "")
     li = R("p2p", "limitar", "clientes-p2p", {"limite": "2M"})
     check("limitar con limite = marca de conexion + marca de paquete + cola", [x[0] for x in li] == [T_MANGLE, T_MANGLE, T_QUEUE]
           and li[2][1]["max-limit"] == "2M" and li[1][1]["new-packet-mark"] == "suricata-p2p", li)
+    check("  la conexion se marca una vez (connection-mark=no-mark), no en cada paquete",
+          li[0][1].get("connection-mark") == "no-mark", li[0])
+    # 2026-10-18: plantilla nueva para criptominado, solo para su lista
+    mi = R("minado", "cortar-mineria", "clientes-minado")
+    check("cortar mineria = un drop tcp a los puertos stratum, solo de la lista de minado, arriba",
+          mi == [(T_RAW, {"chain": "prerouting", "action": "drop", "src-address-list": "clientes-minado",
+                          "protocol": "tcp", "dst-port": ns["PUERTOS_MINERIA"], "_arriba": "1",
+                          "_desc": "Bloquear puertos de mineria"})]
+          and "3333" in ns["PUERTOS_MINERIA"].split(","), mi)
+    check("  se elige solo en criptominado y su defecto sigue siendo 'nada'",
+          "cortar-mineria" in ns["ACCIONES_POR_CAT"]["minado"] and ns["accion_de_clase"]("minado", {}) == "nada"
+          and all("cortar-mineria" not in v for k, v in ns["ACCIONES_POR_CAT"].items() if k != "minado")
+          and ns["accion_de_clase"]("minado", {"ACCION_MINADO": "cortar-mineria"}) == "cortar-mineria", "")
     # revision 2026-10-15, Q16: «2M/2M» es de queue simple; en la max-limit de una queue tree
     # RouterOS lo rechaza. Un valor guardado asi sale como «2M».
     li2 = R("p2p", "limitar", "clientes-p2p", {"limite": "2M/2M"})
@@ -228,8 +248,11 @@ def main():
 
     # ---------- las plantillas que salen de las reglas del ISP ----------
     dp = R("dns", "dns-protegido", "clientes-dns-malware", {"dns_ip": "", "wan": "WAN"})
-    check("DNS protegido: 7 reglas (2 nat, 2 drop DoT, cadena de tope de 2 y su jump)", len(dp) == 7
-          and [x[0] for x in dp] == [T_NAT, T_NAT, T_RAW, T_RAW, T_RAW, T_RAW, T_RAW], [x[0] for x in dp])
+    check("DNS protegido: 8 reglas (2 nat, 2 drop DoT, cadena de tope de 2 y su jump UDP y TCP)", len(dp) == 8
+          and [x[0] for x in dp] == [T_NAT, T_NAT, T_RAW, T_RAW, T_RAW, T_RAW, T_RAW, T_RAW], [x[0] for x in dp])
+    check("  el tope de consultas vale para el 53 UDP y TCP (2026-10-18)",
+          [(x[1].get("protocol"), x[1].get("dst-port")) for x in dp if x[1].get("action") == "jump"]
+          == [("udp", "53"), ("tcp", "53")], dp[6:])
     check("  el 53 va a Quad9 por defecto, con !WAN", dp[0][1]["to-addresses"] == "9.9.9.9"
           and dp[0][1]["in-interface-list"] == "!WAN" and dp[0][1]["action"] == "dst-nat", dp[0])
     check("  corta DoT/DoQ y puertos alternativos como la del ISP",
@@ -242,6 +265,10 @@ def main():
     check("frenar escaneo: tope de 30 SYN/s (rafaga 60) y jump con syn,!ack y !WAN",
           fe[0][1]["dst-limit"] == "30,60,src-address/10s" and fe[2][1]["tcp-flags"] == "syn,!ack"
           and fe[2][1]["in-interface-list"] == "!WAN" and fe[2][1]["jump-target"] == "SURICATA-ESCANEO-TOPE", fe)
+    check("  y el escaneo de puertos TCP y UDP con psd (sin protocolo: vale para los dos), arriba y con !WAN",
+          len(fe) == 4 and fe[3][1].get("psd") == "21,3s,3,1" and fe[3][1]["action"] == "drop"
+          and "protocol" not in fe[3][1] and fe[3][1]["src-address-list"] == "clientes-escaneo"
+          and fe[3][1]["in-interface-list"] == "!WAN" and fe[3][1]["_arriba"] == "1", fe)
     pa = ns["_params_accion"]("dns", {})
     check("la lista WAN por defecto es 'WAN'; 'ninguna' la quita",
           pa["wan"] == "WAN" and ns["_params_accion"]("dns", {"ACCION_WAN_LIST": "ninguna"})["wan"] == "", pa)
@@ -326,6 +353,22 @@ def main():
     m["ACCION_LIMITE_P2P"] = "2M"
     ok7, msg7, _ = ns["aplicar_reglas"](router, "p2p", quien="admin")
     check("con limite, marcas y cola", ok7 and len(rt.t[T_MANGLE]) == 2 and rt.t[T_QUEUE][0]["max-limit"] == "2M", msg7)
+    # 2026-10-18: con fasttrack las conexiones aceleradas se saltan mangle y cola. Aviso SOLO si
+    # el router lo usa sin connection-mark=no-mark (no todos lo usan); la regla no se toca
+    check("  sin fasttrack en el router: sin aviso", "fasttrack" not in ns["plan_reglas"](router, "p2p")["aviso"], "")
+    rt.t[ns["T_FILTER"]].append({".id": rt._id(), "chain": "forward", "action": "fasttrack-connection",
+                           "connection-state": "established,related", "comment": "mio: fasttrack"})
+    av = ns["plan_reglas"](router, "p2p")["aviso"]
+    check("  con fasttrack: la vista previa avisa que el limite no vale y da la orden",
+          "fasttrack" in av and "connection-mark=no-mark" in av, av)
+    rt.t[ns["T_FILTER"]][-1]["connection-mark"] = "no-mark"
+    check("  con fasttrack que ya deja fuera las marcadas: sin aviso",
+          "fasttrack" not in ns["plan_reglas"](router, "p2p")["aviso"], "")
+    rt.t[ns["T_FILTER"]][-1].pop("connection-mark"); rt.t[ns["T_FILTER"]][-1]["disabled"] = "true"
+    check("  con fasttrack desactivado: sin aviso", "fasttrack" not in ns["plan_reglas"](router, "p2p")["aviso"], "")
+    check("  y la regla de fasttrack sigue como estaba (el panel no la toca)",
+          rt.t[ns["T_FILTER"]][-1]["comment"] == "mio: fasttrack" and rt.t[ns["T_FILTER"]][-1]["action"] == "fasttrack-connection", "")
+    rt.t[ns["T_FILTER"]].pop()
 
     # ---------- el router rechaza: se para y se dice ----------
     m["ACCION_SPAM"] = "sin-correo"
