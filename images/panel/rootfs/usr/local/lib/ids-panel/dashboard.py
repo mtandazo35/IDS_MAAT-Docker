@@ -6449,6 +6449,10 @@ def _feeds_conf_set(clave, val):
         except secretos.SecretoNoDisponible as ex:
             SECRETOS_AVISO["feeds:" + clave] = str(ex)
             return False
+    if v and not v.isprintable():
+        # un salto de linea (o cualquier caracter de control) haria del valor una linea nueva
+        # en feeds.conf, p. ej. un *_URL que feeds_update usaria con las claves: no se guarda
+        return False
     if v:
         out.append(f"{clave}={v}")
     try:
@@ -20443,6 +20447,12 @@ class H(BaseHTTPRequestHandler):
             if not k.strip():
                 # sin clave nueva, pero puede venir solo un cambio de modelo
                 if mod and groq_configurada():
+                    if not mod.isprintable():
+                        # un salto de linea en el nombre seria una linea nueva en feeds.conf
+                        bitacora("CONFIG-GROQ", "modelo no guardado (nombre no válido)")
+                        return self._html(perfil_page(
+                            "No se guardó el modelo de Groq: el nombre no es válido "
+                            "(no puede llevar saltos de línea ni caracteres de control).", ok=False))
                     groq_set_modelo(mod)
                     bitacora("CONFIG-GROQ", "modelo " + mod)
                     return self._html(perfil_page("Modelo de Groq guardado: " + mod, ok=True))

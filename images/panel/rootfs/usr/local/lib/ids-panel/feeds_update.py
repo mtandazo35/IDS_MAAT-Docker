@@ -86,6 +86,10 @@ def _fetch(url, auth="", post=None):
     if clave:
         hdrs[CABECERA.get(auth, "Auth-Key")] = clave    # abuse.ch: Auth-Key; AbuseIPDB: Key
     url = url.replace("{AUTH}", clave)                  # o clave en la URL, si la fuente la usa asi
+    if not url.lower().startswith(("http://", "https://")):
+        # urlopen tambien abre file://, ftp://...: una fuente solo se baja por HTTP(S).
+        # El mensaje no lleva la URL: puede llevar la clave dentro ({AUTH})
+        raise ValueError("la URL de la fuente no es http:// ni https://: no se descarga")
     datos = None
     if post is not None:                                # fuentes que son una API (ThreatFox)
         datos = json.dumps(post).encode("utf-8")
