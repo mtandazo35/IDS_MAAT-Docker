@@ -46,7 +46,7 @@ PIEZAS = ("ACCIONES", "ACCIONES_POR_CAT", "ACCION_DEFECTO", "T_RAW", "T_NAT", "T
           "_RSC_TABLA", "REGLAS_DIR", "_RE_KV", "_CADENAS_BASE", "_ACCIONES_TABLA", "_TERMINALES", "_NO_CRITERIO",
           "_PROTO_CON_PUERTO", "_LISTAS_IF_SISTEMA", "verificar_reglas", "_mk_contar", "verificar_en_router", "lineas_verificacion", "_RE_FIND_COMMENT", "_RE_FIND_CHAIN", "DNS_PROTEGIDO_DEFECTO", "reglas_desde_rsc", "cargar_reglas_propias", "guardar_reglas_propias",
           "_TABLA_RSC", "_PROPS_TABLA", "RESPALDOS_MK", "_MK_CONEXION", "accion_de_clase", "reglas_de_accion",
-          "_com_regla", "_prefijo_regla", "_rsc_val", "rsc_de", "_reglas_nuestras", "_params_accion",
+          "_com_regla", "_cod_regla", "_prefijo_regla", "_rsc_val", "rsc_de", "_reglas_nuestras", "_params_accion",
           "_plan", "_plan_en", "plan_reglas", "_mk_print_todo", "_mk_print", "respaldar_firewall", "aplicar_reglas",
           "quitar_reglas", "_aplicar_en", "guardar_mk", "_mk_globales", "estado_reglas",
           "ErrorLecturaMK", "_mk_print_estricto")
@@ -154,7 +154,8 @@ def estado_por_clase():
     e = ns["estado_reglas"]({"id": "p001"})
     check("estado: una sola conexion para todas las clases", len(conexiones) == 1, len(conexiones))
     check("  router vacio: las clases con accion salen pendientes, con cuantos cambios",
-          e["botnet"]["estado"] == "pendientes" and e["botnet"]["cambios"] == 5, e["botnet"])
+          # 7: solo navegación con QUIC y la hora (2026-10-18)
+          e["botnet"]["estado"] == "pendientes" and e["botnet"]["cambios"] == 7, e["botnet"])
     check("  las que no tienen accion (p2p/minado/otros) no dicen nada",
           all(e[c]["estado"] == "ninguna" for c in ("p2p", "minado", "otros")), e)
     ok, msg, _p = ns["aplicar_reglas"]({"id": "p001"}, "botnet", quien="admin")
@@ -164,7 +165,7 @@ def estado_por_clase():
     m["ACCION_BOTNET"] = "nada"
     e3 = ns["estado_reglas"]({"id": "p001"})
     check("  si la clase pasa a 'nada' y quedan reglas en el router: pendientes (hay que quitarlas)",
-          e3["botnet"]["estado"] == "pendientes" and e3["botnet"]["cambios"] == 5, e3["botnet"])
+          e3["botnet"]["estado"] == "pendientes" and e3["botnet"]["cambios"] == 7, e3["botnet"])
     ns["quitar_reglas"]({"id": "p001"}, "botnet", quien="admin")
     check("  y quitadas: ninguna", ns["estado_reglas"]({"id": "p001"})["botnet"]["estado"] == "ninguna", "")
 
@@ -177,11 +178,33 @@ def main():
     # ---------- plantillas ----------
     c = R("botnet", "cortar", "clientes-botnet")
     check("cortar = un drop en raw prerouting por la lista, arriba del todo",
-          c == [(T_RAW, {"chain": "prerouting", "action": "drop", "src-address-list": "clientes-botnet", "_arriba": "1"})], c)
+          c == [(T_RAW, {"chain": "prerouting", "action": "drop", "src-address-list": "clientes-botnet", "_arriba": "1",
+                         "_desc": "Cortar todo"})], c)
     w = R("botnet", "solo-web", "clientes-botnet")
-    check("solo-web = cadena propia (DNS udp/tcp, 80/443) + drop + jump desde prerouting",
-          len(w) == 5 and [x[1]["action"] for x in w] == ["return", "return", "return", "drop", "jump"]
-          and w[4][1]["jump-target"] == "SURICATA-BOTNET" and w[2][1]["dst-port"] == "80,443", w)
+    check("solo-web = cadena propia (DNS udp/tcp, 80/443 tcp, 443 udp, 123 udp) + drop + jump desde prerouting",
+          len(w) == 7 and [x[1]["action"] for x in w] == ["return"] * 5 + ["drop", "jump"]
+          and w[6][1]["jump-target"] == "SURICATA-BOTNET" and w[2][1]["dst-port"] == "80,443", w)
+    # el user (2026-10-18): QUIC (443 UDP) y la hora (123 UDP) tambien pasan; y solo entra en la
+    # cadena lo que sale de la lista
+    check("  solo-web deja pasar QUIC (443 UDP) y la hora (123 UDP)",
+          {(x[1].get("protocol"), x[1].get("dst-port")) for x in w if x[1]["action"] == "return"}
+          == {("udp", "53"), ("tcp", "53"), ("tcp", "80,443"), ("udp", "443"), ("udp", "123")}, w)
+    check("  y a la cadena solo se entra desde la lista (el jump es la unica regla con la lista)",
+          [x[1].get("src-address-list") for x in w] == [None] * 6 + ["clientes-botnet"], w)
+    check("  cada regla lleva su descripcion para el comentario",
+          [x[1]["_desc"] for x in w] == ["DNS UDP", "DNS TCP", "HTTP HTTPS", "HTTP3 QUIC", "Hora NTP",
+                                         "Bloquear resto", "Revisar clientes"], w)
+    check("  y el comentario es «Suricata:<clase>:NN <descripcion>»",
+          ns["_com_regla"]("botnet", 4, "HTTP3 QUIC") == "Suricata:botnet:04 HTTP3 QUIC"
+          and ns["_com_regla"]("botnet", 4) == "Suricata:botnet:04"
+          and ns["_cod_regla"]("Suricata:botnet:04 HTTP3 QUIC") == ns["_cod_regla"]("Suricata:botnet:04")
+          == "Suricata:botnet:04", "")
+    for _acc, _cat, _par in (("cortar", "fuerza", {}), ("sin-correo", "spam", {}), ("frenar-escaneo", "escaneo", {"wan": "WAN"}),
+                             ("dns-protegido", "dns", {"wan": "WAN"}), ("redirigir-dns", "dns", {}),
+                             ("limitar", "p2p", {"limite": "2M"})):
+        _rs = R(_cat, _acc, "l", _par)
+        check("  todas las reglas de «%s» llevan descripcion" % _acc,
+              _rs and all(x[1].get("_desc") for x in _rs), _rs)
     sc = R("spam", "sin-correo", "clientes-spam")
     check("sin-correo = drop tcp 25,465,587,2525 (como la del ISP)", sc[0][1]["dst-port"] == "25,465,587,2525" and sc[0][1]["protocol"] == "tcp", sc)
     rd = R("dns", "redirigir-dns", "clientes-dns-malware", {"dns_ip": ""})
@@ -233,8 +256,9 @@ def main():
     ok, msg, plan = ns["aplicar_reglas"](router, "botnet", quien="admin")
     check("aplicar 'cortar' en botnet: ok", ok is True, msg)
     nuestras = rt.reglas(T_RAW, "Suricata:botnet:")
-    check("queda UNA regla nuestra con su comentario numerado", len(nuestras) == 1 and nuestras[0]["comment"] == "Suricata:botnet:01", nuestras)
-    check("y se puso DELANTE de la regla ajena (place-before)", rt.t[T_RAW][0]["comment"] == "Suricata:botnet:01", [f.get("comment") for f in rt.t[T_RAW]])
+    check("queda UNA regla nuestra con su comentario numerado y su descripcion",
+          len(nuestras) == 1 and nuestras[0]["comment"] == "Suricata:botnet:01 Cortar todo", nuestras)
+    check("y se puso DELANTE de la regla ajena (place-before)", rt.t[T_RAW][0]["comment"] == "Suricata:botnet:01 Cortar todo", [f.get("comment") for f in rt.t[T_RAW]])
     resp = os.listdir(ns["RESPALDOS_MK"])
     check("hay respaldo del firewall", len(resp) == 1 and resp[0].startswith("mikrotik-p001-"), resp)
     # CONTRATO-F2 §2/§4: los respaldos del firewall van al RESPALDOS del panel (antes /root/backups/panel)
@@ -259,21 +283,37 @@ def main():
     m["ACCION_BOTNET"] = "solo-web"
     plan3 = ns["plan_reglas"](router, "botnet")
     ops = [a[0] for a in plan3["acciones"]]
-    check("vista previa de cortar->solo-web: 1 set (la :01) y 4 add", ops.count("set") == 1 and ops.count("add") == 4 and "remove" not in ops, ops)
+    check("vista previa de cortar->solo-web: 1 set (la :01) y 6 add", ops.count("set") == 1 and ops.count("add") == 6 and "remove" not in ops, ops)
+    check("la vista previa lleva el comentario con la descripcion",
+          any('comment="Suricata:botnet:04 HTTP3 QUIC"' in l for l in plan3["rsc"]), plan3["rsc"])
     check("la vista previa es RSC legible", any("jump-target=SURICATA-BOTNET" in l for l in plan3["rsc"]), plan3["rsc"])
     ok3, msg3, _ = ns["aplicar_reglas"](router, "botnet", quien="admin")
     nuestras = rt.reglas(T_RAW, "Suricata:botnet:")
     cadena = [f["action"] for f in nuestras if f.get("chain") == "SURICATA-BOTNET"]
     pre = [f.get("comment") for f in rt.t[T_RAW] if f.get("chain") == "prerouting"]
-    check("ahora hay 5 reglas nuestras: la cadena en orden (3 return + drop)", len(nuestras) == 5
-          and cadena == ["return", "return", "return", "drop"], [f["action"] for f in nuestras])
+    check("ahora hay 7 reglas nuestras: la cadena en orden (5 return + drop)", len(nuestras) == 7
+          and cadena == ["return"] * 5 + ["drop"], [f["action"] for f in nuestras])
     check("y el jump va el PRIMERO de prerouting, delante de la regla ajena",
-          pre and pre[0] == "Suricata:botnet:05" and "mio: gestion" in pre, pre)
+          pre and pre[0] == "Suricata:botnet:07 Revisar clientes" and "mio: gestion" in pre, pre)
     check("la ajena sigue intacta", any(f.get("comment") == "mio: gestion" and f["action"] == "accept" for f in rt.t[T_RAW]), "")
     m["ACCION_BOTNET"] = "cortar"
     ok4, msg4, plan4 = ns["aplicar_reglas"](router, "botnet", quien="admin")
-    check("volver a cortar: corrige la :01 y quita las otras 4", "4 quitada" in msg4 and len(rt.reglas(T_RAW, "Suricata:botnet:")) == 1
+    check("volver a cortar: corrige la :01 y quita las otras 6", "6 quitada" in msg4 and len(rt.reglas(T_RAW, "Suricata:botnet:")) == 1
           and rt.reglas(T_RAW, "Suricata:botnet:")[0]["action"] == "drop", msg4)
+
+    # ---------- reglas de antes, sin descripcion (2026-10-18): se les pone, no se rehacen ----------
+    rt.t[T_RAW][:] = [f for f in rt.t[T_RAW] if not (f.get("comment") or "").startswith("Suricata:")]
+    rt.t[T_RAW].insert(0, {".id": rt._id(), "chain": "prerouting", "action": "drop",
+                           "src-address-list": "clientes-botnet", "comment": "Suricata:botnet:01"})
+    plan_v = ns["plan_reglas"](router, "botnet")
+    ops_v = [a[0] for a in plan_v["acciones"]]
+    check("una regla vieja sin descripcion es la misma regla: un set, ni add ni remove",
+          ops_v == ["set"], ops_v)
+    ok_v, msg_v, _ = ns["aplicar_reglas"](router, "botnet", quien="admin")
+    check("  y al aplicar queda con la descripcion",
+          ok_v and [f.get("comment") for f in rt.reglas(T_RAW, "Suricata:botnet:")] == ["Suricata:botnet:01 Cortar todo"],
+          (msg_v, rt.reglas(T_RAW, "Suricata:botnet:")))
+    check("  la segunda vez: sin cambios", ns["plan_reglas"](router, "botnet")["cambios"] == 0, "")
 
     # ---------- quitar: solo lo nuestro ----------
     ok5, msg5, _ = ns["quitar_reglas"](router, "botnet", quien="admin")

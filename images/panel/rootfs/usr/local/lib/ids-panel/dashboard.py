@@ -1916,7 +1916,7 @@ def _mk_tanda(router, trabajo, fondo=True):
 ACCIONES = {
     "nada":          "Nada (solo la lista)",
     "cortar":        "Cortar todo",
-    "solo-web":      "Solo navegación (DNS, 80 y 443)",
+    "solo-web":      "Solo navegación (DNS, web 80/443 y hora)",
     "sin-correo":    "Sin correo saliente (25/465/587/2525)",
     "dns-protegido": "DNS protegido (Quad9, sin DoT, tope 50/s)",
     "redirigir-dns": "Redirigir DNS a tu resolutor",
@@ -1968,25 +1968,37 @@ def accion_de_clase(cat, m=None):
 
 
 def reglas_de_accion(cat, accion, lista, params=None):
-    """Las reglas que esa accion necesita, en orden: [(tabla, props)]. Sin comentario: lo
-    pone quien reconcilia. 'limitar' sin limite devuelve [] (no se aplica a ciegas)."""
+    """Las reglas que esa accion necesita, en orden: [(tabla, props)]. El comentario lo pone
+    quien reconcilia: «Suricata:<cat>:NN» y, detras, la `_desc` de la regla (el user,
+    2026-10-18: en Winbox se lee que hace cada una). 'limitar' sin limite devuelve [] (no se
+    aplica a ciegas)."""
     p = params or {}
     # `_arriba`: va delante de todo en su cadena (place-before=0). Solo lo llevan las
     # reglas que lo necesitan: el jump/drop de prerouting y el dst-nat.
     wan = {"in-interface-list": "!" + p["wan"]} if p.get("wan") else {}
     if accion == "cortar":
-        return [(T_RAW, {"chain": "prerouting", "action": "drop", "src-address-list": lista, "_arriba": "1"})]
+        return [(T_RAW, {"chain": "prerouting", "action": "drop", "src-address-list": lista, "_arriba": "1",
+                         "_desc": "Cortar todo"})]
     if accion == "solo-web":
+        # solo el trafico que SALE de la lista entra en la cadena (el jump, abajo); el resto de
+        # abonados no pasa por aqui. Ademas de DNS y web por TCP: el 443 por UDP (QUIC/HTTP3:
+        # sin el, YouTube y Google van peor) y la hora (sin NTP los certificados acaban fallando
+        # y «no navega» aunque el 443 este abierto). El user, 2026-10-18.
         ch = "SURICATA-" + cat.upper()
-        return [(T_RAW, {"chain": ch, "action": "return", "protocol": "udp", "dst-port": "53"}),
-                (T_RAW, {"chain": ch, "action": "return", "protocol": "tcp", "dst-port": "53"}),
-                (T_RAW, {"chain": ch, "action": "return", "protocol": "tcp", "dst-port": "80,443"}),
-                (T_RAW, {"chain": ch, "action": "drop"}),
+        return [(T_RAW, {"chain": ch, "action": "return", "protocol": "udp", "dst-port": "53", "_desc": "DNS UDP"}),
+                (T_RAW, {"chain": ch, "action": "return", "protocol": "tcp", "dst-port": "53", "_desc": "DNS TCP"}),
+                (T_RAW, {"chain": ch, "action": "return", "protocol": "tcp", "dst-port": "80,443",
+                         "_desc": "HTTP HTTPS"}),
+                (T_RAW, {"chain": ch, "action": "return", "protocol": "udp", "dst-port": "443",
+                         "_desc": "HTTP3 QUIC"}),
+                (T_RAW, {"chain": ch, "action": "return", "protocol": "udp", "dst-port": "123", "_desc": "Hora NTP"}),
+                (T_RAW, {"chain": ch, "action": "drop", "_desc": "Bloquear resto"}),
                 (T_RAW, {"chain": "prerouting", "action": "jump", "jump-target": ch,
-                         "src-address-list": lista, "_arriba": "1"})]
+                         "src-address-list": lista, "_arriba": "1", "_desc": "Revisar clientes"})]
     if accion == "sin-correo":
         return [(T_RAW, {"chain": "prerouting", "action": "drop", "src-address-list": lista,
-                         "protocol": "tcp", "dst-port": "25,465,587,2525", "_arriba": "1"})]
+                         "protocol": "tcp", "dst-port": "25,465,587,2525", "_arriba": "1",
+                         "_desc": "Bloquear correo saliente"})]
     if accion == "dns-protegido":
         # las del ISP: el 53 a un resolutor que filtra, sin DNS cifrado ni puertos
         # alternativos por donde escaparse, y con tope de consultas por cliente
@@ -1994,22 +2006,28 @@ def reglas_de_accion(cat, accion, lista, params=None):
         ch = "SURICATA-DNS-TOPE"
         nat = {"chain": "dstnat", "action": "dst-nat", "src-address-list": lista, "dst-port": "53",
                "to-addresses": ip, "to-ports": "53", "_arriba": "1"}
-        return [(T_NAT, dict(nat, protocol="udp", **wan)),
-                (T_NAT, dict(nat, protocol="tcp", **wan)),
+        return [(T_NAT, dict(nat, protocol="udp", _desc="DNS UDP al resolutor", **wan)),
+                (T_NAT, dict(nat, protocol="tcp", _desc="DNS TCP al resolutor", **wan)),
                 (T_RAW, dict({"chain": "prerouting", "action": "drop", "src-address-list": lista,
-                              "protocol": "tcp", "dst-port": "853,8853,9953", "_arriba": "1"}, **wan)),
+                              "protocol": "tcp", "dst-port": "853,8853,9953", "_arriba": "1",
+                              "_desc": "Bloquear DNS cifrado TCP"}, **wan)),
                 (T_RAW, dict({"chain": "prerouting", "action": "drop", "src-address-list": lista,
-                              "protocol": "udp", "dst-port": "784,853,8853,9953", "_arriba": "1"}, **wan)),
-                (T_RAW, {"chain": ch, "action": "return", "dst-limit": "50,100,src-address/10s"}),
-                (T_RAW, {"chain": ch, "action": "drop"}),
+                              "protocol": "udp", "dst-port": "784,853,8853,9953", "_arriba": "1",
+                              "_desc": "Bloquear DNS cifrado UDP"}, **wan)),
+                (T_RAW, {"chain": ch, "action": "return", "dst-limit": "50,100,src-address/10s",
+                         "_desc": "Tope 50 consultas/s"}),
+                (T_RAW, {"chain": ch, "action": "drop", "_desc": "Bloquear exceso"}),
                 (T_RAW, dict({"chain": "prerouting", "action": "jump", "jump-target": ch, "src-address-list": lista,
-                              "protocol": "udp", "dst-port": "53", "_arriba": "1"}, **wan))]
+                              "protocol": "udp", "dst-port": "53", "_arriba": "1",
+                              "_desc": "Revisar clientes"}, **wan))]
     if accion == "frenar-escaneo":
         ch = "SURICATA-ESCANEO-TOPE"
-        return [(T_RAW, {"chain": ch, "action": "return", "dst-limit": "30,60,src-address/10s"}),
-                (T_RAW, {"chain": ch, "action": "drop"}),
+        return [(T_RAW, {"chain": ch, "action": "return", "dst-limit": "30,60,src-address/10s",
+                         "_desc": "Tope 30 SYN/s"}),
+                (T_RAW, {"chain": ch, "action": "drop", "_desc": "Bloquear exceso"}),
                 (T_RAW, dict({"chain": "prerouting", "action": "jump", "jump-target": ch, "src-address-list": lista,
-                              "protocol": "tcp", "tcp-flags": "syn,!ack", "_arriba": "1"}, **wan))]
+                              "protocol": "tcp", "tcp-flags": "syn,!ack", "_arriba": "1",
+                              "_desc": "Revisar clientes"}, **wan))]
     if accion == "redirigir-dns":
         ip = (p.get("dns_ip") or "").strip()
         base = {"chain": "dstnat", "src-address-list": lista, "dst-port": "53"}
@@ -2017,7 +2035,8 @@ def reglas_de_accion(cat, accion, lista, params=None):
             acc = {"action": "dst-nat", "to-addresses": ip, "to-ports": "53"}
         else:
             acc = {"action": "redirect", "to-ports": "53"}   # al resolutor del propio router
-        return [(T_NAT, dict(base, protocol="udp", **acc)), (T_NAT, dict(base, protocol="tcp", **acc))]
+        return [(T_NAT, dict(base, protocol="udp", _desc="DNS UDP al resolutor", **acc)),
+                (T_NAT, dict(base, protocol="tcp", _desc="DNS TCP al resolutor", **acc))]
     if accion == "limitar":
         # max-limit de una queue tree es UN valor: «2M/2M» (subida/bajada) es de queue simple y
         # RouterOS lo rechaza aqui; un valor guardado asi se queda con el primero
@@ -2026,10 +2045,11 @@ def reglas_de_accion(cat, accion, lista, params=None):
             return []
         mk = "suricata-" + cat
         return [(T_MANGLE, {"chain": "prerouting", "src-address-list": lista, "action": "mark-connection",
-                            "new-connection-mark": mk, "passthrough": "yes"}),
+                            "new-connection-mark": mk, "passthrough": "yes", "_desc": "Marcar conexiones"}),
                 (T_MANGLE, {"chain": "prerouting", "connection-mark": mk, "action": "mark-packet",
-                            "new-packet-mark": mk, "passthrough": "no"}),
-                (T_QUEUE, {"name": mk, "parent": "global", "packet-mark": mk, "max-limit": lim})]
+                            "new-packet-mark": mk, "passthrough": "no", "_desc": "Marcar paquetes"}),
+                (T_QUEUE, {"name": mk, "parent": "global", "packet-mark": mk, "max-limit": lim,
+                           "_desc": "Cola de limite"})]
     return []
 
 
@@ -2282,8 +2302,16 @@ def guardar_reglas_propias(cat, texto):
     return len(reglas)
 
 
-def _com_regla(cat, n):
-    return "Suricata:%s:%02d" % (cat, n)
+def _com_regla(cat, n, desc=""):
+    """«Suricata:<cat>:NN», y detras la descripcion de la regla si la tiene («Suricata:botnet:01
+    DNS UDP»). El panel reconoce cada regla suya solo por la primera parte (_cod_regla)."""
+    return "Suricata:%s:%02d" % (cat, n) + (" " + desc if desc else "")
+
+
+def _cod_regla(comment):
+    """La parte que identifica la regla: «Suricata:botnet:01» de «Suricata:botnet:01 DNS UDP».
+    Asi las reglas que se pusieron antes, sin descripcion, siguen siendo las mismas reglas."""
+    return (comment or "").split(" ", 1)[0]
 
 
 def _prefijo_regla(cat):
@@ -2381,13 +2409,17 @@ def _plan(cat, deseadas, existentes):
     acciones = []
     usados = set()
     for i, (tabla, props) in enumerate(deseadas, 1):
-        com = _com_regla(cat, i)
-        act = next((f for f in existentes.get(tabla, []) if f.get("comment") == com), None)
+        com = _com_regla(cat, i, props.get("_desc", ""))
+        cod = _com_regla(cat, i)
+        # se empareja por «Suricata:<cat>:NN»: la descripcion puede no estar (reglas de antes) o
+        # haber cambiado; entonces es un set que la pone, no quitar y volver a crear
+        act = next((f for f in existentes.get(tabla, []) if _cod_regla(f.get("comment")) == cod), None)
         if act is None:
             acciones.append(("add", tabla, props, com, ""))
             continue
         usados.add((tabla, act.get(".id")))
-        if all(str(act.get(k, "")) == str(v) for k, v in props.items() if not k.startswith("_")):
+        if (act.get("comment") or "") == com and all(
+                str(act.get(k, "")) == str(v) for k, v in props.items() if not k.startswith("_")):
             acciones.append(("igual", tabla, props, com, act.get(".id", "")))
         else:
             acciones.append(("set", tabla, props, com, act.get(".id", "")))
@@ -13785,9 +13817,12 @@ MikroTik</b>, bajo cada lista, eliges la <b>acción</b> que el router aplica a e
 <b>pone las reglas por la API</b>:</p>
 <table><tr><th>Acción</th><th>Qué pone</th></tr>
 <tr><td><b>Cortar todo</b></td><td>un <code>drop</code> en <code>raw prerouting</code> por la lista.</td></tr>
-<tr><td><b>Solo navegación</b></td><td>una cadena propia que deja pasar DNS (53) y 80/443 y corta lo demás,
-con un <code>jump</code> desde <code>prerouting</code>. Útil con portal cautivo; ojo: una botnet que hable
-por 443 sigue hablando.</td></tr>
+<tr><td><b>Solo navegación</b></td><td>una cadena propia que deja pasar DNS (53, TCP y UDP), la web
+(80 y 443 por TCP), el 443 por UDP (QUIC/HTTP3, el que usan YouTube y Google) y la hora (123 UDP, NTP: sin
+ella los certificados acaban fallando y «no navega» aunque el 443 esté abierto), y corta lo demás. Solo
+entra en la cadena el tráfico que <b>sale</b> de un abonado de la lista (un <code>jump</code> desde
+<code>prerouting</code>); el resto de abonados no pasa por ella. Útil con portal cautivo; ojo: una botnet
+que hable por 443 sigue hablando.</td></tr>
 <tr><td><b>Sin correo saliente</b></td><td>corta 25/465/587/2525 (spam) y nada más.</td></tr>
 <tr><td><b>DNS protegido</b></td><td>la del ISP: el 53 (udp y tcp) a un resolutor que filtra (Quad9
 9.9.9.9 por defecto, o la IP que pongas), corte de DNS cifrado y puertos alternativos (853, 8853, 9953 y
@@ -13831,7 +13866,9 @@ interface-list se pone en Ajustes (vacío = sin esa condición) y tiene que exis
 van a crear, corregir o quitar en ese router; solo si confirmas se toca. Antes del primer cambio se
 <b>respalda</b> el firewall (raw, nat, filter, mangle y queue tree) en <code>/srv/ids/panel/respaldos/</code>; si
 el respaldo falla, no se toca nada. Cada regla del panel lleva <code>comment="Suricata:&lt;clase&gt;:&lt;n&gt;"</code>
-y la reconciliación es <b>idempotente</b> (aplicar dos veces no cambia nada) y <b>acotada</b>: jamás toca una
+seguido de lo que hace (<code>Suricata:botnet:04 HTTP3 QUIC</code>), para que en Winbox se lea; el panel
+reconoce sus reglas por la primera parte, así que a las que se pusieron antes sin descripción solo les
+añade el texto. La reconciliación es <b>idempotente</b> (aplicar dos veces no cambia nada) y <b>acotada</b>: jamás toca una
 regla que no lleve ese comentario. Junto a los botones, una etiqueta dice cómo está cada clase en el router:
 <b style="color:#1a7f37">&#10003; Reglas aplicadas</b> (el router ya tiene exactamente lo que toca),
 <b style="color:#a15c12">N cambio(s) sin aplicar</b>, o <i>Sin guardar</i> si cambiaste la acción y aún no la
