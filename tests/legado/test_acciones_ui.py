@@ -114,8 +114,9 @@ def main():
     check("botones de ver/aplicar y quitar por categoria", h.count("reglasPlan('") == 8 and h.count("reglasQuitar('") == 8, "")
     # el user (2026-10-18): tres botones con nombre propio y el estado en su propia fila
     check("  se llaman «Ver reglas», «Aplicar reglas» y «Quitar reglas», uno de cada por clase",
-          h.count(">Ver reglas</button>") == 8 and h.count(">Aplicar reglas</button>") == 8
-          and h.count(">Quitar reglas</button>") == 8 and h.count("reglasVer('") == 8
+          # (el modal de «Ver reglas» lleva otro «Aplicar reglas»: se cuentan los de la fila)
+          h.count("')\">Ver reglas</button>") == 8 and h.count("')\">Aplicar reglas</button>") == 8
+          and h.count("')\">Quitar reglas</button>") == 8 and h.count("reglasVer('") == 8
           and "Ver / aplicar en el router" not in h, "")
     check("  «Ver reglas» llama a la ruta que solo lee", "_accPost('/mikrotik/reglas/ver',cat," in h, "")
     check("  el estado va en su fila, con su etiqueta, debajo de los botones",
