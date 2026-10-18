@@ -271,6 +271,8 @@ contenedor termina con error y un mensaje claro.
 | `vpn` | `TZSP_PUERTO` | `37008` | 1–65535 |
 | `vpn` | `TZSP_BYTES` | `10000` | entero ≥ 0 |
 | `vpn` | `TZ` | `UTC` | — |
+| `vpn` | `MODO` | `directo` | opcional: `vpn` (sin la variable) o `directo` (0.1.9, [RED](RED-Y-FIREWALL.md) §11) |
+| `vpn` | `MK_IP` | `192.168.88.1` | solo con `MODO=directo`: IPv4 privada o CGNAT, fuera de `TUN_NET` |
 | `suricata` | `PUNTO` | `p003` | `^p\d{3}$` |
 | `suricata` | `IDS_ESPERA_MON_S` | `60` | entero 1–600; las pruebas usan 3 |
 | `suricata` | `TZ` | `UTC` | — |
@@ -560,6 +562,15 @@ table netdev ids_mon {
 }
 ```
 
+Con `MODO=directo` (punto sin VPN, 0.1.9) la tabla `inet ids_punto` no lleva OpenVPN ni `tun0`: el
+espejo entra por `eth0` (el DNAT del puerto UDP del punto en el host) solo desde `MK_IP`, y la API
+sale por `eth0` solo hacia `MK_IP`. Ejemplo exacto: `tests/fixtures/vpn/ids_punto_p003_directo.nft`.
+
+```
+    iifname "eth0" ip saddr 192.168.88.1 udp dport 37008 counter accept comment "espejo TZSP (directo)"
+    oifname "eth0" ip daddr 192.168.88.1 tcp dport 8729 accept comment "API via rele (directo)"
+```
+
 ### 4.8 `ids_host.nft` (plantilla de C)
 
 Exactamente RED-Y-FIREWALL §7, con:
@@ -568,7 +579,9 @@ Exactamente RED-Y-FIREWALL §7, con:
 - `@puertos_vpn` ← los puertos de los puntos con fichero en `/srv/ids/puntos/` (vacío: el set se
   declara sin `elements`);
 - por cada punto con `origen_ip`: en `forward`,
-  `meta l4proto tcp ct direction original ct status dnat ct original proto-dst <puerto> ip saddr != <origen_ip> counter drop comment "origen fijo <pid>"`.
+  `meta l4proto tcp ct direction original ct status dnat ct original proto-dst <puerto> ip saddr != <origen_ip> counter drop comment "origen fijo <pid>"`;
+- por cada punto directo (0.1.9): su puerto UDP del espejo va en `@puertos_vpn` y, siempre,
+  `meta l4proto udp ct direction original ct status dnat ct original proto-dst <puerto> ip saddr != <mk_ip> counter drop comment "espejo directo <pid>"`.
 
 El orquestador la regenera y la aplica con `nft -c -f` y luego `nft -f` en cada alta, baja o ajuste
 de `origen_ip`. En F1a no hay modo seguro: las listas de acceso solo cambian volviendo a ejecutar
@@ -663,8 +676,9 @@ Suricata corre como root del contenedor (sin `--user`: no hay `CAP_SETUID`).
 Se reutiliza `tzsp-decap.py` de `suricata-ids-lab` @ `5b89110` (heredoc de `install-suricata.sh`)
 con estos cambios:
 
-- Entorno que le pasa el `run` de s6: `TZSP_PORT=${TZSP_PUERTO}`, `TZSP_ALLOW=${TUN_MK}/32`,
-  `TZSP_OUT_IF=ids-in`, `TZSP_ESTADO=/run/ids/tzsp.json`, `TZSP_BYTES`. Sin `TZSP_MAP`.
+- Entorno que le pasa el `run` de s6: `TZSP_PORT=${TZSP_PUERTO}`, `TZSP_ALLOW=${TUN_MK}/32`
+  (`${MK_IP}/32` en un punto directo), `TZSP_OUT_IF=ids-in`, `TZSP_ESTADO=/run/ids/tzsp.json`,
+  `TZSP_BYTES`. Sin `TZSP_MAP`.
 - Escucha en `0.0.0.0:<TZSP_PUERTO>`; `SO_RCVBUFFORCE` de 16 MB y, si falla, `SO_RCVBUF`.
 - `settimeout(30)`. **Latido:** escribe `tzsp.json` al arrancar y después **cada 30 s**, llegue o no
   tráfico (`socket.timeout` también escribe). Escritura atómica: `tzsp.json.tmp` + `os.replace`.
@@ -846,6 +860,11 @@ Cada 15 s, atómico. Esquema v1 (decidido en el contrato):
 - `estado` ∈ `creando`, `activo`, `parado`, `error`, `borrando`; `deseado` ∈ `activo`, `parado`.
 - `vpn_cliente` sale de `/srv/ids/run/<pid>/openvpn-status.log` (`CLIENT_LIST`); `suricata.*` del
   último `stats` del eve (`detect.engines[].rules_loaded/rules_failed`, `capture.kernel_*`).
+- 0.1.9: `modo` (`vpn` o `directo`) y `mk_ip` (la IP del MikroTik en la LAN; `null` con VPN), y
+  `tzsp.visto_s` = segundos desde el último espejo aceptado (de `ultimo_visto`; `null` si aún no llegó
+  ninguno). En un punto directo `vpn_cliente` es `null`, `sensor` es la IP del host hacia el MikroTik
+  (`ip -4 route get <mk_ip>`), `mk` = `mk_ip` y `tzsp_puerto` el puerto UDP del host; el panel lo da
+  por conectado si `visto_s` < 120 ([RED](RED-Y-FIREWALL.md) §11).
 - `avisos`: códigos `SIN-ESPEJO` (activo y sin `tx` en 10 min), `ESPEJO-NO-LLEGA` (`tzsp.tx` sube y
   `kernel_packets` no), `NETNS-DISTINTO`, `REINICIOS` (≥ 3 en 1 h), `DISCO` (< 15 % libre),
   F2: `RETENCION-REDUCIDA` (hubo borrado anticipado por disco en los últimos 30 días) y
@@ -937,7 +956,7 @@ que encolan, `--no-esperar` (imprime el `op_id` y sale).
 | Orden CLI | Orden del socket |
 |---|---|
 | `ids-orq servicio` | (arranca el servicio) |
-| `ids-orq punto crear --nombre X [--redes CIDR[,CIDR…]] [--perfil reducido\|completo-low\|completo] [--hilos 1\|2] [--ros 6\|7] [--compat-v6[=seclevel0\|legacy]] [--api-puerto 8729\|8728] [--origen-ip IP]` | `punto.crear` (`--compat-v6` sin valor = `seclevel0`) |
+| `ids-orq punto crear --nombre X [--redes CIDR[,CIDR…]] [--perfil reducido\|completo-low\|completo] [--hilos 1\|2] [--ros 6\|7] [--compat-v6[=seclevel0\|legacy]] [--api-puerto 8729\|8728] [--origen-ip IP] [--modo vpn\|directo --mk-ip IP]` | `punto.crear` (`--compat-v6` sin valor = `seclevel0`; `--modo directo` exige `--mk-ip`, 0.1.9) |
 | `ids-orq punto borrar <pid> --confirmar <nombre>` | `punto.borrar` |
 | `ids-orq punto estado [<pid>\|'*']` | `punto.estado` |
 | `ids-orq punto arrancar\|parar\|reiniciar <pid> [--parte vpn\|suricata\|todo]` | `punto.*` |

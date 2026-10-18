@@ -6,7 +6,8 @@ Anexo de [ARQUITECTURA.md](ARQUITECTURA.md). Este anexo cubre:
 - el flujo del espejo y el de la API;
 - por qué no hay rutas hacia los abonados;
 - el firewall del host y el de cada netns;
-- fail2ban y el modo seguro.
+- fail2ban y el modo seguro;
+- el punto directo, sin VPN, para un MikroTik en la red local (§11).
 
 Los comandos que se pegan en el MikroTik están en [OPERACION.md](OPERACION.md).
 
@@ -502,3 +503,43 @@ cambiarían con la orden `acceso.aplicar` del orquestador.
 **Recuperación:** la consola del proveedor y `/root/ids-maat/revertir-acceso.sh` (vuelve a como
 estaba antes de la última ejecución de `install.sh`) o `ids.conf` + `ids-orq fw-render --aplicar`
 ([OPERACION.md](OPERACION.md) §4).
+
+## 11. Punto directo, sin VPN (solo red local)
+
+Desde 0.1.9 un punto se puede crear **directo**: para quien tiene el MikroTik en la misma red
+local que el VPS y no quiere la VPN (decisión del dueño, 2026-10-18). Se elige al crearlo
+(`modo=directo` y `mk_ip`, la IP del MikroTik en la LAN) y no se cambia después: para pasar a VPN,
+o cambiar la IP, se da de baja y se crea otro.
+
+```
+ MikroTik 192.168.88.1 ── LAN ──► host 192.168.88.10
+   │  host: nft inet ids_host (udp 37009 solo desde 192.168.88.1)
+   └─ udp 37009 ──DNAT──► red ids-p002 ─► vpn-p002 :37008 (eth0)
+
+ netns de p002 (dueño: vpn-p002, sin OpenVPN ni tun0)
+   eth0 ── udp 37008 desde 192.168.88.1 ─► tzsp-decap ─► ids-in ══veth══ ids-mon ─► suricata-p002
+   relé: /run/ids/api.sock ─► 192.168.88.1:8729 (sale por eth0)
+```
+
+| Pieza | Con VPN | Directo |
+|---|---|---|
+| Puerto publicado | `1194+N-1/tcp` (OpenVPN) | `37008+N-1/udp` (el espejo) |
+| Origen aceptado | cualquiera, o `origen_ip` si se fija | **siempre** solo `mk_ip`, en el host (`espejo directo <pid>`) y en el receptor (`TZSP_ALLOW`) |
+| `sniff-target` en el MikroTik | `100.64.N.1`, puerto 37008 | la IP del host hacia el MikroTik (`ip -4 route get <mk_ip>`), puerto `37008+N-1` |
+| API | relé → `100.64.N.2:8729` por `tun0` | relé → `<mk_ip>:8729` por `eth0`; el router ve la IP del host |
+| «Conectado» | cliente OpenVPN conectado | espejo de `mk_ip` en los últimos 2 min (`tzsp.visto_s`) |
+| Certificado, usuario VPN, `server.conf`, fail2ban | sí | no |
+
+- **Solo red local.** `mk_ip` tiene que ser privada o CGNAT (`10/8`, `172.16/12`, `192.168/16`,
+  `100.64/10`) y no caer en la base de túneles, el pool de Docker ni la red del panel. Sin VPN el
+  espejo va **sin cifrar** y en UDP: dentro de la LAN vale; por internet, no (por eso una IP pública se
+  rechaza). Si algún día se permitiera, la API tendría que exigir la huella del certificado de la
+  API-SSL antes de mandar la clave de `ids-api` (decisión del dueño, 2026-10-18).
+- **El origen se puede falsificar en la LAN.** El filtro es por IP de origen: quien esté en esa red
+  podría inyectar espejo con la IP del MikroTik. Es el precio de no llevar túnel.
+- **Mismo contenedor.** El `vpn` del punto directo arranca con `MODO=directo`: su servicio OpenVPN
+  se queda quieto (`sleep infinity`, para que el árbol de s6 sea el mismo) y `salud-vpn` no lo mira.
+  La imagen declara `LABEL ids-maat.modos="vpn,directo"`; sobre una imagen anterior el orquestador no
+  crea un punto directo (`CONFLICTO` antes de gastar pid).
+- **Fragmentación.** Una trama de 1514 B más la cabecera TZSP no cabe en 1500: el MikroTik la
+  fragmenta; el host la reensambla para el DNAT y el netns del punto otra vez (los mismos `ipfrag_*`).

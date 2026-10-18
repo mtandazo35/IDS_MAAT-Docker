@@ -64,6 +64,10 @@ recortado del tráfico de sus abonados (TZSP). Suricata lo analiza y el panel mu
 por punto. Cuando el operador lo decide, el panel mete a los CPE en address-lists del MikroTik de
 ese punto a través de su API-SSL.
 
+Desde 0.1.9, si el MikroTik está en la misma red local que el VPS, el punto puede ser **directo**:
+sin VPN, el router manda el espejo por UDP a un puerto propio del punto en el host y el panel llega
+a su API por la red local ([RED-Y-FIREWALL.md](RED-Y-FIREWALL.md) §11).
+
 ### 1.2 Qué no es
 
 - **No es un IPS en línea.** Analiza una copia y actúa con address-lists en el router.
@@ -119,6 +123,7 @@ aprendido en `suricata-ids-lab` y de la auditoría del diseño.
 | **(D)** 1 VPS = 1 empresa; 1 MikroTik = 1 punto. | Aísla a los clientes del ISP y deja el dimensionado en cada VPS. | — |
 | **(D)** Por punto, `vpn` y `suricata` en un netns compartido; un OpenVPN y un Suricata por MikroTik. | Cada punto tiene su túnel, su interfaz de captura y su firewall. | [INSTANCIA](INSTANCIA.md) |
 | **(D)** Puerto OpenVPN propio por punto (1194, 1195, …) y red de túnel `100.64.N.0/24`: sensor `.1`, MikroTik `.2`. | Puertos fijos; los túneles no se solapan entre puntos. | [RED](RED-Y-FIREWALL.md) §2 |
+| **(D)** Punto **directo** opcional (0.1.9): sin VPN, solo con el MikroTik en la red local (IP privada), espejo por UDP a `37008+N-1` aceptado solo desde la IP del MikroTik. | Hay quien trabaja en local y no quiere la VPN; por internet el espejo iría sin cifrar, así que una IP pública se rechaza. | [RED](RED-Y-FIREWALL.md) §11 |
 | **(D)** Un solo panel, que es también la API; crea las instancias por el orquestador y nunca ve `docker.sock`. | Un panel comprometido no se convierte en root. | [ORQUESTADOR](ORQUESTADOR.md) |
 | **(D)** Todo dato lleva su punto. Filtro por punto y vista «Toda la empresa». | Los puntos pueden repetir LAN privadas. | §5, [DATOS](DATOS.md) |
 | **(D)** Hoy todos ven todo; el modelo está preparado para restringir por punto. | Tabla `visibilidad` desde el primer día. | [DATOS](DATOS.md) §2 |
@@ -183,6 +188,7 @@ aprendido en `suricata-ids-lab` y de la auditoría del diseño.
 | tcp `1194+N-1` | `vpn` del punto N (publicado sobre su 1194) | internet, o solo la IP del MikroTik si se declara | límite de conexiones nuevas por IP, freno en `ovpn-auth`, jaula `ids-vpn` |
 | udp 37008 | `tzsp-decap` del punto | solo `100.64.N.2` por `tun0` | el espejo |
 | tcp 8729 en `100.64.N.2` | API-SSL del MikroTik | solo `100.64.N.1` (el relé) | única salida del netns |
+| udp `37008+N-1` | `tzsp-decap` de un punto **directo** (publicado sobre su 37008) | solo la IP del MikroTik en la LAN | sin VPN ([RED](RED-Y-FIREWALL.md) §11); su API va del relé a `<IP del MikroTik>:8729` por `eth0` |
 | `/run/ids-orq/orq.sock` | orquestador | uid 10500 o root | `SO_PEERCRED` más token |
 | `/srv/ids/run/<pid>/api.sock` | relé del punto | panel (grupo 10500) | destino fijo |
 | `/srv/ids/ctl/<pid>/*` | Suricata y OpenVPN | solo el orquestador | reapertura de logs, `dataset-add`, desconexión de clientes |
@@ -192,7 +198,7 @@ Salidas a internet:
 - **Panel:** 443 hacia AbuseIPDB, Groq y Telegram.
 - **Contenedor efímero de reglas:** fuentes ET y feeds.
 - **Orquestador:** GHCR, GitHub, sigstore y Telegram.
-- **Contenedores `vpn`:** ninguna.
+- **Contenedores `vpn`:** ninguna (un punto directo solo sale hacia la API de su MikroTik en la LAN).
 
 Cuatro ideas fijan la red (el detalle está en [RED-Y-FIREWALL.md](RED-Y-FIREWALL.md)):
 

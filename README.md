@@ -12,13 +12,16 @@ OpenVPN y su propio Suricata.
   ovpn-client` para RouterOS v6 y v7 (con la CA del VPS; sin reglas de firewall ni rutas, que
   gestiona el operador). El usuario de la API no va en esos comandos: lo crea el operador a mano en
   el router si quiere usar la API (docs/OPERACION.md §1.2).
+- Si el MikroTik está en la misma red local que el VPS, el punto puede ser **directo**, sin VPN: el
+  espejo llega por UDP desde la IP del MikroTik y el panel entra a su API por la LAN
+  (docs/RED-Y-FIREWALL.md §11).
 
 ## ⚡ Quick install (one-liner)
 
 En un VPS **Debian 13 (trixie) amd64** recién instalado, como `root` y entrando por SSH con clave:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/mtandazo35/IDS_MAAT-Docker/v0.1.8/install.sh -o /root/ids-maat-install.sh && bash /root/ids-maat-install.sh
+curl -fsSL https://raw.githubusercontent.com/mtandazo35/IDS_MAAT-Docker/v0.1.9/install.sh -o /root/ids-maat-install.sh && bash /root/ids-maat-install.sh
 ```
 
 Sin opciones instala todo (la release de esa línea, reglas, timers y panel) con:
@@ -60,5 +63,5 @@ opciones no reabre un acceso cerrado. Opcionales: `--tun-base 198.18` (si tus ab
 
 Sucesor en contenedores de [suricata-ids-lab](https://github.com/mtandazo35/suricata-ids-lab).
 
-**Estado:** versión publicada `v0.1.8` (la primera fue `v0.1.0`). La arquitectura está en
+**Estado:** versión publicada `v0.1.9` (la primera fue `v0.1.0`). La arquitectura está en
 [docs/ARQUITECTURA.md](docs/ARQUITECTURA.md), con sus anexos en docs/.
