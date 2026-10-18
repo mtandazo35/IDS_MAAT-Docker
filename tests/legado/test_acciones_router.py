@@ -47,7 +47,7 @@ PIEZAS = ("ACCIONES", "ACCIONES_POR_CAT", "ACCION_DEFECTO", "T_RAW", "T_NAT", "T
           "_PROTO_CON_PUERTO", "_LISTAS_IF_SISTEMA", "verificar_reglas", "_mk_contar", "verificar_en_router", "lineas_verificacion", "_RE_FIND_COMMENT", "_RE_FIND_CHAIN", "DNS_PROTEGIDO_DEFECTO", "PUERTOS_MINERIA", "PUERTOS_CORREO", "reglas_desde_rsc", "cargar_reglas_propias", "guardar_reglas_propias",
           "_TABLA_RSC", "_PROPS_TABLA", "RESPALDOS_MK", "_MK_CONEXION", "accion_de_clase", "reglas_de_accion",
           "_com_regla", "_cod_regla", "_prefijo_regla", "_rsc_val", "rsc_de", "_reglas_nuestras", "_params_accion",
-          "_plan", "_aviso_fasttrack", "_plan_en", "plan_reglas", "_mk_print_todo", "_mk_print", "respaldar_firewall", "aplicar_reglas",
+          "_plan", "_aviso_fasttrack", "_reglas_deseadas", "_plan_en", "plan_reglas", "_desc_de_comentario", "ver_reglas", "_mk_print_todo", "_mk_print", "respaldar_firewall", "aplicar_reglas",
           "quitar_reglas", "_aplicar_en", "guardar_mk", "_mk_globales", "estado_reglas",
           "ErrorLecturaMK", "_mk_print_estricto")
 
@@ -168,6 +168,55 @@ def estado_por_clase():
           e3["botnet"]["estado"] == "pendientes" and e3["botnet"]["cambios"] == 7, e3["botnet"])
     ns["quitar_reglas"]({"id": "p001"}, "botnet", quien="admin")
     check("  y quitadas: ninguna", ns["estado_reglas"]({"id": "p001"})["botnet"]["estado"] == "ninguna", "")
+
+
+def ver_por_regla():
+    """«Ver reglas» (el user, 2026-10-18): TODAS las reglas de la clase con su estado en el router
+    (punto verde/rojo en el modal). Solo lee; sin la API del router ensena la plantilla igual."""
+    ns, rt, m, logs, td = entorno()
+    T_RAW = ns["T_RAW"]
+    router = {"id": "p001"}
+    v = ns["ver_reglas"](router, "botnet")
+    check("ver: router vacio, las 7 de «Solo navegación» salen y todas faltan",
+          [e for e, _d, _l in v["reglas"]] == ["falta"] * 7 and v["leido"] == "", v)
+    check("  cada una con su descripcion y su linea de RouterOS con el comentario",
+          [d for _e, d, _l in v["reglas"]] == ["DNS UDP", "DNS TCP", "HTTP HTTPS", "HTTP3 QUIC", "Hora NTP",
+                                                "Bloquear resto", "Revisar clientes"]
+          and v["reglas"][3][2].startswith("/ip firewall raw add ")
+          and 'comment="Suricata:botnet:04 HTTP3 QUIC"' in v["reglas"][3][2], v["reglas"])
+    check("  y no cambia nada en el router", not any(o[0] in ("add", "set", "remove") for o in rt.ordenes), rt.ordenes)
+    ns["aplicar_reglas"](router, "botnet", quien="admin")
+    v = ns["ver_reglas"](router, "botnet")
+    check("  tras aplicar: todas en verde (ok)", [e for e, _d, _l in v["reglas"]] == ["ok"] * 7, v["reglas"])
+    r3 = next(f for f in rt.t[T_RAW] if (f.get("comment") or "").startswith("Suricata:botnet:03"))
+    r3["dst-port"] = "80"
+    v = ns["ver_reglas"](router, "botnet")
+    check("  una regla cambiada a mano en el router: esa sale «distinta» y el resto ok",
+          [e for e, _d, _l in v["reglas"]] == ["ok", "ok", "distinta"] + ["ok"] * 4, v["reglas"])
+    m["ACCION_BOTNET"] = "cortar"
+    v = ns["ver_reglas"](router, "botnet")
+    check("  con otra accion: la 01 distinta y las que ya no pone, «sobra»",
+          [e for e, _d, _l in v["reglas"]] == ["distinta"] + ["sobra"] * 6
+          and v["reglas"][0][1] == "Cortar todo" and v["reglas"][1][1] == "DNS TCP", v["reglas"])
+    # sin la API del router: la plantilla igual, sin comparar y sin conectar
+    conexiones = []
+    ns["mk_conectar"] = lambda d, timeout=6: (conexiones.append(1), rt)[1]
+    v = ns["ver_reglas"](None, "botnet", motivo="el router no tiene usuario y clave de la API")
+    check("  sin la API del router: la plantilla, sin comparar (?) y sin conectar",
+          [e for e, _d, _l in v["reglas"]] == ["?"] and v["reglas"][0][1] == "Cortar todo"
+          and "usuario y clave" in v["leido"] and not conexiones, v)
+    def _cae(d, timeout=6):
+        raise OSError("timeout")
+    ns["mk_conectar"] = _cae
+    m["ACCION_BOTNET"] = "solo-web"
+    v = ns["ver_reglas"](router, "botnet")
+    check("  router que no contesta: la plantilla igual y el motivo",
+          [e for e, _d, _l in v["reglas"]] == ["?"] * 7 and "no se pudo leer el router" in v["leido"], v)
+    m["ACCION_BOTNET"] = "nada"
+    check("  accion «Nada»: ninguna regla", ns["ver_reglas"](None, "botnet")["reglas"] == [], "")
+    check("  la descripcion sale del comentario (o el codigo si no tiene)",
+          ns["_desc_de_comentario"]("Suricata:botnet:01 DNS UDP") == "DNS UDP"
+          and ns["_desc_de_comentario"]("Suricata:botnet:01") == "Suricata:botnet:01", "")
 
 
 def main():
@@ -526,6 +575,7 @@ add chain=prerouting action=drop protocol=tcp dst-port=25
     check("guardar_mk conserva ACCION_*", g.get("ACCION_BOTNET") == "solo-web" and g.get("ACCION_DNS_IP") == "192.0.2.53" and g.get("ACCION_LIMITE_P2P") == "2M", g)
 
     estado_por_clase()
+    ver_por_regla()
     print("\n" + ("TODO OK" if not fallos else "%d fallo(s)" % fallos))
     return 1 if fallos else 0
 

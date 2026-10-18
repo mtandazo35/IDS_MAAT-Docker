@@ -2494,16 +2494,9 @@ def _aviso_fasttrack(s_, leidas=None):
             "connection-mark=no-mark (el panel no toca esa regla).")
 
 
-def _plan_en(s_, cat, accion=None, m=None, verificar=True, leidas=None):
-    """El plan de una clase sobre una conexion YA abierta (el diagnostico lo llama ocho
-    veces con el mismo socket: un login por router, no por clase).
-
-    Si no se puede leer el router lanza ErrorLecturaMK: sin saber que hay, no se propone
-    nada (un plan sobre una lectura fallida proponia add de reglas que ya estaban).
-    `leidas`: ver _reglas_nuestras (una lectura por tabla compartida entre clases)."""
-    m = m if m is not None else _mk_globales()
-    accion = accion or accion_de_clase(cat, m)
-    lista = lista_de_categoria(cat)
+def _reglas_deseadas(cat, accion, lista, m):
+    """Las reglas que toca poner para esa clase (la plantilla o las propias) y el aviso si no
+    hay ninguna. No mira el router: lo usan el plan y «Ver reglas» (que tambien sirve sin el)."""
     aviso = ""
     if accion == "propias":
         try:
@@ -2516,6 +2509,20 @@ def _plan_en(s_, cat, accion=None, m=None, verificar=True, leidas=None):
         deseadas = reglas_de_accion(cat, accion, lista, _params_accion(cat, m))
     if accion == "limitar" and not deseadas:
         aviso = "Falta el límite (ACCION_LIMITE_%s, p.ej. 2M): sin el no se aplica nada." % cat.upper()
+    return deseadas, aviso
+
+
+def _plan_en(s_, cat, accion=None, m=None, verificar=True, leidas=None):
+    """El plan de una clase sobre una conexion YA abierta (el diagnostico lo llama ocho
+    veces con el mismo socket: un login por router, no por clase).
+
+    Si no se puede leer el router lanza ErrorLecturaMK: sin saber que hay, no se propone
+    nada (un plan sobre una lectura fallida proponia add de reglas que ya estaban).
+    `leidas`: ver _reglas_nuestras (una lectura por tabla compartida entre clases)."""
+    m = m if m is not None else _mk_globales()
+    accion = accion or accion_de_clase(cat, m)
+    lista = lista_de_categoria(cat)
+    deseadas, aviso = _reglas_deseadas(cat, accion, lista, m)
     existentes = _reglas_nuestras(s_, cat, deseadas, leidas)
     acciones = _plan(cat, deseadas, existentes)
     if accion == "limitar" and deseadas:
@@ -2570,6 +2577,42 @@ def plan_reglas(router, cat, accion=None, m=None):
     finally:
         try: s_.close()
         except Exception: pass
+
+
+def _desc_de_comentario(comment):
+    """«DNS UDP» de «Suricata:botnet:01 DNS UDP»; sin descripcion, el propio codigo."""
+    cod, _sp, desc = (comment or "").partition(" ")
+    return desc or cod
+
+
+def ver_reglas(router, cat, m=None, motivo=""):
+    """«Ver reglas»: TODAS las reglas que pone la accion de esa clase, no solo lo que falta, y
+    como esta cada una en ESE router. Solo lee. Ver la plantilla no necesita el router: con
+    router=None (sin usuario de la API) o si no contesta, salen igual sin comparar y `leido`
+    dice por que.
+    {"accion", "lista", "aviso", "leido": "" | motivo, "verificacion": [...],
+     "reglas": [(estado, descripcion, linea)]}
+    estado: ok (ya esta igual) | falta | distinta (esta, pero hay que corregirla) |
+            sobra (es del panel y la accion ya no la pone: se quitaria) | ? (sin comparar)"""
+    m = m if m is not None else _mk_globales()
+    accion = accion_de_clase(cat, m)
+    lista = lista_de_categoria(cat)
+    deseadas, aviso = _reglas_deseadas(cat, accion, lista, m)
+    out = {"accion": accion, "lista": lista, "aviso": aviso, "leido": motivo or "", "verificacion": [],
+           "reglas": [("?", p.get("_desc", ""), rsc_de(t, p, _com_regla(cat, i, p.get("_desc", ""))))
+                      for i, (t, p) in enumerate(deseadas, 1)]}
+    if router is None:
+        out["leido"] = out["leido"] or "sin router elegido"
+        return out
+    try:
+        p = plan_reglas(router, cat, accion, m)
+    except Exception as ex:
+        out["leido"] = "no se pudo leer el router: %s" % ex
+        return out
+    est = {"igual": "ok", "add": "falta", "set": "distinta", "remove": "sobra"}
+    out.update(aviso=p["aviso"], verificacion=p.get("verificacion", []),
+               reglas=[(est[op], _desc_de_comentario(c), rsc_de(t, pr, c)) for op, t, pr, c, _i in p["acciones"]])
+    return out
 
 
 def estado_reglas(router, m=None):
@@ -3856,7 +3899,7 @@ def mk_diagnostico(router=None):
                 _acc_checks.append(("falta", f"{_nom}: '{ACCIONES.get(_acc, _acc)}' NO está aplicada ({_p['cambios']} cambio(s))",
                                     "La acción está configurada en el panel pero el router no tiene (o tiene distintas) "
                                     "las reglas. Sin ellas, meter al CPE en la lista no hace nada.",
-                                    "Ajustes -> MikroTik -> " + _nom + " -> Ver / aplicar en el router"))
+                                    "Ajustes -> MikroTik -> " + _nom + " -> Aplicar reglas"))
     finally:
         try: s_.close()
         except OSError: pass
@@ -3901,12 +3944,12 @@ def mk_diagnostico(router=None):
         else:
             if clase:
                 arreglo = ("Ajustes -> MikroTik -> " + clase + " -> elige la acción -> "
-                           "Ver / aplicar en el router")
+                           "Aplicar reglas")
             else:
                 # LIST y LIST_GRAD no son de ninguna clase: no tienen plantilla propia, asi
                 # que se pegan como «Mis reglas» de una clase con el nombre de la lista
                 arreglo = ("Ajustes -> MikroTik -> 'Mis reglas' de una clase con "
-                           f"src-address-list='{lista}' -> Ver / aplicar en el router")
+                           f"src-address-list='{lista}' -> Aplicar reglas")
             out.append(("falta", f"La lista de {que} NO corta nada",
                         f"El panel mete CPEs en '{lista}', pero ninguna regla activa del firewall "
                         "(filter, raw, nat ni mangle) la usa: el abonado sigue atacando y el "
@@ -3958,7 +4001,7 @@ def mk_diagnostico(router=None):
                     "Con muchas IPs en cuarentena conviene cortar en raw: se descarta antes "
                     "de crear la conexión y la tabla de conntrack no se llena. Las plantillas "
                     "del panel ya cortan ahí.",
-                    "Ajustes -> MikroTik -> elige la acción de cada clase -> Ver / aplicar en el router"))
+                    "Ajustes -> MikroTik -> elige la acción de cada clase -> Aplicar reglas"))
     return out
 
 def mk_list_ips(lista, router=None):
@@ -11348,18 +11391,22 @@ def _card_listas(m):
         propias = cargar_reglas_propias(cat)
         filas += ("<div class=field><label>%s</label>"
                   "<input type=text name=lista_%s value=\"%s\" placeholder=\"%s\">"
-                  "<div class=accrow><select name=accion_%s onchange=\"accCambio(this,'%s')\">%s</select>%s"
-                  "<button type=button class=cancelbtn onclick=\"reglasPlan('%s')\">Ver / aplicar en el router</button>"
+                  "<div class=accrow><select name=accion_%s onchange=\"accCambio(this,'%s')\">%s</select>%s</div>"
+                  # tres botones con nombre propio (el user, 2026-10-18): ver solo mira, aplicar
+                  # ensena los cambios y pide confirmar, quitar pregunta antes
+                  "<div class=accrow><button type=button class=cancelbtn onclick=\"reglasVer('%s')\">Ver reglas</button>"
+                  "<button type=button class=cancelbtn onclick=\"reglasPlan('%s')\">Aplicar reglas</button>"
                   "<button type=button class=cancelbtn onclick=\"if(ask(this,'Quitar del router las reglas de %s',"
                   "'Se quitan SOLO las reglas que puso el panel para esta clase (comment Suricata:%s:*). "
-                  "La address-list y las IPs que tenga se quedan.','Quitar',''))reglasQuitar('%s')\">Quitar del router</button>"
-                  "<span class=accest id=accest_%s></span></div>"
+                  "La address-list y las IPs que tenga se quedan.','Quitar',''))reglasQuitar('%s')\">Quitar reglas</button></div>"
+                  # el estado aparte: punto verde = aplicadas, rojo = no aplicadas, gris = sin comprobar
+                  "<div class=accestrow><span class=acclbl>Estado en el router:</span><span class=accest id=accest_%s></span></div>"
                   "<textarea name=reglas_%s id=reglas_%s class=rsc rows=6 style='display:%s' "
                   "placeholder='/ip firewall raw&#10;add chain=prerouting action=drop src-address-list={LISTA} place-before=0'>%s</textarea>"
                   "<div id=verif_%s style='display:%s;margin-top:6px'><button type=button class=cancelbtn "
                   "onclick=\"reglasVerificar('%s')\">Verificar mis reglas</button></div>"
                   "</div>" % (esc(nom), esc(cat), esc(actual), esc(por_defecto),
-                              cat, cat, ops, extra, cat, esc(nom), cat, cat, cat,
+                              cat, cat, ops, extra, cat, cat, esc(nom), cat, cat, cat,
                               cat, cat, "block" if acc == "propias" else "none", esc(propias),
                               cat, "block" if acc == "propias" else "none", cat))
     # a que router (punto) se le miran/aplican las reglas: SIEMPRE explicito (el rid va en
@@ -11377,9 +11424,12 @@ def _card_listas(m):
         ".accrow select{padding:7px 10px;border:1px solid #d7d6d2;border-radius:8px;font:13px system-ui}"
         ".accrow .cancelbtn{padding:6px 10px;font-size:12.5px}"
         ".acclim{width:220px;padding:7px 10px;border:1px solid #d7d6d2;border-radius:8px;font:13px system-ui}"
-        ".accest{display:none;align-items:center;gap:5px;font:600 12.5px system-ui;padding:5px 11px;border-radius:999px;white-space:nowrap}"
+        ".accestrow{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:8px}"
+        ".acclbl{font:12.5px system-ui;color:#52514e}"
+        ".accest{display:none;align-items:center;gap:6px;font:600 12.5px system-ui;padding:4px 11px;border-radius:999px}"
+        ".accest::before{content:'';width:9px;height:9px;border-radius:50%;background:currentColor;flex:none}"
         ".accest.ok{display:inline-flex;background:#e6f4ea;color:#1a7f37;border:1px solid #b7e0c2}"
-        ".accest.pend{display:inline-flex;background:#fff4e5;color:#a15c12;border:1px solid #f2d3ad}"
+        ".accest.pend{display:inline-flex;background:#fdecea;color:#b42318;border:1px solid #f5c2bd}"
         ".accest.gris{display:inline-flex;background:#f1f1ef;color:#6b6a66;border:1px solid #e0dfda;font-weight:500}"
         ".rsc{width:100%;box-sizing:border-box;margin-top:6px;font:12px ui-monospace,Consolas,monospace;"
         "padding:8px;border:1px solid #d7d6d2;border-radius:8px}</style>"
@@ -11399,11 +11449,12 @@ def _card_listas(m):
         "fetch('/mikrotik/reglas/estado',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:d.toString()})"
         ".then(function(r){return r.json();}).then(function(j){"
         "for(var i=0;i<bs.length;i++){var cat=bs[i].id.slice(7),e=j[cat];"
-        "if(j._error||!e||e.estado==='error'){_accEt(cat,'gris','No se pudo comprobar el router');}"
-        "else if(e.estado==='aplicadas'){_accEt(cat,'ok','\u2713 Reglas aplicadas');}"
-        "else if(e.estado==='pendientes'){_accEt(cat,'pend',e.cambios+' cambio(s) sin aplicar');}"
-        "else{_accEt(cat,'','');}}})"
-        ".catch(function(){for(var i=0;i<bs.length;i++){_accEt(bs[i].id.slice(7),'gris','No se pudo comprobar el router');}});}"
+        # verde = aplicadas, rojo = no aplicadas; gris = no se sabe, y entonces dice por que
+        "if(j._error||!e||e.estado==='error'){_accEt(cat,'gris','Sin comprobar: '+(j._error||(e&&e.msg)||'el router no contesta'));}"
+        "else if(e.estado==='aplicadas'){_accEt(cat,'ok','Aplicadas');}"
+        "else if(e.estado==='pendientes'){_accEt(cat,'pend','No aplicadas \u00b7 faltan '+e.cambios+' cambio(s)');}"
+        "else{_accEt(cat,'gris','Sin reglas: esta acci\u00f3n no pone ninguna');}}})"
+        ".catch(function(){for(var i=0;i<bs.length;i++){_accEt(bs[i].id.slice(7),'gris','Sin comprobar: el panel no contesta');}});}"
         "function _accRid(){var s=document.getElementById('accrid');return s?s.value:'';}"
         "function _accBox(h){var mo=document.getElementById('mkwait'),bx=mo.querySelector('.mkbox');"
         "bx.style.maxWidth='780px';bx.style.alignItems='flex-start';bx.innerHTML=h;mo.style.display='flex';}"
@@ -11413,6 +11464,33 @@ def _card_listas(m):
         "fetch(ruta,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:d.toString()})"
         ".then(function(r){return r.text();}).then(fn)"
         ".catch(function(e){_accBox(\"<div><b>Error</b><br><span style='font-size:13px'>\"+_accEsc(String(e))+\"</span></div>\");});}"
+        # «Ver reglas»: todas las reglas de la clase, cada una con su punto (verde = ya esta en el
+        # router, rojo = falta o esta distinta, ambar = sobra, gris = sin comparar). Solo mira.
+        "var _accCat='';"
+        "function reglasVer(cat){_accCat=cat;_accBox(\"<div class='mkspin'></div><div><b>Leyendo las reglas&hellip;</b><br>"
+        "<span style='font-size:13px;color:#52514e'>Solo se mira: no se cambia nada.</span></div>\");"
+        "_accPost('/mikrotik/reglas/ver',cat,function(t){var ok=t.indexOf('OK')===0;"
+        "var c=t.replace(/^OK ?/,'').replace(/^ERR: /,'');"
+        "if(!ok){_accBox(\"<div style='font-size:30px'>&#9940;</div><div><b>No se pudieron leer las reglas</b><br><span style='font-size:13px'>\"+_accEsc(c)+\"</span>"
+        "<div class=actions style='margin-top:10px'><button type=button class=cancelbtn onclick='_accCerrar()'>Cerrar</button></div></div>\");return;}"
+        "var L=c.split(String.fromCharCode(10));var cab=L.shift();"
+        "var V=L.filter(function(x){return x.charAt(0)==='!';});"
+        "var R=L.filter(function(x){return x.charAt(0)==='@';}).map(function(x){return x.slice(1).split(String.fromCharCode(9));});"
+        "var E={ok:['#1a7f37','ya está en el router'],falta:['#b42318','falta en el router'],"
+        "distinta:['#b42318','está, pero distinta: se corrige al aplicar'],sobra:['#a15c12','sobra: se quita al aplicar'],"
+        "'?':['#8a8985','sin comparar']};"
+        "var hay=R.some(function(r){return r[0]==='falta'||r[0]==='distinta'||r[0]==='sobra';});"
+        "var li=R.length?R.map(function(r){var e=E[r[0]]||E['?'];"
+        "return \"<li style='list-style:none;margin:0 0 9px'><div style='display:flex;align-items:center;gap:7px;font-size:13px'>"
+        "<span style='width:9px;height:9px;border-radius:50%;flex:none;background:\"+e[0]+\"'></span>"
+        "<b>\"+_accEsc(r[1]||'')+\"</b><span style='color:\"+e[0]+\"'>&middot; \"+e[1]+\"</span></div>"
+        "<code style='display:block;margin:3px 0 0 16px;font-size:11.5px;white-space:pre-wrap;word-break:break-all;color:#3d3c39'>\"+_accEsc(r[2]||'')+\"</code></li>\";}).join('')"
+        ":\"<p style='margin:0'>Esta acción no pone ninguna regla.</p>\";"
+        "_accBox(\"<div style='width:100%'><b>Reglas &middot; \"+_accEsc(cat)+\"</b>"
+        "<div style='font-size:13px;color:#52514e;margin:4px 0 8px'>\"+_accEsc(cab)+\"</div>\"+_accVer(V)+"
+        "\"<ul style='margin:0;padding:0;max-height:55vh;overflow:auto'>\"+li+\"</ul>"
+        "<div class=actions style='margin-top:12px'>\"+(hay?\"<button type=button class=primary onclick='reglasPlan(_accCat)'>Aplicar reglas</button>\":'')+"
+        "\"<button type=button class=cancelbtn onclick='_accCerrar()'>Cerrar</button></div></div>\");});}"
         "function reglasPlan(cat){_accBox(\"<div class='mkspin'></div><div><b>Leyendo el router&hellip;</b><br>"
         "<span style='font-size:13px;color:#52514e'>Se compara lo que hay con lo que toca. No se cambia nada todavía.</span></div>\");"
         "_accPost('/mikrotik/reglas/plan',cat,function(t){var ok=t.indexOf('OK')===0;"
@@ -11425,7 +11503,7 @@ def _card_listas(m):
         "var pre=L.length?\"<pre style='background:#f8f9fa;border:1px solid #eaecf0;border-radius:6px;padding:10px;max-height:50vh;overflow:auto;"
         "font-size:12px;white-space:pre-wrap;margin:0'>\"+_accEsc(L.join(String.fromCharCode(10)))+\"</pre>\""
         ":\"<p style='margin:0'>El router ya tiene exactamente estas reglas.</p>\";"
-        "_accBox(\"<div style='width:100%'><b>Vista previa &middot; \"+_accEsc(cat)+\"</b>"
+        "_accBox(\"<div style='width:100%'><b>Aplicar reglas &middot; \"+_accEsc(cat)+\"</b>"
         "<div style='font-size:13px;color:#52514e;margin:4px 0 8px'>\"+_accEsc(cab)+\"</div>\"+ver+pre+"
         "\"<div class=actions style='margin-top:12px'>\"+((L.length&&!hayE)?\"<button type=button class=primary onclick=\\\"reglasAplicar('\"+cat+\"')\\\">Aplicar en el router</button>\":'')+"
         "\"<button type=button class=cancelbtn onclick='_accCerrar()'>Cerrar</button></div></div>\");});}"
@@ -11464,7 +11542,7 @@ def _card_listas(m):
         "plantilla (cortar, solo navegación, sin correo, DNS protegido o redirigido, frenar escaneo, limitar, cortar minería) o <b>tus "
         "propias reglas</b> pegadas tal cual de RouterOS (usa <code>{LISTA}</code> donde "
         "vaya la lista; el comentario lo pone el panel). <b>Guarda</b> primero; después "
-        "<i>Ver / aplicar en el router</i> enseña las líneas exactas que se van a crear, "
+        "<i>Aplicar reglas</i> enseña las líneas exactas que se van a crear, "
         "corregir o quitar, y solo se toca el router si confirmas. Antes de cada cambio se "
         "respalda su firewall en los respaldos del panel. Nunca se toca una regla "
         "que no lleve el comentario del panel.</p>"
@@ -13711,8 +13789,8 @@ maestra del servidor y no se vuelve a mostrar.</p>
 <p>Cada CPE va a la address-list de <b>su categoría</b> (<code>clientes-botnet</code>,
 <code>clientes-escaneo</code>&hellip;, ver "Una lista por categoría de abuso"; su fila lo dice), y los de
 DNS sospechoso a <code>suricata-dns-sospechoso</code>. La regla de cada lista no hace falta escribirla:
-en <b>Ajustes &rarr; MikroTik</b> eliges la acción de la lista y el panel la pone con <b>Ver / aplicar en el
-router</b> (ver "Acciones por categoría: lo que el router hace con cada lista"). A mano, cortar el
+en <b>Ajustes &rarr; MikroTik</b> eliges la acción de la lista y el panel la pone con <b>Aplicar
+reglas</b> (ver "Acciones por categoría: lo que el router hace con cada lista"). A mano, cortar el
 tráfico saliente de una lista sería (misma sintaxis en v6 y v7):</p>
 <pre><code>/ip firewall filter add chain=forward src-address-list=clientes-botnet action=drop comment="Suricata: CPE en cuarentena"</code></pre>
 <p>Alternativas según tu política: en vez de <code>action=drop</code> puedes redirigir a un portal,
@@ -13872,7 +13950,7 @@ nada y no da error</b>: una <code>/queue simple</code> con <code>target=""</code
 tráfico, y una marca de paquete que ninguna cola consume no la usa nadie. P2P y criptominado
 llevan <b>marcas y colas distintas</b>, para poder darles límites distintos y saber cuál consume.
 No hace falta copiarlas: la acción <b>Limitar</b> de <b>Ajustes &rarr; MikroTik</b> pone las tres con
-<b>Ver / aplicar en el router</b>.</p>
+<b>Aplicar reglas</b>.</p>
 <p>Por qué una regla puede <b>parecer</b> que no funciona (el orden frente al fasttrack, las conexiones
 que ya estaban abiertas y el <code>redirect</code> al resolutor del propio router): ver "Acciones por
 categoría: lo que el router hace con cada lista".</p>
@@ -13911,8 +13989,8 @@ equipo infectado se salta la redirección.</td></tr>
 + marca de paquete + cola (<code>queue tree</code>) con el límite que pongas (p.ej. <code>2M</code>: la
 <code>max-limit</code> de una <code>queue tree</code> lleva un solo valor; <code>2M/2M</code> es la forma de las
 <code>queue simple</code>). Sin límite no se aplica. <b>Ojo con el fasttrack</b>: si el router lo usa, las
-conexiones aceleradas se saltan el mangle y la cola y el límite no se les aplica. La vista previa lo avisa
-solo en los routers que lo usan, con la orden para arreglarlo (<code>connection-mark=no-mark</code> en su
+conexiones aceleradas se saltan el mangle y la cola y el límite no se les aplica. <i>Ver reglas</i> y
+<i>Aplicar reglas</i> lo avisan solo en los routers que lo usan, con la orden para arreglarlo (<code>connection-mark=no-mark</code> en su
 regla de fasttrack); el panel no toca esa regla.</td></tr>
 <tr><td><b>Cortar puertos de minería</b></td><td>solo para criptominado: corta por TCP los puertos
 habituales de las pools (stratum: 3333, 4444, 5555, 7777, 14433, 14444). Limitar el ancho de banda no frena
@@ -13946,24 +14024,35 @@ normaliza), se dice qué campo y cómo, y queda en el Registro; si coincide, "Ve
 </ul>
 <p>Las plantillas de DNS y escaneo llevan <code>in-interface-list=!WAN</code>: el nombre de esa
 interface-list se pone en Ajustes (vacío = sin esa condición) y tiene que existir en el router.</p>
-<p><b>Cómo se aplica.</b> Guarda primero. <i>Ver / aplicar en el router</i> enseña las líneas exactas que se
-van a crear, corregir o quitar en ese router; solo si confirmas se toca. Antes del primer cambio se
+<p><b>Cómo se aplica.</b> Guarda primero. Cada clase tiene tres botones:</p>
+<ul>
+<li><b>Ver reglas</b>: enseña <b>todas</b> las reglas que pone la acción, con su descripción y la línea de
+RouterOS, y al lado de cada una un punto: <b style="color:#1a7f37">verde</b> si ya está en el router,
+<b style="color:#b42318">rojo</b> si falta o está distinta, <b style="color:#a15c12">ámbar</b> si sobra (es del panel
+y la acción ya no la pone) y gris si no se pudo comparar. Solo mira; sin usuario de la API del router enseña
+igual la plantilla, sin comparar.</li>
+<li><b>Aplicar reglas</b>: enseña solo los cambios (crear, corregir o quitar) en ese router, con lo que
+avise el verificador, y no toca nada hasta que pulsas <i>Aplicar en el router</i>.</li>
+<li><b>Quitar reglas</b>: pregunta antes y elimina solo las del panel para esa clase; la lista y sus IPs
+se quedan.</li>
+</ul>
+<p> Antes del primer cambio se
 <b>respalda</b> el firewall (raw, nat, filter, mangle y queue tree) en <code>/srv/ids/panel/respaldos/</code>; si
 el respaldo falla, no se toca nada. Cada regla del panel lleva <code>comment="Suricata:&lt;clase&gt;:&lt;n&gt;"</code>
 seguido de lo que hace (<code>Suricata:botnet:04 HTTP3 QUIC</code>), para que en Winbox se lea; el panel
 reconoce sus reglas por la primera parte, así que a las que se pusieron antes sin descripción solo les
 añade el texto. La reconciliación es <b>idempotente</b> (aplicar dos veces no cambia nada) y <b>acotada</b>: jamás toca una
-regla que no lleve ese comentario. Junto a los botones, una etiqueta dice cómo está cada clase en el router:
-<b style="color:#1a7f37">&#10003; Reglas aplicadas</b> (el router ya tiene exactamente lo que toca),
-<b style="color:#a15c12">N cambio(s) sin aplicar</b>, o <i>Sin guardar</i> si cambiaste la acción y aún no la
-guardaste; se comprueba al abrir el apartado, al cambiar de router y después de aplicar o quitar.
+regla que no lleve ese comentario. Debajo de los botones, <b>Estado en el router</b> dice cómo está cada
+clase: punto <b style="color:#1a7f37">verde, Aplicadas</b> (el router ya tiene exactamente lo que toca), punto
+<b style="color:#b42318">rojo, No aplicadas</b> con los cambios que faltan, o gris: <i>Sin reglas</i> (la acción no
+pone ninguna), <i>Sin guardar</i> si cambiaste la acción y aún no la guardaste, o <i>Sin comprobar</i> con el
+motivo (por ejemplo, el router no tiene usuario de la API). Se comprueba al abrir el apartado, al cambiar de
+router y después de aplicar o quitar.
 Debajo de las listas, <b>Recargar las listas en el router</b> vuelve a cargar las IPs que el panel tiene
 en cuarentena y que faltan en su address-list (alguien la vació, se restauró un respaldo viejo); las que ya
 están se omiten y no se quita nada. El panel compara cada IP con <b>su</b> lista cada pocos minutos: si una
 entrada permanente falta en el router, no la olvida, la marca <i>falta en el router</i> para poder recargarla
-(una con TTL que ya no está se da por caducada).
-<i>Quitar del router</i> elimina solo las del panel para esa clase; la
-lista y sus IPs se quedan.</p>
+(una con TTL que ya no está se da por caducada).</p>
 <p><b>Por qué en raw prerouting.</b> Se evalúa antes del fasttrack y de conntrack: corta aunque la conexión
 ya esté establecida y sin depender del orden del <code>filter</code>. Las acciones de NAT y de colas van en su
 tabla.</p>
@@ -19917,8 +20006,11 @@ class H(BaseHTTPRequestHandler):
                 return self._prohibido()
             rid = (q.get("rid", [""])[0]).strip()
             r = _router_de_pid(rid)     # el nodo de la operacion, validado; nunca uno por defecto
-            if not r or not (r.get("USER") and r.get("PASS")):
-                res = {"_error": "router sin conexión configurada"}
+            if not r:
+                res = {"_error": "no hay router elegido"}
+            elif not (r.get("USER") and r.get("PASS")):
+                # el motivo sale en la etiqueta: «no se pudo comprobar» a secas no decia por que
+                res = {"_error": "el router no tiene usuario y clave de la API (Puntos > ficha del punto > API)"}
             else:
                 try:
                     res = estado_reglas(r)
@@ -19928,6 +20020,39 @@ class H(BaseHTTPRequestHandler):
             self.send_response(200)
             self.send_header("Content-Type", "application/json; charset=utf-8")
             self.send_header("Cache-Control", "no-store")
+            self.send_header("Content-Length", str(len(b)))
+            self.end_headers(); self.wfile.write(b)
+            return
+        if ruta == "/mikrotik/reglas/ver":
+            # «Ver reglas»: todas las reglas de la clase y como esta cada una en el router. Solo
+            # lee; sin la API del router ensena la plantilla igual, sin comparar.
+            # "OK cabecera\n!E/!W/!I verificacion\n@estado<TAB>descripcion<TAB>linea" o "ERR: motivo"
+            if not self._admin():
+                return self._prohibido()
+            cat = (q.get("cat", [""])[0]).strip()
+            rid = (q.get("rid", [""])[0]).strip()
+            if cat not in ACCIONES_POR_CAT:
+                b = b"ERR: clase desconocida"
+            else:
+                r = _router_de_pid(rid)
+                motivo = ""
+                if not r:
+                    motivo = "no hay router elegido"
+                elif not (r.get("USER") and r.get("PASS")):
+                    motivo = "el router no tiene usuario y clave de la API (Puntos > ficha del punto > API)"
+                v = ver_reglas(r if not motivo else None, cat, motivo=motivo)
+                cab = "%d regla(s) · acción: %s · lista: %s" % (
+                    sum(1 for e, _d, _l in v["reglas"] if e != "sobra"), ACCIONES.get(v["accion"], v["accion"]), v["lista"])
+                if r and not motivo:
+                    cab += " · router: %s" % (r.get("nombre") or r.get("HOST", ""))
+                if v["leido"]:
+                    cab += " · sin comparar con el router: " + v["leido"]
+                if v["aviso"]:
+                    cab += " · " + v["aviso"]
+                _lin = lineas_verificacion(v["verificacion"]) + ["@%s\t%s\t%s" % x for x in v["reglas"]]
+                b = ("OK " + cab + (("\n" + "\n".join(_lin)) if _lin else "")).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain; charset=utf-8")
             self.send_header("Content-Length", str(len(b)))
             self.end_headers(); self.wfile.write(b)
             return

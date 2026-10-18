@@ -72,6 +72,17 @@ def cuerpo_ruta_in(rutas):
     raise SystemExit("no se encontro la ruta " + rutas[0])
 
 
+def cuerpo_ruta_eq(ruta):
+    """El cuerpo del `if ruta == "..."` de esa ruta."""
+    for n in ast.walk(ARBOL):
+        if (isinstance(n, ast.If) and isinstance(n.test, ast.Compare)
+                and getattr(n.test.left, "id", "") == "ruta" and isinstance(n.test.ops[0], ast.Eq)
+                and getattr(n.test.comparators[0], "value", None) == ruta):
+            ls = DASH.split("\n")[n.body[0].lineno - 1:n.body[-1].end_lineno]
+            return textwrap.dedent("\n".join(ls))
+    raise SystemExit("no se encontro la ruta " + ruta)
+
+
 def main():
     nod, _sec = _comun.panel(TMP.name)   # nodos.py real: puntos p001 y p002 (CONTRATO-F2 §1)
     # ---------- la tarjeta ----------
@@ -101,6 +112,15 @@ def main():
     check("el resolutor solo en DNS, visible si 'redirigir-dns'", h.count("<input type=text name=accion_dns_ip") == 1
           and 'value="192.0.2.53"' in h, "")
     check("botones de ver/aplicar y quitar por categoria", h.count("reglasPlan('") == 8 and h.count("reglasQuitar('") == 8, "")
+    # el user (2026-10-18): tres botones con nombre propio y el estado en su propia fila
+    check("  se llaman «Ver reglas», «Aplicar reglas» y «Quitar reglas», uno de cada por clase",
+          h.count(">Ver reglas</button>") == 8 and h.count(">Aplicar reglas</button>") == 8
+          and h.count(">Quitar reglas</button>") == 8 and h.count("reglasVer('") == 8
+          and "Ver / aplicar en el router" not in h, "")
+    check("  «Ver reglas» llama a la ruta que solo lee", "_accPost('/mikrotik/reglas/ver',cat," in h, "")
+    check("  el estado va en su fila, con su etiqueta, debajo de los botones",
+          h.count("<div class=accestrow><span class=acclbl>Estado en el router:</span><span class=accest id=accest_") == 8
+          and h.index(">Quitar reglas</button>") < h.index("id=accest_botnet"), "")
     check("quitar pasa por el modal propio (ask), nunca confirm()", "ask(this,'Quitar del router" in h and "confirm(" not in h, "")
     # CONTRATO-F2 §3/§10.1: el destino va SIEMPRE explicito (rid en cada peticion, sin
     # router por defecto): el selector sale tambien con un solo punto, con ese punto
@@ -136,8 +156,15 @@ def main():
 
     # ---------- plan / aplicar / quitar ----------
     cuerpo = cuerpo_ruta_in(("/mikrotik/reglas/plan",))
-    llamadas = []; logs = []
-    def ejecutar(ruta_, campos, admin=True):
+    llamadas = []; logs = []; vistos = []
+    def _ver(r, cat, m=None, motivo=""):
+        vistos.append(((r or {}).get("id"), cat, motivo))
+        return {"accion": "solo-web", "lista": "clientes-" + cat, "aviso": "", "leido": motivo,
+                "verificacion": [{"nivel": "aviso", "donde": "router", "msg": "lista vacía"}],
+                "reglas": [("ok", "DNS UDP", "/ip firewall raw add chain=SURICATA-BOTNET action=return"),
+                           ("falta", "HTTP3 QUIC", "/ip firewall raw add chain=SURICATA-BOTNET action=return"),
+                           ("sobra", "Viejo", "/ip firewall raw add chain=prerouting action=drop")]}
+    def ejecutar(ruta_, campos, admin=True, cuerpo_=None):
         visto = {}
         class Self:
             def _admin(self): return admin
@@ -162,8 +189,9 @@ def main():
                                                   "rsc": ["# ADD /ip firewall raw add chain=prerouting action=drop"], "acciones": []},
                    "aplicar_reglas": lambda r, cat, quien="?": (llamadas.append(("aplicar", r["id"], cat, quien)) or (True, "aplicado: 1 nueva(s)", {})),
                    "quitar_reglas": lambda r, cat, quien="?": (llamadas.append(("quitar", r["id"], cat, quien)) or (True, "aplicado: 0 nueva(s), 0 corregida(s), 1 quitada(s)", {})),
+                   "ver_reglas": _ver,
                    "bitacora": lambda a, d="": logs.append((a, d))})
-        exec(compile("def _f():\n" + textwrap.indent(cuerpo, "    "), "<r>", "exec"), n2)
+        exec(compile("def _f():\n" + textwrap.indent(cuerpo_ or cuerpo, "    "), "<r>", "exec"), n2)
         n2["_f"]()
         return visto
     v = ejecutar("/mikrotik/reglas/plan", {"cat": "botnet", "rid": ""}, admin=False)
@@ -190,6 +218,29 @@ def main():
     check("quitar: idem", ("quitar", "p001", "spam", "admin") in llamadas and "quitada" in v.get("texto", ""), v)
     check("queda en la bitacora", any(a == "REGLAS-ROUTER" and "spam" in d for a, d in logs), logs)
 
+    # ---------- «Ver reglas»: solo lee; sin la API del router ensena la plantilla ----------
+    cver = cuerpo_ruta_eq("/mikrotik/reglas/ver")
+    n_ll = len(llamadas); n_lg = len(logs)
+    v = ejecutar("/mikrotik/reglas/ver", {"cat": "botnet", "rid": "p001"}, admin=False, cuerpo_=cver)
+    check("ver: sin admin, denegado", v.get("deny") is True and not vistos, v)
+    v = ejecutar("/mikrotik/reglas/ver", {"cat": "zzz", "rid": "p001"}, cuerpo_=cver)
+    check("ver: clase desconocida, ERR", v.get("texto", "").startswith("ERR: clase desconocida") and not vistos, v)
+    v = ejecutar("/mikrotik/reglas/ver", {"cat": "botnet", "rid": "p001"}, cuerpo_=cver)
+    L = v.get("texto", "").split("\n")
+    check("ver: OK con cuantas reglas (sin contar las que sobran), accion, lista y router",
+          L[0].startswith("OK 2 regla(s) · acción: Solo navegación") and "lista: clientes-botnet" in L[0]
+          and "router: Centro" in L[0] and "sin comparar" not in L[0] and vistos[-1] == ("p001", "botnet", ""), L)
+    check("  la verificacion (!W) y una linea por regla: @estado<TAB>descripcion<TAB>linea",
+          L[1] == "!W router: lista vacía"
+          and L[2:] == ["@ok\tDNS UDP\t/ip firewall raw add chain=SURICATA-BOTNET action=return",
+                        "@falta\tHTTP3 QUIC\t/ip firewall raw add chain=SURICATA-BOTNET action=return",
+                        "@sobra\tViejo\t/ip firewall raw add chain=prerouting action=drop"], L)
+    v = ejecutar("/mikrotik/reglas/ver", {"cat": "botnet", "rid": "p002"}, cuerpo_=cver)
+    check("  router sin la API: OK igual (la plantilla), sin comparar y diciendo por que; sin conectar",
+          v.get("texto", "").startswith("OK ") and vistos[-1][0] is None
+          and "usuario y clave de la API" in vistos[-1][2] and "sin comparar con el router" in v["texto"], (v, vistos[-1]))
+    check("  ver nunca aplica ni quita nada", len(llamadas) == n_ll and len(logs) == n_lg, (llamadas[n_ll:], logs[n_lg:]))
+
     # ---------- la etiqueta "Reglas aplicadas" ----------
     check("cada clase tiene su etiqueta de estado junto a los botones",
           "<span class=accest id=accest_%s></span></div>" in DASH, "")
@@ -202,9 +253,17 @@ def main():
           "if(id==='mikrotik'&&typeof accEstado==='function')accEstado();" in DASH
           and "<select id=accrid onchange=accEstado()>" in DASH
           and "var ok=t.indexOf('OK')===0;accEstado();" in DASH, "")
-    check("en verde 'Reglas aplicadas'; ambar lo que falta; 'Sin guardar' si se cambio la accion",
-          "'ok','\\u2713 Reglas aplicadas'" in DASH and "' cambio(s) sin aplicar'" in DASH
+    # el user (2026-10-18): punto verde = aplicada, punto rojo = no aplicada
+    check("verde 'Aplicadas'; rojo 'No aplicadas' con lo que falta; 'Sin guardar' si se cambio la accion",
+          "_accEt(cat,'ok','Aplicadas')" in DASH and "_accEt(cat,'pend','No aplicadas \\u00b7 faltan '+e.cambios+' cambio(s)')" in DASH
           and "'Sin guardar: guarda y vuelve a mirar'" in DASH, "")
+    check("  el punto: verde en 'ok', rojo en 'pend' (del color del texto)",
+          ".accest::before{content:'';width:9px;height:9px;border-radius:50%;background:currentColor" in DASH
+          and ".accest.ok{display:inline-flex;background:#e6f4ea;color:#1a7f37" in DASH
+          and ".accest.pend{display:inline-flex;background:#fdecea;color:#b42318" in DASH, "")
+    check("  sin poder comprobar dice el motivo, no solo «no se pudo»",
+          "'Sin comprobar: '+(j._error||(e&&e.msg)||" in DASH
+          and "el router no tiene usuario y clave de la API" in tramo, "")
     # de 'accest_botnet' sale la clase cortando el prefijo: con un caracter de mas salia
     # 'otnet', ninguna etiqueta se encontraba y todas se quedaban en "Comprobando..."
     cortes = re.findall(r"\.id\.slice\((\d+)\)", DASH[DASH.index("function accEstado()"):])

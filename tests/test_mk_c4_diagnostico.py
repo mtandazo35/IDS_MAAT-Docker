@@ -124,7 +124,7 @@ class Diagnostico(Base):
         for titulo in ("La lista de cuarentena NO corta nada", "Los cortes van por filter, no por raw"):
             fix = c[titulo][2]
             self.assertIn("Ajustes -> MikroTik", fix)
-            self.assertIn("Ver / aplicar en el router", fix)
+            self.assertIn("Aplicar reglas", fix)
             self.assertNotIn("action=drop", fix)
             self.assertNotIn("/ip firewall", fix)
 
@@ -135,7 +135,7 @@ class Diagnostico(Base):
         e, det, fix = c["La lista de categoría botnet / cnc NO corta nada"]
         self.assertEqual(e, "falta")
         self.assertIn("Botnet / CnC", fix)
-        self.assertIn("Ver / aplicar en el router", fix)
+        self.assertIn("Aplicar reglas", fix)
         # y con la plantilla puesta en raw deja de faltar
         self.r.cargar(RAW, [{"chain": "prerouting", "action": "drop", "src-address-list": "clientes-botnet"}])
         self.assertEqual(self.checks()["La lista de categoría botnet / cnc corta"][0], "ok")

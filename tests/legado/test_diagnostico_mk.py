@@ -100,7 +100,7 @@ def main():
     # (adaptada, 2026-10-14) el arreglo ya no es un drop suelto en filter, que duplicaba la
     # plantilla del panel y quedaba fuera de su gestion: remite a Ajustes -> MikroTik
     check("con el camino para arreglarlo (la plantilla del panel, no un drop suelto)",
-          "suricata-cuarentena" in fix and "Ver / aplicar en el router" in fix
+          "suricata-cuarentena" in fix and "Aplicar reglas" in fix
           and "action=drop" not in fix, fix)
     # --- una lista con espacios en el nombre -------------------------------------------
     # "Cliente Virus" es un nombre real de un ISP. (adaptada, 2026-10-14) Ya no se propone
@@ -112,7 +112,7 @@ def main():
     check("una lista con espacios sale entera en el arreglo",
           "'Cliente Virus'" in fix2, fix2)
     check("y la graduada tambien remite a la plantilla",
-          "Ver / aplicar en el router" in
+          "Aplicar reglas" in
           [f for _e, t, _d, f in c2 if "graduada NO corta" in t][0], "")
 
     ros = ns2["ros_lista"]
@@ -193,7 +193,7 @@ def main():
     check("la accion sin aplicar sale como falta, con los cambios que le faltan",
           any(k.startswith("Spam: 'Sin correo, envío y recepción (25/110/465/587/993/995/2525)' NO está aplicada (3 cambio(s))") and v == "falta" for k, v in e6.items()), e6)
     check("una clase sin accion no aparece", not any(k.startswith("Escaneo:") for k in e6), e6)
-    check("y el arreglo apunta a Ajustes", any("Ver / aplicar en el router" in f for _e, _t, _d, f in c6), "")
+    check("y el arreglo apunta a Ajustes", any("Aplicar reglas" in f for _e, _t, _d, f in c6), "")
 
     print("\n" + ("TODO OK" if not fallos else "%d fallo(s)" % fallos))
     return 1 if fallos else 0
