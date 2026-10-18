@@ -44,7 +44,7 @@ def check(d, c, e=""):
 
 PIEZAS = ("ACCIONES", "ACCIONES_POR_CAT", "ACCION_DEFECTO", "T_RAW", "T_NAT", "T_MANGLE", "T_QUEUE", "T_FILTER",
           "_RSC_TABLA", "REGLAS_DIR", "_RE_KV", "_CADENAS_BASE", "_ACCIONES_TABLA", "_TERMINALES", "_NO_CRITERIO",
-          "_PROTO_CON_PUERTO", "_LISTAS_IF_SISTEMA", "verificar_reglas", "_mk_contar", "verificar_en_router", "lineas_verificacion", "_RE_FIND_COMMENT", "_RE_FIND_CHAIN", "DNS_PROTEGIDO_DEFECTO", "PUERTOS_MINERIA", "reglas_desde_rsc", "cargar_reglas_propias", "guardar_reglas_propias",
+          "_PROTO_CON_PUERTO", "_LISTAS_IF_SISTEMA", "verificar_reglas", "_mk_contar", "verificar_en_router", "lineas_verificacion", "_RE_FIND_COMMENT", "_RE_FIND_CHAIN", "DNS_PROTEGIDO_DEFECTO", "PUERTOS_MINERIA", "PUERTOS_CORREO", "reglas_desde_rsc", "cargar_reglas_propias", "guardar_reglas_propias",
           "_TABLA_RSC", "_PROPS_TABLA", "RESPALDOS_MK", "_MK_CONEXION", "accion_de_clase", "reglas_de_accion",
           "_com_regla", "_cod_regla", "_prefijo_regla", "_rsc_val", "rsc_de", "_reglas_nuestras", "_params_accion",
           "_plan", "_aviso_fasttrack", "_plan_en", "plan_reglas", "_mk_print_todo", "_mk_print", "respaldar_firewall", "aplicar_reglas",
@@ -206,7 +206,11 @@ def main():
         check("  todas las reglas de «%s» llevan descripcion" % _acc,
               _rs and all(x[1].get("_desc") for x in _rs), _rs)
     sc = R("spam", "sin-correo", "clientes-spam")
-    check("sin-correo = drop tcp 25,465,587,2525 (como la del ISP)", sc[0][1]["dst-port"] == "25,465,587,2525" and sc[0][1]["protocol"] == "tcp", sc)
+    # el user (2026-10-18): correo que envia Y que recibe
+    check("sin-correo = un drop tcp a 25,110,465,587,993,995,2525 (enviar y recibir), solo desde la lista",
+          len(sc) == 1 and set(sc[0][1]["dst-port"].split(",")) == {"25", "110", "465", "587", "993", "995", "2525"}
+          and sc[0][1]["protocol"] == "tcp" and sc[0][1]["src-address-list"] == "clientes-spam"
+          and sc[0][1]["action"] == "drop", sc)
     rd = R("dns", "redirigir-dns", "clientes-dns-malware", {"dns_ip": ""})
     check("redirigir sin IP = redirect al propio router, udp y tcp",
           [x[1]["action"] for x in rd[:2]] == ["redirect", "redirect"] and {x[1]["protocol"] for x in rd[:2]} == {"udp", "tcp"}, rd)

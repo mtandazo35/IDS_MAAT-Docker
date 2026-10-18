@@ -1917,7 +1917,7 @@ ACCIONES = {
     "nada":          "Nada (solo la lista)",
     "cortar":        "Cortar todo",
     "solo-web":      "Solo navegación (DNS, web 80/443 y hora)",
-    "sin-correo":    "Sin correo saliente (25/465/587/2525)",
+    "sin-correo":    "Sin correo, envío y recepción (25/110/465/587/993/995/2525)",
     "dns-protegido": "DNS protegido (Quad9, sin DoT/DoQ, tope 50/s)",
     "redirigir-dns": "Redirigir DNS a tu resolutor (sin DoT/DoQ)",
     "frenar-escaneo": "Frenar escaneo (tope 30 SYN/s y escaneo de puertos)",
@@ -1944,6 +1944,8 @@ ACCION_DEFECTO = {"botnet": "solo-web", "escaneo": "frenar-escaneo", "fuerza": "
 DNS_PROTEGIDO_DEFECTO = "9.9.9.9"     # Quad9: resuelve y bloquea dominios de malware
 # puertos stratum habituales de las pools de mineria (TCP). No son todos: es lo comun
 PUERTOS_MINERIA = "3333,4444,5555,7777,14433,14444"
+# correo que envia (SMTP 25, SMTPS 465, envio 587 y 2525) y que recibe (POP3 110, POP3S 995, IMAPS 993)
+PUERTOS_CORREO = "25,110,465,587,993,995,2525"
 T_RAW, T_NAT, T_MANGLE, T_QUEUE = "/ip/firewall/raw", "/ip/firewall/nat", "/ip/firewall/mangle", "/queue/tree"
 T_FILTER = "/ip/firewall/filter"
 _TABLA_RSC = {T_RAW: "/ip firewall raw", T_NAT: "/ip firewall nat", T_FILTER: "/ip firewall filter",
@@ -1999,9 +2001,12 @@ def reglas_de_accion(cat, accion, lista, params=None):
                 (T_RAW, {"chain": "prerouting", "action": "jump", "jump-target": ch,
                          "src-address-list": lista, "_arriba": "1", "_desc": "Revisar clientes"})]
     if accion == "sin-correo":
+        # el correo que envia (25 SMTP, 465 SMTPS, 587 y 2525 envio) y el que recibe (110 POP3,
+        # 995 POP3S, 993 IMAPS): lo pidio el user (2026-10-18). Son conexiones que abre el cliente,
+        # asi que basta la lista de origen; el correo va solo por TCP
         return [(T_RAW, {"chain": "prerouting", "action": "drop", "src-address-list": lista,
-                         "protocol": "tcp", "dst-port": "25,465,587,2525", "_arriba": "1",
-                         "_desc": "Bloquear correo saliente"})]
+                         "protocol": "tcp", "dst-port": PUERTOS_CORREO, "_arriba": "1",
+                         "_desc": "Bloquear correo enviar y recibir"})]
     if accion == "dns-protegido":
         # las del ISP: el 53 a un resolutor que filtra, sin DNS cifrado ni puertos
         # alternativos por donde escaparse, y con tope de consultas por cliente
@@ -13886,7 +13891,9 @@ ella los certificados acaban fallando y «no navega» aunque el 443 esté abiert
 entra en la cadena el tráfico que <b>sale</b> de un abonado de la lista (un <code>jump</code> desde
 <code>prerouting</code>); el resto de abonados no pasa por ella. Útil con portal cautivo; ojo: una botnet
 que hable por 443 sigue hablando.</td></tr>
-<tr><td><b>Sin correo saliente</b></td><td>corta 25/465/587/2525 (spam) y nada más.</td></tr>
+<tr><td><b>Sin correo</b></td><td>corta el correo del cliente, el que <b>envía</b> (25 SMTP, 465 SMTPS, 587 y
+2525) y el que <b>recibe</b> (110 POP3, 995 POP3S, 993 IMAPS), y nada más. El correo va solo por TCP. El
+cliente sigue navegando y puede usar el correo web (por el 443).</td></tr>
 <tr><td><b>DNS protegido</b></td><td>la del ISP: el 53 (udp y tcp) a un resolutor que filtra (Quad9
 9.9.9.9 por defecto, o la IP que pongas), corte de DNS cifrado (DoT 853 por TCP y DoQ 853 por UDP, más los
 puertos alternativos 8853, 9953 y 784) y tope de 50 consultas/s por cliente con ráfaga de 100, <b>por UDP y
