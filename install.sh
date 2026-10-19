@@ -1,8 +1,11 @@
 #!/bin/bash
 # ids-maat — instalador del VPS (CONTRATO-F1a §7). Debian 13 (trixie), amd64, como root.
 #
-#   curl -fsSL https://raw.githubusercontent.com/mtandazo35/IDS_MAAT-Docker/v0.1.11/install.sh \
+#   curl -fsSL https://raw.githubusercontent.com/mtandazo35/IDS_MAAT-Docker/main/install.sh \
 #        -o /root/ids-maat-install.sh && bash /root/ids-maat-install.sh
+#
+# Las instalaciones nuevas salen de main (decisión del dueño 2026-10-19), que instala la última release
+# (VERSION_DEFECTO); el install.sh de una etiqueta (.../vX.Y.Z/install.sh) instala la suya.
 #
 # Sin opciones instala todo (la release de este instalador, reglas, timers y panel) con el nombre =
 # la IP pública del VPS, la zona America/Guayaquil y el acceso ABIERTO: SSH y panel desde cualquier

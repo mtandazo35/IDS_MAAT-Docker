@@ -18,13 +18,18 @@ OpenVPN y su propio Suricata.
 
 ## ⚡ Quick install (one-liner)
 
-En un VPS **Debian 13 (trixie) amd64** recién instalado, como `root` y entrando por SSH con clave:
+En un VPS **Debian 13 (trixie) amd64** recién instalado, como `root` y entrando por SSH:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/mtandazo35/IDS_MAAT-Docker/v0.1.11/install.sh -o /root/ids-maat-install.sh && bash /root/ids-maat-install.sh
+curl -fsSL https://raw.githubusercontent.com/mtandazo35/IDS_MAAT-Docker/main/install.sh -o /root/ids-maat-install.sh && bash /root/ids-maat-install.sh
 ```
 
-Sin opciones instala todo (la release de esa línea, reglas, timers y panel) con:
+El instalador sale siempre de `main`, así que una instalación nueva lleva sus últimos arreglos sin
+esperar a una release. Instala la última release (imágenes firmadas, `VERSION_DEFECTO`); el panel y el
+orquestador se ponen al día con `main` desde el botón «Actualizar». Para fijar una versión concreta:
+`--version vX.Y.Z`, o el `install.sh` de su etiqueta (`.../vX.Y.Z/install.sh`).
+
+Sin opciones instala todo (la última release, reglas, timers y panel) con:
 
 - **nombre** = la IP pública del VPS (la que reciben los MikroTik para conectar la VPN). Si el VPS
   está detrás de NAT (IP privada), usa la pública con la que sale a internet y avisa de los puertos

@@ -1219,7 +1219,7 @@ Identidad que verifica el instalador: ACTUALIZACIONES §3 con `<owner>` = `mtand
 One-liner (en `/root`, nunca en `/tmp`, y sin `curl | bash`):
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/mtandazo35/IDS_MAAT-Docker/v0.1.5/install.sh -o /root/ids-maat-install.sh \
+curl -fsSL https://raw.githubusercontent.com/mtandazo35/IDS_MAAT-Docker/main/install.sh -o /root/ids-maat-install.sh \
   && bash /root/ids-maat-install.sh [--version v0.1.5] [--nombre ids.empresa.example] \
        [--gestion 192.0.2.0/25,198.51.100.0/26] [--proxy 203.0.113.50] \
        [--tun-base 100.64|198.18] [--dueno-ip 203.0.113.20] [--zona America/Guayaquil]
@@ -1229,6 +1229,11 @@ curl -fsSL https://raw.githubusercontent.com/mtandazo35/IDS_MAAT-Docker/v0.1.5/i
 seguridad»). En una instalación nueva, la que falta vale:
 
 - `--version`: la release de ese `install.sh` (`VERSION_DEFECTO`, igual a `ORQ_VERSION` de su etiqueta).
+  Las instalaciones nuevas usan el `install.sh` de `main` (decisión del dueño 2026-10-19), cuyo
+  `VERSION_DEFECTO` es la última release: los arreglos del instalador valen en cuanto entran en `main`,
+  sin esperar a una release. Orden al sacar una release, para que el de `main` nunca apunte a una que
+  aún no existe: commit de versión a una rama temporal (su `ci.yml` en verde, que `release.yml` exige),
+  etiqueta, release publicada y solo entonces `main` y borrar la rama.
 - `--nombre`: la IP pública del VPS, la de origen de la ruta por defecto. Va en el certificado del
   servidor OpenVPN y en las órdenes de los MikroTik. Si es privada (VPS detrás de NAT o servidor en
   una red local) el instalador no se para (decisión del dueño 2026-10-19: «instalar en cualquier

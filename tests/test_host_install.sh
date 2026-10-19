@@ -577,14 +577,16 @@ p_nombre_por_defecto_ip_publica() {   # sin --nombre: la IP pública; detrás de
   return 0
 }
 
-p_version_del_instalador_es_la_de_la_release() {   # VERSION_DEFECTO = ORQ_VERSION = README = cabecera
+p_version_del_instalador_es_la_de_la_release() {   # VERSION_DEFECTO = ORQ_VERSION = README; one-liner de main
   local orq readme cab
   orq="v$(sed -n 's/^ORQ_VERSION = "\(.*\)"$/\1/p' orquestador/ids_orq.py)"
   [ "$VERSION_DEFECTO" = "$orq" ] || { echo "VERSION_DEFECTO=$VERSION_DEFECTO ORQ_VERSION=$orq"; return 1; }
-  readme=$(grep -o 'IDS_MAAT-Docker/v[0-9.]*/install.sh' README.md | sort -u)
-  [ "$readme" = "IDS_MAAT-Docker/$orq/install.sh" ] || { echo "README: $readme"; return 2; }
-  cab=$(sed -n '2,10p' install.sh | grep -o 'IDS_MAAT-Docker/v[0-9.]*/install.sh')
-  [ "$cab" = "IDS_MAAT-Docker/$orq/install.sh" ] || { echo "cabecera: $cab"; return 3; }
+  # las instalaciones nuevas salen de main (2026-10-19): ni el README ni la cabecera fijan una etiqueta
+  readme=$(grep -o 'IDS_MAAT-Docker/[A-Za-z0-9.]*/install.sh' README.md | sort -u)
+  [ "$readme" = "IDS_MAAT-Docker/main/install.sh" ] || { echo "README: $readme"; return 2; }
+  cab=$(sed -n '2,10p' install.sh | grep -o 'IDS_MAAT-Docker/[A-Za-z0-9.]*/install.sh')
+  [ "$cab" = "IDS_MAAT-Docker/main/install.sh" ] || { echo "cabecera: $cab"; return 3; }
+  grep -qF "versión publicada \`$orq\`" README.md || { echo "README sin «versión publicada \`$orq\`»"; return 4; }
   return 0
 }
 
