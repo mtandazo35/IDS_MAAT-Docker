@@ -26,8 +26,10 @@ curl -fsSL https://raw.githubusercontent.com/mtandazo35/IDS_MAAT-Docker/v0.1.9/i
 
 Sin opciones instala todo (la release de esa línea, reglas, timers y panel) con:
 
-- **nombre** = la IP pública del VPS (la que reciben los MikroTik para conectar la VPN; si el VPS está
-  detrás de NAT, pásala con `--nombre`);
+- **nombre** = la IP pública del VPS (la que reciben los MikroTik para conectar la VPN). Si el VPS
+  está detrás de NAT (IP privada), usa la pública con la que sale a internet y avisa de los puertos
+  que el NAT tiene que pasar; si no la averigua, usa la privada, que solo alcanzan los MikroTik de la
+  misma red. Para otro nombre, `--nombre`;
 - **zona horaria** `America/Guayaquil` (la del servidor y las fechas del panel; los contenedores
   siguen en UTC por dentro);
 - **acceso abierto**: SSH y panel desde cualquier IP, con fail2ban activo. Sin modo seguro, porque con

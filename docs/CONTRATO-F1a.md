@@ -1229,8 +1229,13 @@ seguridad»). En una instalación nueva, la que falta vale:
 
 - `--version`: la release de ese `install.sh` (`VERSION_DEFECTO`, igual a `ORQ_VERSION` de su etiqueta).
 - `--nombre`: la IP pública del VPS, la de origen de la ruta por defecto. Va en el certificado del
-  servidor OpenVPN y en las órdenes de los MikroTik, así que si es privada (VPS detrás de NAT) el
-  instalador se para y pide `--nombre`.
+  servidor OpenVPN y en las órdenes de los MikroTik. Si es privada (VPS detrás de NAT o servidor en
+  una red local) el instalador no se para (decisión del dueño 2026-10-19: «instalar en cualquier
+  situación»): pregunta la IP pública por HTTPS (`checkip.amazonaws.com`, `icanhazip.com`,
+  `api.ipify.org`, 5 s cada una) y usa la primera que sea pública, con un aviso de los puertos que el
+  NAT tiene que pasar al VPS (1194+N-1/tcp y 5637/tcp). Si ninguna contesta, usa la privada, que solo
+  alcanzan los MikroTik de la misma red, también con aviso. El resumen final lo repite. Los puntos
+  directos no usan el nombre (el MikroTik manda el espejo a la IP del host por la que se le alcanza).
 - `--gestion` y `--proxy`: `0.0.0.0/0`, **abierto**. El SSH y el 5637 se abren a cualquier IP
   (fail2ban sigue activo); no hay modo seguro, porque con el SSH abierto no hay nada que revertir.
   Al panel le llega `IDS_PROXY` vacío: no se fía del `X-Forwarded-For` de nadie. `--gestion 0.0.0.0/0`

@@ -541,17 +541,34 @@ p_reinstalacion_conserva_acceso_y_nombre() {   # sin opciones no reabre lo cerra
   return 0
 }
 
-p_nombre_por_defecto_ip_publica() {   # sin --nombre: la IP de la ruta por defecto, si es pública
+p_nombre_por_defecto_ip_publica() {   # sin --nombre: la IP pública; detrás de NAT la del NAT o la privada
   ip() { echo "192.0.2.1 via 203.0.113.1 dev eth0 src 203.0.113.10 uid 0"; }
+  curl() { echo "curl $*" >> "$LLAMADAS"; echo 198.51.100.7; }
   parsear_args && validar_args || return 1
   [ "$NOMBRE:$NOMBRE_AUTO" = "203.0.113.10:1" ] || { echo "$NOMBRE"; return 2; }
-  ip() { echo "192.0.2.1 via 10.0.0.1 dev eth0 src 10.0.0.5 uid 0"; }     # detrás de NAT
-  NOMBRE="" NOMBRE_AUTO=0
-  ( parsear_args && validar_args ) > "$T/nat" 2>&1 && return 3
-  grep -qF "privada" "$T/nat" || { cat "$T/nat"; return 4; }
+  grep -q '^curl' "$LLAMADAS" && return 3                                 # con IP pública no pregunta fuera
+  # detrás de NAT: la IP pública que devuelve internet, con aviso; no se para
+  ip() { echo "192.0.2.1 via 10.0.0.1 dev eth0 src 10.0.0.5 uid 0"; }
+  NOMBRE="" NOMBRE_AUTO=0 IP_LOCAL=""
+  { parsear_args && validar_args; } > "$T/nat" 2>&1 || { cat "$T/nat"; return 4; }
+  [ "$NOMBRE:$NOMBRE_AUTO:$IP_LOCAL" = "198.51.100.7:2:10.0.0.5" ] || { echo "$NOMBRE:$NOMBRE_AUTO:$IP_LOCAL"; return 5; }
+  grep -qF "detrás de NAT" "$T/nat" && grep -qF -- "--nombre 10.0.0.5" "$T/nat" || { cat "$T/nat"; return 6; }
+  grep -q '^curl -4 ' "$LLAMADAS" || return 7
+  resumen_texto x > "$T/resumen" 2>&1
+  grep -qF "el NAT tiene que pasar a 10.0.0.5" "$T/resumen" || { cat "$T/resumen"; return 8; }
+  # internet no contesta, o contesta algo que no es una IP pública: se queda la privada, con aviso
+  for respuesta in "" "10.9.9.9" "<html>error</html>"; do
+    curl() { echo "$respuesta"; [ -n "$respuesta" ] || return 7; }
+    NOMBRE="" NOMBRE_AUTO=0 IP_LOCAL=""
+    { parsear_args && validar_args; } > "$T/nat" 2>&1 || { cat "$T/nat"; return 9; }
+    [ "$NOMBRE:$NOMBRE_AUTO" = "10.0.0.5:3" ] || { echo "$respuesta -> $NOMBRE:$NOMBRE_AUTO"; return 10; }
+    grep -qF "misma red" "$T/nat" || { cat "$T/nat"; return 11; }
+  done
+  resumen_texto x > "$T/resumen" 2>&1
+  grep -qF "la IP privada" "$T/resumen" || { cat "$T/resumen"; return 12; }
   ip() { return 1; }                                                      # sin ruta
   NOMBRE=""
-  ( parsear_args && validar_args ) >/dev/null 2>&1 && return 5
+  ( parsear_args && validar_args ) >/dev/null 2>&1 && return 13
   return 0
 }
 
@@ -1087,7 +1104,7 @@ esperar 0 "panel: crear-admin dice que ya existía"        en_instalador p_panel
 esperar 0 "panel: si falla, no sigue"                     en_instalador p_panel_falla_no_dice_instalado
 esperar 0 "acceso abierto sin --gestion ni --proxy"      en_instalador p_acceso_abierto
 esperar 0 "reinstalación: conserva acceso y nombre"      en_instalador p_reinstalacion_conserva_acceso_y_nombre
-esperar 0 "sin --nombre: IP pública (y no si es privada)" en_instalador p_nombre_por_defecto_ip_publica
+esperar 0 "sin --nombre: IP pública, la del NAT o la privada" en_instalador p_nombre_por_defecto_ip_publica
 esperar 0 "versión del instalador = release = README"    en_instalador p_version_del_instalador_es_la_de_la_release
 esperar 0 "resumen con el acceso abierto"                en_instalador p_resumen_abierto
 esperar 0 "reinstalación: IPS_PROXY ancho pasa a REDES_PANEL" en_instalador p_reinstalacion_mueve_proxy_ancho_a_panel

@@ -19,7 +19,8 @@
 # Opciones (todas opcionales; en una reinstalación, la que falta conserva lo que ya había):
 #   --version          release vX.Y.Z; por defecto la de este instalador
 #   --nombre           nombre DNS (o IP) con el que los MikroTik llegan al VPS; por defecto la IP
-#                      pública (la de la ruta por defecto; si es privada, hay que darlo)
+#                      pública: la de la ruta por defecto o, si es privada (detrás de NAT), la que
+#                      se averigua por internet; si no se averigua, la privada (MikroTik de la red)
 #   --gestion          redes desde las que se entra por SSH (hasta /16); sin ella, abierto
 #   --panel            redes desde las que se abre el panel directamente (hasta /16); el panel no se fía
 #                      de sus cabeceras X-Forwarded-*
@@ -59,7 +60,7 @@ ABIERTO=0.0.0.0/0                # gestión o panel sin --gestion/--panel/--prox
 R="${IDS_RAIZ:-}"            # prefijo de rutas para las pruebas; vacío en producción
 R="${R%/}"
 
-GESTION_ABIERTA=0 PROXY_ABIERTO=0 NOMBRE_AUTO=0
+GESTION_ABIERTA=0 PROXY_ABIERTO=0 NOMBRE_AUTO=0 IP_LOCAL=""
 VERSION="" NOMBRE="" GESTION="" PROXY="" PANEL="" TUN_BASE="100.64" TUN_BASE_DADO=0 DUENO=""
 DESDE_REPO="" IMAGENES="" SOLO_VALIDAR=0 CONFIRMAR=0 SIN_REVERSION=0 FORZAR_ACCESO=0
 HOST_DIR="" IMG_VPN="" IMG_SUR="" IMG_PANEL="" DEV=false TS="" T0_REVERSION="" ZONA=""
@@ -185,6 +186,18 @@ ip_privada() {   # la IP no la alcanza un MikroTik por internet (privada, CGNAT,
   ip_en_lista "$1" 10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,100.64.0.0/10,127.0.0.0/8,169.254.0.0/16
 }
 
+ip_publica_nat() {   # la IP pública con la que sale a internet un VPS detrás de NAT; vacío si no se averigua
+  local url v
+  for url in https://checkip.amazonaws.com https://icanhazip.com https://api.ipify.org; do
+    v=$(curl -4 -fsS --max-time 5 "$url" 2>/dev/null | head -n1 | tr -d '[:space:]') || v=""
+    if ip_a_int "$v" >/dev/null 2>&1 && ! ip_privada "$v" && ! ip_en_lista "$v" 0.0.0.0/8,224.0.0.0/3; then
+      echo "$v"
+      return 0
+    fi
+  done
+  return 0
+}
+
 texto_acceso() {   # texto_acceso <lista>: «abierto a cualquier IP» o «solo desde <lista>»
   if [ "$1" = "$ABIERTO" ]; then echo "abierto a cualquier IP"; else echo "solo desde $1"; fi
 }
@@ -197,16 +210,27 @@ validar_args() {
   local c norm lista="" lista_proxy="" lista_panel="" otro tun len anchas="" estrechas=""
   local proxy_dado="$PROXY" panel_dado="$PANEL"
   # Sin --nombre: el de la instalación anterior y, en una nueva, la IP pública (la del certificado
-  # del servidor OpenVPN y la que reciben los MikroTik en sus órdenes, así que tiene que alcanzarse)
+  # del servidor OpenVPN y la que reciben los MikroTik en sus órdenes, así que tiene que alcanzarse).
+  # Con la IP de la ruta por defecto privada no se para (el dueño, 2026-10-19: «instalar en cualquier
+  # situación»): la pública del NAT (NOMBRE_AUTO=2) o, si no se averigua, la privada (3), que solo
+  # alcanzan los MikroTik de la misma red. Se cambia volviendo a ejecutarlo con --nombre.
   [ -n "$NOMBRE" ] || NOMBRE=$(valor_conf NOMBRE_DNS)
   if [ -z "$NOMBRE" ]; then
     NOMBRE=$(ip_publica)
     NOMBRE="${NOMBRE%%$'\n'*}"
     [ -n "$NOMBRE" ] || fallar "--nombre: no se pudo averiguar la IP pública del VPS (sin ruta por defecto): pasa --nombre"
-    if ip_privada "$NOMBRE"; then
-      fallar "--nombre: la IP de la ruta por defecto es $NOMBRE, privada (VPS detrás de NAT): pasa --nombre con el nombre DNS o la IP pública con la que llegan los MikroTik"
-    fi
     NOMBRE_AUTO=1
+    if ip_privada "$NOMBRE"; then
+      IP_LOCAL="$NOMBRE"
+      NOMBRE=$(ip_publica_nat)
+      if [ -n "$NOMBRE" ]; then
+        NOMBRE_AUTO=2
+        aviso "--nombre: la IP del VPS es $IP_LOCAL, privada (detrás de NAT): se usa la IP pública $NOMBRE, la que reciben los MikroTik. El NAT tiene que pasar al VPS los puertos de la VPN (1194+N-1/tcp) y del panel ($PUERTO_PANEL/tcp). Si los MikroTik están en la misma red, vuelve a ejecutarlo con --nombre $IP_LOCAL"
+      else
+        NOMBRE="$IP_LOCAL" NOMBRE_AUTO=3
+        aviso "--nombre: la IP del VPS es $NOMBRE, privada, y no se pudo averiguar la pública: se usa la privada, que solo alcanzan los MikroTik de la misma red. Para MikroTik por internet, vuelve a ejecutarlo con --nombre <nombre DNS o IP pública>"
+      fi
+    fi
   fi
   [[ "$NOMBRE" =~ ^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?)+$ ]] \
     || fallar "--nombre debe ser el nombre DNS del VPS (p. ej. ids.empresa.example)"
@@ -1075,12 +1099,20 @@ ip_publica() {   # IP de origen de la ruta por defecto (sin enviar nada); vacío
 }
 
 resumen_texto() {   # resumen_texto <clave tal como se muestra>
-  local ip
+  local ip nota=""
   ip=$(ip_publica)
   ip="${ip%%$'\n'*}"
+  case "$NOMBRE_AUTO" in
+    1) nota="   (la IP pública: sin --nombre)" ;;
+    2) nota="   (la IP pública del NAT; la del VPS es $IP_LOCAL: sin --nombre)" ;;
+    3) nota="   (la IP privada: sin --nombre y sin IP pública; solo la alcanzan los MikroTik de la misma red)" ;;
+  esac
   echo
   echo "==> ids-maat $VERSION instalado$([ "$DEV" = true ] && echo ' (LABORATORIO, sin firmas)')"
-  echo "  nombre DNS        $NOMBRE$([ "$NOMBRE_AUTO" = 1 ] && echo '   (la IP pública: sin --nombre)')"
+  echo "  nombre DNS        $NOMBRE$nota"
+  if [ "$NOMBRE_AUTO" = 2 ]; then
+    echo "                    el NAT tiene que pasar a $IP_LOCAL los puertos 1194+N-1/tcp (VPN) y $PUERTO_PANEL/tcp (panel)"
+  fi
   echo "  base de túneles   $TUN_BASE.N.0/24"
   echo "  SSH (22/tcp)      $(texto_acceso "$GESTION")"
   echo "  OpenVPN           1194+N-1/tcp, uno por punto, con freno de conexiones nuevas"
