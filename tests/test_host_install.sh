@@ -334,11 +334,16 @@ p_respaldo() {
 }
 
 p_reversion_y_confirmar() {
-  mkdir -p "$IDS_RAIZ/srv/ids/fw" "$IDS_RAIZ/root/ids-maat"
+  mkdir -p "$IDS_RAIZ/srv/ids/fw" "$IDS_RAIZ/root/ids-maat" "$IDS_RAIZ/etc/ssh/sshd_config.d"
   echo "anterior" > "$IDS_RAIZ/srv/ids/fw/ids_host.nft"
+  # el 10-ids.conf de una instalación anterior no se respalda ni se revierte: sshd no es del IDS
+  echo "PasswordAuthentication no" > "$IDS_RAIZ/etc/ssh/sshd_config.d/10-ids.conf"
   TS=20261010T081500Z
   armar_reversion || return 1
   [ "$(cat "$IDS_RAIZ/root/ids-maat/acceso-anterior-$TS/ids_host.nft")" = anterior ] || return 2
+  [ -e "$IDS_RAIZ/root/ids-maat/acceso-anterior-$TS/10-ids.conf" ] && return 12
+  grep -qE 'sshd|10-ids\.conf|reload ssh' "$IDS_RAIZ/root/ids-maat/revertir-acceso.sh" && return 13
+  [ "$(cat "$IDS_RAIZ/etc/ssh/sshd_config.d/10-ids.conf")" = "PasswordAuthentication no" ] || return 14
   bash -n "$IDS_RAIZ/root/ids-maat/revertir-acceso.sh" || return 3
   grep -q 'D="/root/ids-maat/acceso-anterior-20261010T081500Z"' "$IDS_RAIZ/root/ids-maat/revertir-acceso.sh" || return 4
   grep -q "systemd-run --quiet --unit ids-maat-revertir-acceso --on-active=300 /bin/bash /root/ids-maat/revertir-acceso.sh" \
@@ -477,7 +482,7 @@ p_principal_revertido_no_dice_instalado() {
   local paso
   for paso in comprobar_sistema comprobar_tun_base comprobar_acceso_ssh respaldo paquetes zona_host \
               obtener_release docker_ce docker_daemon modulos_sysctl_hora usuario_y_arbol escribir_ids_conf \
-              secretos pki instalar_orquestador firewall ssh_endurecer imagenes arrancar panel; do
+              secretos pki instalar_orquestador firewall imagenes arrancar panel; do
     eval "$paso() { :; }"
   done
   readlink() { echo /root/ids-maat-install.sh; }
@@ -672,8 +677,10 @@ p_acceso_ssh() {
   ( SSH_CONNECTION="203.0.113.99 51000 203.0.113.10 22" comprobar_acceso_ssh ) >/dev/null 2>&1 && return 3
   ( SSH_CONNECTION="2001:db8::5 51000 2001:db8::1 22" comprobar_acceso_ssh ) >/dev/null 2>&1 && return 4
   FORZAR_ACCESO=1 SSH_CONNECTION="203.0.113.99 51000 203.0.113.10 22" comprobar_acceso_ssh 2>/dev/null || return 5
+  # sin claves y con contraseña: sigue (el SSH admite contraseña y clave, 2026-10-19)
   rm -f "$IDS_RAIZ/root/.ssh/authorized_keys"
-  ( SSH_CONNECTION="198.51.100.7 51000 203.0.113.10 22" comprobar_acceso_ssh ) >/dev/null 2>&1 && return 7
+  ( SSH_CONNECTION="198.51.100.7 51000 203.0.113.10 22" comprobar_acceso_ssh ) > "$T/sin_claves" 2>&1 \
+    || { cat "$T/sin_claves"; return 7; }
   return 0
 }
 
@@ -1022,7 +1029,7 @@ p_principal_completo_log_sin_clave() {
   local paso log
   for paso in comprobar_sistema comprobar_tun_base comprobar_acceso_ssh respaldo paquetes zona_host \
               obtener_release docker_ce docker_daemon modulos_sysctl_hora usuario_y_arbol escribir_ids_conf \
-              secretos pki instalar_orquestador armar_reversion firewall ssh_endurecer fail2ban_jaulas \
+              secretos pki instalar_orquestador armar_reversion firewall fail2ban_jaulas \
               esperar_confirmacion imagenes arrancar; do
     eval "$paso() { :; }"
   done
@@ -1034,6 +1041,7 @@ p_principal_completo_log_sin_clave() {
   grep -qF "ids-maat v0.1.0 instalado" "$log" || { cat "$log"; return 5; }
   grep -qF "clave             ********" "$log" || return 6
   grep -qF "log del instalador: $log" "$T/principal" || return 7
+  grep -qE "reload ssh|sshd" "$LLAMADAS" && { cat "$LLAMADAS"; return 9; }     # sshd no se toca
   if [ "$WINDOWS" = 0 ]; then [ "$(stat -c %a "$log")" = 600 ] || return 8; fi
   return 0
 }
@@ -1045,7 +1053,7 @@ p_principal_zona_en_su_sitio() {
   : > "$T/orden"
   for paso in comprobar_sistema comprobar_tun_base comprobar_acceso_ssh respaldo paquetes zona_host \
               obtener_release docker_ce docker_daemon modulos_sysctl_hora usuario_y_arbol escribir_ids_conf \
-              secretos pki instalar_orquestador armar_reversion firewall ssh_endurecer fail2ban_jaulas \
+              secretos pki instalar_orquestador armar_reversion firewall fail2ban_jaulas \
               esperar_confirmacion imagenes arrancar panel resumen; do
     eval "$paso() { echo $paso >> \"\$T/orden\"; }"
   done

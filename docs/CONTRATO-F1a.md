@@ -48,7 +48,8 @@ Reglas del contrato:
 - Imágenes `vpn` y `suricata` publicables en GHCR, firmadas.
 - Orquestador `ids-orq` como servicio systemd con su socket y su **CLI**; cola en serie, supervisión,
   comparación de netns, `estado.json`, reglas con reinicio en serie, logrotate.
-- Firewall del host (`inet ids_host`), fail2ban (`sshd` e `ids-vpn`), `PasswordAuthentication no`.
+- Firewall del host (`inet ids_host`) y fail2ban (`sshd` e `ids-vpn`). sshd no se toca desde
+  2026-10-19 (contraseña o clave, como lo tenga el servidor; antes, `PasswordAuthentication no`).
 - Instalador one-liner y CI de GitHub Actions.
 - **Fuera de F1a:** panel, red `ids-core`, avisos por Telegram, modo seguro (`acceso.*`),
   `sistema.actualizar/revertir`, respaldo diario, `punto.threshold`, `bitacora.anclar`. F1a sí deja
@@ -136,7 +137,7 @@ IDS_MAAT-Docker/
 │   ├── docker/daemon.json
 │   ├── logrotate/ids-maat.conf
 │   ├── journald/90-ids.conf                           límites de ritmo y tamaño del journal (VPN-15)
-│   ├── sysctl/90-ids.conf      modules/ids.conf      ssh/10-ids.conf
+│   ├── sysctl/90-ids.conf      modules/ids.conf
 ├── tests/
 │   ├── run.sh                                        C  runner (§8.1)
 │   ├── test_vpn_*.py       imagen/test_vpn_*.sh       fixtures/vpn/        A
@@ -1286,8 +1287,10 @@ Pasos (idempotente: se puede volver a ejecutar para cambiar gestión/proxy):
    2 días antes, como el certificado de servidor (margen para routers con el reloj atrasado), y
    `dh.pem` `ffdhe2048` con `openssl genpkey -genparam -algorithm DH -pkeyopt dh_param:ffdhe2048`.
 8. Firewall: renderiza `ids_host.nft`, `nft -c -f`, instala y arranca `ids-host-fw.service`.
-9. SSH: `/etc/ssh/sshd_config.d/10-ids.conf` con `PasswordAuthentication no`; `sshd -t`; reload;
-   comprueba `sshd -T`.
+9. SSH: nada desde 2026-10-19 (decisión del dueño: el SSH admite contraseña y clave, como lo tenga
+   el servidor). Hasta 0.1.10 instalaba `/etc/ssh/sshd_config.d/10-ids.conf` con
+   `PasswordAuthentication no` y exigía claves en `authorized_keys`; en un servidor que ya lo tenga,
+   ese fichero se queda como está (el instalador ni lo pone ni lo quita, y el modo seguro tampoco).
 10. fail2ban: jaulas y filtro; `fail2ban-regex` del filtro contra las líneas de §5.13 (2 coincidencias:
     las dos `ovpn-auth: rechazado`, con `motivo=formato` y `motivo=usuario`; con otro número, el
     instalador se para).

@@ -39,7 +39,8 @@
 #                      averiguar
 #
 # Idempotente: volver a ejecutarlo cambia gestión, panel y proxy. Respaldo en /root/backups antes de tocar
-# sshd, firewall, Docker o fail2ban. Nunca instala iptables-persistent ni ufw ni hace flush ruleset.
+# firewall, Docker o fail2ban. No toca sshd: el SSH admite contraseña o clave, como lo tenga el
+# servidor. Nunca instala iptables-persistent ni ufw ni hace flush ruleset.
 set -euo pipefail
 umask 022
 
@@ -391,18 +392,6 @@ comprobar_memoria() {
   return 0
 }
 
-claves_ssh_presentes() {
-  local f
-  for f in "${R}/root/.ssh/authorized_keys" "${R}/root/.ssh/authorized_keys2"; do
-    [ -s "$f" ] && return 0
-  done
-  if [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != root ]; then
-    f="$(getent passwd "$SUDO_USER" | cut -d: -f6)/.ssh/authorized_keys"
-    [ -s "${R}$f" ] && return 0
-  fi
-  return 1
-}
-
 ppid_de() {   # ppid_de <pid> -> PPid según ${R}/proc/<pid>/status
   sed -n 's/^PPid:[[:space:]]*\([0-9][0-9]*\)[[:space:]]*$/\1/p' "${R}/proc/$1/status" 2>/dev/null | head -n1 || true
 }
@@ -437,9 +426,6 @@ ip_sesion_ssh() {
 
 comprobar_acceso_ssh() {
   local ip
-  if ! claves_ssh_presentes && ! sshd -T 2>/dev/null | grep -i '^passwordauthentication no' >/dev/null; then
-    fallar "no hay claves en authorized_keys: con PasswordAuthentication no te quedarías fuera"
-  fi
   if ! ip=$(ip_sesion_ssh); then
     if [ "$FORZAR_ACCESO" = 1 ] || [ "$SIN_REVERSION" = 1 ]; then
       aviso "no se pudo averiguar la IP de tu sesión SSH: no se comprueba que esté en --gestion"
@@ -848,10 +834,9 @@ armar_reversion() {
   [ "$SIN_REVERSION" = 1 ] && { aviso "sin modo seguro (--sin-reversion)"; return 0; }
   install -d -m 0700 "$ant"
   [ -f "${R}/srv/ids/fw/ids_host.nft" ] && cp -p "${R}/srv/ids/fw/ids_host.nft" "$ant/ids_host.nft"
-  [ -f "${R}/etc/ssh/sshd_config.d/10-ids.conf" ] && cp -p "${R}/etc/ssh/sshd_config.d/10-ids.conf" "$ant/10-ids.conf"
   cat > "$script" <<EOF
 #!/bin/bash
-# Generado por install.sh ($TS): vuelve al acceso anterior (firewall del host y sshd)
+# Generado por install.sh ($TS): vuelve al acceso anterior (firewall del host)
 # si nadie confirmó desde una sesión SSH nueva en ${VENTANA_REVERSION} s.
 set -u
 # Marcador primero: desde aquí ni --confirmar ni el instalador pueden darlo por confirmado.
@@ -865,12 +850,6 @@ else
   rm -f /srv/ids/fw/ids_host.nft
   systemctl disable ids-host-fw.service 2>/dev/null
 fi
-if [ -f "\$D/10-ids.conf" ]; then
-  cp -p "\$D/10-ids.conf" /etc/ssh/sshd_config.d/10-ids.conf
-else
-  rm -f /etc/ssh/sshd_config.d/10-ids.conf
-fi
-sshd -t && systemctl reload ssh
 logger -t ids-maat "acceso revertido: install.sh no se confirmó a tiempo"
 echo "REVERTIDO \$(date -u)"
 EOF
@@ -913,18 +892,8 @@ firewall() {
   systemctl enable ids-host-fw.service >/dev/null
 }
 
-ssh_endurecer() {
-  install -d -m 0755 "${R}/etc/ssh/sshd_config.d"
-  install -m 0644 "$HOST_DIR/host/ssh/10-ids.conf" "${R}/etc/ssh/sshd_config.d/10-ids.conf"
-  if ! sshd -t; then
-    rm -f "${R}/etc/ssh/sshd_config.d/10-ids.conf"
-    fallar "sshd -t falló con 10-ids.conf: retirado"
-  fi
-  systemctl reload ssh
-  sshd -T 2>/dev/null | grep -i '^passwordauthentication no$' >/dev/null \
-    || fallar "sshd -T no muestra «passwordauthentication no» (otro fichero de sshd_config.d lo pisa)"
-  log "sshd: PasswordAuthentication no"
-}
+# sshd no se toca (decisión del dueño 2026-10-19: el SSH admite contraseña y clave, como lo tenga
+# el cliente). Un /etc/ssh/sshd_config.d/10-ids.conf de una instalación anterior se queda como está.
 
 lineas_ids_vpn() {   # CONTRATO-F1a §5.13. Solo casan las 2 de «ovpn-auth: rechazado» con motivo=formato
                      # o motivo=usuario (un escáner); clave y freno no banean al dueño del usuario (VPN-04)
@@ -991,8 +960,8 @@ esperar_confirmacion() {
   echo
   log "CONFIRMA EL ACCESO: abre una sesión SSH NUEVA desde una red de gestión y ejecuta"
   log "    bash $(readlink -f "$0") --confirmar"
-  log "(si no llega en $((VENTANA_REVERSION / 60)) min, el firewall y sshd vuelven a como estaban)"
-  # El plazo cuenta desde que se armó el timer (T0), no desde ahora: firewall, sshd y fail2ban
+  log "(si no llega en $((VENTANA_REVERSION / 60)) min, el firewall vuelve a como estaba)"
+  # El plazo cuenta desde que se armó el timer (T0), no desde ahora: firewall y fail2ban
   # ya gastaron parte de la ventana. Se deja de esperar 10 s antes de que venza.
   fin=$(( ${T0_REVERSION:-$(date +%s)} + VENTANA_REVERSION - 10 ))
   while [ "$(date +%s)" -lt "$fin" ]; do
@@ -1210,7 +1179,6 @@ principal() {
   instalar_orquestador       # 11
   armar_reversion            # modo seguro
   firewall                   # 8
-  ssh_endurecer              # 9
   fail2ban_jaulas            # 10
   esperar_confirmacion       # modo seguro
   imagenes                   # 11

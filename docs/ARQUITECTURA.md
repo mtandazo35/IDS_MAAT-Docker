@@ -183,7 +183,7 @@ aprendido en `suricata-ids-lab` y de la auditoría del diseño.
 
 | Puerto / socket | Escucha | Quién puede llegar | Notas |
 |---|---|---|---|
-| tcp 22 | sshd del host | solo las redes de gestión | fail2ban; `PasswordAuthentication no` |
+| tcp 22 | sshd del host | solo las redes de gestión | fail2ban; contraseña o clave, como lo tenga el servidor (el IDS no toca sshd) |
 | tcp 5637 | `panel-web` (publicado, HTTP) | solo las IP del proxy inverso | el TLS lo termina el proxy; emergencia: `ssh -L` desde gestión |
 | tcp `1194+N-1` | `vpn` del punto N (publicado sobre su 1194) | internet, o solo la IP del MikroTik si se declara | límite de conexiones nuevas por IP, freno en `ovpn-auth`, jaula `ids-vpn` |
 | udp 37008 | `tzsp-decap` del punto | solo `100.64.N.2` por `tun0` | el espejo |
@@ -271,8 +271,9 @@ Detalle, entidades, retenciones y secretos: [DATOS.md](DATOS.md).
   validaría:
   - que el proxy por el que llega la petición sigue en su lista;
   - que no hay redes de gestión más anchas que /16 (para eso, la consola);
-  - que no hay solape con los túneles ni con el pool de Docker;
-  - `PasswordAuthentication no`.
+  - que no hay solape con los túneles ni con el pool de Docker.
+  sshd no entra: el IDS no toca su configuración (contraseña o clave, como lo tenga el servidor;
+  decisión del dueño 2026-10-19).
 - **Modo seguro:** aplica, arma la reversión (5 min por defecto) y solo hace persistente el cambio
   si el admin confirma desde una conexión nueva. Un reinicio del VPS en la ventana equivale a
   revertir. Recuperación: consola del proveedor y `/root/ids-maat/revertir-acceso.sh` (solo existe

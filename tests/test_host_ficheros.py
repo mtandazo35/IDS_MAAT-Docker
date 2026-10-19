@@ -93,10 +93,8 @@ class Ficheros(unittest.TestCase):
         sysctl = [x for x in (H / "sysctl" / "90-ids.conf").read_text(encoding="utf-8").splitlines()
                   if x and not x.startswith("#")]
         self.assertEqual(sysctl, ["net.core.rmem_max=33554432"])
-        ssh = {x.split()[0].lower(): x.split()[1] for x in (H / "ssh" / "10-ids.conf").read_text(encoding="utf-8")
-               .splitlines() if x and not x.startswith("#")}
-        self.assertEqual(ssh["passwordauthentication"], "no")
-        self.assertEqual(ssh["kbdinteractiveauthentication"], "no")
+        # el IDS no trae configuración de sshd: contraseña o clave lo decide el servidor (2026-10-19)
+        self.assertFalse((H / "ssh").exists())
 
     def test_journald(self):
         """VPN-15: todos los contenedores escriben en journald por docker.service y comparten su

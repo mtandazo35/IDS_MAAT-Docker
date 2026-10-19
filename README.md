@@ -57,9 +57,11 @@ opciones no reabre un acceso cerrado. Opcionales: `--tun-base 198.18` (si tus ab
 - **Prueba antes los valores** sin tocar nada: añade `--solo-validar` al final.
 - **Al cerrar el acceso, confirma.** Con `--gestion` el instalador se para y pide abrir una **sesión
   SSH nueva** desde una red de gestión y ejecutar `bash /root/ids-maat-install.sh --confirmar`. Si no
-  llega en 5 minutos, el firewall y sshd vuelven a como estaban, para que no te quedes fuera.
+  llega en 5 minutos, el firewall vuelve a como estaba, para que no te quedes fuera.
 - Tarda unos 10 minutos: verifica la firma de la release, instala Docker, descarga las reglas ET y las
-  imágenes firmadas. Antes de tocar sshd, el firewall, Docker o fail2ban deja un respaldo en `/root/backups/`.
+  imágenes firmadas. Antes de tocar el firewall, Docker o fail2ban deja un respaldo en `/root/backups/`.
+- **No toca la configuración de SSH:** se entra con contraseña o con clave, como lo tenga el servidor.
+  fail2ban vigila el SSH (5 fallos en 10 minutos banean la IP).
 - Al terminar imprime la URL del panel, el usuario `admin` y su clave **una sola vez** (en el log sale
   enmascarada). Cámbiala desde el panel.
 

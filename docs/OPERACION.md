@@ -443,8 +443,8 @@ rsync -a --chmod=F600 'root@ids.empresa.example:/root/backups/ids-maat-install-*
   1. Entrar por la consola del proveedor del VPS.
   2. Si el problema lo trajo la **última ejecución de `install.sh`**:
      `bash /root/ids-maat/revertir-acceso.sh`. Es el mismo script que el modo seguro ejecuta solo si
-     nadie confirma a tiempo: devuelve el firewall del host (`ids_host.nft`) y el `10-ids.conf` de
-     sshd a como estaban antes de esa ejecución. No admite parámetros (ni IP ni `--proxy`). Solo
+     nadie confirma a tiempo: devuelve el firewall del host (`ids_host.nft`) a como estaba antes de
+     esa ejecución (sshd no lo toca: el IDS no cambia su configuración). No admite parámetros (ni IP ni `--proxy`). Solo
      existe si esa ejecución fue con modo seguro: con `--sin-reversion` no se genera (y queda el de
      una ejecución anterior, que devolvería un estado más viejo).
   3. Si no, **abrir una IP o red concreta**: editar `/etc/ids-maat/ids.conf` (`REDES_GESTION` para

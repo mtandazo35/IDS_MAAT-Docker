@@ -459,7 +459,7 @@ tomada de `X-Forwarded-For` solo cuando la conexión viene del proxy (ver
 
 > **Estado real:** `acceso.aplicar` y `acceso.confirmar` son órdenes **reservadas** del orquestador
 > (contestan «no disponible»). Lo que existe hoy es el modo seguro de `install.sh`: antes de cambiar
-> el firewall del host y sshd guarda los anteriores en `/root/ids-maat/acceso-anterior-<ts>/`, genera
+> el firewall del host guarda el anterior en `/root/ids-maat/acceso-anterior-<ts>/`, genera
 > `/root/ids-maat/revertir-acceso.sh` y lo programa con `systemd-run` a los 5 min; desde una sesión
 > SSH **nueva**, `install.sh --confirmar` lo anula. Con `--sin-reversion` (instalación desde la
 > consola) no hay modo seguro. El origen fijo de cada puerto VPN se cambia con
@@ -480,8 +480,8 @@ cambiarían con la orden `acceso.aplicar` del orquestador.
   `ids.conf` y `ids-orq fw-render --aplicar` ([OPERACION.md](OPERACION.md) §4).
 - No puede haber solape con la base de túneles ni con el pool de Docker: por la VPN solo pasan
   datos.
-- `sshd -T` tiene que mostrar `passwordauthentication no`. El instalador lo deja así y, si alguien
-  lo cambió, `acceso.aplicar` se niega.
+- sshd no se valida: desde 2026-10-19 el IDS no toca su configuración (el SSH admite contraseña y
+  clave, como lo tenga el servidor; decisión del dueño). Lo protege la jaula `sshd` de fail2ban (§9).
 
 ### Aplicación
 
