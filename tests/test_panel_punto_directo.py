@@ -163,7 +163,8 @@ class Ficha(_Base):
         h = self.get("/puntos/p002")
         self.assertIn("<h2>Conexión directa: datos para el MikroTik</h2>", h)
         self.assertIn("sniff-target=192.168.88.10 sniff-target-port=37009", h)
-        self.assertIn("a 192.168.88.10:37009/udp · solo desde 192.168.88.1", h)
+        self.assertIn("a 192.168.88.10:37009/udp · desde cualquier IP · API en 192.168.88.1:", h)
+        self.assertNotIn("solo desde 192.168.88.1", h)
         self.assertIn("la red local directa a 192.168.88.1", h)
         self.assertIn("<a href='#vpn'>Conexión</a>", h)
         for nada in ("Regenerar la clave VPN", "/puntos/p002/desbanear", "Puerto VPN / red del túnel",

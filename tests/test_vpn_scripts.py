@@ -206,17 +206,19 @@ class ConFalsos(unittest.TestCase):
         self.assertFalse(marca.exists())
         self.assertIn("punto directo", p.stdout)
 
-    def test_run_tzsp_decap_directo_solo_desde_mk_ip(self):
+    def test_run_tzsp_decap_directo_desde_cualquier_ip(self):
+        """2026-10-20 («necesito que escuche cualquier IP»): el espejo directo no se filtra por origen."""
         self.falso_que_apunta("python3")
         p = self.ejecutar(S6RC / "tzsp-decap" / "run", self.DIRECTO)
         self.assertEqual(p.returncode, 0, p.stderr)
-        self.assertIn("env=TZSP_ALLOW=192.168.88.1/32", self.leido())
+        self.assertIn("env=TZSP_ALLOW=0.0.0.0/0", self.leido())
+        self.assertNotIn("env=TZSP_ALLOW=192.168.88.1/32", self.leido())
 
-    def test_run_tzsp_decap_directo_sin_mk_ip_deja_allow_invalido(self):
+    def test_run_tzsp_decap_directo_no_depende_de_mk_ip(self):
         self.falso_que_apunta("python3")
         p = self.ejecutar(S6RC / "tzsp-decap" / "run", {"MODO": "directo"}, quitar=("MK_IP",))
         self.assertEqual(p.returncode, 0, p.stderr)
-        self.assertIn("env=TZSP_ALLOW=/32", self.leido())
+        self.assertIn("env=TZSP_ALLOW=0.0.0.0/0", self.leido())
 
     def test_run_rele_api_directo(self):
         self.falso_que_apunta("socat")

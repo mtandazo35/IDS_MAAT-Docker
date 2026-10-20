@@ -13,8 +13,8 @@ OpenVPN y su propio Suricata.
   gestiona el operador). El usuario de la API no va en esos comandos: lo crea el operador a mano en
   el router si quiere usar la API (docs/OPERACION.md §1.2).
 - Si el MikroTik está en la misma red local que el VPS, el punto puede ser **directo**, sin VPN: el
-  espejo llega por UDP desde la IP del MikroTik y el panel entra a su API por la LAN
-  (docs/RED-Y-FIREWALL.md §11).
+  espejo llega por UDP al puerto del punto, desde cualquier IP del router, y el panel entra a su API
+  por la LAN (docs/RED-Y-FIREWALL.md §11).
 
 ## ⚡ Quick install (one-liner)
 

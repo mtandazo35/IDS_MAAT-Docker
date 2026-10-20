@@ -513,21 +513,21 @@ o cambiar la IP, se da de baja y se crea otro.
 
 ```
  MikroTik 192.168.88.1 ── LAN ──► host 192.168.88.10
-   │  host: nft inet ids_host (udp 37009 solo desde 192.168.88.1)
+   │  host: nft inet ids_host (udp 37009 publicado, desde cualquier IP)
    └─ udp 37009 ──DNAT──► red ids-p002 ─► vpn-p002 :37008 (eth0)
 
  netns de p002 (dueño: vpn-p002, sin OpenVPN ni tun0)
-   eth0 ── udp 37008 desde 192.168.88.1 ─► tzsp-decap ─► ids-in ══veth══ ids-mon ─► suricata-p002
+   eth0 ── udp 37008 desde cualquier IP ─► tzsp-decap ─► ids-in ══veth══ ids-mon ─► suricata-p002
    relé: /run/ids/api.sock ─► 192.168.88.1:8729 (sale por eth0)
 ```
 
 | Pieza | Con VPN | Directo |
 |---|---|---|
 | Puerto publicado | `1194+N-1/tcp` (OpenVPN) | `37008+N-1/udp` (el espejo) |
-| Origen aceptado | cualquiera, o `origen_ip` si se fija | **siempre** solo `mk_ip`, en el host (`espejo directo <pid>`) y en el receptor (`TZSP_ALLOW`) |
+| Origen aceptado | cualquiera, o `origen_ip` si se fija | **cualquiera** desde 2026-10-20 (antes solo `mk_ip`): sin regla `espejo directo <pid>` en el host, `TZSP_ALLOW=0.0.0.0/0` en el receptor y sin `ip saddr` en el `ids_punto` del contenedor |
 | `sniff-target` en el MikroTik | `100.64.N.1`, puerto 37008 | la IP del host hacia el MikroTik (`ip -4 route get <mk_ip>`), puerto `37008+N-1` |
 | API | relé → `100.64.N.2:8729` por `tun0` | relé → `<mk_ip>:8729` por `eth0`; el router ve la IP del host |
-| «Conectado» | cliente OpenVPN conectado | espejo de `mk_ip` en los últimos 2 min (`tzsp.visto_s`) |
+| «Conectado» | cliente OpenVPN conectado | espejo en los últimos 2 min (`tzsp.visto_s`) |
 | Certificado, usuario VPN, `server.conf`, fail2ban | sí | no |
 
 - **Solo red local.** `mk_ip` tiene que ser privada o CGNAT (`10/8`, `172.16/12`, `192.168/16`,
@@ -535,8 +535,12 @@ o cambiar la IP, se da de baja y se crea otro.
   espejo va **sin cifrar** y en UDP: dentro de la LAN vale; por internet, no (por eso una IP pública se
   rechaza). Si algún día se permitiera, la API tendría que exigir la huella del certificado de la
   API-SSL antes de mandar la clave de `ids-api` (decisión del dueño, 2026-10-18).
-- **El origen se puede falsificar en la LAN.** El filtro es por IP de origen: quien esté en esa red
-  podría inyectar espejo con la IP del MikroTik. Es el precio de no llevar túnel.
+- **Espejo desde cualquier IP** (decisión del dueño 2026-10-20: «necesito que escuche cualquier IP»).
+  El MikroTik puede mandarlo desde una dirección que no es la de su API (visto en un cliente: la API
+  en 172.16.x y el espejo saliendo por un enlace 100.64.x, que además cae en la base de túneles y no
+  se puede dar como `mk_ip`). Lo que tiene que coincidir es el **puerto** UDP del punto. Quien
+  alcance ese puerto puede inyectar espejo; la seguridad de la red la decide el cliente. `mk_ip`
+  sigue siendo la IP de la API y la que decide qué IP del host va en `sniff-target`.
 - **Mismo contenedor.** El `vpn` del punto directo arranca con `MODO=directo`: su servicio OpenVPN
   se queda quieto (`sleep infinity`, para que el árbol de s6 sea el mismo) y `salud-vpn` no lo mira.
   La imagen declara `LABEL ids-maat.modos="vpn,directo"`; sobre una imagen anterior el orquestador no

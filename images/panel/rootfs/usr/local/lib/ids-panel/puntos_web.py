@@ -2591,8 +2591,8 @@ def ficha(h, pid, mensaje="", codigo=200, ok=False, extra_espejo=""):
              % (_num(su.get("kernel_packets")), _num(su.get("kernel_drops")))),
             ("Alertas 24 h", "<a href='/eventos?nodo=%s'>%s</a>" % (esc(pid), alertas_24h_html(pid, ahora, p)[0])),
             ("Retención efectiva", retencion_html(retencion(pid, p), ahora)),
-        ) + ((("Espejo directo", esc("a %s:%s/udp · solo desde %s · API en %s:%s"
-                                     % (p.get("sensor") or "?", p.get("tzsp_puerto") or "-", p.get("mk_ip") or "?",
+        ) + ((("Espejo directo", esc("a %s:%s/udp · desde cualquier IP · API en %s:%s"
+                                     % (p.get("sensor") or "?", p.get("tzsp_puerto") or "-",
                                         p.get("mk_ip") or "?", p.get("api_puerto") or 8729))),)
              if directo else
              (("Puerto VPN / red del túnel", esc("%s/tcp · %s" % (p.get("puerto") or "-", p.get("tun_net") or "-"))),)

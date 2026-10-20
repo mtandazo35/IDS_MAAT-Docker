@@ -793,8 +793,8 @@ def _elems_ip(redes):
 
 def render_nft(cfg, puertos, origenes):
     """puertos: lista de int; origenes: lista de (pid, puerto, ip) o (pid, puerto, ip, proto). Sin
-    proto, «tcp»: el origen fijo de la VPN. «udp» es el espejo de un punto directo, que solo puede
-    venir de la IP del MikroTik."""
+    proto, «tcp»: el origen fijo de la VPN. «udp» filtraría un espejo directo por origen; desde
+    2026-10-20 puertos_y_origenes no lo pide (el espejo directo entra desde cualquier IP)."""
     puertos = sorted(set(int(x) for x in puertos))
     elementos = "elements = { %s } " % ", ".join(str(x) for x in puertos) if puertos else ""
     def _linea(o):
@@ -812,15 +812,15 @@ def render_nft(cfg, puertos, origenes):
 
 def puertos_y_origenes(puntos):
     """Lo que el firewall del host deja publicado: el puerto de cada punto (OpenVPN por TCP o, en
-    uno directo, el del espejo por UDP) y desde dónde. Un punto directo SIEMPRE lleva su origen: el
-    espejo solo entra desde la IP del MikroTik."""
+    uno directo, el del espejo por UDP) y desde dónde. El espejo de un punto directo entra desde
+    cualquier IP (el dueño, 2026-10-20: «necesito que escuche cualquier IP»): el MikroTik puede
+    mandarlo desde una IP que no es la de su API. Solo la VPN puede llevar origen fijo."""
     puertos, origenes = [], []
     for p in puntos:
         puertos.append(p["puerto"])
         if es_directo(p):
-            if p.get("mk_ip"):
-                origenes.append((p["pid"], p["puerto"], p["mk_ip"], "udp"))
-        elif p.get("origen_ip"):
+            continue
+        if p.get("origen_ip"):
             origenes.append((p["pid"], p["puerto"], p["origen_ip"]))
     return puertos, origenes
 
@@ -978,12 +978,12 @@ def comandos_directo(p, ip_host=None):
         "#\n"
         "# Espejo (TZSP por UDP): en las reglas sniff-tzsp del MikroTik usa\n"
         "#   sniff-target=%s sniff-target-port=%s\n"
-        "# Solo se acepta desde %s: si el router lo manda desde otra IP, no llega.\n"
+        "# Se acepta desde cualquier IP del router; lo que importa es el puerto: %s.\n"
         "#\n"
-        "# API: el panel entra a la API-SSL (puerto %s) del MikroTik desde %s.\n"
+        "# API: el panel entra a la API-SSL (puerto %s) del MikroTik (%s) desde %s.\n"
         "# Si el router filtra la entrada, deja pasar ese puerto desde esa IP.\n"
-        % (p["pid"], p["nombre"], p["n"], p["mk_ip"], host, p["puerto"], p["mk_ip"],
-           p["api_puerto"], host))
+        % (p["pid"], p["nombre"], p["n"], p["mk_ip"], host, p["puerto"], p["puerto"],
+           p["api_puerto"], p["mk_ip"], host))
 
 
 def comandos_mikrotik(p, nombre_dns, clave=None, ca_pem=None, aviso_cert=None):

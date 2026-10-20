@@ -104,6 +104,18 @@ class FiltroOrigen(unittest.TestCase):
         self.assertEqual(len(enviadas), 1)
         self.assertEqual((r.rx, r.tx, r.rechazados), (2, 1, 1))
 
+    def test_punto_directo_acepta_cualquier_origen(self):
+        """El `run` de un punto directo pone TZSP_ALLOW=0.0.0.0/0 (2026-10-20): el espejo de un
+        MikroTik que sale por otra IP (un enlace 100.64.x, otra LAN) entra igual."""
+        cfg = td.config_desde_entorno({"TZSP_ALLOW": "0.0.0.0/0", "TZSP_PORT": "37008", "TZSP_BYTES": "0"})
+        r = td.Receptor(cfg["allow"], 0, None, "p002", ahora=1000.0)
+        enviadas = []
+        for origen in ("100.64.0.2", "172.16.50.254", "10.55.55.254", "203.0.113.9"):
+            with self.subTest(origen=origen):
+                self.assertEqual(r.procesar(ay.tzsp(ay.trama_tcp()), origen, 1000, enviadas.append), "enviado")
+        self.assertEqual((r.rx, r.tx, r.rechazados), (4, 4, 0))
+        self.assertEqual(len(enviadas), 4)
+
     def test_basura_del_mikrotik_se_descarta(self):
         r = receptor()
         enviadas = []

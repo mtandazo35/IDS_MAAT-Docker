@@ -5,7 +5,7 @@ table inet ids_punto {
     type filter hook input priority filter; policy drop;
     iif lo accept
     ct state established,related accept
-    iifname "eth0" ip saddr 192.168.88.1 udp dport 37008 counter accept comment "espejo TZSP (directo)"
+    iifname "eth0" udp dport 37008 counter accept comment "espejo TZSP (directo, cualquier origen)"
     counter comment "resto"
   }
   chain output {

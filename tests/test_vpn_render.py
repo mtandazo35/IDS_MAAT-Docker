@@ -143,7 +143,9 @@ class Directo(unittest.TestCase):
 
     def test_nft_directo_sin_tun0_ni_openvpn(self):
         txt = render.nft_punto(render.validar(entorno(API_PUERTO="8728", TZSP_PUERTO="40000", **DIRECTO)))
-        self.assertIn('iifname "eth0" ip saddr 192.168.88.1 udp dport 40000 counter accept', txt)
+        # el espejo entra desde cualquier IP (2026-10-20); la API sigue saliendo solo hacia el MikroTik
+        self.assertIn('iifname "eth0" udp dport 40000 counter accept', txt)
+        self.assertNotIn("ip saddr", txt)
         self.assertIn('oifname "eth0" ip daddr 192.168.88.1 tcp dport 8728 accept', txt)
         for nada in ("tun0", "1194", "100.64", "flush"):
             self.assertNotIn(nada, txt)

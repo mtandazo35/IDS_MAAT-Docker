@@ -144,8 +144,8 @@ def nft_punto(cfg):
 
 def nft_punto_directo(cfg):
     """La tabla de un punto directo: sin OpenVPN ni tun0. El espejo entra por eth0 (el DNAT del
-    puerto UDP del punto en el host) y solo desde la IP del MikroTik; la API sale por eth0 solo
-    hacia ella."""
+    puerto UDP del punto en el host) desde cualquier IP (el dueño, 2026-10-20: «necesito que escuche
+    cualquier IP»); la API sale por eth0 solo hacia la IP del MikroTik."""
     mk = cfg["mk_ip"]
     return (
         "table inet ids_punto\n"
@@ -155,7 +155,7 @@ def nft_punto_directo(cfg):
         "    type filter hook input priority filter; policy drop;\n"
         "    iif lo accept\n"
         "    ct state established,related accept\n"
-        f'    iifname "eth0" ip saddr {mk} udp dport {cfg["tzsp_puerto"]} counter accept comment "espejo TZSP (directo)"\n'
+        f'    iifname "eth0" udp dport {cfg["tzsp_puerto"]} counter accept comment "espejo TZSP (directo, cualquier origen)"\n'
         '    counter comment "resto"\n'
         "  }\n"
         "  chain output {\n"

@@ -568,7 +568,7 @@ espejo entra por `eth0` (el DNAT del puerto UDP del punto en el host) solo desde
 sale por `eth0` solo hacia `MK_IP`. Ejemplo exacto: `tests/fixtures/vpn/ids_punto_p003_directo.nft`.
 
 ```
-    iifname "eth0" ip saddr 192.168.88.1 udp dport 37008 counter accept comment "espejo TZSP (directo)"
+    iifname "eth0" udp dport 37008 counter accept comment "espejo TZSP (directo, cualquier origen)"
     oifname "eth0" ip daddr 192.168.88.1 tcp dport 8729 accept comment "API via rele (directo)"
 ```
 
@@ -581,8 +581,9 @@ Exactamente RED-Y-FIREWALL §7, con:
   declara sin `elements`);
 - por cada punto con `origen_ip`: en `forward`,
   `meta l4proto tcp ct direction original ct status dnat ct original proto-dst <puerto> ip saddr != <origen_ip> counter drop comment "origen fijo <pid>"`;
-- por cada punto directo (0.1.9): su puerto UDP del espejo va en `@puertos_vpn` y, siempre,
-  `meta l4proto udp ct direction original ct status dnat ct original proto-dst <puerto> ip saddr != <mk_ip> counter drop comment "espejo directo <pid>"`.
+- por cada punto directo (0.1.9): su puerto UDP del espejo va en `@puertos_vpn`, **sin filtro de
+  origen** desde 2026-10-20 (el dueño: «necesito que escuche cualquier IP»; hasta entonces llevaba
+  `... ip saddr != <mk_ip> counter drop comment "espejo directo <pid>"`).
 
 El orquestador la regenera y la aplica con `nft -c -f` y luego `nft -f` en cada alta, baja o ajuste
 de `origen_ip`. En F1a no hay modo seguro: las listas de acceso solo cambian volviendo a ejecutar
@@ -678,7 +679,7 @@ Se reutiliza `tzsp-decap.py` de `suricata-ids-lab` @ `5b89110` (heredoc de `inst
 con estos cambios:
 
 - Entorno que le pasa el `run` de s6: `TZSP_PORT=${TZSP_PUERTO}`, `TZSP_ALLOW=${TUN_MK}/32`
-  (`${MK_IP}/32` en un punto directo), `TZSP_OUT_IF=ids-in`, `TZSP_ESTADO=/run/ids/tzsp.json`,
+  (`0.0.0.0/0` en un punto directo, desde 2026-10-20: cualquier origen), `TZSP_OUT_IF=ids-in`, `TZSP_ESTADO=/run/ids/tzsp.json`,
   `TZSP_BYTES`. Sin `TZSP_MAP`.
 - Escucha en `0.0.0.0:<TZSP_PUERTO>`; `SO_RCVBUFFORCE` de 16 MB y, si falla, `SO_RCVBUF`.
 - `settimeout(30)`. **Latido:** escribe `tzsp.json` al arrancar y después **cada 30 s**, llegue o no

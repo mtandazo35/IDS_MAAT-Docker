@@ -14331,8 +14331,9 @@ MikroTik»).</li>
 datos del espejo: en las reglas <code>sniff-tzsp</code> del MikroTik, <code>sniff-target</code> es la IP de
 este servidor en esa red y <code>sniff-target-port</code> el puerto UDP propio del punto (37008 el primero,
 37009 el siguiente...).</li>
-<li>El servidor solo acepta el espejo de ese punto desde la IP del MikroTik: si el router lo manda desde
-otra, no llega.</li>
+<li>El servidor acepta el espejo de ese punto desde <b>cualquier IP</b>: el router puede mandarlo desde
+otra dirección que la de su API (p. ej. la de un enlace). Lo que tiene que coincidir es el
+<b>puerto</b> UDP del punto.</li>
 <li>El panel entra a la API del MikroTik directo por la red local, desde la IP de este servidor: si el
 router filtra la entrada, deja pasar el 8729 desde ella.</li>
 <li>El punto sale <b>conectado</b> cuando llega su espejo (en los últimos 2 minutos); hasta entonces,

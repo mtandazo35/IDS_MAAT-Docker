@@ -3,8 +3,8 @@ UDP propio del punto en el host y el panel llega a su API en su IP de la LAN.
 
 Con el código real del orquestador y el sistema simulado: validación del alta (solo IP privada, sin
 chocar con lo interno), lo que se genera (compose sin /dev/net/tun ni OpenVPN, puerto UDP, MODO y
-MK_IP; sin certificado, usuario ni server.conf), el firewall del host (puerto publicado y espejo
-solo desde la IP del MikroTik), el estado, los comandos y las órdenes que no aplican."""
+MK_IP; sin certificado, usuario ni server.conf), el firewall del host (puerto publicado; el espejo
+desde cualquier IP desde 2026-10-20), el estado, los comandos y las órdenes que no aplican."""
 
 import json
 import sys
@@ -53,17 +53,21 @@ class Alta(unittest.TestCase):
         # los comandos dicen adónde va el espejo (la IP del host hacia el MikroTik) y nada de VPN
         com = d["comandos"]
         self.assertIn("sniff-target=192.168.88.10 sniff-target-port=37008", com)
+        self.assertIn("Se acepta desde cualquier IP del router", com)
+        self.assertNotIn("Solo se acepta desde", com)
         self.assertIn("sin VPN", com)
         self.assertNotIn("ovpn-client", com)
         self.assertNotIn("/certificate", com)
 
-    def test_firewall_publica_el_udp_y_solo_desde_el_mikrotik(self):
+    def test_firewall_publica_el_udp_desde_cualquier_ip(self):
+        """2026-10-20 («necesito que escuche cualquier IP»): el puerto del espejo se publica sin filtro
+        de origen; el MikroTik puede mandarlo desde otra IP que la de su API."""
         A.crear(self, self.orq, {"nombre": "vpn1"})                       # p001: con VPN, 1194
         A.crear(self, self.orq, dict(LAN, nombre="lan2"))                 # p002: directo, 37009
         nft = self.s.nft_aplicado[-1]
         self.assertIn("elements = { 1194, 37009 }", nft)
-        self.assertIn('meta l4proto udp ct direction original ct status dnat ct original proto-dst 37009 '
-                      'ip saddr != 192.168.88.1 counter drop comment "espejo directo p002"', nft)
+        self.assertNotIn("espejo directo", nft)
+        self.assertNotIn("ip saddr != 192.168.88.1", nft)
         self.assertNotIn("origen fijo", nft)              # la VPN de p001 no tiene origen fijo
         # el punto con VPN sigue como siempre
         compose = self.e.ruta("/srv/ids/puntos/p001/compose.yml").read_text(encoding="utf-8")
