@@ -864,7 +864,10 @@ p_imagen_privada_error_claro() {   # paquete de GHCR privado: el error dice qué
   IMG_SUR="ghcr.io/mtandazo35/ids-maat-suricata@sha256:$(printf '2%.0s' {1..64})"
   IMG_PANEL="ghcr.io/mtandazo35/ids-maat-panel@sha256:$(printf '3%.0s' {1..64})"
   mkdir -p "$IDS_RAIZ/etc/ids-maat"
+  sleep() { echo "$1" >> "$T/esperas"; }
+  : > "$T/esperas"
   docker() {
+    echo "docker $*" >> "$LLAMADAS"
     case "$*" in
       *ids-maat-panel*) echo "Error response from daemon: Head \"https://ghcr.io/v2/mtandazo35/ids-maat-panel/manifests/sha256:333\": denied" >&2; return 1 ;;
     esac
@@ -873,11 +876,60 @@ p_imagen_privada_error_claro() {   # paquete de GHCR privado: el error dice qué
   ( imagenes ) >"$T/priv" 2>&1 && return 1
   grep -q "ghcr.io/mtandazo35/ids-maat-panel es privado" "$T/priv" || { cat "$T/priv"; return 2; }
   grep -q "https://github.com/users/mtandazo35/packages/container/ids-maat-panel/settings" "$T/priv" || return 3
-  # otro fallo (sin red): se dice el motivo real, no «privado»
-  docker() { echo "Error response from daemon: Get \"https://ghcr.io/v2/\": dial tcp: lookup ghcr.io: no such host" >&2; return 1; }
+  # privado no se arregla reintentando: un solo intento y sin esperas
+  [ "$(grep -c "pull -q $IMG_PANEL" "$LLAMADAS")" = 1 ] || { grep pull "$LLAMADAS"; return 7; }
+  [ -s "$T/esperas" ] && return 8
+  # otro fallo (sin red): se reintenta hasta REINTENTOS y se dice el motivo real, no «privado»
+  : > "$LLAMADAS"
+  docker() { echo "docker $*" >> "$LLAMADAS"; echo "Error response from daemon: Get \"https://ghcr.io/v2/\": dial tcp: lookup ghcr.io: no such host" >&2; return 1; }
   ( imagenes ) >"$T/priv" 2>&1 && return 4
   grep -q "privado" "$T/priv" && return 5
   grep -q "no such host" "$T/priv" || return 6
+  [ "$(grep -c "pull -q $IMG_VPN" "$LLAMADAS")" = "$REINTENTOS" ] || { grep -c pull "$LLAMADAS"; return 9; }
+  return 0
+}
+
+p_reintentos_red_inestable() {   # GitHub/ghcr cortan conexiones al azar (curl 35/56): se reintenta
+  DEV=false VERSION=v0.2.0
+  IMG_VPN="ghcr.io/mtandazo35/ids-maat-vpn@sha256:$(printf '1%.0s' {1..64})"
+  IMG_SUR="ghcr.io/mtandazo35/ids-maat-suricata@sha256:$(printf '2%.0s' {1..64})"
+  IMG_PANEL="ghcr.io/mtandazo35/ids-maat-panel@sha256:$(printf '3%.0s' {1..64})"
+  mkdir -p "$IDS_RAIZ/etc/ids-maat"
+  sleep() { echo "$1" >> "$T/esperas"; }
+  : > "$T/esperas"
+  # docker pull de la suricata falla 2 veces (TLS cortado) y a la tercera baja: la instalación sigue
+  echo 0 > "$T/fallos"
+  docker() {
+    echo "docker $*" >> "$LLAMADAS"
+    case "$*" in
+      *ids-maat-suricata*)
+        local f; f=$(cat "$T/fallos")
+        if [ "$f" -lt 2 ]; then
+          echo $((f + 1)) > "$T/fallos"
+          echo "error pulling image configuration: download failed after attempts=6: unexpected EOF" >&2
+          return 1
+        fi ;;
+    esac
+    return 0
+  }
+  imagenes > "$T/inestable" 2>&1 || { cat "$T/inestable"; return 1; }
+  [ "$(grep -c "pull -q $IMG_SUR" "$LLAMADAS")" = 3 ] || { grep pull "$LLAMADAS"; return 2; }
+  [ "$(tr '\n' ' ' < "$T/esperas")" = "5 10 " ] || { cat "$T/esperas"; return 3; }
+  grep -q "intento 1 de $REINTENTOS" "$T/inestable" || { cat "$T/inestable"; return 4; }
+  # si nunca baja: REINTENTOS intentos, esperas crecientes con tope de 30 s y el código del último
+  : > "$T/esperas"
+  siempre_falla() { echo "curl: (35) TLS connect error" >&2; return 35; }
+  con_reintentos siempre_falla > "$T/salida_ult" 2>/dev/null; rc=$?
+  [ "$rc" = 35 ] || { echo "rc=$rc"; return 5; }
+  grep -q "TLS connect error" "$T/salida_ult" || return 6
+  [ "$(wc -l < "$T/esperas")" = $((REINTENTOS - 1)) ] || return 7
+  [ "$(sort -n "$T/esperas" | tail -n1)" = 30 ] || { cat "$T/esperas"; return 8; }
+  # las descargas de curl: reintentos de curl para cualquier error y corte de lo que se queda colgado
+  curl() { echo "curl $*" >> "$LLAMADAS"; return 0; }
+  descargar "$T/x" https://github.com/ejemplo || return 9
+  grep "^curl " "$LLAMADAS" | grep -F -- "--retry $REINTENTOS" | grep -F -- "--retry-all-errors" \
+    | grep -F -- "--speed-limit 1024 --speed-time 30" | grep -qF -- "-o $T/x https://github.com/ejemplo" \
+    || { grep "^curl " "$LLAMADAS"; return 10; }
   return 0
 }
 
@@ -1105,6 +1157,7 @@ else
 fi
 esperar 0 "imagenes.json de producción: las tres por digest" en_instalador p_imagenes_produccion_descarga_las_tres
 esperar 0 "imagen privada en GHCR: error claro con enlace" en_instalador p_imagen_privada_error_claro
+esperar 0 "red inestable con GitHub: se reintenta"        en_instalador p_reintentos_red_inestable
 esperar 0 "ids.conf: ZONA_HORARIA siempre (o Ecuador)"    en_instalador p_zona_en_ids_conf
 esperar 0 "zona del servidor: enlace, timezone, idempotente" en_instalador p_zona_host
 esperar 0 "principal: zona tras paquetes, antes de arrancar" en_instalador p_principal_zona_en_su_sitio

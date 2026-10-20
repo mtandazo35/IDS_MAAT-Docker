@@ -1219,7 +1219,7 @@ Identidad que verifica el instalador: ACTUALIZACIONES §3 con `<owner>` = `mtand
 One-liner (en `/root`, nunca en `/tmp`, y sin `curl | bash`):
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/mtandazo35/IDS_MAAT-Docker/main/install.sh -o /root/ids-maat-install.sh \
+curl -fsSL --retry 5 --retry-all-errors https://raw.githubusercontent.com/mtandazo35/IDS_MAAT-Docker/main/install.sh -o /root/ids-maat-install.sh \
   && bash /root/ids-maat-install.sh [--version v0.1.5] [--nombre ids.empresa.example] \
        [--gestion 192.0.2.0/25,198.51.100.0/26] [--proxy 203.0.113.50] \
        [--tun-base 100.64|198.18] [--dueno-ip 203.0.113.20] [--zona America/Guayaquil]
@@ -1234,6 +1234,11 @@ seguridad»). En una instalación nueva, la que falta vale:
   sin esperar a una release. Orden al sacar una release, para que el de `main` nunca apunte a una que
   aún no existe: commit de versión a una rama temporal (su `ci.yml` en verde, que `release.yml` exige),
   etiqueta, release publicada y solo entonces `main` y borrar la rama.
+  Cada descarga se reintenta (2026-10-19, una red cortaba al azar la mitad de las conexiones a
+  GitHub y ghcr.io mientras el resto de internet iba bien): curl con `--retry 10 --retry-all-errors`
+  y un mínimo de 1 KB/s durante 30 s (una descarga colgada se corta y se repite); `cosign verify-blob`,
+  `cosign verify` y `docker pull` hasta 10 veces con espera de 5, 10… hasta 30 s. Un «denied» o
+  «unauthorized» del registro (paquete privado) no se reintenta.
 - `--nombre`: la IP pública del VPS, la de origen de la ruta por defecto. Va en el certificado del
   servidor OpenVPN y en las órdenes de los MikroTik. Si es privada (VPS detrás de NAT o servidor en
   una red local) el instalador no se para (decisión del dueño 2026-10-19: «instalar en cualquier

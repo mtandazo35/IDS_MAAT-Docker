@@ -1,7 +1,7 @@
 #!/bin/bash
 # ids-maat — instalador del VPS (CONTRATO-F1a §7). Debian 13 (trixie), amd64, como root.
 #
-#   curl -fsSL https://raw.githubusercontent.com/mtandazo35/IDS_MAAT-Docker/main/install.sh \
+#   curl -fsSL --retry 5 --retry-all-errors https://raw.githubusercontent.com/mtandazo35/IDS_MAAT-Docker/main/install.sh \
 #        -o /root/ids-maat-install.sh && bash /root/ids-maat-install.sh
 #
 # Las instalaciones nuevas salen de main (decisión del dueño 2026-10-19), que instala la última release
@@ -516,7 +516,8 @@ docker_ce() {
   fi
   log "Docker CE $DOCKER_MAYOR desde download.docker.com"
   install -d -m 0755 "${R}/etc/apt/keyrings" "${R}/etc/apt/preferences.d"
-  curl -fsSL https://download.docker.com/linux/debian/gpg -o "${R}/etc/apt/keyrings/docker.asc"
+  descargar "${R}/etc/apt/keyrings/docker.asc" https://download.docker.com/linux/debian/gpg \
+    || fallar "no se pudo descargar la clave del repositorio de Docker tras $REINTENTOS intentos"
   chmod a+r "${R}/etc/apt/keyrings/docker.asc"
   echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/debian trixie stable" \
     > "${R}/etc/apt/sources.list.d/docker.list"
@@ -727,13 +728,47 @@ pki() {
   chmod 0644 "$p/dh.pem"
 }
 
+# Red inestable (2026-10-19): desde algunas redes GitHub y ghcr.io cortan conexiones al azar (curl 35/56
+# «unexpected eof», conexiones que no llegan a abrir o que se quedan colgadas a mitad) mientras el
+# resto de internet va bien. Cada descarga se reintenta: curl con --retry-all-errors y un mínimo de
+# velocidad (una descarga colgada se corta y se repite); cosign y docker pull, con con_reintentos.
+REINTENTOS=10
+ESPERA_REINTENTO=5      # s; con_reintentos espera 5, 10, 15… hasta 30 entre intentos
+
+descargar() {   # descargar <destino> <url>
+  curl -fsSL --connect-timeout 20 --speed-limit 1024 --speed-time 30 \
+    --retry "$REINTENTOS" --retry-delay "$ESPERA_REINTENTO" --retry-all-errors -o "$1" "$2"
+}
+
+# con_reintentos <orden…>: la repite hasta REINTENTOS veces si falla; imprime la salida del último
+# intento y devuelve su código. Un registro que dice «denied/unauthorized» (paquete privado) no se
+# arregla reintentando: se devuelve enseguida para que motivo_registro lo explique.
+con_reintentos() {
+  local n=1 salida rc espera
+  while :; do
+    salida=$("$@" 2>&1) && { printf '%s\n' "$salida"; return 0; }
+    rc=$?
+    if [ "$n" -ge "$REINTENTOS" ] \
+       || [[ "${salida,,}" =~ (denied|unauthorized|authentication\ required|forbidden) ]]; then
+      printf '%s\n' "$salida"
+      return "$rc"
+    fi
+    espera=$((ESPERA_REINTENTO * n))
+    [ "$espera" -le 30 ] || espera=30
+    aviso "falló «$1${2:+ $2}» (intento $n de $REINTENTOS, código $rc): se reintenta en $espera s"
+    sleep "$espera"
+    n=$((n + 1))
+  done
+}
+
 asegurar_cosign() {
   local bin="${R}/root/ids-maat/bin/cosign-${COSIGN_VERSION}"
   install -d -m 0700 "${R}/root/ids-maat/bin"
   if [ -x "$bin" ] && echo "$COSIGN_SHA256  $bin" | sha256sum -c --status 2>/dev/null; then
     echo "$bin"; return 0
   fi
-  curl -fsSL -o "$bin.tmp" "https://github.com/sigstore/cosign/releases/download/${COSIGN_VERSION}/cosign-linux-amd64"
+  descargar "$bin.tmp" "https://github.com/sigstore/cosign/releases/download/${COSIGN_VERSION}/cosign-linux-amd64" \
+    || fallar "no se pudo descargar cosign de GitHub tras $REINTENTOS intentos (¿la red corta las conexiones a github.com?)"
   echo "$COSIGN_SHA256  $bin.tmp" | sha256sum -c --status || { rm -f "$bin.tmp"; fallar "sha256 de cosign incorrecto"; }
   chmod 0755 "$bin.tmp"
   mv "$bin.tmp" "$bin"
@@ -771,12 +806,14 @@ obtener_release() {
   install -d -m 0700 "$rel"
   base="https://github.com/${OWNER}/${REPO}/releases/download/${VERSION}"
   log "release $VERSION: descarga y verificación (cosign keyless)"
-  curl -fsSL -o "$rel/release.json" "$base/release.json"
-  curl -fsSL -o "$rel/release.json.bundle" "$base/release.json.bundle"
+  descargar "$rel/release.json" "$base/release.json" \
+    || fallar "no se pudo descargar release.json de la release $VERSION tras $REINTENTOS intentos ($base)"
+  descargar "$rel/release.json.bundle" "$base/release.json.bundle" \
+    || fallar "no se pudo descargar release.json.bundle de la release $VERSION tras $REINTENTOS intentos"
   id="^https://github\\.com/${OWNER}/${REPO}/\\.github/workflows/release\\.yml@refs/tags/v[0-9]+\\.[0-9]+\\.[0-9]+\$"
   iss="https://token.actions.githubusercontent.com"
-  "$cosign" verify-blob --bundle "$rel/release.json.bundle" --certificate-identity-regexp "$id" \
-    --certificate-oidc-issuer "$iss" "$rel/release.json" >/dev/null 2>&1 \
+  con_reintentos "$cosign" verify-blob --bundle "$rel/release.json.bundle" --certificate-identity-regexp "$id" \
+    --certificate-oidc-issuer "$iss" "$rel/release.json" >/dev/null \
     || fallar "la firma de release.json no es válida"
   datos=$(python3 - "$rel/release.json" <<'PY'
 import json, re, sys
@@ -793,10 +830,11 @@ PY
 ) || fallar "release.json no tiene el formato esperado (¿release anterior a F1b, sin la imagen del panel?)"
   read -r v IMG_VPN IMG_SUR IMG_PANEL tar_nombre tar_sha <<<"$datos"
   [ "v$v" = "$VERSION" ] || fallar "release.json es de la versión $v, no de $VERSION"
-  curl -fsSL -o "$rel/$tar_nombre" "$base/$tar_nombre"
+  descargar "$rel/$tar_nombre" "$base/$tar_nombre" \
+    || fallar "no se pudo descargar $tar_nombre tras $REINTENTOS intentos"
   echo "$tar_sha  $rel/$tar_nombre" | sha256sum -c --status || fallar "sha256 de $tar_nombre incorrecto"
   for v in "$IMG_VPN" "$IMG_SUR" "$IMG_PANEL"; do
-    salida=$("$cosign" verify --certificate-identity-regexp "$id" --certificate-oidc-issuer "$iss" "$v" 2>&1) \
+    salida=$(con_reintentos "$cosign" verify --certificate-identity-regexp "$id" --certificate-oidc-issuer "$iss" "$v") \
       || fallar "la firma de la imagen $v no se pudo verificar: $(motivo_registro "$v" "$salida")"
   done
   destino="${R}/root/ids-maat/host-${VERSION#v}"
@@ -1018,7 +1056,7 @@ imagenes() {
       continue
     fi
     log "docker pull $img"
-    salida=$(docker pull -q "$img" 2>&1) || fallar "no se pudo descargar $img: $(motivo_registro "$img" "$salida")"
+    salida=$(con_reintentos docker pull -q "$img") || fallar "no se pudo descargar $img: $(motivo_registro "$img" "$salida")"
   done
 }
 

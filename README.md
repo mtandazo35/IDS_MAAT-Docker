@@ -21,13 +21,17 @@ OpenVPN y su propio Suricata.
 En un VPS **Debian 13 (trixie) amd64** recién instalado, como `root` y entrando por SSH:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/mtandazo35/IDS_MAAT-Docker/main/install.sh -o /root/ids-maat-install.sh && bash /root/ids-maat-install.sh
+curl -fsSL --retry 5 --retry-all-errors https://raw.githubusercontent.com/mtandazo35/IDS_MAAT-Docker/main/install.sh -o /root/ids-maat-install.sh && bash /root/ids-maat-install.sh
 ```
 
 El instalador sale siempre de `main`, así que una instalación nueva lleva sus últimos arreglos sin
 esperar a una release. Instala la última release (imágenes firmadas, `VERSION_DEFECTO`); el panel y el
 orquestador se ponen al día con `main` desde el botón «Actualizar». Para fijar una versión concreta:
 `--version vX.Y.Z`, o el `install.sh` de su etiqueta (`.../vX.Y.Z/install.sh`).
+
+Si la red corta conexiones a GitHub (errores de curl `35`/`56`, «unexpected eof»), el instalador
+reintenta cada descarga, la verificación de firmas y cada `docker pull`, y avisa en pantalla de cada
+reintento.
 
 Sin opciones instala todo (la última release, reglas, timers y panel) con:
 
