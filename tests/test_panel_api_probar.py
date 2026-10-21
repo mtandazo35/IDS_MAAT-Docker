@@ -35,6 +35,7 @@ mk_crear_certificado) y la ficha sale del panel de verdad con el orquestador fal
 (tests/fixtures/panel2/_dash_p.py).
 """
 import hashlib
+import importlib
 import json
 import os
 import re
@@ -47,7 +48,7 @@ from unittest import mock
 
 TESTS = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(TESTS, "fixtures", "panel2"))
-import _dash  # noqa: E402,F401  - pone la carpeta del panel en sys.path
+importlib.import_module("_dash")   # solo por su efecto: pone la carpeta del panel en sys.path
 from _dash_p import PanelP  # noqa: E402
 
 FP = hashlib.sha256(b"certificado-de-prueba").hexdigest()     # lo que presenta un router con certificado
