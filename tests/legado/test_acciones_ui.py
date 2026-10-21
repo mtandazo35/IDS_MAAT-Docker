@@ -93,7 +93,7 @@ def main():
                  "_mk_globales": lambda: {}})
     h = ns["_card_listas"]({"ACCION_BOTNET": "propias", "ACCION_P2P": "limitar", "ACCION_LIMITE_P2P": "2M",
                             "ACCION_DNS": "redirigir-dns", "ACCION_DNS_IP": "192.0.2.53"})
-    check("un select de accion por categoria (8)", h.count("<select name=accion_") == 8, h.count("<select name=accion_"))
+    check("un select de accion por categoria (7, sin Otros)", h.count("<select name=accion_") == 7, h.count("<select name=accion_"))
     def sel(cat):   # el <select> de esa categoria (el JS tambien menciona 'accion_dns_ip')
         i = h.index("<select name=accion_%s " % cat); return h[i:h.index("</select>", i)]
     check("la accion guardada sale marcada", "<option value='propias' selected>" in sel("botnet"), sel("botnet"))
@@ -111,16 +111,18 @@ def main():
           and "name=limite_botnet" not in h and 'name=limite_p2p class=acclim value="2M"' in h, "")
     check("el resolutor solo en DNS, visible si 'redirigir-dns'", h.count("<input type=text name=accion_dns_ip") == 1
           and 'value="192.0.2.53"' in h, "")
-    check("botones de ver/aplicar y quitar por categoria", h.count("reglasPlan('") == 8 and h.count("reglasQuitar('") == 8, "")
+    # 7 clases: «Otros» ya no sale en Ajustes (el user, 2026-10-20: «saca eso de otros»)
+    check("botones de ver/aplicar y quitar por categoria", h.count("reglasPlan('") == 7 and h.count("reglasQuitar('") == 7, "")
+    check("  y ninguno de Otros", "id=accest_otros" not in h and "name=accion_otros" not in h, "")
     # el user (2026-10-18): tres botones con nombre propio y el estado en su propia fila
     check("  se llaman «Ver reglas», «Aplicar reglas» y «Quitar reglas», uno de cada por clase",
           # (el modal de «Ver reglas» lleva otro «Aplicar reglas»: se cuentan los de la fila)
-          h.count("')\">Ver reglas</button>") == 8 and h.count("')\">Aplicar reglas</button>") == 8
-          and h.count("')\">Quitar reglas</button>") == 8 and h.count("reglasVer('") == 8
+          h.count("')\">Ver reglas</button>") == 7 and h.count("')\">Aplicar reglas</button>") == 7
+          and h.count("')\">Quitar reglas</button>") == 7 and h.count("reglasVer('") == 7
           and "Ver / aplicar en el router" not in h, "")
     check("  «Ver reglas» llama a la ruta que solo lee", "_accPost('/mikrotik/reglas/ver',cat," in h, "")
     check("  el estado va en su fila, con su etiqueta, debajo de los botones",
-          h.count("<div class=accestrow><span class=acclbl>Estado en el router:</span><span class=accest id=accest_") == 8
+          h.count("<div class=accestrow><span class=acclbl>Estado en el router:</span><span class=accest id=accest_") == 7
           and h.index(">Quitar reglas</button>") < h.index("id=accest_botnet"), "")
     check("quitar pasa por el modal propio (ask), nunca confirm()", "ask(this,'Quitar del router" in h and "confirm(" not in h, "")
     # CONTRATO-F2 §3/§10.1: el destino va SIEMPRE explicito (rid en cada peticion, sin
@@ -137,7 +139,7 @@ def main():
     check("  preseleccionado el nodo que se mira (solo preselecciona: el rid viaja en la peticion)",
           "<option value='p002' selected>" in h3 and "<option value='p001' selected>" not in h3, "")
     check("boton 'Verificar mis reglas' por categoria, visible solo con 'propias'",
-          h.count("reglasVerificar('") == 8 and "id=verif_botnet style='display:block" in h
+          h.count("reglasVerificar('") == 7 and "id=verif_botnet style='display:block" in h
           and "id=verif_escaneo style='display:none" in h, "")
     check("la vista previa ensena la verificacion y sin errores deja aplicar", "_accVer(V)" in h and "(L.length&&!hayE)" in h, "")
     check("el modal usa fromCharCode, no escapes que se rompen al incrustar", "String.fromCharCode(10)" in h and "\\n" not in h[h.index("<script>"):h.index("</script>")], "")

@@ -61,7 +61,10 @@ def main():
     # --- herencia desde las bandas ----------------------------------------------------
     viejo = {"POL_BAJO": "nada", "POL_MEDIO": "nada", "POL_ALTO": "cuarentena"}
     check("ALTO=cuarentena sin POL_<CLASE> -> 'alto' en todas las clases (P2P incluido)",
-          all(pdc(c, viejo) == "alto" for c, *_ in ns["CAT_CPE"] + [ns["CAT_OTROS"]]), "")
+          all(pdc(c, viejo) == "alto" for c, *_ in ns["CAT_CPE"]), "")
+    # «Otros» fuera de Ajustes (el user, 2026-10-20): su politica es siempre 'nada', herede lo que herede
+    check("Otros siempre 'nada' (ni heredada ni guardada)",
+          pdc("otros", viejo) == "nada" and pdc("otros", {"POL_OTROS": "siempre"}) == "nada", "")
     check("MEDIO=cuarentena -> 'medio'", pdc("botnet", {"POL_MEDIO": "cuarentena"}) == "medio", "")
     check("BAJO=dns (era una cuarentena a la lista DNS) -> 'siempre'",
           pdc("dns", {"POL_BAJO": "dns"}) == "siempre", "")
@@ -204,7 +207,9 @@ def main():
     # --- formulario y ruta ---------------------------------------------------------------
     ns3 = piezas(BASE + ("_card_politicas",), {"_mk_globales": lambda: {}, "lista_de_categoria": lambda c: "clientes-" + c})
     h = ns3["_card_politicas"]({"POL_ALTO": "cuarentena", "POL_P2P": "nada", "POL_AUTO": "1"})
-    check("un select por clase (8)", h.count("<select name='pol_") == 8, h.count("<select name='pol_"))
+    # 7: «Otros» ya no sale en Ajustes y su politica es fija 'nada' (el user, 2026-10-20)
+    check("un select por clase (7)", h.count("<select name='pol_") == 7 and "pol_otros" not in h,
+          h.count("<select name='pol_"))
     check("con la lista de la clase al lado", "clientes-botnet" in h and "clientes-p2p" in h, "")
     check("P2P sale en 'nada' y botnet heredado en 'alto'",
           "<option value='nada' selected>" in h[h.index("pol_p2p"):]

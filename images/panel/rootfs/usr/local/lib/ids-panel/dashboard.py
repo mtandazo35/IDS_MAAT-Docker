@@ -2035,7 +2035,11 @@ RESPALDOS_MK = os.path.join(nodos.RESPALDOS, "mikrotik")
 
 
 def accion_de_clase(cat, m=None):
-    """La accion configurada para esa clase (ACCION_<CLASE>), o la de defecto."""
+    """La accion configurada para esa clase (ACCION_<CLASE>), o la de defecto. «Otros» siempre
+    'nada' (el user, 2026-10-20: «saca eso de otros»): ya no sale en Ajustes, asi que tampoco puede
+    quedar puesta una accion vieja que nadie ve; lo que no encaja en ninguna clase solo va a su lista."""
+    if cat == "otros":
+        return "nada"
     m = m if m is not None else _mk_globales()
     v = (m.get("ACCION_" + cat.upper(), "") or "").strip()
     return v if v in ACCIONES_POR_CAT.get(cat, ()) else ACCION_DEFECTO.get(cat, "nada")
@@ -5768,7 +5772,11 @@ def _politica_heredada(m):
     return "nada"
 
 def politica_de_clase(cat, m=None):
-    """Politica de esa clase: POL_<CLASE> si existe; si no, la heredada de las bandas."""
+    """Politica de esa clase: POL_<CLASE> si existe; si no, la heredada de las bandas. «Otros»
+    siempre 'nada' (2026-10-20, fuera de Ajustes): sin cuarentena automatica para lo que no encaja
+    en ninguna clase; a mano se sigue pudiendo enviar."""
+    if cat == "otros":
+        return "nada"
     m = m if m is not None else _mk_globales()
     v = (m.get("POL_" + cat.upper(), "") or "").strip()
     if v in POL_CLASE_VALORES:
@@ -11462,7 +11470,8 @@ def _card_listas(m):
     filas = ""
     routers = cargar_routers()
 
-    for cat, nom, _cats, por_defecto in CAT_CPE + [CAT_OTROS]:
+    # sin «Otros» (2026-10-20): su accion y su politica son fijas ('nada') y su lista, la de siempre
+    for cat, nom, _cats, por_defecto in CAT_CPE:
         # el nombre por defecto va CARGADO en el campo (editable), no solo como pista: el
         # usuario queria ver y poder cambiar el nombre real, no un gris que no se guarda
         actual = (m.get("LISTA_" + cat.upper(), "") or "").strip() or por_defecto
@@ -11665,7 +11674,7 @@ def _card_politicas(m):
     """Sub-bloque de la tarjeta MikroTik: politica por CLASE de abuso."""
     esc = html.escape
     filas = ""
-    for cat, nom, _cats, _l in CAT_CPE + [CAT_OTROS]:
+    for cat, nom, _cats, _l in CAT_CPE:            # «Otros» fuera de Ajustes (2026-10-20)
         actual = politica_de_clase(cat, m)
         o = "".join(f"<option value='{v}'{' selected' if v == actual else ''}>{esc(t)}</option>"
                     for v, t in POL_CLASE)
@@ -14023,7 +14032,7 @@ consumo. Con <b>su propia marca y su propia cola</b> (las dos se llaman <code>su
 separadas de las del P2P.</td></tr>
 <tr><td>P2P</td><td><code>clientes-p2p</code></td><td><b>Encolar</b>, no cortar: es consumo. Marca
 y cola <code>suricata-p2p</code>.</td></tr>
-<tr><td>Otros</td><td><code>clientes-otros</code></td><td>Lo que no encaja en nada de lo anterior.</td></tr>
+<tr><td>Otros</td><td><code>clientes-otros</code></td><td>Lo que no encaja en nada de lo anterior. Solo se apunta en la lista: sin reglas ni cuarentena automática (no sale en Ajustes); se decide a mano.</td></tr>
 </table>
 <p>Es una recomendación. La acción que el panel trae elegida de serie (se cambia en <b>Ajustes &rarr;
 MikroTik</b> y no se aplica sin confirmar) es: <b>Solo navegación</b> para botnet, <b>DNS protegido</b>
@@ -20001,7 +20010,8 @@ class H(BaseHTTPRequestHandler):
             # Las listas por categoria. Vacio = se borra la clave y vuelve el nombre por
             # defecto; asi se puede deshacer un cambio sin tener que recordar cual era.
             _err_reglas = []; _av_reglas = []
-            for _cat, _nom, _cs, _def in CAT_CPE + [CAT_OTROS]:
+            # sin «Otros»: ya no viene en el formulario y su LISTA_ no se toca (2026-10-20)
+            for _cat, _nom, _cs, _def in CAT_CPE:
                 _k = "LISTA_" + _cat.upper()
                 _v = (q.get("lista_" + _cat, [""])[0]).strip()[:64]
                 if _v and _v != _def:          # el defecto viene cargado: no es un cambio
@@ -20040,7 +20050,7 @@ class H(BaseHTTPRequestHandler):
                 m.pop("ACCION_DNS_IP", None)
             m["AUTO_MANTENER"] = "1"   # fijo: la cuarentena sale cuando el CPE deja de atacar (2026-10-14)
             # politica por clase; un valor que no es de la lista se ignora (queda la anterior)
-            for _cat, _nom, _cs, _def in CAT_CPE + [CAT_OTROS]:
+            for _cat, _nom, _cs, _def in CAT_CPE:
                 _v = (q.get("pol_" + _cat, [""])[0] or "").strip()
                 if _v in POL_CLASE_VALORES:
                     m["POL_" + _cat.upper()] = _v
