@@ -53,9 +53,8 @@ certificado») y el router no tiene ninguno (abajo, 2026-10-20).
   segundo relé, `api-claro.sock`, desde la 0.1.14), crea el certificado y se lo pone a la API-SSL.
   Sin la casilla solo confirma la conexión. Si no puede crearlo (la API normal apagada o filtrada, o
   el contenedor del punto de una versión anterior), el aviso da las órdenes de arriba para pegarlas.
-  Por eso los datos para el MikroTik de un punto directo ya no llevan ninguna orden de la API: remiten
-  a la ficha y a «Probar la conexión», y dicen qué dejar pasar desde la IP del host si el router
-  filtra la entrada (el puerto de la API y el 8728).
+  Por eso los datos para el MikroTik de un punto directo no dicen nada de la API (el dueño,
+  2026-10-21): solo adónde va el espejo.
 - Si el servicio está deshabilitado: `/ip service enable api-ssl`.
 - **La clave de `ids-api` la protege el túnel.** Sin huella fijada, el panel hace `/login` con lo
   que presente el router, con certificado o sin él. La clave va por el túnel OpenVPN, en el que el

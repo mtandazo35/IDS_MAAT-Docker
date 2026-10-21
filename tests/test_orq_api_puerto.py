@@ -3,8 +3,8 @@ la API, puede estar cambiada en el MikroTik»): cualquier puerto 1-65535 en un p
 sea 8729/8728 exige una imagen vpn con ids-maat.api-puerto=libre. Va solo; guarda el puerto y hace un reconfigurar: el compose lleva
 el API_PUERTO nuevo (el relé y la tabla ids_punto del contenedor vpn), se recrean vpn y suricata y el
 estado lo dice. Si el recreado falla, vuelven el puerto y los ficheros de antes. Los datos para el
-MikroTik de un punto directo no llevan órdenes de la API (el dueño, 2026-10-20): remiten a la ficha
-del punto y a «Probar la conexión», y nombran los puertos que dejar pasar. Con el Docker simulado."""
+MikroTik de un punto directo no dicen nada de la API (el dueño, 2026-10-21: «eso no va»): solo el
+espejo. Con el Docker simulado."""
 
 import sys
 import unittest
@@ -107,10 +107,9 @@ class ApiPuerto(unittest.TestCase):
 
 
 class ComandosDirecto(unittest.TestCase):
-    """Los datos para el MikroTik de un punto directo (el dueño, 2026-10-20): de la API, ninguna orden.
-    Se configura en la ficha del punto (usuario, clave, puerto y «Con certificado») y «Probar la
-    conexión» la comprueba y, con certificado, lo crea si el router no tiene, entrando una vez por la
-    API normal. Solo queda qué dejar pasar si el router filtra: el puerto de la API y el 8728."""
+    """Los datos para el MikroTik de un punto directo: de la API, nada (el dueño, 2026-10-20 y
+    2026-10-21). Se configura en la ficha del punto y «Probar la conexión» la comprueba y crea el
+    certificado si falta; los datos solo dicen adónde va el espejo."""
 
     def setUp(self):
         self.mod, self.e, self.s, self.orq = A.preparar(ncpu=8)
@@ -126,33 +125,24 @@ class ComandosDirecto(unittest.TestCase):
         """Las líneas que RouterOS ejecutaría si se pegara el bloque: cualquiera que no sea comentario."""
         return [x for x in txt.splitlines() if x.strip() and not x.lstrip().startswith("#")]
 
-    def test_sin_ordenes_de_la_api(self):
-        txt = self.mod.comandos_directo(self.p(api_puerto=2290), "192.168.88.10")
-        self.assertEqual(self.ordenes(txt), [], txt)
-        self.assertEqual([x for x in txt.splitlines() if x.lstrip().startswith("/")], [], txt)
-        self.assertNotIn("/certificate", txt)
-        self.assertNotIn("/ip service", txt)
-        # remite a la ficha y a «Probar la conexión», que crea el certificado si falta
-        self.assertIn("ficha del punto", txt)
-        self.assertIn("Con certificado", txt)
-        self.assertIn("«Probar la conexión»", txt)
-        self.assertIn("puerto 2290", txt)
-        # si el router filtra: el puerto de la API y el 8728 (la API normal, para crear el certificado)
-        self.assertIn("deja pasar desde 192.168.88.10 los puertos 2290 y 8728\n", txt)
-        self.assertIn("el 8728 es la API normal", txt)
-        # el espejo, como siempre
-        self.assertIn("sniff-target=192.168.88.10 sniff-target-port=37009", txt)
-
-    def test_api_normal_en_8728_no_se_repite(self):
-        txt = self.mod.comandos_directo(self.p(api_puerto=8728), "192.168.88.10")
-        self.assertEqual(self.ordenes(txt), [], txt)
-        self.assertIn("deja pasar desde 192.168.88.10 el puerto 8728.\n", txt)
-        self.assertNotIn("8728 y", txt)
+    def test_nada_de_la_api(self):
+        """2026-10-21 («eso no va»): ni órdenes ni comentarios de la API; solo el espejo."""
+        for ap in (2290, 8728, 8729):
+            with self.subTest(api_puerto=ap):
+                txt = self.mod.comandos_directo(self.p(api_puerto=ap), "192.168.88.10")
+                self.assertEqual(self.ordenes(txt), [], txt)
+                for nada in ("API", "api", "certificado", "/certificate", "/ip service", "Probar",
+                             "ficha del punto", "deja pasar", str(ap)):
+                    self.assertNotIn(nada, txt)
+                # el espejo, como siempre
+                self.assertIn("sniff-target=192.168.88.10 sniff-target-port=37009", txt)
+                self.assertTrue(txt.endswith("lo que importa es el puerto: 37009.\n"), txt)
 
     def test_sin_ruta_al_mikrotik(self):
         txt = self.mod.comandos_directo(self.p())
         self.assertEqual(self.ordenes(txt), [], txt)
-        self.assertIn("deja pasar desde <IP-DEL-HOST> los puertos 8729 y 8728\n", txt)
+        self.assertIn("sniff-target=<IP-DEL-HOST> sniff-target-port=37009", txt)
+        self.assertNotIn("API", txt)
 
 
 if __name__ == "__main__":

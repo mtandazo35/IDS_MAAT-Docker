@@ -970,22 +970,9 @@ def ip_host_hacia(ip, t=None):
 
 def comandos_directo(p, ip_host=None):
     """Lo que el MikroTik de un punto directo necesita saber: no hay VPN que crear, solo adónde manda
-    el espejo. De la API, ninguna orden (el dueño, 2026-10-20): se configura en la ficha del punto
-    (usuario, clave, puerto y «Con certificado») y «Probar la conexión» la comprueba y, con
-    certificado, lo crea si el router no tiene (entra una vez por la API normal, 8728). Aquí solo
-    queda qué dejar pasar si el router filtra la entrada. Lo mismo en v6 y v7."""
+    el espejo. De la API, nada (el dueño, 2026-10-21: «eso no va»): se configura en la ficha del
+    punto y «Probar la conexión» la comprueba y crea el certificado si falta. Lo mismo en v6 y v7."""
     host = ip_host or "<IP-DEL-HOST>"
-    ap = p["api_puerto"]
-    # el 8728 es la API normal, por la que el panel entra a crear el certificado; si ya es el de la
-    # API, no se repite
-    pasar = ("el puerto 8728.\n" if str(ap) == "8728" else
-             "los puertos %s y 8728\n"
-             "# (el 8728 es la API normal, por la que se crea el certificado).\n" % ap)
-    api = ("# API: se configura en la ficha del punto (sección API): usuario, clave, puerto %s (el del\n"
-           "# servicio en el router) y «Con certificado». «Probar la conexión» la comprueba y, con\n"
-           "# certificado, si el router no tiene uno, lo crea.\n"
-           "# Si el router filtra la entrada, deja pasar desde %s %s"
-           % (ap, host, pasar))
     return (
         "# ids-maat %s (%s) · N=%s · conexión directa (sin VPN, solo LAN) · MikroTik %s\n"
         "# Este punto no lleva VPN: no hay nada que pegar para conectarlo.\n"
@@ -993,8 +980,7 @@ def comandos_directo(p, ip_host=None):
         "# Espejo (TZSP por UDP): en las reglas sniff-tzsp del MikroTik usa\n"
         "#   sniff-target=%s sniff-target-port=%s\n"
         "# Se acepta desde cualquier IP del router; lo que importa es el puerto: %s.\n"
-        "#\n"
-        % (p["pid"], p["nombre"], p["n"], p["mk_ip"], host, p["puerto"], p["puerto"])) + api
+        % (p["pid"], p["nombre"], p["n"], p["mk_ip"], host, p["puerto"], p["puerto"]))
 
 
 def comandos_mikrotik(p, nombre_dns, clave=None, ca_pem=None, aviso_cert=None):

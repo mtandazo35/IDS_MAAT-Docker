@@ -57,16 +57,13 @@ class Alta(unittest.TestCase):
         self.assertNotIn("Solo se acepta desde", com)
         self.assertIn("sin VPN", com)
         self.assertNotIn("ovpn-client", com)
-        # nada de la CA de la VPN ni órdenes de la API (el dueño, 2026-10-20): la API se configura en
-        # la ficha del punto y «Probar la conexión» crea el certificado si el router no tiene
+        # nada de la CA de la VPN ni de la API (el dueño, 2026-10-20 y 2026-10-21): la API se
+        # configura en la ficha del punto y «Probar la conexión» crea el certificado si falta
         self.assertNotIn("/certificate import", com)
         self.assertNotIn("ids-maat-ca", com)
         self.assertEqual([x for x in com.splitlines() if x.lstrip().startswith("/")], [], com)
-        self.assertNotIn("/certificate", com)
-        self.assertNotIn("/ip service", com)
-        self.assertIn("«Probar la conexión»", com)
-        self.assertIn("puerto 8729", com)
-        self.assertIn("deja pasar desde 192.168.88.10 los puertos 8729 y 8728\n", com)
+        for nada in ("/certificate", "/ip service", "API", "Probar", "8729", "8728", "deja pasar"):
+            self.assertNotIn(nada, com)
 
     def test_firewall_publica_el_udp_desde_cualquier_ip(self):
         """2026-10-20 («necesito que escuche cualquier IP»): el puerto del espejo se publica sin filtro
@@ -152,7 +149,7 @@ class Alta(unittest.TestCase):
         A.crear(self, self.orq, LAN)
         d = self.orq.atender(A.peticion("punto.comandos", {"pid": "p001"}))["datos"]
         self.assertIn("sniff-target=<IP-DEL-HOST> sniff-target-port=37008", d["comandos"])
-        self.assertIn("deja pasar desde <IP-DEL-HOST> los puertos 8729 y 8728\n", d["comandos"])
+        self.assertNotIn("API", d["comandos"])
         self.assertNotIn("clave", d)
 
     def test_ordenes_de_la_vpn_no_aplican(self):
