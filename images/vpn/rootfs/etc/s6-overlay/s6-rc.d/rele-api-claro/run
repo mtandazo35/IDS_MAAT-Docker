@@ -1,0 +1,17 @@
+#!/bin/sh
+# rele-api-claro (longrun): CONTRATO-F1a §5.5. Segundo relé, fijo: UNIX -> API normal (sin SSL,
+# 8728) del MikroTik por tun0 o, en un punto directo, a su IP de la LAN por eth0. Va siempre al
+# 8728, sea cual sea API_PUERTO: con él «Probar la conexión» del panel entra una vez sin TLS y crea
+# el certificado de la API-SSL si el router no tiene uno (el dueño, 2026-10-20). El trabajo diario
+# sigue por rele-api (api.sock).
+# umask 007 + mode=660: como rele-api, el socket queda 0660 y grupo 10500 por el setgid de
+# /run/ids (2770). Aquí no hay TLS: el relé solo copia bytes, pero lo que pasa por él (el /login
+# incluido) va en claro dentro del túnel o, en directo, por la LAN.
+exec 2>&1
+umask 007
+destino="${TUN_MK}"
+if [ "${MODO:-vpn}" = "directo" ]; then
+  destino="${MK_IP}"
+fi
+exec socat UNIX-LISTEN:/run/ids/api-claro.sock,fork,unlink-early,mode=660,max-children=4 \
+           "TCP:${destino}:8728,connect-timeout=5"

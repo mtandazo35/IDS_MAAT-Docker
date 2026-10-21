@@ -159,6 +159,9 @@ ok "tablas nft (inet ids_punto y netdev ids_mon iguales a los fixtures)"
 
 [ "$("${SUDO[@]}" stat -c '%a %g %F' "$RUN/api.sock")" = "660 10500 socket" ] \
   || fallo "api.sock: $("${SUDO[@]}" stat -c '%a %g %F' "$RUN/api.sock" 2>&1)"
+# el segundo relé, a la API normal (8728), con los mismos permisos (0.1.14)
+[ "$("${SUDO[@]}" stat -c '%a %g %F' "$RUN/api-claro.sock")" = "660 10500 socket" ] \
+  || fallo "api-claro.sock: $("${SUDO[@]}" stat -c '%a %g %F' "$RUN/api-claro.sock" 2>&1)"
 [ "$("${SUDO[@]}" stat -c '%a %g' "$RUN/tzsp.json")" = "640 10500" ] \
   || fallo "tzsp.json: $("${SUDO[@]}" stat -c '%a %g' "$RUN/tzsp.json" 2>&1)"
 "${SUDO[@]}" cat "$RUN/tzsp.json" > "$TMP/tzsp.json"
@@ -171,7 +174,7 @@ PY
 "${SUDO[@]}" test -S "$CTL/ovpn-mgmt.sock" || fallo "no existe ovpn-mgmt.sock"
 [ "$("${SUDO[@]}" stat -c '%a %g' "$RUN/openvpn-status.log")" = "640 10500" ] \
   || fallo "openvpn-status.log: $("${SUDO[@]}" stat -c '%a %g' "$RUN/openvpn-status.log" 2>&1)"
-ok "api.sock 0660:10500, tzsp.json y openvpn-status.log 0640:10500, ovpn-mgmt.sock"
+ok "api.sock y api-claro.sock 0660:10500, tzsp.json y openvpn-status.log 0640:10500, ovpn-mgmt.sock"
 
 # --- kill de openvpn: s6 lo relanza dentro del contenedor ----------------------------------
 inicio="$(docker inspect -f '{{.State.StartedAt}} {{.RestartCount}}' "$CTR")"

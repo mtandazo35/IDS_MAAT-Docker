@@ -3,8 +3,8 @@ la API, puede estar cambiada en el MikroTik»): cualquier puerto 1-65535 en un p
 sea 8729/8728 exige una imagen vpn con ids-maat.api-puerto=libre. Va solo; guarda el puerto y hace un reconfigurar: el compose lleva
 el API_PUERTO nuevo (el relé y la tabla ids_punto del contenedor vpn), se recrean vpn y suricata y el
 estado lo dice. Si el recreado falla, vuelven el puerto y los ficheros de antes. Los datos para el
-MikroTik de un punto directo dicen qué encender: el certificado de la API-SSL o la API sin SSL.
-Con el Docker simulado."""
+MikroTik de un punto directo no llevan órdenes de la API (el dueño, 2026-10-20): remiten a la ficha
+del punto y a «Probar la conexión», y nombran los puertos que dejar pasar. Con el Docker simulado."""
 
 import sys
 import unittest
@@ -107,9 +107,10 @@ class ApiPuerto(unittest.TestCase):
 
 
 class ComandosDirecto(unittest.TestCase):
-    """Los datos para el MikroTik de un punto directo: el puerto de la API y las dos formas, con
-    certificado (el que piden algunos RouterOS 7; con él conectó el router de un cliente, 2026-10-20)
-    o la API normal. Cuál usa el panel lo dice la casilla de la ficha."""
+    """Los datos para el MikroTik de un punto directo (el dueño, 2026-10-20): de la API, ninguna orden.
+    Se configura en la ficha del punto (usuario, clave, puerto y «Con certificado») y «Probar la
+    conexión» la comprueba y, con certificado, lo crea si el router no tiene, entrando una vez por la
+    API normal. Solo queda qué dejar pasar si el router filtra: el puerto de la API y el 8728."""
 
     def setUp(self):
         self.mod, self.e, self.s, self.orq = A.preparar(ncpu=8)
@@ -121,14 +122,37 @@ class ComandosDirecto(unittest.TestCase):
         return dict({"pid": "p002", "nombre": "lan", "n": 2, "puerto": 37009, "mk_ip": "192.168.88.1",
                      "api_puerto": 8729}, **k)
 
-    def test_las_dos_formas_con_el_puerto(self):
+    def ordenes(self, txt):
+        """Las líneas que RouterOS ejecutaría si se pegara el bloque: cualquiera que no sea comentario."""
+        return [x for x in txt.splitlines() if x.strip() and not x.lstrip().startswith("#")]
+
+    def test_sin_ordenes_de_la_api(self):
         txt = self.mod.comandos_directo(self.p(api_puerto=2290), "192.168.88.10")
-        self.assertIn("por el puerto 2290", txt)
-        self.assertIn("/certificate add name=ids-api common-name=ids-api", txt)
-        self.assertIn("/certificate sign ids-api\n", txt)
-        self.assertIn("/ip service set api-ssl certificate=ids-api disabled=no\n", txt)
-        self.assertIn("/ip service set api disabled=no\n", txt)
-        self.assertIn("viaja sin cifrar", txt)
+        self.assertEqual(self.ordenes(txt), [], txt)
+        self.assertEqual([x for x in txt.splitlines() if x.lstrip().startswith("/")], [], txt)
+        self.assertNotIn("/certificate", txt)
+        self.assertNotIn("/ip service", txt)
+        # remite a la ficha y a «Probar la conexión», que crea el certificado si falta
+        self.assertIn("ficha del punto", txt)
+        self.assertIn("Con certificado", txt)
+        self.assertIn("«Probar la conexión»", txt)
+        self.assertIn("puerto 2290", txt)
+        # si el router filtra: el puerto de la API y el 8728 (la API normal, para crear el certificado)
+        self.assertIn("deja pasar desde 192.168.88.10 los puertos 2290 y 8728\n", txt)
+        self.assertIn("el 8728 es la API normal", txt)
+        # el espejo, como siempre
+        self.assertIn("sniff-target=192.168.88.10 sniff-target-port=37009", txt)
+
+    def test_api_normal_en_8728_no_se_repite(self):
+        txt = self.mod.comandos_directo(self.p(api_puerto=8728), "192.168.88.10")
+        self.assertEqual(self.ordenes(txt), [], txt)
+        self.assertIn("deja pasar desde 192.168.88.10 el puerto 8728.\n", txt)
+        self.assertNotIn("8728 y", txt)
+
+    def test_sin_ruta_al_mikrotik(self):
+        txt = self.mod.comandos_directo(self.p())
+        self.assertEqual(self.ordenes(txt), [], txt)
+        self.assertIn("deja pasar desde <IP-DEL-HOST> los puertos 8729 y 8728\n", txt)
 
 
 if __name__ == "__main__":

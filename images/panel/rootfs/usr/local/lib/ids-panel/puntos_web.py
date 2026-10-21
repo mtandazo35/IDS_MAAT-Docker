@@ -858,6 +858,13 @@ _CSS = (
     ".pjest{font-size:13.5px;margin:6px 0}.pjpasos{font-size:13px;margin:8px 0;padding-left:20px}"
     ".pjcaja{border:1px solid #cfe0f6;background:#f6f9fe;border-radius:9px;padding:10px 13px;margin:10px 0}"
     "#pjov .pbajabox{max-width:820px;max-height:88vh;overflow:auto}"
+    # el modal de «Probar la conexión» (2026-10-20): los datos del router en dos columnas y, si falla,
+    # qué hacer delante y el detalle técnico plegado y en pequeño
+    "table.papi{border-collapse:collapse;font-size:13.5px;margin:4px 0 8px}"
+    "table.papi th{text-align:left;color:#6b6a66;font-weight:600;padding:5px 16px 5px 0;vertical-align:top;"
+    "white-space:nowrap}table.papi td{padding:5px 0;overflow-wrap:anywhere}"
+    ".papiqh{font-size:14px;margin:4px 0 10px}"
+    ".papidet{color:#8a8a86;font-size:12px;margin:6px 0 0;overflow-wrap:anywhere}"
     # huella del certificado API-SSL en bloques (VPN-06) y el desbaneo de la ficha
     "code.phue{display:inline-block;font-size:13px;letter-spacing:.4px;line-height:1.7;padding:3px 7px}"
     ".pdesban{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin:4px 0 0}"
@@ -941,9 +948,24 @@ function pjOrq(id,orden){var c=(orden==='punto.ajustar')?document.getElementById
 function ppref(f){var c=document.getElementById('pprog');if(c){c.style.display='block';c.innerHTML='<b>Cambiando los prefijos</b>'+pjEspera('Encolando el cambio…');}
  pjPost(f,{},function(j){if(j.op_id){pjOrq(j.op_id,'punto.ajustar');return;}if(c)c.style.display='none';aviso('No se cambiaron los prefijos',j.error||'Sin respuesta del panel.');},
   function(m){if(c)c.style.display='none';aviso('No se pudo',m);});return false;}
-function papiProbar(b){var f=b.form;pjAbrir('Probar la conexión',pjEspera('Probando la API del MikroTik por el túnel (hasta 35 s si el router no responde)…'),' ','');
- pjPost(f,{accion:'probar'},function(j){pjAbrir(j.ok?'Conexión correcta':'La conexión falló','<p>'+pjEsc(j.mensaje||j.error||'')+'</p>');pjHuella(1);},
+function papiProbar(b){var f=b.form;pjAbrir('Probar la conexión',pjEspera('Probando la API del MikroTik (hasta 35 s si el router no responde; un par de minutos más si hay que crearle el certificado)…'),' ','');
+ pjPost(f,{accion:'probar'},function(j){pjAbrir(j.prueba?j.prueba.titulo:(j.ok?'Conexión correcta':'No se probó'),papiModal(j));pjHuella(1);},
   function(m){pjAbrir('No se pudo','<p>'+pjEsc(m)+'</p>');});return false;}
+function papiCopiar(b){pcopiar(b.getAttribute('data-pre'),b);}
+function papiModal(j){var p=j.prueba;if(!p)return '<p>'+pjEsc(j.mensaje||j.error||'')+'</p>';
+ var c=p.certificado||{},ro=pjEsc(p.router),mo=pjEsc(p.modelo),ve=pjEsc(p.version),co=pjEsc(p.conexion),
+  pu=pjEsc(p.puerto),vi=pjEsc(p.via),us=pjEsc(p.usuario),ce=pjEsc(c.texto),qh=pjEsc(p.que_hacer),
+  ord=pjEsc(p.ordenes),de=pjEsc(p.detalle),cx=co+(pu?', puerto '+pu:'');
+ function fila(et,v){return v?'<tr><th>'+et+'</th><td>'+v+'</td></tr>':'';}
+ if(p.ok){return '<table class=papi>'+fila('Router',[ro?'<b>'+ro+'</b>':'',mo,ve?'RouterOS '+ve:''].filter(Boolean).join(' · '))
+  +fila('Conexión',cx)+fila('Por dónde',vi)+(p.ssl?fila('Certificado',ce):'')+fila('Usuario de la API',us)
+  +fila('Enviar a cuarentena',p.enviar?'permitido':'no: marca «Permitir enviar IPs a este MikroTik» y pulsa «Guardar»')+'</table>'
+  +(p.ssl?'':'<p class=hint>Sin SSL, la clave de la API viaja sin cifrar por la red del punto.</p>');}
+ var h='<p class=papiqh><b>Qué hacer:</b> '+qh+'</p>',se=[cx,vi?'por '+vi:'',us?'usuario '+us:''].filter(Boolean).join(' · ');
+ if(ord)h+="<div class=bloque><div class=bcab><span class=hint>Para pegar en el terminal del MikroTik:</span><button type=button class='btn sec chico' data-pre=papiord onclick='papiCopiar(this)'>Copiar</button></div><pre class=cmd id=papiord>"+ord+'</pre></div>';
+ if(se)h+='<p class=hint>Se probó: '+se+'.</p>';
+ if(de)h+='<details class=plogs><summary>Detalle técnico</summary><p class=papidet>'+de+'</p></details>';
+ return h;}
 function phueConf(f){pjAbrir('Confirmar la huella',pjEspera('Volviendo a leer la huella que presenta el router…'),' ','');
  pjPost(f,{},function(j){pjAbrir(j.ok?'Huella confirmada':'No se confirmó la huella','<p>'+pjEsc(j.mensaje||j.error||'')+'</p>');pjHuella(1);},
   function(m){pjAbrir('No se pudo','<p>'+pjEsc(m)+'</p>');});return false;}
@@ -1487,10 +1509,15 @@ def _soltar_token(tok):
 
 def _responder(h, pid, res, ajax=False):
     mensaje, codigo, ok, extra = res
+    # `extra` es el HTML que va tras la API en la ficha o, desde 2026-10-20 («Probar la conexión»), un
+    # dict con lo que lleva ademas el JSON del modal ({"prueba": ...}); en la ficha, nada
+    datos = extra if isinstance(extra, dict) else {}
     if ajax:
         # el formulario sigue en la pagina: se le da un token nuevo para la siguiente vez
-        return h._json({"ok": bool(ok), "mensaje": mensaje, "token": str(uuid.uuid4())}, codigo)
-    return ficha(h, pid, mensaje, codigo, ok=ok, extra_espejo=extra)
+        j = dict(datos)
+        j.update(ok=bool(ok), mensaje=mensaje, token=str(uuid.uuid4()))
+        return h._json(j, codigo)
+    return ficha(h, pid, mensaje, codigo, ok=ok, extra_espejo="" if datos else extra)
 
 
 def _repetida(h, pid, accion, est, ajax=False):
@@ -1508,6 +1535,8 @@ def _repetida(h, pid, accion, est, ajax=False):
         return _responder(h, pid, ("Esa orden ya se lanzó desde la ficha: su resultado se vio allí. "
                                    "(Ese formulario ya se había enviado: no se repitió la orden.)", 409, False, ""), ajax)
     mensaje, codigo, ok, extra = est[1]
+    if isinstance(extra, dict):
+        extra = ""          # sin los datos de la prueba: el modal enseña el texto, con la nota de abajo
     return _responder(h, pid, (((mensaje + " ") if mensaje else "")
                                + "(Ese formulario ya se había enviado: no se repitió la orden.)", codigo, ok, extra),
                       ajax)
@@ -2678,8 +2707,13 @@ def ficha(h, pid, mensaje="", codigo=200, ok=False, extra_espejo=""):
         "Probar la conexión</button></div></form>"
         "<p class=hint>La conexión va por %s (%s). La clave se guarda cifrada con la clave maestra y no se "
         "vuelve a mostrar. Cambiar el puerto recrea los contenedores del punto (un par de minutos sin "
-        "análisis).</p><p class=hint>En el router: <b>con certificado</b>, <code>%s</code>; <b>sin "
-        "certificado</b>, <code>/ip service set api disabled=no</code>. El puerto es el que diga "
+        "análisis).</p>"
+        # 2026-10-20 (el dueño: «si en caso no tiene certificado lo creas»): las órdenes del certificado
+        # ya no salen aquí, «Probar la conexión» se lo pone al router si no lo tiene
+        "<p class=hint>«Probar la conexión» con <b>«Con certificado»</b> confirma la conexión "
+        "y el certificado del router y, si el router no tiene, lo crea (entra una vez por la API normal, "
+        "8728, que RouterOS trae encendida); <b>sin certificado</b> solo confirma la conexión (la API normal "
+        "se enciende con <code>/ip service set api disabled=no</code>). El puerto es el que diga "
         "<code>/ip service print</code>.</p>%s"
         % (esc(pid), campo_token(), esc(rt.get("USER", "")), "(guardada)" if rt.get("PASS") else "",
            "dejar vacío para conservar" if rt.get("PASS") else "clave del usuario ids-api",
@@ -2689,7 +2723,7 @@ def ficha(h, pid, mensaje="", codigo=200, ok=False, extra_espejo=""):
            ("API sin SSL, puerto %s del router: la clave viaja sin cifrar" if tls_no
             else "API-SSL, puerto %s del router, sin exigir certificado salvo que fijes uno abajo")
            % esc(p.get("api_puerto") or 8729),
-           esc(CMD_CERT_API_SSL), caja_huella))
+           caja_huella))
     # Espejo: ya no hay seccion (el espejo lo monta el operador a mano en el MikroTik, el user
     # 2026-10-16); lo que traiga extra_espejo (el resultado de una accion de la API) sale tras la API
     # Prefijos
@@ -2793,6 +2827,15 @@ def huella_cacheada(d, pid):
     return v if isinstance(v, str) and RE_HUELLA_API.fullmatch(v) else ""
 
 
+def _huella_fijada(d, rt):
+    """La huella que el panel exige al router del punto ("" si ninguna): la de dashboard.huella_fijada
+    o, con un nucleo sin ella, la CERT_FP guardada. Una de API anonima (sha256 de nada) no cuenta."""
+    if hasattr(d, "huella_fijada"):
+        return d.huella_fijada(rt)
+    fijada = str(rt.get("CERT_FP") or "").lower().replace(":", "")
+    return "" if fijada == SHA256_VACIO else fijada
+
+
 def huella_bloques(fp):
     """La huella en bloques de 4 (dos lineas de 8), para compararla a ojo con el `fingerprint`
     del router, que la da seguida."""
@@ -2824,11 +2867,7 @@ def huella_caja(d, pid, p, rt, presentada="", error="", pedir=False):
         return ("<p class=hint>Este punto usa la API sin TLS (puerto %s, el servicio <code>api</code> del "
                 "router): no hay certificado ni huella que fijar, y la clave de la API viaja sin cifrar por la "
                 "red del punto.</p>" % esc(p.get("api_puerto") or 8728))
-    if hasattr(d, "huella_fijada"):
-        fijada = d.huella_fijada(rt)
-    else:
-        fijada = str(rt.get("CERT_FP") or "").lower().replace(":", "")
-        fijada = "" if fijada == SHA256_VACIO else fijada
+    fijada = _huella_fijada(d, rt)
     est = d.huella_estado(rt) if hasattr(d, "huella_estado") else ("confirmada" if fijada else "sin")
     sin_cert = presentada == SHA256_VACIO
     comparar = ("<p class=hint>Compárala en el router: <code>%s</code> dice qué certificado usa la API-SSL y "
@@ -2945,7 +2984,7 @@ def logs(h, pid, consulta):
 # --------------------------------------------------------------------------------------------
 # Acciones de la ficha
 # --------------------------------------------------------------------------------------------
-# El certificado para la API-SSL del router (2026-10-20; = COMANDOS_CERT_API_SSL del orquestador):
+# El certificado para la API-SSL del router (2026-10-20; = la de dashboard.py):
 # hay RouterOS 7 que cierran la API-SSL sin certificado y conectan con este
 CMD_CERT_API_SSL = ("/certificate add name=ids-api common-name=ids-api days-valid=3650 trusted=yes "
                     "key-usage=key-cert-sign,crl-sign,digital-signature,key-encipherment,tls-server ; "
@@ -2955,7 +2994,9 @@ CMD_CERT_API_SSL = ("/certificate add name=ids-api common-name=ids-api days-vali
 def accion_api(h, pid, form, ajax=False):
     """Guardar, probar u olvidar la huella de la API del router del punto. Un solo uso por
     formulario (A-08). Con ajax=1 (el boton «Probar la conexion»), {ok, mensaje} para un modal: la
-    prueba tarda 20-35 s con el router caido y la ficha no se queda en blanco.
+    prueba tarda 20-35 s con el router caido y la ficha no se queda en blanco. Al probar, el JSON
+    lleva ademas `prueba` (_datos_prueba: router, conexion, certificado, usuario... o, si fallo, que
+    hacer), con lo que papiModal pinta el modal; «mensaje» es la misma prueba en texto (_texto_prueba).
 
     Desde 2026-10-20 el formulario lleva tambien el puerto de la API (el que tenga el router, puede
     estar cambiado) y la casilla «Con certificado (API-SSL)»: la casilla se guarda aqui (TLS) y un
@@ -3026,9 +3067,12 @@ def accion_api(h, pid, form, ajax=False):
                         "punto (un par de minutos); el avance está en Operaciones (%s)."
                         % (cifrado, puerto_txt, op_id), 200, True, "")
             return "Conexión de la API guardada (%s)." % cifrado, 200, True, ""
-        ok, msg = probar_api(d, pid)
+        ok, msg, prueba = probar_api_detalle(d, pid)
         _bit(d, "PUNTO-API", pid=pid, objetivo="probar", resultado="ok" if ok else "fallo")
-        return "Prueba: " + msg, 200 if ok else 502, ok, ""
+        # el modal se pinta con `prueba`; el texto, para la ficha sin JavaScript y para quien solo lea
+        # {ok, mensaje}. Antes: «Prueba: » + el de probar_api, que con el certificado recién creado ya
+        # traía otro «Prueba: » («Prueba: El router no tenía certificado…. Prueba: conexión OK…»)
+        return _texto_prueba(prueba), 200 if ok else 502, ok, {"prueba": prueba}
     return _con_token(h, pid, "api-" + acc, form, hacer, validar, ajax=ajax)
 
 
@@ -3175,29 +3219,317 @@ def accion_desbanear(h, pid, form, ajax=False):
     return _con_token(h, pid, "desbanear", form, hacer, validar, ajax=ajax)
 
 
-def probar_api(d, pid):
-    r = _router(d, pid)
-    if not r or not (r.get("USER") and r.get("PASS")):
-        return False, "Falta el usuario o la clave de la API del punto."
+# Como dice el nucleo (dashboard._mk_tls_wrap) que fallo el saludo TLS de la API-SSL: el router que
+# cierra sin contestar (hay RouterOS 7 que sin certificado no aceptan la API-SSL) o ningun cifrado vale
+_FALLO_SALUDO_TLS = ("cerró la API-SSL sin contestar al saludo TLS", "TLS handshake falló")
+
+
+def _api_recurso(d, s):
+    """Modelo y version de RouterOS (/system/resource/print: board-name y version) por la conexion
+    que ya abrio la prueba: {"modelo", "version"}, o {} si no se pueden leer. Es solo para el modal
+    de «Probar»: lo que falle aqui no cambia la prueba."""
     try:
-        s = d.mk_conectar(d.cargar_mk_de(r))
-        try:
-            d._mk_send(s, ["/system/identity/print"])
-            ok, frases, err = d._mk_reply(s)
-        finally:
-            try:
-                s.close()
-            except Exception:
-                pass
+        d._mk_send(s, ["/system/resource/print"])
+        ok, frases, _err = d._mk_reply(s)
+    except Exception:
+        return {}
+    out = {}
+    for f in (frases or []) if ok else []:
+        for a in f:
+            for pre, campo in (("=board-name=", "modelo"), ("=version=", "version")):
+                if a.startswith(pre):
+                    out[campo] = a[len(pre):][:64]
+    return out
+
+
+def _api_identidad(d, r, info=None):
+    """Conecta con el router `r` como diga su casilla (mk_conectar: API-SSL o API normal, y /login),
+    pide /system/identity y cierra. (ok, nombre del router o el error de RouterOS); lo que falle al
+    conectar sube tal cual. Con `info` (el modal de «Probar», 2026-10-20) apunta ahi el nombre y, por
+    la misma conexion, el modelo y la version de RouterOS (_api_recurso)."""
+    s = d.mk_conectar(d.cargar_mk_de(r))
+    try:
+        d._mk_send(s, ["/system/identity/print"])
+        ok, frases, err = d._mk_reply(s)
         nombre = ""
         for f in frases or []:
             for a in f:
                 if a.startswith("=name="):
                     nombre = a[len("=name="):]
-        return (True, "conexión OK con '%s'." % (nombre or pid)) if ok else (False, err or "sin respuesta")
+        if ok and info is not None:
+            info.update(router=nombre[:128], modelo="", version="")
+            info.update(_api_recurso(d, s))
+    finally:
+        try:
+            s.close()
+        except Exception:
+            pass
+    return (True, nombre) if ok else (False, err or "sin respuesta")
+
+
+def _no_conecto(e):
+    # 600: lo que hay que hacer en el router va delante del detalle y con 200 se cortaba
+    return "no conectó: %s" % str(e)[:600]
+
+
+def _es_fallo_tls(d, e):
+    """Si `e` es el saludo TLS de la API-SSL que no salio: lo unico que «Probar» arregla creando el
+    certificado. Una huella distinta (HuellaNoConfirmada) no lo es nunca."""
+    hnc = getattr(d, "HuellaNoConfirmada", None)
+    if isinstance(hnc, type) and isinstance(e, hnc):
+        return False
+    return any(x in str(e) for x in _FALLO_SALUDO_TLS)
+
+
+def _huella_ultima(d, pid):
+    """La huella del certificado que presento el router en la ultima conexion TLS del panel
+    (dashboard.huella_vista): SHA256_VACIO si no presento ninguno (cifrado anonimo), "" si no se sabe."""
+    f = getattr(d, "huella_vista", None)
+    try:
+        v = f(pid) if f is not None else ""
+    except Exception:
+        v = ""
+    v = str(v or "").lower()
+    return v if RE_HUELLA_API.fullmatch(v) else ""
+
+
+def _probar_api_ssl(d, pid, r, puerto, info=None):
+    """Una prueba por API-SSL: (ok, mensaje, falta). `falta` es el fallo que se arregla creandole el
+    certificado al router (cierra el saludo TLS o conecta sin certificado), o None: con una huella
+    fijada nunca (el panel exige ESE certificado y uno nuevo tampoco valdria; si el router no lo
+    presenta, el mensaje del nucleo ya dice que se olvide la huella). En `info`, lo que vio (_probar)."""
+    info = {} if info is None else info
+    fijada = _huella_fijada(d, r)
+    info.update(fijada=bool(fijada), huella="")
+    try:
+        ok, txt = _api_identidad(d, r, info)
     except Exception as e:
-        # 600: lo que hay que hacer en el router va delante del detalle y con 200 se cortaba
-        return False, "no conectó: %s" % str(e)[:600]
+        fallo = _no_conecto(e)
+        return False, fallo, (fallo if not fijada and _es_fallo_tls(d, e) else None)
+    if not ok:
+        return False, txt, None
+    hecho = "conexión OK con '%s' por API-SSL (puerto %d)" % (txt or pid, puerto)
+    fp = _huella_ultima(d, pid)
+    info["huella"] = fp
+    if fp == SHA256_VACIO:
+        # conecta, pero con el cifrado anonimo: «Con certificado» pide que el router tenga uno
+        fallo = ("el MikroTik no presenta certificado en la API-SSL: ponle este: %s (%s, con cifrado anónimo)"
+                 % (CMD_CERT_API_SSL, hecho))
+        return False, fallo, (None if fijada else fallo)
+    if not fp:
+        return True, "%s; no se supo qué certificado presenta el router." % hecho, None
+    return True, "%s; certificado del router %s… (%s)." % (
+        hecho, fp[:16], "es el de la huella fijada" if fijada else "puedes fijar su huella abajo"), None
+
+
+def probar_api(d, pid):
+    """«Probar la conexión» de la ficha: (ok, mensaje para el modal), que empieza por lo que hay que
+    hacer si falla. El dueño, 2026-10-20: «el probar la conexión debe confirmar si está con ssl:
+    confirmar conexión y certificado; si en caso no tiene certificado lo creas; en el que no es con ssl
+    solo confirma conexión».
+    - Sin SSL (casilla «Con certificado» desmarcada, TLS «0»): solo la conexión por la API normal.
+    - API-SSL: la conexión y el certificado que presenta el router (sus 16 primeros: la huella se fija
+      abajo). Si el router conecta sin certificado (cifrado anonimo) o cierra el saludo TLS, el panel
+      se lo crea (dashboard.mk_crear_certificado: entra UNA vez por la API normal, 8728, y le pone
+      ids-api a la API-SSL en su puerto) y vuelve a probar por API-SSL, una sola vez. Si no puede
+      crearlo, el fallo de antes (con las ordenes para pegar) y el motivo.
+    - Con una huella fijada (distinta o no) o ante cualquier otro fallo (clave mala, router caido,
+      rele cerrado) no se crea nada: el fallo tal cual. Con el puerto 8728 (el de la API normal)
+      tampoco: el fallo y que cambie el puerto o desmarque la casilla.
+    El modal de la ficha usa probar_api_detalle (lo mismo, con los datos para pintarlo)."""
+    return _probar(d, pid, {})
+
+
+def probar_api_detalle(d, pid):
+    """«Probar la conexión» para el modal (el dueño, 2026-10-20, de «Prueba: conexión OK con 'X'.»:
+    «ese mensaje debes mejorar»): la misma prueba que probar_api, (ok, mensaje, datos), con los datos
+    de _datos_prueba para pintarla. No cambia que se prueba ni cuando se crea el certificado."""
+    info = {}
+    ok, msg = _probar(d, pid, info)
+    return ok, msg, _datos_prueba(d, pid, ok, msg, info)
+
+
+def _probar(d, pid, info):
+    """probar_api, apuntando en `info` lo que vio por el camino para el modal: sin_ssl y puerto;
+    router, modelo y version (_api_identidad); huella y fijada (_probar_api_ssl); falta (sin usuario
+    o clave); creado (lo que dijo mk_crear_certificado al crearlo) o no_creado ("8728", "nucleo" o
+    "fallo") si hacia falta y no se creo."""
+    r = _router(d, pid)
+    sin_ssl = str((r or {}).get("TLS", "1")) == "0"
+    try:
+        puerto = int((r or {}).get("PORT") or (8728 if sin_ssl else 8729))
+    except (TypeError, ValueError):
+        puerto = 8728 if sin_ssl else 8729
+    info.update(sin_ssl=sin_ssl, puerto=puerto)
+    if not r or not (r.get("USER") and r.get("PASS")):
+        info["falta"] = "credenciales"
+        return False, "Falta el usuario o la clave de la API del punto."
+    if sin_ssl:
+        try:
+            ok, txt = _api_identidad(d, r, info)
+        except Exception as e:
+            return False, _no_conecto(e)
+        if not ok:
+            return False, txt
+        return True, "conexión OK con '%s' por la API normal (sin SSL, puerto %d)." % (txt or pid, puerto)
+    ok, msg, falta = _probar_api_ssl(d, pid, r, puerto, info)
+    if falta is None:
+        return ok, msg
+    if puerto == 8728:
+        # la casilla marcada con el puerto de la API normal: crearlo pondría la API-SSL en el 8728 del
+        # router, encima de la API normal por la que entra el panel
+        info["no_creado"] = "8728"
+        return False, ("%s — no se creó el certificado: con «Con certificado» el puerto no puede ser el 8728 (el "
+                       "de la API normal); pon el de la API-SSL (8729) o desmarca la casilla" % falta)
+    crear = getattr(d, "mk_crear_certificado", None)
+    if crear is None:
+        info["no_creado"] = "nucleo"
+        return False, "%s — no se pudo crear el certificado: este panel no sabe crearlo (núcleo anterior)" % falta
+    try:
+        hecho, txt = crear(pid, puerto)       # el Registro (MK-API-SSL) lo apunta el nucleo
+    except Exception as e:
+        hecho, txt = False, str(e)
+    txt = str(txt or "").strip().rstrip(".")
+    if not hecho:
+        info["no_creado"] = "fallo"
+        # 600 tambien: el motivo del nucleo puede acabar con las ordenes para pegar y no se cortan a medias
+        return False, "%s — no se pudo crear el certificado: %s" % (falta, txt[:600] or "sin motivo")
+    info["creado"] = txt or "creado"
+    ok, msg, _falta = _probar_api_ssl(d, pid, r, puerto, info)
+    return ok, "El router no tenía certificado en la API-SSL: %s. Prueba: %s" % (txt or "creado", msg)
+
+
+def _datos_prueba(d, pid, ok, msg, info):
+    """Lo que enseña el modal de «Probar la conexión» (papiModal), sin claves: titulo; router,
+    modelo y version (de RouterOS, si se pudieron leer); conexion, ssl, puerto y via (por donde va);
+    certificado, solo con SSL ({huella (16 primeros), fijada, creado, texto}); usuario y enviar (si se
+    permite mandar IPs a la cuarentena); y si fallo, que_hacer (una frase), ordenes (de RouterOS para
+    pegar, una por linea) y detalle (el fallo tal cual, `msg`)."""
+    try:
+        p = nodos.punto(pid) or {}
+    except Exception:
+        p = {}
+    r = _router(d, pid) or {}
+    sin_ssl = bool(info.get("sin_ssl"))
+    creado = str(info.get("creado") or "")
+    # mk_crear_certificado dice «creado y firmado…» o, si ya lo tenia, «…asignado a la API-SSL…»
+    hecho = "creado" if creado.startswith("creado") else "asignado"
+    cert = None
+    if not sin_ssl:
+        fp = str(info.get("huella") or "")
+        if fp == SHA256_VACIO:
+            texto = "el router no presenta ninguno (cifrado anónimo)"
+        elif not fp:
+            texto = "no se supo cuál presenta el router"
+        elif creado:
+            texto = ("%s ahora: ids-api (%s); su huella empieza por %s…: puedes fijarla abajo"
+                     % (hecho, creado, fp[:16]))
+        elif info.get("fijada"):
+            texto = "%s… · es el de la huella fijada" % fp[:16]
+        else:
+            texto = "%s… · sin fijar: puedes fijar su huella abajo" % fp[:16]
+        cert = {"huella": "" if fp == SHA256_VACIO else fp[:16], "fijada": bool(info.get("fijada")),
+                "creado": creado, "texto": texto}
+    if ok:
+        titulo = "Conexión correcta" + ((": certificado %s" % hecho) if creado else "")
+    elif info.get("falta"):
+        titulo = "Falta el usuario o la clave"
+    elif creado:
+        titulo = "Certificado %s, pero no conectó" % hecho
+    elif info.get("no_creado") in ("nucleo", "fallo"):
+        titulo = "No conectó: no se pudo crear el certificado"
+    else:
+        titulo = "No conectó"
+    datos = {"ok": bool(ok), "titulo": titulo,
+             "router": str(info.get("router") or ""), "modelo": str(info.get("modelo") or ""),
+             "version": str(info.get("version") or ""),
+             "conexion": "API normal (sin SSL)" if sin_ssl else "API-SSL (con certificado)",
+             "ssl": not sin_ssl, "puerto": info.get("puerto") or (8728 if sin_ssl else 8729),
+             "via": ("la red local, directo a %s" % (p.get("mk_ip") or "?")) if es_directo(p)
+             else "el túnel VPN del punto",
+             "certificado": cert, "usuario": str(r.get("USER") or "")[:64], "enviar": str(r.get("ENABLED")) == "1",
+             "que_hacer": "", "ordenes": "", "detalle": ""}
+    if not ok:
+        que, ordenes = _guia_fallo(msg, info, p)
+        datos.update(que_hacer=que, ordenes="\n".join(ordenes), detalle=str(msg or ""))
+    return datos
+
+
+def _guia_fallo(msg, info, p):
+    """(que hacer, [ordenes de RouterOS para pegar]) de una prueba que fallo: una frase para el
+    tecnico, que el modal pone delante del detalle (el fallo tal cual). Va por lo que apunto _probar
+    y por lo que dice el fallo; si no se reconoce, revisar el servicio de la API en el router."""
+    m = str(msg or "").lower()
+    sin_ssl = bool(info.get("sin_ssl"))
+    puerto = info.get("puerto") or (8728 if sin_ssl else 8729)
+    servicio = "api" if sin_ssl else "api-ssl"
+    revisar = ["/ip service print detail where name=%s" % servicio] + (
+        ["/ip service set api disabled=no"] if sin_ssl else [])
+    servicio_ok = ("el servicio %s esté encendido en el puerto %d y que su address esté vacía o incluya la IP "
+                   "del sensor%s" % (servicio, puerto, (" (%s)" % p["sensor"]) if p.get("sensor") else ""))
+    if info.get("falta"):
+        return ("Escribe el usuario y la clave de la API (los del usuario del MikroTik para el panel, ids-api de "
+                "serie) y vuelve a probar.", [])
+    if "distinto del confirmado" in m:
+        return ("El router presenta otro certificado que el de la huella fijada y el panel no le mandó la clave: "
+                "compara la huella en el router y, si el cambio es tuyo, vuelve a confirmarla abajo (u olvídala si "
+                "le quitaste el certificado).", [CMD_SERVICIO_API, CMD_HUELLA_ROUTER])
+    if "olvida la huella" in m:
+        return ("Este punto exige el certificado de la huella fijada y el router no lo presenta: si le quitaste el "
+                "certificado a la API-SSL, pulsa «Olvidar la huella» abajo y vuelve a probar.", [CMD_SERVICIO_API])
+    if info.get("no_creado") == "8728":
+        return ("Con «Con certificado» el puerto tiene que ser el de la API-SSL (8729 de serie): cámbialo y pulsa "
+                "«Guardar», o desmarca la casilla para ir por la API normal.", [])
+    if info.get("creado"):
+        return ("El panel ya le puso el certificado ids-api, pero la API-SSL sigue sin conectar: revisa en el router "
+                "que %s." % servicio_ok, [CMD_SERVICIO_API])
+    if CMD_CERT_API_SSL in str(msg or "") or "no presenta certificado" in m:
+        return ("Ponle el certificado a la API-SSL pegando estas órdenes en el terminal del MikroTik y vuelve a "
+                "probar%s; o desmarca «Con certificado» para ir por la API normal (8728)."
+                % (" (el panel no pudo ponérselo: el motivo está en el detalle)" if info.get("no_creado") else ""),
+                [x.strip() for x in CMD_CERT_API_SSL.split(";")])
+    if any(x in m for x in ("invalid user name or password", "login rechazado", "cannot log in", "login failure")):
+        return ("El MikroTik rechazó el usuario o la clave: comprueba que el usuario existe en el router y vuelve "
+                "a escribir aquí su clave.", ["/user print"])
+    if any(x in m for x in ("relé", "no such file", "errno 2]", "connection refused", "errno 111", "af_unix")):
+        return ("El panel no pudo abrir el relé de la API del punto en este servidor: mira en el Resumen que el "
+                "contenedor %s esté en marcha (si no, «Arrancar» en Servicio) y vuelve a probar."
+                % ("del punto" if es_directo(p) else "de la VPN"), [])
+    if "timed out" in m or "timeout" in m:
+        donde = (("que el servidor llega a %s por la red local" % (p.get("mk_ip") or "la IP del MikroTik"))
+                 if es_directo(p) else "en el Resumen que su VPN está conectada")
+        return ("El MikroTik no contestó a tiempo: comprueba %s y, en el router, que %s." % (donde, servicio_ok),
+                revisar)
+    if any(x in m for x in ("conexión cerrada", "eof", "reset", "cerró", "broken pipe")):
+        return "El MikroTik cortó la conexión: revisa en el router que %s." % servicio_ok, revisar
+    if not m.startswith("no conectó"):
+        # entró y RouterOS contestó con un error (/system/identity): permisos del grupo del usuario
+        return ("El MikroTik dejó entrar al usuario, pero contestó con un error (en el detalle): revisa que su "
+                "grupo tenga los permisos read y api.", ["/user print", "/user group print"])
+    return "Revisa en el router que %s; el detalle técnico está abajo." % servicio_ok, revisar
+
+
+def _texto_prueba(t):
+    """La prueba (_datos_prueba) en texto: el «mensaje» del JSON, para quien no pinte el modal, y el
+    aviso de la ficha sin JavaScript. Si fallo, lo que hay que hacer va delante del detalle."""
+    if not t["ok"]:
+        # las ordenes que ya trae el detalle (las del certificado, en el aviso del nucleo) no se repiten
+        ordenes = [x for x in t["ordenes"].splitlines() if x and x not in t["detalle"]]
+        return "%s. Qué hacer: %s%s Detalle: %s" % (
+            t["titulo"], t["que_hacer"],
+            (" Órdenes para el MikroTik: %s." % " ; ".join(ordenes)) if ordenes else "", t["detalle"])
+    rt = ", ".join(x for x in (t["modelo"], ("RouterOS " + t["version"]) if t["version"] else "") if x)
+    router = ("«%s»" % t["router"]) if t["router"] else ""
+    router = ("%s (%s)" % (router, rt)) if router and rt else (router or rt)
+    partes = [t["titulo"] + "."]
+    if router:
+        partes.append("Router: %s." % router)
+    partes.append("Conexión: %s, puerto %s, por %s." % (t["conexion"], t["puerto"], t["via"]))
+    if t["certificado"]:
+        partes.append("Certificado: %s." % t["certificado"]["texto"])
+    partes.append("Usuario de la API: %s; enviar IPs a la cuarentena: %s."
+                  % (t["usuario"] or "-", "permitido" if t["enviar"] else "no permitido"))
+    return " ".join(partes)
 
 
 def _kw_avance(fn, avance):

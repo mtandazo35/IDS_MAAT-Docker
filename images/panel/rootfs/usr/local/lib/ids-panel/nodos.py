@@ -292,6 +292,13 @@ def api_sock(pid):
     return os.path.join(RUN, exigir_pid(pid), "api.sock")
 
 
+def api_sock_claro(pid):
+    """Relé fijo a la API normal (8728, sin SSL) del MikroTik de ese punto (socat en su contenedor
+    vpn). Solo para entrar una vez y ponerle el certificado a la API-SSL; las imágenes vpn de antes
+    no lo tienen."""
+    return os.path.join(RUN, exigir_pid(pid), "api-claro.sock")
+
+
 def tzsp_json(pid):
     return os.path.join(RUN, _pid_ruta(pid), "tzsp.json")
 

@@ -16,7 +16,9 @@ import _ayuda_vpn as ay  # noqa: E402
 BASH = ay.bash()
 S6RC = ay.S6 / "s6-rc.d"
 ONESHOTS = ["init-env", "init-nft", "init-veth", "init-mon"]
-LONGRUNS = ["openvpn", "tzsp-decap", "rele-api"]
+# rele-api-claro: el segundo relé, fijo al 8728 (API normal), para crear el certificado de la
+# API-SSL desde «Probar la conexión» (2026-10-20)
+LONGRUNS = ["openvpn", "tzsp-decap", "rele-api", "rele-api-claro"]
 
 
 def scripts_sh():
@@ -192,6 +194,20 @@ class ConFalsos(unittest.TestCase):
             "arg=UNIX-LISTEN:/run/ids/api.sock,fork,unlink-early,mode=660,max-children=4",
             "arg=TCP:100.64.3.2:8728,connect-timeout=5"])
 
+    def test_run_rele_api_claro(self):
+        """El relé claro va siempre al 8728 del MikroTik por el túnel, sea cual sea API_PUERTO, con
+        su propio socket y los mismos permisos que rele-api."""
+        for puerto in ("8729", "8728", "2290"):
+            with self.subTest(API_PUERTO=puerto):
+                self.falso_que_apunta("socat")
+                p = self.ejecutar(S6RC / "rele-api-claro" / "run", {"API_PUERTO": puerto})
+                self.assertEqual(p.returncode, 0, p.stderr)
+                r = self.leido()
+                self.assertEqual(r[0], "umask=0007")
+                self.assertEqual([l for l in r if l.startswith("arg=")], [
+                    "arg=UNIX-LISTEN:/run/ids/api-claro.sock,fork,unlink-early,mode=660,max-children=4",
+                    "arg=TCP:100.64.3.2:8728,connect-timeout=5"])
+
     # --- punto directo (sin VPN, solo LAN; el user, 2026-10-18) ---------------------------------
     DIRECTO = {"MODO": "directo", "MK_IP": "192.168.88.1"}
 
@@ -226,6 +242,17 @@ class ConFalsos(unittest.TestCase):
         self.assertEqual(p.returncode, 0, p.stderr)
         self.assertIn("arg=TCP:192.168.88.1:8729,connect-timeout=5", self.leido())
 
+    def test_run_rele_api_claro_directo(self):
+        """En directo, al 8728 de MK_IP por eth0; el socket es el mismo que con VPN."""
+        self.falso_que_apunta("socat")
+        p = self.ejecutar(S6RC / "rele-api-claro" / "run", self.DIRECTO)
+        self.assertEqual(p.returncode, 0, p.stderr)
+        r = self.leido()
+        self.assertEqual(r[0], "umask=0007")
+        self.assertEqual([l for l in r if l.startswith("arg=")], [
+            "arg=UNIX-LISTEN:/run/ids/api-claro.sock,fork,unlink-early,mode=660,max-children=4",
+            "arg=TCP:192.168.88.1:8728,connect-timeout=5"])
+
     def test_salud_directo_sin_openvpn_ni_listen(self):
         """Sin OpenVPN (servicio quieto) y sin nada en el 1194: sano en directo."""
         extra = self.preparar_salud(caido="openvpn", tcp=self.TCP_SIN_ESCUCHA, arriba="1")
@@ -234,7 +261,7 @@ class ConFalsos(unittest.TestCase):
         self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
 
     def test_salud_directo_sigue_exigiendo_el_resto(self):
-        for s in ("tzsp-decap", "rele-api"):
+        for s in ("tzsp-decap", "rele-api", "rele-api-claro"):
             with self.subTest(s):
                 extra = self.preparar_salud(caido=s)
                 extra["MODO"] = "directo"

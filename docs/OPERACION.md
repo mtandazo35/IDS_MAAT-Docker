@@ -21,15 +21,17 @@ Versiones soportadas: **RouterOS 6.49 o superior** en v6, y v7. Anteriores a 6.4
 
 El script no crea ningún certificado ni toca `/ip service api-ssl` (ni el certificado ni
 `address=`, §1.5): el panel usa la API-SSL (8729) del router tal como esté. Es como trabaja el
-proyecto original (decisión del dueño, 2026-10-15) y vale igual en 6.49 y en v7.
+proyecto original (decisión del dueño, 2026-10-15) y vale igual en 6.49 y en v7. Lo único que el
+panel crea en el router es el certificado de la API-SSL, y solo si la ficha lo pide («Con
+certificado») y el router no tiene ninguno (abajo, 2026-10-20).
 
 - **Sin certificado (`certificate=none`)** RouterOS 6.49 y algunos 7 negocian un cifrado anónimo
   (ADH). El panel prueba primero ese cifrado (`ADH:@SECLEVEL=0`) y después los normales, por si el
   router tiene un certificado asignado.
 - **Hay RouterOS 7 que no aceptan la API-SSL sin certificado** (visto el 2026-10-20 en un cliente):
   cierran el saludo TLS y «Probar la conexión» dice «el MikroTik cerró la API-SSL sin contestar al
-  saludo TLS». Con un certificado propio conectan. El panel da estas órdenes en el aviso y en los
-  datos del punto:
+  saludo TLS». Con un certificado propio conectan. «Probar la conexión» lo crea (abajo) y, si no
+  puede, el aviso da estas órdenes para pegarlas en el router:
 
   ```
   /certificate add name=ids-api common-name=ids-api days-valid=3650 trusted=yes key-usage=key-cert-sign,crl-sign,digital-signature,key-encipherment,tls-server
@@ -45,6 +47,15 @@ proyecto original (decisión del dueño, 2026-10-15) y vale igual en 6.49 y en v
   del punto, con vuelta atrás si falla. Un puerto que no sea 8729 ni 8728 necesita la imagen `vpn`
   0.1.13 o posterior (etiqueta `ids-maat.api-puerto=libre`); con una anterior el orquestador contesta
   CONFLICTO y pide volver a ejecutar `install.sh`.
+- **«Probar la conexión» crea el certificado si falta** (el dueño, 2026-10-20). Con «Con certificado»
+  confirma la conexión y el certificado y, si el router no tiene ninguno, lo crea: entra una vez por
+  la API normal (8728, que RouterOS trae encendida y que el contenedor del punto alcanza por un
+  segundo relé, `api-claro.sock`, desde la 0.1.14), crea el certificado y se lo pone a la API-SSL.
+  Sin la casilla solo confirma la conexión. Si no puede crearlo (la API normal apagada o filtrada, o
+  el contenedor del punto de una versión anterior), el aviso da las órdenes de arriba para pegarlas.
+  Por eso los datos para el MikroTik de un punto directo ya no llevan ninguna orden de la API: remiten
+  a la ficha y a «Probar la conexión», y dicen qué dejar pasar desde la IP del host si el router
+  filtra la entrada (el puerto de la API y el 8728).
 - Si el servicio está deshabilitado: `/ip service enable api-ssl`.
 - **La clave de `ids-api` la protege el túnel.** Sin huella fijada, el panel hace `/login` con lo
   que presente el router, con certificado o sin él. La clave va por el túnel OpenVPN, en el que el
@@ -214,10 +225,9 @@ con la clave VPN y haría de «sensor» para el router.
   del ping de la tabla `inet ids_punto` ([RED-Y-FIREWALL.md](RED-Y-FIREWALL.md) §8) entra al recrear
   su contenedor `vpn` con la imagen nueva: `ids-orq punto reconfigurar p003` (§1.6). Hasta entonces
   el sensor descarta el ping.
-- **Puerto 8728 (API en claro): el panel no conecta.** El orquestador acepta `api_puerto=8728`, pero
-  el panel habla **siempre** TLS con el router: contra el servicio `api` en claro el saludo TLS falla
-  y no hay conexión (la ficha del punto lo dice así). Para que el panel llegue a la API, el punto
-  tiene que usar 8729 (`api-ssl`).
+- **Puerto 8728 (API en claro).** Desde la 0.1.13 el panel la habla: en la ficha del punto (API) se
+  desmarca «Con certificado (API-SSL)» y se pone el puerto (§1.1). Hasta la 0.1.12 el panel hablaba
+  siempre TLS y con 8728 no conectaba.
 
 ### 1.6 Llevar una corrección a lo ya desplegado
 

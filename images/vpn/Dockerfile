@@ -50,7 +50,7 @@ RUN set -eux; \
                /etc/s6-overlay/s6-rc.d/init-env/up /etc/s6-overlay/s6-rc.d/init-nft/up \
                /etc/s6-overlay/s6-rc.d/init-veth/up /etc/s6-overlay/s6-rc.d/init-mon/up \
                /etc/s6-overlay/s6-rc.d/openvpn/run /etc/s6-overlay/s6-rc.d/tzsp-decap/run \
-               /etc/s6-overlay/s6-rc.d/rele-api/run; \
+               /etc/s6-overlay/s6-rc.d/rele-api/run /etc/s6-overlay/s6-rc.d/rele-api-claro/run; \
     python3 -m py_compile /usr/local/lib/ids-vpn/render.py; \
     for f in /usr/local/bin/tzsp-decap /usr/local/bin/ovpn-auth; do \
         python3 -c "import sys; compile(open(sys.argv[1]).read(), sys.argv[1], 'exec')" "$f"; \

@@ -58,7 +58,9 @@ def pieza():
 
 def main():
     ns = pieza()
-    cats = ns["CAT_CPE"] + [ns["CAT_OTROS"]]
+    # sin «Otros» (adaptada, 2026-10-20: el user, «saca eso de otros»): su lista no se cambia en
+    # Ajustes; su accion y su politica son fijas «nada»
+    cats = ns["CAT_CPE"]
 
     # --- sin nada configurado: un campo por categoria, vacio, con el defecto a la vista --
     h = ns["_card_listas"]({})
@@ -66,8 +68,8 @@ def main():
         check("hay campo para '%s'" % cat, "name=lista_%s" % cat in h, "")
         check("  con el nombre por defecto CARGADO como valor (editable)",
               'name=lista_%s value="%s"' % (cat, por_defecto) in h, "")
-    check("son las ocho (siete categorias mas otros)",
-          h.count("name=lista_") == 8, h.count("name=lista_"))
+    check("son las siete categorias (sin Otros)",
+          h.count("name=lista_") == 7 and "name=lista_otros" not in h, h.count("name=lista_"))
 
     # --- lo configurado en MK_CONF se ve en el campo ------------------------------------
     # Si no se viera, guardar el formulario mandaria vacio y borraria la configuracion.
@@ -131,7 +133,7 @@ def main():
     ruta = DASH[DASH.index('if ruta == "/mikrotik":'):]
     ruta = ruta[:ruta.index('\n        if ruta == ', 10)]
     check("la ruta guarda las listas por categoria",
-          'for _cat, _nom, _cs, _def in CAT_CPE + [CAT_OTROS]:' in ruta
+          'for _cat, _nom, _cs, _def in CAT_CPE:' in ruta
           and '"LISTA_" + _cat.upper()' in ruta, "")
     # vacio o el propio defecto = borrar la clave: no se guarda el defecto como cambio
     check("un campo vacio o con el defecto borra la clave",

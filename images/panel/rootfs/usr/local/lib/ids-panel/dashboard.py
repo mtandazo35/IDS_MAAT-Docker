@@ -1318,7 +1318,8 @@ def olvidar_router(pid):
 # rebaje la conexion) y con otro no manda la clave. Nunca se fija sola (VPN-06).
 RE_HUELLA_SHA256 = re.compile(r"^[0-9a-f]{64}\Z")
 SHA256_VACIO = _hashlib.sha256(b"").hexdigest()   # API-SSL sin certificado (cifrado anonimo)
-# El certificado para la API-SSL del router (2026-10-20; = COMANDOS_CERT_API_SSL del orquestador)
+# El certificado para la API-SSL del router (2026-10-20; lo crea mk_crear_certificado, y estas
+# son las órdenes para pegarlo a mano cuando el panel no puede)
 CMD_CERT_API_SSL = ("/certificate add name=ids-api common-name=ids-api days-valid=3650 trusted=yes "
                     "key-usage=key-cert-sign,crl-sign,digital-signature,key-encipherment,tls-server ; "
                     "/certificate sign ids-api ; /ip service set api-ssl certificate=ids-api disabled=no")
@@ -1627,13 +1628,22 @@ def _mk_tls_wrap(host, port, timeout, con_certificado=False):
         "el MikroTik cerró la API-SSL sin contestar al saludo TLS" if cerro else "TLS handshake falló",
         pista, len(fallos), " | ".join(fallos)))
 
-def mk_conectar(d, timeout=6):
+def mk_conectar(d, timeout=6, rele=None):
     """Abre el socket y hace login. Devuelve el socket o lanza excepcion.
 
     El destino es SIEMPRE el rele del punto del router (`ROUTER_ID`), validado: nunca una
-    ruta o host que venga de un fichero o de un formulario."""
+    ruta o host que venga de un fichero o de un formulario.
+
+    `rele` (2026-10-20) solo admite el rele fijo a la API normal de ESE punto
+    (nodos.api_sock_claro), y solo sin SSL: es la entrada de mk_crear_certificado para ponerle
+    el certificado a la API-SSL. Asi el /login sigue estando solo aqui. Otra cosa: ValueError."""
     pid = nodos.exigir_pid(d.get("ROUTER_ID") or "")
-    host = "unix:" + nodos.api_sock(pid)
+    if rele is None:
+        host = "unix:" + nodos.api_sock(pid)
+    elif rele == nodos.api_sock_claro(pid) and str(d.get("TLS", "1")) == "0":
+        host = "unix:" + rele
+    else:
+        raise ValueError("relé no admitido para el router %s: solo el de su API normal y sin SSL" % pid)
     port = int(d.get("PORT") or 8729)
     if str(d.get("TLS", "1")) == "0":
         # API normal, sin SSL (el dueno, 2026-10-20: «si no, envia por api normal»): el relé del punto
@@ -1718,6 +1728,97 @@ def mk_probar(pid):
         return (True, f"Conexión OK con '{nombre or d.get('ROUTER_NOMBRE') or pid}'.")
     except Exception as e:
         return (False, f"No conectó: {e}")
+
+def mk_crear_certificado(pid, puerto, timeout=120, quien=None):
+    """Le pone el certificado ids-api a la API-SSL del router de ESE punto (el dueno, 2026-10-20:
+    hay RouterOS 7 que cierran la API-SSL sin certificado; «Probar la conexión» con «Con
+    certificado» lo crea si no lo tiene). Entra UNA vez por la API normal (8728, que RouterOS trae
+    encendida) por el rele fijo del punto (nodos.api_sock_claro) y con el usuario de ids-api: si
+    no hay ids-api lo crea y lo firma, y lo asigna a la API-SSL en `puerto`, encendida. Si ya
+    estaba solo lo asigna (y lo firma si el router dice que esta sin firmar: una firma cortada a
+    medias). La firma tarda: el socket espera hasta `timeout` s por respuesta (RouterOS manda !re de
+    progreso y al final !done). (ok, mensaje), sin claves en el mensaje ni en el Registro; `quien`
+    va al Registro (un trabajo de fondo no lleva el usuario en el hilo: que lo pase quien llama)."""
+    pid = nodos.exigir_pid(pid)
+    try:
+        puerto = int(puerto)
+    except (TypeError, ValueError):
+        puerto = 0
+    if not 0 < puerto < 65536:
+        return (False, "el puerto de la API-SSL no es válido (de 1 a 65535)")
+    if puerto == 8728:
+        # la API-SSL encima de la API normal del router: el panel se quedaria sin la entrada de ahora
+        return (False, "la API-SSL no puede ir en el 8728, el de la API normal: pon el suyo (8729)")
+    d = cargar_mk_de(router_por_id(pid) or _router_vacio(pid))
+    if not (d.get("USER") and d.get("PASS")):
+        return (False, "Falta usuario o clave de la API de este punto.")
+    rele = nodos.api_sock_claro(pid)
+    if not os.path.exists(rele):
+        return (False, "el contenedor del punto es de una versión anterior y no tiene el relé de la API "
+                       "normal: vuelve a ejecutar install.sh, o pega en el router: " + CMD_CERT_API_SSL)
+    s, paso, hecho = None, "entrar", []
+
+    def _orden(que, palabras):
+        nonlocal paso
+        paso = que
+        _mk_send(s, palabras)
+        ok, frases, err = _mk_reply(s)
+        if ok and not any(f and f[0] in ("!trap", "!fatal") for f in frases):
+            return frases, ""
+        return frases, "no se pudo %s: %s" % (que, err or "el router lo rechazó sin decir por qué")
+
+    try:
+        s = mk_conectar(dict(d, TLS="0", PORT="8728"), rele=rele)
+        frases, err = _orden("leer los certificados del router", ["/certificate/print", "?name=ids-api"])
+        ya = [f for f in frases if f and f[0] == "!re"]
+        if not err and not ya:
+            _f, err = _orden("crear el certificado ids-api",
+                             ["/certificate/add", "=name=ids-api", "=common-name=ids-api", "=days-valid=3650",
+                              "=trusted=yes",
+                              "=key-usage=key-cert-sign,crl-sign,digital-signature,key-encipherment,tls-server"])
+            if not err:
+                hecho.append("creado")
+        if not err and (not ya or "=private-key=false" in ya[0]):
+            s.settimeout(timeout)
+            _f, err = _orden("firmar el certificado ids-api", ["/certificate/sign", "=number=ids-api"])
+            if not err:
+                hecho.append("firmado")
+        if not err:
+            _f, err = _orden("asignar el certificado ids-api a la API-SSL",
+                             ["/ip/service/set", "=numbers=api-ssl", "=certificate=ids-api",
+                              "=port=%d" % puerto, "=disabled=no"])
+        if err:
+            res = (False, err)
+        elif "creado" in hecho:
+            res = (True, "creado y firmado el certificado ids-api y asignado a la API-SSL en el puerto %d" % puerto)
+        elif hecho:
+            res = (True, "el certificado ids-api ya estaba sin firmar: firmado y asignado a la API-SSL en el "
+                         "puerto %d" % puerto)
+        else:
+            res = (True, "el certificado ids-api ya estaba; asignado a la API-SSL en el puerto %d" % puerto)
+    except Exception as e:
+        if s is None:
+            res = (False, "no se pudo entrar por la API normal (8728): %s" % e)
+        else:
+            # en un router lento la firma puede tardar mas que `timeout`; el router la sigue o la deja a
+            # medias, y la proxima vez se firma lo que quede sin firmar
+            res = (False, "se cortó la API normal (8728) al %s: %s%s" % (
+                paso, e, " (en un router lento la firma tarda más: vuelve a probar en un par de minutos)"
+                if paso.startswith("firmar") else ""))
+    finally:
+        if s is not None:
+            try: s.close()
+            except Exception: pass
+    if res[0]:
+        # la proxima conexion TLS empieza por los cifrados normales: si arrancara por el anonimo (el
+        # ultimo que funciono) y el router lo siguiera aceptando, no se veria el certificado nuevo
+        _MK_TLS_OK[("unix:" + nodos.api_sock(pid), int(puerto))] = "DEFAULT:@SECLEVEL=0"
+    try:
+        # -FALLO: el Registro lo marca como fallo (_registro_tipo)
+        bitacora("MK-API-SSL" if res[0] else "MK-API-SSL-FALLO", "%s: %s" % (pid, res[1]), quien=quien)
+    except Exception:
+        pass
+    return res
 
 def _router_destino(router):
     """El router de una accion: tiene que venir dado y ser un punto que existe. Sin
@@ -9688,10 +9789,8 @@ def _vuelta_refrescador(estado):
         try: precargar_abuseipdb()
         except Exception as _e: sys.stderr.write("precarga abuseipdb: %s\n" % _e)
         ult_aidb = time.time()
-    if time.time() - ult_diag > 600:       # cada ~10 min: que le falta a cada router
-        try: guardar_diagnostico()
-        except Exception as _e: sys.stderr.write("diagnostico mikrotik: %s\n" % _e)
-        ult_diag = time.time()
+    # (el diagnostico de cada router cada 10 min se dejo de hacer el 2026-10-20: solo lo
+    # pintaba el cuadro «Protección en el MikroTik» de Histórico, que se quito)
     if time.time() - ult_pub > 6 * 3600:   # cada ~6 h: reputacion de TUS IPs publicas
         try: vigilar_publicas()
         except Exception as _e: sys.stderr.write("vigilancia de publicas: %s\n" % _e)
@@ -13301,23 +13400,6 @@ algunos minutos, no es instantáneo, pero acierta mucho más.</li>
 <p>Las dos juntas se acercan bastante a un IPS. Y el orden importa: primero las nativas, que son
 gratis y no dependen de nada; después las del panel.</p>
 
-<h3>Protección en el MikroTik: qué le falta</h3>
-<p>Al final de la pestaña <b>Histórico</b> (titulada <b>Abuso saliente</b>), el panel <b>le pregunta al
-router</b> y dice qué tiene y qué le falta para poder cortar, con el comando exacto de cada cosa:</p>
-<ul>
-<li><b>El espejo activo.</b> Si el sniffer se paró, el sensor está ciego y todo lo demás da igual.</li>
-<li><b>Que las address-lists CORTEN.</b> Es el fallo más caro: el panel mete CPEs en la lista, dice
-"enviado", y si ninguna regla usa esa lista el abonado sigue atacando igual. Una regla
-<b>desactivada</b> tampoco cuenta.</li>
-<li><b>Origen falsificado</b> (<code>rp-filter</code>). Es la base de los ataques de amplificación y
-de las quejas que no se pueden rastrear, y <b>ningún IDS lo detecta</b>, porque el tráfico parece
-venir de otro sitio. Aviso: con rutas asimétricas o varios proveedores, <code>strict</code> tira
-tráfico legítimo; se prueba antes con <code>loose</code>.</li>
-<li><b>Detección de escaneo en el propio router</b> y <b>tope de conexiones por abonado</b>.</li>
-<li><b>Cortar en <code>raw</code></b>: con muchas IPs en cuarentena conviene descartar antes de
-crear la conexión, para no llenar la tabla de conntrack.</li>
-</ul>
-
 <h2>El espejo del MikroTik</h2>
 <p>El espejo lo montas <b>tú, a mano, en el MikroTik</b> del punto: dos reglas <code>mangle</code>
 <code>sniff-tzsp</code> hacia el sensor del punto (su IP dentro del túnel, puerto <code>37008</code>), una
@@ -13883,7 +13965,8 @@ tú en el router un usuario que solo pueda entrar desde el sensor del punto (por
 <pre>/user group add name=ids-api policy=read,write,api
 /user add name=ids-api group=ids-api address=&lt;IP del sensor&gt;/32 password=&lt;CLAVE-API&gt;</pre>
 <p>La IP del sensor es la <code>.1</code> de la red del túnel del punto (ficha → Resumen). La API-SSL
-va <b>sin certificado</b> (ver «La API del router: API-SSL sin certificado»).</p>
+va <b>sin certificado</b>; en los RouterOS que lo exigen, <b>Probar la conexión</b> con <b>Con certificado
+(API-SSL)</b> se lo crea (ver «La API del router: API-SSL o API sin SSL»).</p>
 
 <h3>2) La clave del usuario API</h3>
 <p>La eliges tú al crear el usuario en el router y la pones en la ficha del punto
@@ -13913,10 +13996,14 @@ bajo todavía se queda.</p>
 <li><b>Puntos &rarr; ficha del punto &rarr; API</b>: usuario, clave y <b>Permitir enviar</b>. Lo común a
 todos los nodos (nombres de las listas por categoría, acciones y políticas) está en Ajustes &rarr; MikroTik,
 que además resume la conexión de cada nodo.</li>
-<li>Pulsa <b>Probar la conexión</b>: si conecta, muestra el nombre (identity) del router. Sin huella
+<li>Pulsa <b>Probar la conexión</b>: si conecta, una ventana dice el router (nombre, modelo y versión de
+RouterOS), cómo conectó (API-SSL o API normal, y el puerto), por dónde (túnel o red local), el
+certificado, el usuario y si puede enviar IPs a cuarentena; si no conecta, primero <b>qué hacer</b>, las
+órdenes para pegar en el router y, plegado, el detalle técnico. Sin huella
 fijada el panel entra igual, presente el router certificado o no (la clave de <code>ids-api</code> va
-protegida por el túnel). Si le pusiste certificado a la API-SSL, puedes fijar su <b>huella</b> (opcional; ver "Puntos: un
-MikroTik, su VPN y su Suricata", apartado <b>La API del router: API-SSL sin certificado</b>): desde
+protegida por el túnel). Con <b>Con certificado (API-SSL)</b> marcada, si el router no tiene certificado
+lo crea entrando una vez por la API normal (8728). Si le pusiste certificado a la API-SSL, puedes fijar su <b>huella</b> (opcional; ver "Puntos: un
+MikroTik, su VPN y su Suricata", apartado <b>La API del router: API-SSL o API sin SSL</b>): desde
 entonces, si un día el router presenta otro certificado, la conexión se rechaza hasta que lo revises.</li>
 <li>En <b>Cuarentena</b>, cada CPE candidato muestra <b>Enviar</b> (lo agrega a la lista de su
 categoría en el MikroTik de <b>su</b> nodo; debajo dice a cuál) y luego <b>Quitar</b> (lo saca). Todo queda en el registro de
@@ -14393,16 +14480,26 @@ de la verificación del servidor), la ficha la enseña además en un aviso rojo 
 <p>El panel habla con la API del MikroTik a través del relé del punto (el túnel, o la red local en un punto
 directo) y le manda la clave de <code>ids-api</code> (que puede escribir en el router). Por defecto va por
 <b>API-SSL</b> (8729) sin exigir certificado: con lo que presente el router, también el cifrado anónimo si
-lo ofrece. El script del alta no crea certificados ni toca <code>/ip service api-ssl</code>.</p>
+lo ofrece. El script del alta no crea certificados ni toca <code>/ip service api-ssl</code>: si el router
+necesita uno, lo crea <b>Probar la conexión</b> (abajo).</p>
 <ul>
-<li><b>Probar la conexión</b> (ficha &rarr; API) dice si entra. Si contesta «el MikroTik cerró la API-SSL
-sin contestar al saludo TLS», revisa en el router <code>/ip service print detail where name=api-ssl</code>:
-que esté habilitada y que <code>address</code> incluya al sensor o esté vacía. <b>Hay RouterOS 7 que no
-aceptan la API-SSL sin certificado</b>: si no tiene uno (o tiene uno y corta igual), pégale este y vuelve a
-probar:<br><code>/certificate add name=ids-api common-name=ids-api days-valid=3650 trusted=yes
-key-usage=key-cert-sign,crl-sign,digital-signature,key-encipherment,tls-server</code><br>
+<li><b>Probar la conexión</b> (ficha &rarr; API) dice si entra. Con la casilla <b>Con certificado
+(API-SSL)</b> confirma la conexión y el certificado, porque <b>hay RouterOS 7 que no aceptan la API-SSL
+sin certificado</b>: si el router no tiene, el panel <b>lo crea</b> entrando una vez por la <b>API
+normal</b> (8728, que RouterOS trae encendida) con el usuario de <code>ids-api</code>. Crea y firma el
+certificado <code>ids-api</code> (la firma tarda; en un router lento, un par de minutos), lo asigna a la
+API-SSL en el puerto de la ficha y la deja encendida; si ya estaba, solo lo asigna. Queda una línea en el
+<b>Registro</b>. Sin la casilla solo confirma la conexión (API normal, sin certificado).</li>
+<li>Si no puede crearlo (la API normal está apagada o no deja entrar al sensor, el router le niega el
+permiso al usuario de <code>ids-api</code>, o el contenedor del punto es de una versión anterior: vuelve a
+ejecutar <code>install.sh</code>), el aviso dice el motivo y da las órdenes para pegar
+en el router; son estas, y luego vuelve a probar:<br><code>/certificate add name=ids-api common-name=ids-api
+days-valid=3650 trusted=yes key-usage=key-cert-sign,crl-sign,digital-signature,key-encipherment,tls-server</code><br>
 <code>/certificate sign ids-api</code><br>
-<code>/ip service set api-ssl certificate=ids-api disabled=no</code></li>
+<code>/ip service set api-ssl certificate=ids-api disabled=no</code><br>
+Si contesta «el MikroTik cerró la API-SSL sin contestar al saludo TLS», revisa además en el router
+<code>/ip service print detail where name=api-ssl</code>: que esté habilitada y que <code>address</code>
+incluya al sensor o esté vacía.</li>
 <li><b>Fijar la huella (opcional).</b> Si le pones un certificado a la API-SSL del router, la ficha enseña
 su <b>huella SHA-256</b> en bloques de 4 caracteres. Compárala en el router con <code>/certificate print
 detail</code> (el campo <code>fingerprint</code> del certificado que diga <code>/ip service print detail
@@ -17438,65 +17535,7 @@ def historico_page(dias_n=7):
                 f"<table><thead><tr><th>{'Categoría' if campo == 'cats' else 'Puerto'}</th>"
                 f"<th class=num>Alertas</th><th class=num>%</th></tr></thead><tbody>{filas}</tbody></table></section>")
 
-    # --- Que le falta al router para poder CORTAR ------------------------------------
-    # Con un espejo, Suricata no bloquea nunca: ve una copia y el paquete ya paso. El que
-    # corta es el router, asi que lo primero es saber si esta en condiciones de hacerlo.
-    def _diag_cuando(ts):
-        """Cuando se tomo esta medicion, y que se refresca sola.
-
-        El panel consulta el router en segundo plano cada 10 minutos, asi que lo que se ve
-        puede ser de hace un rato. Sin decirlo, una regla recien pegada parece no haber
-        funcionado."""
-        if not ts:
-            return ""
-        _m = int(max(0, time.time() - ts) // 60)
-        _c = ("hace un momento" if _m < 1 else
-              "hace 1 minuto" if _m == 1 else "hace %d minutos" % _m)
-        return ("<span class=diagts> &middot; comprobado %s (%s), se repite cada 10 min"
-                "</span>" % (_c, time.strftime("%H:%M", time.localtime(ts))))
-
-    def _diag_html(r, nom, multi):
-        # de la cache que llena el hilo de fondo: consultar el router aqui dejaba la
-        # pagina esperando 4 llamadas a su API
-        _d = diagnostico_de(r.get("id", ""))
-        cab = ("<section class=card><h2 style='font-size:15px;margin:0 0 6px'>"
-               + ("Protección en " + esc(nom) if multi else "Protección en el MikroTik")
-               + "</h2>")
-        if not _d:
-            return cab + ("<p class=hint>Todavía sin medir. El panel consulta el router "
-                          "cada 10 minutos en segundo plano.</p></section>")
-        if _d.get("error"):
-            return cab + ("<p class=hint>No se pudo consultar el router: "
-                          + esc(_d["error"]) + "</p></section>")
-        checks = _d.get("checks") or []
-        col = {"ok": "#3a9d5d", "falta": "#e34948", "aviso": "#e58a00"}
-        ico = {"ok": "&#10003;", "falta": "&#9888;", "aviso": "&#9679;"}
-        faltan = sum(1 for e, _t, _d, _f in checks if e == "falta")
-        filas = "".join(
-            "<div class=diagl>"
-            f"<span style='color:{col.get(e, '#8a8a86')};font-weight:700'>{ico.get(e, '')}</span>"
-            f"<div><b>{esc(t)}</b>"
-            + (f"<div class=rn>{esc(det)}</div>" if det else "")
-            + (f"<pre class=diagfix>{esc(fix)}</pre>" if fix else "")
-            + "</div></div>"
-            for e, t, det, fix in checks)
-        return ("<section class=card>"
-                + "<h2 style='font-size:15px;margin:0 0 4px'>"
-                + ("Protección en " + esc(nom) if multi else "Protección en el MikroTik")
-                + "</h2>"
-                + "<p class=sub2 style='margin:0 0 8px'>Suricata <b>no bloquea</b>: con un espejo "
-                  "ve una copia y el paquete ya pasó. El que corta es el router. "
-                + (f"<b style='color:#b52a2a'>Le faltan {faltan} cosas.</b>" if faltan
-                   else "<b style='color:#1a7f37'>Está en condiciones de cortar.</b>")
-                # de cuando es esta foto: sin esto, quien acaba de pegar la regla no puede
-                # distinguir "la regla fallo" de "todavia no lo he vuelto a mirar"
-                + _diag_cuando(_d.get("ts", 0))
-                + "</p>" + filas + "</section>")
-
-    # sin «Reglas de salida» (el user, 2026-10-13): de los routers de lo que se mira solo se
-    # pinta su diagnostico (un nodo, o todos en la vista acumulada)
-    _vis = nodos.nodos_de()
-    rs = [r for r in cargar_routers() if r.get("id") in _vis]
+    # sin «Reglas de salida» (2026-10-13) ni el diagnostico del router (2026-10-20)
     # --- cortar a los que nos atacan desde internet ---------------------------------
     bl = blocklist_borde()
     bl_html = ""
@@ -17625,12 +17664,8 @@ def historico_page(dias_n=7):
                f"<ul class=feedley>{ley}</ul>" if ley else "")
             + "</section>")
 
-    diag_html = ""
-    for r in rs:
-        if (r.get("HOST") or "") and r.get("ENABLED") == "1":
-            diag_html += _diag_html(r, r.get("nombre") or r.get("HOST") or r.get("id", ""),
-                                    len(rs) > 1)
-    reglas_html = diag_html + bl_html
+    # sin el cuadro «Protección en el MikroTik» (el user, 2026-10-20: «saca ese cuadro»)
+    reglas_html = bl_html
 
     sel = "".join(
         f"<a href='?d={n}{qs_nodo()}' class='{'on' if n == dias_n else ''}'>{n} días</a>"

@@ -14,7 +14,7 @@ table inet ids_punto {
     type filter hook output priority filter; policy drop;
     oif lo accept
     ct state established,related accept
-    oifname "tun0" ip daddr 100.64.3.2 tcp dport 8729 accept comment "API via rele"
+    oifname "tun0" ip daddr 100.64.3.2 tcp dport { 8728, 8729 } accept comment "API via rele"
     counter comment "resto"
   }
   chain forward { type filter hook forward priority filter; policy drop; }

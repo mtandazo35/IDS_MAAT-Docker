@@ -62,6 +62,7 @@ Ejemplos: VPS `203.0.113.10` (nombre `ids.empresa.example`), redes de gestión `
  netns de p003 (dueño: vpn-p003)
    tun0 ── udp 37008 desde 100.64.3.2 ─► tzsp-decap ─► ids-in ══veth══ ids-mon ─► suricata-p003
    relé: /run/ids/api.sock ─► 100.64.3.2:8729 (sale por tun0)
+   relé claro: /run/ids/api-claro.sock ─► 100.64.3.2:8728 (sale por tun0; crea el certificado de la API-SSL)
    ip_forward=0 · nft inet ids_punto (solo datos) · netdev ids_mon (descarta lo inyectado)
 ```
 
@@ -147,26 +148,36 @@ alta), la regla es que **no sea más específica que la ruta conectada del túne
 Los routers dados de alta con el script anterior llevan esa ruta con el comentario
 `IDS ids-maat:<pid>`; cómo quitarla, en [OPERACION.md](OPERACION.md) §1.5.
 
-## 4. Flujo de la API: un relé por punto
+## 4. Flujo de la API: dos relés por punto
 
 ```
 panel ── connect(/data/puntos/run/p003/api.sock) ──► socat (netns p003)
       ── TLS API-SSL de extremo a extremo (el relé no ve credenciales) ──►
       TCP 100.64.3.1 → 100.64.3.2:8729 por tun0 ──► MikroTik
+
+panel ── connect(/data/puntos/run/p003/api-claro.sock) ──► socat (netns p003)   («Probar la conexión»)
+      ── API normal, sin TLS ──►
+      TCP 100.64.3.1 → 100.64.3.2:8728 por tun0 ──► MikroTik
 ```
 
 ```sh
-# dentro de vpn-<pid>, supervisado por s6; N y API_PUERTO vienen del entorno
+# dentro de vpn-<pid>, supervisados por s6; N y API_PUERTO vienen del entorno
+# rele-api: el de siempre, al puerto de la API del punto
 socat UNIX-LISTEN:/run/ids/api.sock,fork,unlink-early,mode=660,max-children=4 \
       TCP:100.64.${N}.2:${API_PUERTO:-8729},connect-timeout=5
+# rele-api-claro: fijo a la API normal (8728), sea cual sea API_PUERTO
+socat UNIX-LISTEN:/run/ids/api-claro.sock,fork,unlink-early,mode=660,max-children=4 \
+      TCP:100.64.${N}.2:8728,connect-timeout=5
 ```
 
-- **Un solo relé por punto, hacia `API_PUERTO`: 8729 por defecto, o el puerto de la API que tenga
-  el router (1-65535 desde 2026-10-20, imagen `vpn` con `ids-maat.api-puerto=libre`; se cambia con
-  `ids-orq punto ajustar <pid> --api-puerto` o en la ficha). Si el panel habla TLS o la API normal lo
-  decide la casilla «Con certificado (API-SSL)» de la ficha, no el puerto.** Con 8729 el panel habla TLS con la API-SSL del router, que se usa tal como
-  esté: el script no crea ningún certificado ni toca `/ip service api-ssl` ([OPERACION.md](OPERACION.md)
-  §1.1; hay RouterOS 7 que necesitan un certificado, que el panel da en el aviso). Sin certificado
+- **El relé del punto (`rele-api`, `api.sock`) va a `API_PUERTO`: 8729 por defecto, o el puerto
+  de la API que tenga el router (1-65535 desde 2026-10-20, imagen `vpn` con
+  `ids-maat.api-puerto=libre`; se cambia con `ids-orq punto ajustar <pid> --api-puerto` o en la
+  ficha). Si el panel habla TLS o la API normal lo decide la casilla «Con certificado (API-SSL)» de
+  la ficha, no el puerto.** Es el que usa el panel para todo el trabajo del punto. Con 8729 el panel
+  habla TLS con la API-SSL del router, que se usa tal como esté: el script no crea ningún certificado ni toca `/ip service api-ssl` ([OPERACION.md](OPERACION.md)
+  §1.1; hay RouterOS 7 que necesitan un certificado, que el panel da en el aviso y que «Probar la
+  conexión» puede crear por el relé claro, abajo). Sin certificado
   (`certificate=none`) RouterOS 6.49 y algunos 7 negocian un cifrado anónimo (ADH): el panel prueba primero `ADH:@SECLEVEL=0` y
   después los cifrados normales (router con certificado). **Sin huella fijada hace `/login` con lo
   que presente el router**, con certificado o sin él. Es la decisión del dueño (2026-10-15), como en
@@ -187,10 +198,25 @@ socat UNIX-LISTEN:/run/ids/api.sock,fork,unlink-early,mode=660,max-children=4 \
   «fijada automáticamente»), y una huella **vacía** guardada antes (el sha256 de nada, de un
   API-SSL sin certificado) cuenta como sin huella.
 
-  **8728 (en claro): se descarta.** El orquestador la admite por punto (`api_puerto`) y entonces
-  genera el relé hacia 8728 y la tabla del netns abre solo ese puerto, pero **el panel no conecta**:
-  habla siempre TLS, y contra la API en claro el saludo falla. La ficha lo dice así.
-- **Permisos del socket:**
+  **8728 como puerto del punto (`api_puerto=8728`):** los dos relés van al mismo puerto y la tabla
+  del netns abre solo ese (§8). Con la casilla «Con certificado» apagada el panel habla la API normal
+  por `api.sock`, sin TLS.
+- **Relé claro (`rele-api-claro`, `api-claro.sock`), fijo al 8728.** Lo pidió el dueño (2026-10-20:
+  «el probar la conexión debe confirmar si está con ssl conexión y certificado; si no tiene
+  certificado lo creas»). Sirve para una sola cosa: que «Probar la conexión» de la ficha, cuando la
+  API-SSL del router no tiene certificado, entre una vez por la API normal y lo cree. El trabajo
+  diario sigue por `api.sock`.
+  - Va siempre al 8728, aunque `API_PUERTO` sea otro, y la tabla del netns abre ese puerto además
+    del de la API, solo hacia el MikroTik (§8).
+  - Por aquí no hay TLS: el relé solo copia bytes, pero lo que pasa por él, el `/login` con la clave
+    de `ids-api` incluido, va en claro dentro del túnel (en un punto directo, por la LAN).
+  - Si el router tiene la API normal apagada (`/ip service api`) o en otro puerto, el socket acepta
+    pero la conexión se corta: al momento si el router la rechaza, o a los 5 s (`connect-timeout`)
+    si su firewall la descarta.
+  - **Imagen anterior:** una imagen `vpn` sin este relé no crea `api-claro.sock` (en el host,
+    `/srv/ids/run/<pid>/api-claro.sock`). El panel lo detecta porque falta el socket y no intenta
+    crear el certificado por esa vía.
+- **Permisos de los sockets** (`api.sock` y `api-claro.sock`, los dos iguales):
   - el directorio del host `/srv/ids/run/<pid>` pertenece a `root:10500` con modo `2770`
     (setgid), así que el socket hereda el grupo 10500;
   - `socat` solo fija `mode=660` (`group=` exigiría `CAP_CHOWN`);
@@ -210,10 +236,11 @@ socat UNIX-LISTEN:/run/ids/api.sock,fork,unlink-early,mode=660,max-children=4 \
 - **El router verifica al servidor:** importa la CA del VPS y conecta con
   `verify-server-certificate=yes` ([OPERACION.md](OPERACION.md) §1.4). Un impostor del servidor
   OpenVPN no recibe la clave VPN ni hace de `100.64.N.1`.
-- **Defensa en profundidad:** la tabla del netns solo deja salir hacia `100.64.N.2` y el puerto de
-  la API, aunque alguien cambiara el relé. Esa tabla frena el forwarding IP, pero no a un root con
-  `CAP_NET_RAW` dentro del netns (un socket `AF_PACKET` no pasa por los hooks `inet`): lo que llegue
-  así al router lo filtra el firewall del operador, y Suricata ya no tiene `NET_ADMIN`
+- **Defensa en profundidad:** la tabla del netns solo deja salir hacia `100.64.N.2` y los puertos de
+  la API (el del punto y el 8728 del relé claro), aunque alguien cambiara los relés. Esa tabla
+  frena el forwarding IP, pero no a un root con `CAP_NET_RAW` dentro del netns (un socket
+  `AF_PACKET` no pasa por los hooks `inet`): lo que llegue así al router lo filtra el firewall del
+  operador, y Suricata ya no tiene `NET_ADMIN`
   ([INSTANCIA.md](INSTANCIA.md) §2.1).
 - **Alternativas descartadas:**
   - el panel conectado a todas las redes con rutas, que lo deja a un salto de cada túnel;
@@ -348,7 +375,7 @@ table inet ids_punto {
     type filter hook output priority filter; policy drop;
     oif lo accept
     ct state established,related accept
-    oifname "tun0" ip daddr 100.64.3.2 tcp dport 8729 accept comment "API via rele"
+    oifname "tun0" ip daddr 100.64.3.2 tcp dport { 8728, 8729 } accept comment "API via rele"
     counter comment "resto"
   }
   chain forward { type filter hook forward priority filter; policy drop; }
@@ -361,6 +388,11 @@ table netdev ids_mon {
 
 - Por la VPN **solo entran el espejo, el ping del MikroTik y las respuestas** a lo que abre el
   sensor, que es la API. No se llega al panel, al SSH ni a otros puntos.
+- **La API sale a dos puertos del MikroTik:** el del punto (`API_PUERTO`, relé `api.sock`) y el
+  8728 (relé claro, `api-claro.sock`, §4), en una regla con el conjunto en orden ascendente
+  (`tcp dport { 8728, 8729 }`, `{ 2290, 8728 }`…). Si `API_PUERTO` es 8728, una sola regla
+  `tcp dport 8728`. Siempre solo hacia `100.64.N.2` por `tun0` (en un punto directo, hacia `mk_ip`
+  por `eth0`, §11). La tabla de una imagen sin el relé claro abre solo el puerto del punto.
 - **El MikroTik del punto puede hacer ping al sensor** (`100.64.N.1`), para comprobar el túnel desde
   el router: solo `echo-request`, solo desde su IP del túnel (`100.64.N.2`) y con tope de 5 por
   segundo. La respuesta sale por `ct state established,related`; `output` no abre nada nuevo.
@@ -522,6 +554,7 @@ o cambiar la IP, se da de baja y se crea otro.
  netns de p002 (dueño: vpn-p002, sin OpenVPN ni tun0)
    eth0 ── udp 37008 desde cualquier IP ─► tzsp-decap ─► ids-in ══veth══ ids-mon ─► suricata-p002
    relé: /run/ids/api.sock ─► 192.168.88.1:8729 (sale por eth0)
+   relé claro: /run/ids/api-claro.sock ─► 192.168.88.1:8728 (sale por eth0)
 ```
 
 | Pieza | Con VPN | Directo |
@@ -529,7 +562,7 @@ o cambiar la IP, se da de baja y se crea otro.
 | Puerto publicado | `1194+N-1/tcp` (OpenVPN) | `37008+N-1/udp` (el espejo) |
 | Origen aceptado | cualquiera, o `origen_ip` si se fija | **cualquiera** desde 2026-10-20 (antes solo `mk_ip`): sin regla `espejo directo <pid>` en el host, `TZSP_ALLOW=0.0.0.0/0` en el receptor y sin `ip saddr` en el `ids_punto` del contenedor |
 | `sniff-target` en el MikroTik | `100.64.N.1`, puerto 37008 | la IP del host hacia el MikroTik (`ip -4 route get <mk_ip>`), puerto `37008+N-1` |
-| API | relé → `100.64.N.2:8729` por `tun0` | relé → `<mk_ip>:8729` por `eth0`; el router ve la IP del host |
+| API | relé → `100.64.N.2:8729` y relé claro → `100.64.N.2:8728`, por `tun0` | relé → `<mk_ip>:8729` y relé claro → `<mk_ip>:8728`, por `eth0`; el router ve la IP del host |
 | «Conectado» | cliente OpenVPN conectado | espejo en los últimos 2 min (`tzsp.visto_s`) |
 | Certificado, usuario VPN, `server.conf`, fail2ban | sí | no |
 

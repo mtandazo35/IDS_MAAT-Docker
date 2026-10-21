@@ -83,7 +83,9 @@ class TextoNft(unittest.TestCase):
             N="12", TUN_NET="198.18.12.0/24", TUN_SENSOR="198.18.12.1", TUN_MK="198.18.12.2",
             API_PUERTO="8728", TZSP_PUERTO="40000")))
         self.assertIn('iifname "tun0" ip saddr 198.18.12.2 udp dport 40000 counter accept', txt)
+        # API_PUERTO=8728 es el mismo puerto del relé claro: una sola regla, sin conjunto
         self.assertIn('oifname "tun0" ip daddr 198.18.12.2 tcp dport 8728 accept', txt)
+        self.assertNotIn("dport {", txt)
         self.assertNotIn("100.64", txt)
         self.assertNotIn("8729", txt)
         self.assertNotIn("flush", txt)
@@ -158,6 +160,38 @@ class Directo(unittest.TestCase):
         self.assertIn("directo, MikroTik 192.168.88.1", p.stderr)
 
 
+class ApiClaro(unittest.TestCase):
+    """2026-10-20 (el dueño: «si no tiene certificado lo creas»): el relé fijo rele-api-claro va al
+    8728, la API normal, para que «Probar la conexión» cree el certificado de la API-SSL. La salida
+    hacia el MikroTik abre el puerto del punto y el 8728, con VPN y en directo."""
+
+    REGLAS = (
+        ({}, '    oifname "tun0" ip daddr 100.64.3.2 %s accept comment "API via rele"\n'),
+        (DIRECTO, '    oifname "eth0" ip daddr 192.168.88.1 %s accept comment "API via rele (directo)"\n'),
+    )
+
+    def test_puerto_del_punto_y_8728(self):
+        """Conjunto en orden ascendente (numérico: 10000 va después de 8728) y un solo puerto si son
+        el mismo."""
+        for puerto, dport in (("8729", "tcp dport { 8728, 8729 }"), ("8728", "tcp dport 8728"),
+                              ("2290", "tcp dport { 2290, 8728 }"), ("10000", "tcp dport { 8728, 10000 }")):
+            for modo, regla in self.REGLAS:
+                with self.subTest(puerto=puerto, modo=modo.get("MODO", "vpn")):
+                    txt = render.nft_punto(render.validar(entorno(API_PUERTO=puerto, **modo)))
+                    self.assertIn(regla % dport, txt)
+                    self.assertEqual(sum("API via rele" in l for l in txt.splitlines()), 1)
+
+    def test_solo_hacia_el_mikrotik(self):
+        """El 8728 tampoco abre la salida a otro destino: la regla sigue atada a la IP del MikroTik."""
+        for modo, _ in self.REGLAS:
+            with self.subTest(modo=modo.get("MODO", "vpn")):
+                txt = render.nft_punto(render.validar(entorno(**modo)))
+                salida = txt.split("chain output", 1)[1]
+                lineas = [l for l in salida.splitlines() if "8728" in l]
+                self.assertEqual(len(lineas), 1, lineas)
+                self.assertIn("ip daddr ", lineas[0])
+
+
 # Lo que imprime `nft list table` (nftables 1.1) de las tablas de los fixtures: otra forma,
 # comillas en iif/oif y contadores. test_vpn_arranque.sh lo compara con ay.comparar_nft.
 LISTADO_PUNTO = """table inet ids_punto {
@@ -175,7 +209,7 @@ LISTADO_PUNTO = """table inet ids_punto {
 \t\ttype filter hook output priority filter; policy drop;
 \t\toif "lo" accept
 \t\tct state established,related accept
-\t\toifname "tun0" ip daddr 100.64.3.2 tcp dport 8729 accept comment "API via rele"
+\t\toifname "tun0" ip daddr 100.64.3.2 tcp dport { 8728, 8729 } accept comment "API via rele"
 \t\tcounter packets 0 bytes 0 comment "resto"
 \t}
 
@@ -211,6 +245,8 @@ class CompararNft(unittest.TestCase):
         self.assertIsNotNone(ay.comparar_nft(self.punto, LISTADO_PUNTO.replace("100.64.3.2 udp", "100.64.3.9 udp")))
         sin_api = "\n".join(l for l in LISTADO_PUNTO.split("\n") if "8729" not in l)
         self.assertIsNotNone(ay.comparar_nft(self.punto, sin_api))
+        # la tabla de una imagen sin rele-api-claro (solo el puerto del punto) tampoco vale
+        self.assertIsNotNone(ay.comparar_nft(self.punto, LISTADO_PUNTO.replace("{ 8728, 8729 }", "8729")))
         de_mas = LISTADO_PUNTO.replace('\t\tcounter packets 0 bytes 0 comment "resto"\n\t}\n\n\tchain output',
                                        '\t\ttcp dport 22 accept\n\t\tcounter comment "resto"\n\t}\n\n\tchain output')
         self.assertNotEqual(de_mas, LISTADO_PUNTO)
@@ -252,9 +288,10 @@ class Cli(unittest.TestCase):
 
     def test_api_en_cualquier_puerto(self):
         """2026-10-20: el puerto de la API puede estar cambiado en el router; la imagen acepta 1-65535
-        y la tabla del punto deja salir la API a ese puerto. Lo que no es un puerto, no."""
+        y la tabla del punto deja salir la API a ese puerto (y al 8728 del relé claro). Lo que no es un
+        puerto, no."""
         txt = render.nft_punto(render.validar(entorno(API_PUERTO="2290", **DIRECTO)))
-        self.assertIn('oifname "eth0" ip daddr 192.168.88.1 tcp dport 2290 accept', txt)
+        self.assertIn('oifname "eth0" ip daddr 192.168.88.1 tcp dport { 2290, 8728 } accept', txt)
         for malo in ("0", "70000", "abc", "", "8729 ", "²"):
             with self.subTest(malo=malo):
                 with self.assertRaises(render.ErrorEntorno):

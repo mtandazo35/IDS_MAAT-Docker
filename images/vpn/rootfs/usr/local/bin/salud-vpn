@@ -1,6 +1,7 @@
 #!/bin/sh
 # salud-vpn: healthcheck del contenedor vpn (CONTRATO-F1a §5.7). Sano (0) si:
-#   - s6 da `up` para openvpn, tzsp-decap y rele-api;
+#   - s6 da `up` para openvpn, tzsp-decap, rele-api y rele-api-claro (el relé fijo al 8728, que
+#     viaja en la misma imagen que este script);
 #   - openvpn lleva arriba más de 5 s según s6 (`updownfor`): un openvpn que muere al arrancar y
 #     s6 relanza una y otra vez sale «up» en cada vuelta (si este s6-svstat no da updownfor, esta
 #     comprobación se salta);
@@ -26,9 +27,9 @@ directo=no
 [ "${MODO:-vpn}" = "directo" ] && directo=si
 
 if [ "$directo" = si ]; then
-  requeridos="tzsp-decap rele-api"
+  requeridos="tzsp-decap rele-api rele-api-claro"
 else
-  requeridos="openvpn tzsp-decap rele-api"
+  requeridos="openvpn tzsp-decap rele-api rele-api-claro"
 fi
 for s in $requeridos; do
   estado="$("$svstat" -o up "$servicios/$s" 2>/dev/null || true)"

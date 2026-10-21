@@ -113,7 +113,8 @@ IDS_MAAT-Docker/
 │   │       │   ├── openvpn/    {type=longrun, run, dependencies.d/init-mon}
 │   │       │   ├── tzsp-decap/ {type=longrun, run, dependencies.d/init-mon}
 │   │       │   ├── rele-api/   {type=longrun, run, dependencies.d/init-mon}
-│   │       │   └── user/contents.d/{init-env,init-nft,init-veth,init-mon,openvpn,tzsp-decap,rele-api}
+│   │       │   ├── rele-api-claro/ {type=longrun, run, dependencies.d/init-mon}   relé fijo al 8728 (§5.5)
+│   │       │   └── user/contents.d/{init-env,init-nft,init-veth,init-mon,openvpn,tzsp-decap,rele-api,rele-api-claro}
 │   │       ├── usr/local/bin/{tzsp-decap, ovpn-auth, salud-vpn}
 │   │       └── usr/local/lib/ids-vpn/render.py        validación del entorno y render de las tablas nft
 │   └── suricata/                                     B  contexto de build = images/suricata
@@ -187,7 +188,7 @@ IDS_MAAT-Docker/
 | `/srv/ids/datos/<pid>/` | root:10500 | **2750** | `eve.json`, `dns.json` y sus rotados — **lo crea el contenedor `suricata`**, ficheros 0640 grupo 10500 |
 | `/srv/ids/run/` | root:10500 | 0750 | padre |
 | `/srv/ids/run/estado.json` | root:10500 | 0640 | §5.10; el orquestador cada 15 s |
-| `/srv/ids/run/<pid>/` | root:10500 | **2770** | `api.sock` (660), `tzsp.json` (0640), `openvpn-status.log` (0640) — **los crea el contenedor `vpn`** |
+| `/srv/ids/run/<pid>/` | root:10500 | **2770** | `api.sock` (660), `api-claro.sock` (660, §5.5; no lo crea una imagen anterior a 2026-10-20), `tzsp.json` (0640), `openvpn-status.log` (0640) — **los crea el contenedor `vpn`** |
 | `/srv/ids/ctl/` | root:root | 0700 | padre |
 | `/srv/ids/ctl/<pid>/vpn/` | root:root | 0700 | `ovpn-mgmt.sock` — lo crea `vpn` |
 | `/srv/ids/ctl/<pid>/suricata/` | root:root | 0700 | `suricata-command.socket` — lo crea `suricata` |
@@ -268,7 +269,7 @@ contenedor termina con error y un mensaje claro.
 | `vpn` | `TUN_NET` | `100.64.3.0/24` | CIDR /24 |
 | `vpn` | `TUN_SENSOR` | `100.64.3.1` | `.1` de `TUN_NET` |
 | `vpn` | `TUN_MK` | `100.64.3.2` | `.2` de `TUN_NET` |
-| `vpn` | `API_PUERTO` | `8729` | `8729` o `8728` |
+| `vpn` | `API_PUERTO` | `8729` | 1–65535, sin ceros delante (desde 2026-10-20; antes `8729` o `8728`). El relé claro no lo usa: va siempre al 8728 (§5.5) |
 | `vpn` | `TZSP_PUERTO` | `37008` | 1–65535 |
 | `vpn` | `TZSP_BYTES` | `10000` | entero ≥ 0 |
 | `vpn` | `TZ` | `UTC` | — |
@@ -401,7 +402,8 @@ Reglas de render (decidido en el contrato):
 - `mem_reservation` de `suricata` sale de la tabla de perfiles (`reserva_mb`, §4.6.2). Del `vpn`,
   fijo `192m`. Desde 2026-10-16 no hay `mem_limit` ni `memswap_limit` (sin tope duro);
   `oom_score_adj` es fijo: −800 en el `vpn` y 500 en `suricata`.
-- `API_PUERTO` es `8728` solo con la excepción explícita del punto.
+- `API_PUERTO` es el `api_puerto` del punto: 8729 por defecto, o el que tenga la API en el router
+  (1-65535 desde 2026-10-20).
 - Se arranca con `docker compose -p ids-<pid> -f /srv/ids/puntos/<pid>/compose.yml up -d --pull never`.
   Las imágenes se descargan antes, por digest.
 
@@ -548,12 +550,17 @@ table inet ids_punto {
     type filter hook output priority filter; policy drop;
     oif lo accept
     ct state established,related accept
-    oifname "tun0" ip daddr 100.64.3.2 tcp dport 8729 accept comment "API via rele"
+    oifname "tun0" ip daddr 100.64.3.2 tcp dport { 8728, 8729 } accept comment "API via rele"
     counter comment "resto"
   }
   chain forward { type filter hook forward priority filter; policy drop; }
 }
 ```
+
+La salida de la API abre dos puertos, siempre solo hacia el MikroTik: `API_PUERTO` (relé
+`rele-api`) y el 8728 (relé `rele-api-claro`, §5.5), en una regla con el conjunto en orden
+ascendente numérico (`{ 8728, 8729 }`, `{ 2290, 8728 }`, `{ 8728, 10000 }`). Con `API_PUERTO=8728`
+queda una sola regla `tcp dport 8728`, sin conjunto.
 
 ```
 table netdev ids_mon
@@ -564,12 +571,13 @@ table netdev ids_mon {
 ```
 
 Con `MODO=directo` (punto sin VPN, 0.1.9) la tabla `inet ids_punto` no lleva OpenVPN ni `tun0`: el
-espejo entra por `eth0` (el DNAT del puerto UDP del punto en el host) solo desde `MK_IP`, y la API
-sale por `eth0` solo hacia `MK_IP`. Ejemplo exacto: `tests/fixtures/vpn/ids_punto_p003_directo.nft`.
+espejo entra por `eth0` (el DNAT del puerto UDP del punto en el host) desde cualquier origen
+(2026-10-20; antes solo desde `MK_IP`), y la API sale por `eth0` solo hacia `MK_IP`, a los mismos dos
+puertos que con VPN. Ejemplo exacto: `tests/fixtures/vpn/ids_punto_p003_directo.nft`.
 
 ```
     iifname "eth0" udp dport 37008 counter accept comment "espejo TZSP (directo, cualquier origen)"
-    oifname "eth0" ip daddr 192.168.88.1 tcp dport 8729 accept comment "API via rele (directo)"
+    oifname "eth0" ip daddr 192.168.88.1 tcp dport { 8728, 8729 } accept comment "API via rele (directo)"
 ```
 
 ### 4.8 `ids_host.nft` (plantilla de C)
@@ -638,6 +646,7 @@ Con `"dev": false`, el orquestador **rechaza** cualquier referencia que no sea `
 | 5 | `openvpn` | longrun | `umask 027; exec openvpn --config /etc/ids/vpn/server.conf` | s6 lo relanza |
 | 5 | `tzsp-decap` | longrun | §5.4 | s6 lo relanza |
 | 5 | `rele-api` | longrun | §5.5 | s6 lo relanza |
+| 5 | `rele-api-claro` | longrun | §5.5 (relé fijo al 8728) | s6 lo relanza |
 
 ```sh
 ip link add ids-in type veth peer name ids-mon
@@ -704,16 +713,33 @@ F2: `rx_bytes` (bytes de los datagramas TZSP recibidos, también los rechazados)
 de las tramas reenviadas a `ids-in`), acumulados como `rx`/`tx`: el panel calcula los Mbps del espejo
 con la diferencia entre dos lecturas.
 
-### 5.5 Relé del API-SSL (A)
+### 5.5 Relés de la API (A)
+
+Dos longrun con el mismo cálculo del destino: `TUN_MK` y, con `MODO=directo`, `MK_IP` (por `eth0`).
 
 ```sh
+# rele-api: el de siempre, al puerto de la API del punto
 umask 007
 exec socat UNIX-LISTEN:/run/ids/api.sock,fork,unlink-early,mode=660,max-children=4 \
            TCP:${TUN_MK}:${API_PUERTO},connect-timeout=5
+
+# rele-api-claro: fijo a la API normal (sin SSL), sea cual sea API_PUERTO
+umask 007
+exec socat UNIX-LISTEN:/run/ids/api-claro.sock,fork,unlink-early,mode=660,max-children=4 \
+           TCP:${TUN_MK}:8728,connect-timeout=5
 ```
 
-- El socket queda `root:10500` 0660 por el setgid de `/srv/ids/run/<pid>` (2770).
-- La tabla `ids_punto` solo deja salir hacia `${TUN_MK}:${API_PUERTO}` por `tun0`.
+- Los dos sockets quedan `root:10500` 0660 por el setgid de `/srv/ids/run/<pid>` (2770).
+- `api.sock` es el del trabajo diario del panel. `api-claro.sock` sirve para que «Probar la
+  conexión» entre una vez por la API normal y cree el certificado de la API-SSL cuando el router no
+  tiene uno (el dueño, 2026-10-20: «el probar la conexión debe confirmar si está con ssl conexión y
+  certificado; si no tiene certificado lo creas»). Por él no hay TLS: el `/login` va en claro dentro
+  del túnel (o de la LAN, en directo).
+- La tabla `ids_punto` solo deja salir hacia `${TUN_MK}` por `tun0` (en directo, `${MK_IP}` por
+  `eth0`), a `${API_PUERTO}` y al 8728 (§4.7).
+- **Imagen anterior:** sin `rele-api-claro` no hay `api-claro.sock` y su tabla abre solo
+  `${API_PUERTO}`. El panel lo detecta porque falta el socket en `/srv/ids/run/<pid>/` y no intenta
+  crear el certificado por esa vía.
 
 ### 5.6 `ovpn-auth` (A) y usuarios
 
@@ -747,7 +773,7 @@ Líneas de log por **stderr** (exactas; las usan fail2ban y las pruebas de C):
 
 | Contenedor | Comando | Sano (exit 0) si… | `interval/timeout/retries/start_period` |
 |---|---|---|---|
-| `vpn` | `/usr/local/bin/salud-vpn` (sh) | `/command/s6-svstat -o up /run/service/<s>` da `true` para `openvpn`, `tzsp-decap` y `rele-api`; **y** `/run/ids/tzsp.json` tiene menos de 90 s (`stat -c %Y`); **y** `nft list table inet ids_punto` funciona; **y** hay un socket en LISTEN (`/proc/net/tcp`, estado `0A`) en el `port` de `server.conf`; **y** openvpn lleva más de 5 s arriba (`s6-svstat -o updownfor`, si existe) | 30s / 10s / 3 / 30s (start_interval 5s) |
+| `vpn` | `/usr/local/bin/salud-vpn` (sh) | `/command/s6-svstat -o up /run/service/<s>` da `true` para `openvpn`, `tzsp-decap`, `rele-api` y `rele-api-claro` (en directo, sin `openvpn`); **y** `/run/ids/tzsp.json` tiene menos de 90 s (`stat -c %Y`); **y** `nft list table inet ids_punto` funciona; **y** hay un socket en LISTEN (`/proc/net/tcp`, estado `0A`) en el `port` de `server.conf`; **y** openvpn lleva más de 5 s arriba (`s6-svstat -o updownfor`, si existe) | 30s / 10s / 3 / 30s (start_interval 5s) |
 | `suricata` | `/usr/local/bin/salud-suricata` (python3) | `/proc/1/cmdline` contiene `suricata`; **y** en los últimos 512 KiB de `/var/log/suricata/eve.json` hay una línea con `"event_type":"stats"` cuyo `timestamp` tiene menos de 120 s y es posterior al arranque del PID 1 | 30s / 10s / 3 / 600s (start_interval 5s) |
 
 - Ninguno falla por falta de espejo, punto pausado o MikroTik desconectado.
@@ -906,7 +932,7 @@ código `CANCELADA` y quedan en `orq.jsonl`; nunca se ejecutan (los `pid` no se 
 
 | Orden | Parámetros | Encola | Devuelve en `datos` |
 |---|---|---|---|
-| `punto.crear` | `nombre`, `redes_abonados[]` (≤ 64, IPv4 CIDR; opcional desde 2026-10-15: sin ella, `redes_por_defecto`, lo privado y el CGNAT menos las redes reservadas), `perfil` (def. `reducido`), `hilos` 1–2 (def. 1), `ros_version` 6/7 (def. 7), `compat_v6` `no`/`seclevel0`/`legacy`, `api_puerto` 8729/8728, `origen_ip?`, `pid?`, `n?` | sí | `pid`, `n`, `puerto`, `tun_net`, `usuario`, `clave` y `comandos` con la clave puesta. La clave va en el primer `op.estado` que lee el resultado (no se guarda en `orq.db`); un `punto.crear` nuevo de un punto que ya existe («ya existe», `ya_entregada`) la vuelve a dar si el orquestador la tiene cifrada y es la vigente (2026-10-16), y si no, `comandos` con `<CLAVE-VPN>` |
+| `punto.crear` | `nombre`, `redes_abonados[]` (≤ 64, IPv4 CIDR; opcional desde 2026-10-15: sin ella, `redes_por_defecto`, lo privado y el CGNAT menos las redes reservadas), `perfil` (def. `reducido`), `hilos` 1–2 (def. 1), `ros_version` 6/7 (def. 7), `compat_v6` `no`/`seclevel0`/`legacy`, `api_puerto` 1-65535 (8729 por defecto), `origen_ip?`, `pid?`, `n?` | sí | `pid`, `n`, `puerto`, `tun_net`, `usuario`, `clave` y `comandos` con la clave puesta. La clave va en el primer `op.estado` que lee el resultado (no se guarda en `orq.db`); un `punto.crear` nuevo de un punto que ya existe («ya existe», `ya_entregada`) la vuelve a dar si el orquestador la tiene cifrada y es la vigente (2026-10-16), y si no, `comandos` con `<CLAVE-VPN>` |
 | `punto.borrar` | `pid`, `confirmar` (= nombre) | sí | — |
 | `punto.arrancar` / `punto.parar` / `punto.reiniciar` | `pid`, `parte` ∈ vpn/suricata/todo | sí | `observado` |
 | `punto.ajustar` | `pid`, `perfil?`, `hilos?`, `redes_abonados?`, `compat_v6?`, `ros_version?`, `origen_ip?` | sí | lo recreado |

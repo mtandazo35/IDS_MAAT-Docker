@@ -968,28 +968,24 @@ def ip_host_hacia(ip, t=None):
     return valor
 
 
-# Certificado para la API-SSL del router (2026-10-20): hay RouterOS 7 que cierran la API-SSL sin
-# certificado (no ofrecen el cifrado anónimo) y con este conecta; lo comprobó el dueño en un cliente.
-COMANDOS_CERT_API_SSL = (
-    "/certificate add name=ids-api common-name=ids-api days-valid=3650 trusted=yes "
-    "key-usage=key-cert-sign,crl-sign,digital-signature,key-encipherment,tls-server\n"
-    "/certificate sign ids-api\n"
-    "/ip service set api-ssl certificate=ids-api disabled=no\n")
-
-
 def comandos_directo(p, ip_host=None):
     """Lo que el MikroTik de un punto directo necesita saber: no hay VPN que crear, solo adónde manda
-    el espejo y desde dónde le llega el panel a la API (el certificado que pide RouterOS 7 para la
-    API-SSL, o encender la API normal). Lo mismo en v6 y v7."""
+    el espejo. De la API, ninguna orden (el dueño, 2026-10-20): se configura en la ficha del punto
+    (usuario, clave, puerto y «Con certificado») y «Probar la conexión» la comprueba y, con
+    certificado, lo crea si el router no tiene (entra una vez por la API normal, 8728). Aquí solo
+    queda qué dejar pasar si el router filtra la entrada. Lo mismo en v6 y v7."""
     host = ip_host or "<IP-DEL-HOST>"
-    # con o sin certificado lo elige la casilla de la ficha (panel); aquí van las dos (2026-10-20)
-    api = ("# API: el panel entra a la API del MikroTik (%s) por el puerto %s, desde %s.\n"
-           "# Si el router filtra la entrada, deja pasar ese puerto desde esa IP. El puerto tiene que ser\n"
-           "# el del servicio en el router (/ip service print).\n"
-           "# Con certificado (API-SSL; RouterOS 7 no la acepta sin uno). Si el router no tiene, pega:\n"
-           % (p["mk_ip"], p["api_puerto"], host) + COMANDOS_CERT_API_SSL
-           + "# Sin certificado (API normal; la clave viaja sin cifrar por la red):\n"
-             "/ip service set api disabled=no\n")
+    ap = p["api_puerto"]
+    # el 8728 es la API normal, por la que el panel entra a crear el certificado; si ya es el de la
+    # API, no se repite
+    pasar = ("el puerto 8728.\n" if str(ap) == "8728" else
+             "los puertos %s y 8728\n"
+             "# (el 8728 es la API normal, por la que se crea el certificado).\n" % ap)
+    api = ("# API: se configura en la ficha del punto (sección API): usuario, clave, puerto %s (el del\n"
+           "# servicio en el router) y «Con certificado». «Probar la conexión» la comprueba y, con\n"
+           "# certificado, si el router no tiene uno, lo crea.\n"
+           "# Si el router filtra la entrada, deja pasar desde %s %s"
+           % (ap, host, pasar))
     return (
         "# ids-maat %s (%s) · N=%s · conexión directa (sin VPN, solo LAN) · MikroTik %s\n"
         "# Este punto no lleva VPN: no hay nada que pegar para conectarlo.\n"

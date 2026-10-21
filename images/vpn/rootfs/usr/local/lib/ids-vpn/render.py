@@ -21,6 +21,10 @@ RE_ENTERO = re.compile(r"0|[1-9][0-9]*")
 MODOS = ("vpn", "directo")
 REDES_LAN = tuple(ipaddress.IPv4Network(r) for r in
                   ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "100.64.0.0/10"))
+# La API normal (sin SSL) de RouterOS. El relé fijo `rele-api-claro` va siempre a ella, sea cual sea
+# API_PUERTO: «Probar la conexión» entra por ahí y crea el certificado de la API-SSL si el router no
+# tiene uno (el dueño, 2026-10-20). La salida hacia el MikroTik abre los dos puertos.
+API_CLARO_PUERTO = 8728
 
 
 class ErrorEntorno(ValueError):
@@ -113,6 +117,16 @@ def validar(env):
     }
 
 
+def _dport_api(cfg):
+    """`tcp dport` de la API hacia el MikroTik: el puerto del punto (rele-api) y el 8728
+    (rele-api-claro). Si coinciden, uno solo; si no, el conjunto en orden ascendente (el mismo que
+    devuelve `nft list`)."""
+    puertos = sorted({cfg["api_puerto"], API_CLARO_PUERTO})
+    if len(puertos) == 1:
+        return f"tcp dport {puertos[0]}"
+    return "tcp dport { " + ", ".join(str(p) for p in puertos) + " }"
+
+
 def nft_punto(cfg):
     """Texto exacto de la tabla `inet ids_punto` (§4.7). Nunca `flush ruleset`."""
     if cfg.get("modo") == "directo":
@@ -137,7 +151,8 @@ def nft_punto(cfg):
         "    type filter hook output priority filter; policy drop;\n"
         "    oif lo accept\n"
         "    ct state established,related accept\n"
-        f'    oifname "tun0" ip daddr {mk} tcp dport {cfg["api_puerto"]} accept comment "API via rele"\n'
+        # la API sale solo hacia el MikroTik del tunel: su puerto (rele-api) y el 8728 (rele-api-claro)
+        f'    oifname "tun0" ip daddr {mk} {_dport_api(cfg)} accept comment "API via rele"\n'
         '    counter comment "resto"\n'
         "  }\n"
         "  chain forward { type filter hook forward priority filter; policy drop; }\n"
@@ -148,7 +163,7 @@ def nft_punto(cfg):
 def nft_punto_directo(cfg):
     """La tabla de un punto directo: sin OpenVPN ni tun0. El espejo entra por eth0 (el DNAT del
     puerto UDP del punto en el host) desde cualquier IP (el dueño, 2026-10-20: «necesito que escuche
-    cualquier IP»); la API sale por eth0 solo hacia la IP del MikroTik."""
+    cualquier IP»); la API sale por eth0 solo hacia la IP del MikroTik, a su puerto y al 8728."""
     mk = cfg["mk_ip"]
     return (
         "table inet ids_punto\n"
@@ -165,7 +180,7 @@ def nft_punto_directo(cfg):
         "    type filter hook output priority filter; policy drop;\n"
         "    oif lo accept\n"
         "    ct state established,related accept\n"
-        f'    oifname "eth0" ip daddr {mk} tcp dport {cfg["api_puerto"]} accept comment "API via rele (directo)"\n'
+        f'    oifname "eth0" ip daddr {mk} {_dport_api(cfg)} accept comment "API via rele (directo)"\n'
         '    counter comment "resto"\n'
         "  }\n"
         "  chain forward { type filter hook forward priority filter; policy drop; }\n"
