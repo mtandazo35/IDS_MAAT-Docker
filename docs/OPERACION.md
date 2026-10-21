@@ -36,11 +36,15 @@ proyecto original (decisión del dueño, 2026-10-15) y vale igual en 6.49 y en v
   /certificate sign ids-api
   /ip service set api-ssl certificate=ids-api disabled=no
   ```
-- **API sin SSL (8728).** Alternativa sin certificado: en la ficha del punto (API), «Pasar a API sin
-  SSL (8728)», o `ids-orq punto ajustar <pid> --api-puerto 8728`, y en el router
-  `/ip service set api disabled=no`. Recrea los dos contenedores del punto (con vuelta atrás si
-  falla). Sin SSL no hay certificado ni huella, y la clave de `ids-api` viaja sin cifrar por la red
-  del punto (decisión del dueño, 2026-10-20: «debe aceptar sin ssl»).
+- **Con certificado o API normal, y el puerto** (decisión del dueño, 2026-10-20). En la ficha del
+  punto (API) están la casilla «Con certificado (API-SSL)» y el «Puerto de la API en el MikroTik», el
+  que diga `/ip service print`, que puede estar cambiado. Sin la casilla el panel habla la **API
+  normal** (en el router, `/ip service set api disabled=no`): no hay certificado ni huella, y la clave
+  de `ids-api` viaja sin cifrar por la red del punto. La casilla se guarda al momento. Cambiar el puerto
+  (al «Guardar», o `ids-orq punto ajustar <pid> --api-puerto <1-65535>`) recrea los dos contenedores
+  del punto, con vuelta atrás si falla. Un puerto que no sea 8729 ni 8728 necesita la imagen `vpn`
+  0.1.13 o posterior (etiqueta `ids-maat.api-puerto=libre`); con una anterior el orquestador contesta
+  CONFLICTO y pide volver a ejecutar `install.sh`.
 - Si el servicio está deshabilitado: `/ip service enable api-ssl`.
 - **La clave de `ids-api` la protege el túnel.** Sin huella fijada, el panel hace `/login` con lo
   que presente el router, con certificado o sin él. La clave va por el túnel OpenVPN, en el que el

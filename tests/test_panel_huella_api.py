@@ -154,7 +154,7 @@ class HuellaNucleo(_Nucleo):
         self.d._mk_abrir_unix = abrir
         self.d._mk_tls_wrap = sin_tls
         d = self.d.cargar_mk_de(self.d.router_por_id("p001"))
-        d["PORT"] = "8728"
+        d["PORT"], d["TLS"] = "8728", "0"          # la casilla «Con certificado» desmarcada
         self.d.mk_conectar(d).close()
         self.assertEqual([w for w in recibido if w and w[0] == "/login"],
                          [["/login", "=name=ids-api", "=password=clave-api-1"]])
@@ -592,27 +592,52 @@ class FichaHuella(_Panel):
         # clave viaja sin cifrar y ofrece volver a API-SSL
         self.assertNotIn("<b>no conecta</b>", h)
         self.assertIn("viaja sin cifrar", h)
-        self.assertIn("Pasar a API-SSL (8729)", h)
+        self.assertIn("name=api_puerto id=papi_puerto min=1 max=65535 value='8728'", h)
+        self.assertIn("id=papi_tls onchange", h)          # casilla «Con certificado» sin marcar
         self.assertNotIn("protegida solo por el túnel", h)
         self.assertNotIn("La huella coincide: confirmar", h)
 
-    def test_pasar_a_api_sin_ssl_encola_el_ajuste(self):
-        """2026-10-20: «Pasar a API sin SSL (8728)» encola punto.ajustar solo con api_puerto; un puerto
-        que no es 8729 ni 8728 no sale del panel."""
+    def test_casilla_y_puerto_de_la_api(self):
+        """2026-10-20: la ficha lleva «Con certificado (API-SSL)» y el puerto de la API del router. Guardar
+        sin la casilla deja la API normal (TLS 0) y un puerto distinto encola punto.ajustar solo con
+        api_puerto; un puerto que no lo es no sale; «Probar» con otro puerto pide guardar antes; un
+        formulario viejo, sin esos campos, no toca el cifrado."""
         h = self.get("/puntos/p001")
-        self.assertIn("Pasar a API sin SSL (8728)", h)
-        self.assertIn("/ip service set api disabled=no", h)
-        tok = self.token_de(h, "value=puerto")
-        r = self.p.pedir("POST", "/puntos/p001/api", {"accion": "puerto", "api_puerto": "8728", "op": tok},
-                         cookie=self.ana)
-        self.assertIn(r.status, (200, 303), r.texto[:300])
+        self.assertIn("Con certificado (API-SSL)", h)
+        self.assertIn("name=tls value=1 id=papi_tls checked", h)          # API-SSL de serie
+        self.assertIn("min=1 max=65535 value='8729'", h)
+        r = self.p.pedir("POST", "/puntos/p001/api",
+                         {"accion": "guardar", "user": "ids-api", "api_puerto": "2290",
+                          "op": self.token_de(h, "value=guardar")}, cookie=self.ana)
+        self.assertEqual(r.status, 200, r.texto[:300])
+        self.assertIn("sin SSL (API normal)", r.texto)
+        self.assertIn("pasa a 2290", r.texto)
+        self.assertEqual(self.guardados()["p001"]["TLS"], "0")
         ajustes = [x for x in self.pedidas if x["orden"] == "punto.ajustar"]
-        self.assertEqual([x["params"] for x in ajustes], [{"pid": "p001", "api_puerto": 8728}])
-        r = self.p.pedir("POST", "/puntos/p001/api", {"accion": "puerto", "api_puerto": "8080",
-                                                      "op": self.token_de(self.get("/puntos/p001"), "value=puerto")},
-                         cookie=self.ana)
-        self.assertEqual(r.status, 400, r.texto[:300])
+        self.assertEqual([x["params"] for x in ajustes], [{"pid": "p001", "api_puerto": 2290}])
+        # con la casilla marcada y el mismo puerto: TLS 1 y ninguna orden más
+        r = self.p.pedir("POST", "/puntos/p001/api",
+                         {"accion": "guardar", "user": "ids-api", "api_puerto": "8729", "tls": "1",
+                          "op": self.token_de(self.get("/puntos/p001"), "value=guardar")}, cookie=self.ana)
+        self.assertEqual(r.status, 200, r.texto[:300])
+        self.assertEqual(self.guardados()["p001"]["TLS"], "1")
         self.assertEqual(len([x for x in self.pedidas if x["orden"] == "punto.ajustar"]), 1)
+        # un puerto que no lo es
+        r = self.p.pedir("POST", "/puntos/p001/api",
+                         {"accion": "guardar", "user": "ids-api", "api_puerto": "70000",
+                          "op": self.token_de(self.get("/puntos/p001"), "value=guardar")}, cookie=self.ana)
+        self.assertEqual(r.status, 400, r.texto[:300])
+        # «Probar» con otro puerto: primero hay que guardar
+        r, _j = self.ajax("/puntos/p001/api", {"accion": "probar", "user": "ids-api", "api_puerto": "2291",
+                                               "op": self.token_de(self.get("/puntos/p001"), "value=guardar")})
+        self.assertEqual(r.status, 409, r.texto[:300])
+        self.assertIn("Guardar", r.texto)
+        # un formulario viejo, sin puerto ni casilla, no toca el cifrado
+        r = self.p.pedir("POST", "/puntos/p001/api",
+                         {"accion": "guardar", "user": "ids-api",
+                          "op": self.token_de(self.get("/puntos/p001"), "value=guardar")}, cookie=self.ana)
+        self.assertEqual(r.status, 200, r.texto[:300])
+        self.assertEqual(self.guardados()["p001"]["TLS"], "1")
 
     def test_solo_admin(self):
         olga = self.p.entrar("olga")
@@ -751,7 +776,7 @@ class Textos(_Panel):
                     # la API-SSL va sin exigir certificado (2026-10-15); hay RouterOS 7 que lo necesitan y
                     # la doc da el suyo, y la API sin SSL (8728) se elige en la ficha (2026-10-20)
                     "La API del router: API-SSL o API sin SSL", "/ip service set api-ssl certificate=ids-api",
-                    "Pasar a API sin\nSSL (8728)", "/ip service set api disabled=no",
+                    "Puerto de la API en el MikroTik", "/ip service set api disabled=no",
                     "verify-server-certificate", "ids-maat-ca-",
                     # el script no lleva firewall ni rutas (2026-10-15): lo dice y explica la limpieza
                     "Firewall y rutas del router: los gestionas tú", "no lleva reglas de firewall ni rutas",

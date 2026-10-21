@@ -1170,7 +1170,10 @@ CAMPOS_ROUTER = ("id", "nombre", "iface", "HOST", "PORT", "TLS", "USER", "PASS",
 # CERT_FP_CUANDO dicen que administrador confirmo la huella y cuando (VPN-06); una CERT_FP sin
 # ellos es de antes: la fijo sola la primera conexion (se sigue usando, la ficha la marca).
 CAMPOS_USUARIO = ("USER", "PASS", "LIST", "TTL", "LIST_DNS", "TTL_DNS", "LIST_GRAD", "TTL_GRAD",
-                  "LIST_DST", "TTL_DST", "ENABLED", "CERT_FP", "CERT_FP_QUIEN", "CERT_FP_CUANDO")
+                  "LIST_DST", "TTL_DST", "ENABLED", "CERT_FP", "CERT_FP_QUIEN", "CERT_FP_CUANDO",
+                  # TLS: «1» API-SSL (con certificado en el router), «0» API normal sin SSL; lo elige
+                  # el usuario en la ficha, aparte del puerto (el user, 2026-10-20)
+                  "TLS")
 _ROUTERS_LOCK = threading.RLock()
 SECRETOS_AVISO = {}          # campo -> motivo, de los secretos que no se pudieron descifrar
 
@@ -1181,7 +1184,9 @@ def _router_vacio(pid):
     p = nodos.punto(pid) or {}
     return {"id": pid, "nombre": p.get("nombre") or pid, "iface": pid,
             "HOST": "unix:" + os.path.join(nodos.RUN, pid, "api.sock"),
-            "PORT": str(p.get("api_puerto") or 8729), "TLS": "1", "USER": "", "PASS": "",
+            "PORT": str(p.get("api_puerto") or 8729),
+            # sin elegir todavia: API-SSL salvo en el 8728, el de la API normal de RouterOS
+            "TLS": "0" if str(p.get("api_puerto") or "") == "8728" else "1", "USER": "", "PASS": "",
             "LIST": "suricata-cuarentena", "TTL": "1h",
             "LIST_DNS": "suricata-dns-sospechoso", "TTL_DNS": "1d",
             "LIST_GRAD": "suricata-graduada", "TTL_GRAD": "1d",
@@ -1630,14 +1635,14 @@ def mk_conectar(d, timeout=6):
     pid = nodos.exigir_pid(d.get("ROUTER_ID") or "")
     host = "unix:" + nodos.api_sock(pid)
     port = int(d.get("PORT") or 8729)
-    if port == 8728:
-        # API sin TLS (el dueno, 2026-10-20: «debe aceptar sin ssl»): el relé del punto lleva el TCP
-        # al 8728 del router y aqui se habla la API en claro, sin certificado ni huella que
-        # comprobar. La clave de ids-api viaja sin cifrar por la red del punto: lo decide el cliente.
+    if str(d.get("TLS", "1")) == "0":
+        # API normal, sin SSL (el dueno, 2026-10-20: «si no, envia por api normal»): el relé del punto
+        # lleva el TCP al puerto de la API del router y aqui se habla en claro, sin certificado ni
+        # huella que comprobar. La clave de ids-api viaja sin cifrar por la red del punto.
         try:
             sock = _mk_abrir_unix(host[len("unix:"):], timeout)
         except Exception as e:
-            raise IOError("no se pudo abrir el relé de la API del punto (API sin SSL, 8728): %s" % e)
+            raise IOError("no se pudo abrir el relé de la API del punto (API sin SSL, puerto %d): %s" % (port, e))
     else:
         # La API-SSL va sin certificado (decision del dueno 2026-10-15): sin huella fijada se hace
         # /login con lo que presente el router, anonimo (ADH) o con certificado, y la clave de ids-api
@@ -1682,8 +1687,8 @@ def mk_huella_presentada(pid, timeout=8):
     conecta, o si tiene una huella fijada y el router no presenta certificado."""
     pid = nodos.exigir_pid(pid)
     d = cargar_mk_de(router_por_id(pid) or _router_vacio(pid))
-    if int(d.get("PORT") or 8729) == 8728:
-        raise IOError("el punto usa la API sin SSL (8728): no hay certificado ni huella")
+    if str(d.get("TLS", "1")) == "0":
+        raise IOError("el punto usa la API sin SSL: no hay certificado ni huella")
     sock = _mk_tls_wrap("unix:" + nodos.api_sock(pid), int(d.get("PORT") or 8729), timeout,
                         con_certificado=bool(huella_fijada(d)))
     try:
@@ -14411,11 +14416,15 @@ en rojo (puede ser una suplantación o un certificado cambiado en el router) y e
 clave; el Registro lo apunta una vez. Si lo cambiaste tú, compara el nuevo en el router y pulsa
 <b>Volver a confirmar</b>. <b>Olvidar la huella</b> la borra y el panel vuelve a conectar sin exigir
 certificado (hazlo también si le quitaste el certificado al router).</li>
-<li><b>API sin SSL (8728).</b> Si prefieres no usar certificado, en la ficha (API) pulsa <b>Pasar a API sin
-SSL (8728)</b> (o <code>ids-orq punto ajustar &lt;punto&gt; --api-puerto 8728</code> en el servidor) y
-enciende la API en el router: <code>/ip service set api disabled=no</code>. Se recrean los contenedores del
-punto (un par de minutos sin análisis). Sin SSL no hay certificado ni huella, y <b>la clave de la API viaja
-sin cifrar</b> por la red del punto. Para volver, <b>Pasar a API-SSL (8729)</b>.</li>
+<li><b>Con certificado o API normal, y el puerto.</b> En la ficha (API) están la casilla <b>Con certificado
+(API-SSL)</b> y el <b>Puerto de la API en el MikroTik</b> (el que diga <code>/ip service print</code>: puede
+estar cambiado). Con la casilla, el panel habla API-SSL; sin ella, la <b>API normal</b>: enciéndela en el
+router con <code>/ip service set api disabled=no</code>. Sin certificado no hay huella, y <b>la clave de la
+API viaja sin cifrar</b> por la red del punto. Al marcar o desmarcar la casilla, el puerto pasa solo de
+8729 a 8728 y al revés si era uno de esos. Cambiar el puerto (al <b>Guardar</b>, o
+<code>ids-orq punto ajustar &lt;punto&gt; --api-puerto &lt;puerto&gt;</code> en el servidor) recrea los
+contenedores del punto (un par de minutos sin análisis); un puerto que no sea 8729 ni 8728 necesita la
+imagen <code>vpn</code> de la 0.1.13 o posterior (volver a ejecutar <code>install.sh</code>).</li>
 </ul>
 <h3>Origen fijo de la VPN</h3>
 <p>Cualquiera puede abrir el puerto VPN de un punto, y OpenVPN reserva una de sus <b>32 plazas</b> a cada

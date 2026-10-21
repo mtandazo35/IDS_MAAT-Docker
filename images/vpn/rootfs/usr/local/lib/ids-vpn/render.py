@@ -75,9 +75,12 @@ def validar(env):
     if mk != tun_net.network_address + 2:
         raise ErrorEntorno(f"TUN_MK={mk} no es la .2 de TUN_NET={tun_net}")
 
+    # el puerto de la API del router: 8729 (API-SSL), 8728 (API normal) u otro si en el router está
+    # cambiado (2026-10-20; la imagen lo declara con ids-maat.api-puerto=libre)
     api_txt = env.get("API_PUERTO", "")
-    if api_txt not in ("8729", "8728"):
-        raise ErrorEntorno(f"API_PUERTO={api_txt!r} debe ser 8729 o 8728")
+    if not (api_txt.isascii() and api_txt.isdigit() and len(api_txt) <= 5 and api_txt[0] != "0"
+            and int(api_txt) <= 65535):
+        raise ErrorEntorno(f"API_PUERTO={api_txt!r} debe ser un puerto (1-65535)")
 
     tzsp_puerto = _entero(env, "TZSP_PUERTO", 1, 65535)
     tzsp_bytes = _entero(env, "TZSP_BYTES", 0)

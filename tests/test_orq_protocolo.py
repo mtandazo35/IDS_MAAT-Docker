@@ -39,7 +39,7 @@ class Protocolo(unittest.TestCase):
             ("punto.crear", {"nombre": "Norte", "redes_abonados": ["10.0.0.0/24"]}),
             ("punto.crear", {"nombre": "norte", "redes_abonados": ["10.0.0.0/24"], "hilos": 3}),
             ("punto.crear", {"nombre": "norte", "redes_abonados": ["10.0.0.0/24"], "ros_version": 5}),
-            ("punto.crear", {"nombre": "norte", "redes_abonados": ["10.0.0.0/24"], "api_puerto": 22}),
+            ("punto.crear", {"nombre": "norte", "redes_abonados": ["10.0.0.0/24"], "api_puerto": 70000}),   # 1-65535 desde 2026-10-20
             ("punto.crear", {"nombre": "norte", "redes_abonados": ["10.0.0.0/24"], "imagen": "x"}),
             ("punto.crear", {"nombre": "norte", "redes_abonados": ["10.0.0.0/24"], "perfil": "todo"}),
             ("punto.crear", {"nombre": "norte", "redes_abonados": ["10.0.0.0/24"], "n": 251}),

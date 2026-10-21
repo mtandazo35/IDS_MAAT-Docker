@@ -143,6 +143,7 @@ class SistemaFalso:
         self.forzar_parte = {}    # parte -> {"estado", "salud"} al crearla o arrancarla
         self.imagenes_faltan = set()   # referencias que `docker image inspect` no encuentra
         self.modos_vpn = "vpn,directo"  # etiqueta ids-maat.modos de la imagen vpn ("" = anterior)
+        self.api_puerto_vpn = "libre"   # etiqueta ids-maat.api-puerto de la imagen vpn ("" = anterior)
         self.baneadas = set()          # IPs baneadas en la jaula ids-vpn (fail2ban-client simulado)
 
     def __call__(self, args, entrada=None, timeout=600):
@@ -289,6 +290,8 @@ class SistemaFalso:
                 return 1, "", "Error response from daemon: No such image: %s\n" % a[-1]
             if any("ids-maat.modos" in x for x in a):        # etiqueta de la imagen vpn
                 return 0, self.modos_vpn + "\n", ""
+            if any("ids-maat.api-puerto" in x for x in a):   # cualquier puerto para la API (2026-10-20)
+                return 0, self.api_puerto_vpn + "\n", ""
             return 0, "sha256:" + "d" * 64 + "\n", ""
         if sub == "create":
             return 0, "id\n", ""

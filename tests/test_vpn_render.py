@@ -52,7 +52,7 @@ class Validacion(unittest.TestCase):
                         "100.64.3.0/024", "fd00::/24", "100.64.3.0/24 "],
             "TUN_SENSOR": ["", "100.64.3.2", "100.64.4.1", "100.64.3.01", "x"],
             "TUN_MK": ["", "100.64.3.1", "100.64.3.3", "100.64.4.2", "192.0.2.2", "100.64.3.02"],
-            "API_PUERTO": ["", "443", "8730", "08729", "8729 "],
+            "API_PUERTO": ["", "0", "70000", "08729", "8729 "],   # cualquier puerto 1-65535 desde 2026-10-20
             "TZSP_PUERTO": ["", "0", "65536", "-1", "x", "37008/udp"],
             "TZSP_BYTES": ["", "-1", "1e4", "10k", "10 000"],
         }
@@ -246,9 +246,19 @@ class Cli(unittest.TestCase):
         self.assertEqual(out, (ay.FIXTURES / "ids_punto_p003.nft").read_text(encoding="utf-8"))
 
     def test_nft_punto_no_imprime_nada_si_el_entorno_es_malo(self):
-        rc, out, _ = self.ejecutar("nft-punto", self.limpio(API_PUERTO="22"))
+        rc, out, _ = self.ejecutar("nft-punto", self.limpio(API_PUERTO="70000"))
         self.assertEqual(rc, 1)
         self.assertEqual(out, "")
+
+    def test_api_en_cualquier_puerto(self):
+        """2026-10-20: el puerto de la API puede estar cambiado en el router; la imagen acepta 1-65535
+        y la tabla del punto deja salir la API a ese puerto. Lo que no es un puerto, no."""
+        txt = render.nft_punto(render.validar(entorno(API_PUERTO="2290", **DIRECTO)))
+        self.assertIn('oifname "eth0" ip daddr 192.168.88.1 tcp dport 2290 accept', txt)
+        for malo in ("0", "70000", "abc", "", "8729 ", "²"):
+            with self.subTest(malo=malo):
+                with self.assertRaises(render.ErrorEntorno):
+                    render.validar(entorno(API_PUERTO=malo))
 
     def test_orden_desconocida(self):
         salida, errores = io.StringIO(), io.StringIO()

@@ -161,9 +161,10 @@ socat UNIX-LISTEN:/run/ids/api.sock,fork,unlink-early,mode=660,max-children=4 \
       TCP:100.64.${N}.2:${API_PUERTO:-8729},connect-timeout=5
 ```
 
-- **Un solo relé por punto, hacia `API_PUERTO`: 8729 (API-SSL) por defecto u 8728 (API sin SSL,
-  desde 2026-10-20; el panel habla entonces la API en claro y se cambia con `ids-orq punto ajustar
-  <pid> --api-puerto`).** Con 8729 el panel habla TLS con la API-SSL del router, que se usa tal como
+- **Un solo relé por punto, hacia `API_PUERTO`: 8729 por defecto, o el puerto de la API que tenga
+  el router (1-65535 desde 2026-10-20, imagen `vpn` con `ids-maat.api-puerto=libre`; se cambia con
+  `ids-orq punto ajustar <pid> --api-puerto` o en la ficha). Si el panel habla TLS o la API normal lo
+  decide la casilla «Con certificado (API-SSL)» de la ficha, no el puerto.** Con 8729 el panel habla TLS con la API-SSL del router, que se usa tal como
   esté: el script no crea ningún certificado ni toca `/ip service api-ssl` ([OPERACION.md](OPERACION.md)
   §1.1; hay RouterOS 7 que necesitan un certificado, que el panel da en el aviso). Sin certificado
   (`certificate=none`) RouterOS 6.49 y algunos 7 negocian un cifrado anónimo (ADH): el panel prueba primero `ADH:@SECLEVEL=0` y

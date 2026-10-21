@@ -958,11 +958,11 @@ que encolan, `--no-esperar` (imprime el `op_id` y sale).
 | Orden CLI | Orden del socket |
 |---|---|
 | `ids-orq servicio` | (arranca el servicio) |
-| `ids-orq punto crear --nombre X [--redes CIDR[,CIDR…]] [--perfil reducido\|completo-low\|completo] [--hilos 1\|2] [--ros 6\|7] [--compat-v6[=seclevel0\|legacy]] [--api-puerto 8729\|8728] [--origen-ip IP] [--modo vpn\|directo --mk-ip IP]` | `punto.crear` (`--compat-v6` sin valor = `seclevel0`; `--modo directo` exige `--mk-ip`, 0.1.9) |
+| `ids-orq punto crear --nombre X [--redes CIDR[,CIDR…]] [--perfil reducido\|completo-low\|completo] [--hilos 1\|2] [--ros 6\|7] [--compat-v6[=seclevel0\|legacy]] [--api-puerto 1-65535] [--origen-ip IP] [--modo vpn\|directo --mk-ip IP]` | `punto.crear` (`--compat-v6` sin valor = `seclevel0`; `--modo directo` exige `--mk-ip`, 0.1.9) |
 | `ids-orq punto borrar <pid> --confirmar <nombre>` | `punto.borrar` |
 | `ids-orq punto estado [<pid>\|'*']` | `punto.estado` |
 | `ids-orq punto arrancar\|parar\|reiniciar <pid> [--parte vpn\|suricata\|todo]` | `punto.*` |
-| `ids-orq punto ajustar <pid> [--perfil …] [--hilos …] [--redes …] [--compat-v6[=…]\|--sin-compat-v6] [--ros 6\|7] [--origen-ip IP\|--sin-origen-ip] [--api-puerto 8729\|8728]` | `punto.ajustar` (`--api-puerto` va solo, 2026-10-20) |
+| `ids-orq punto ajustar <pid> [--perfil …] [--hilos …] [--redes …] [--compat-v6[=…]\|--sin-compat-v6] [--ros 6\|7] [--origen-ip IP\|--sin-origen-ip] [--api-puerto 1-65535]` | `punto.ajustar` (`--api-puerto` va solo, 2026-10-20) |
 | `ids-orq punto reconfigurar <pid>` | `punto.reconfigurar` |
 | `ids-orq punto ovpn-client <pid>` | `punto.comandos` |
 | `ids-orq punto vpn-regenerar <pid>` | `punto.vpn.regenerar` |

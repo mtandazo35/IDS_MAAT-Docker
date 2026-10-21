@@ -2010,11 +2010,9 @@ def _cuerpo_fin(d, vm):
         cuerpo += aviso("Ese punto ya existía con los mismos datos. Los comandos para el MikroTik están en la "
                         "ficha del punto (VPN); si allí salen sin la clave, regenérala desde la misma ficha.", "amb")
     elif vm.get("orden") == "punto.ajustar" and r.get("api_puerto"):
-        sin_ssl = str(r.get("api_puerto")) == "8728"
-        cuerpo += aviso("Puerto de la API cambiado: el panel habla con el MikroTik por la %s. En el router: "
-                        "%s. Después, «Probar la conexión» en la ficha (API)."
-                        % ("API sin SSL (8728)" if sin_ssl else "API-SSL (8729)",
-                           "/ip service set api disabled=no" if sin_ssl else CMD_CERT_API_SSL), "info")
+        cuerpo += aviso("Puerto de la API cambiado: el panel llega a la API del MikroTik por el puerto %s. "
+                        "Comprueba que el router la tiene en ese puerto (/ip service print) y pulsa «Probar la "
+                        "conexión» en la ficha (API)." % r.get("api_puerto"), "info")
     elif vm.get("orden") == "punto.ajustar":
         cuerpo += aviso("Prefijos cambiados en el punto. Si tu espejo del MikroTik filtra por una address-list (p. ej. «Redes Privadas»), añade ahí también los prefijos adicionales.", "info")
     elif vm.get("orden") in ORDENES_CON_CLAVE and vm.get("entrega_clave") == "no_llego":
@@ -2657,28 +2655,41 @@ def ficha(h, pid, mensaje="", codigo=200, ok=False, extra_espejo=""):
     # ni asi frena la ficha: se pide por fetch despues de pintarla (GET /puntos/<pid>/huella) y se
     # guarda 10 min por punto (P4). La huella es opcional: sin certificado no hay (2026-10-15).
     hc = huella_cacheada(d, pid)
-    caja_huella = huella_caja(d, pid, p, rt, hc, pedir=sit["clave"] == "conectada" and not hc)
+    tls_no = str(rt.get("TLS", "0" if str(p.get("api_puerto")) == "8728" else "1")) == "0"
+    caja_huella = huella_caja(d, pid, dict(p, _tls_no=tls_no), rt, hc,
+                              pedir=sit["clave"] == "conectada" and not hc and not tls_no)
     api_html = (
         "<form method=post action='/puntos/%s/api'><input type=hidden name=accion value=guardar>%s"
         "<div class=datos><div><label class=l>Usuario de la API</label>"
         "<input class=t name=user value='%s' maxlength=64 autocomplete=off></div>"
         "<div><label class=l>Clave de la API %s</label>"
         "<input class=t type=password name=pass autocomplete=new-password placeholder='%s'></div></div>"
+        # el puerto de la API (el que tenga /ip service en el router, puede estar cambiado) y si va con
+        # certificado (API-SSL) o por la API normal (el user, 2026-10-20)
+        "<div class=datos><div><label class=l>Puerto de la API en el MikroTik</label>"
+        "<input class=t type=number name=api_puerto id=papi_puerto min=1 max=65535 value='%s'></div>"
+        "<div><label class=l>Cifrado</label><label><input type=checkbox name=tls value=1 id=papi_tls%s "
+        "onchange=\"var q=document.getElementById('papi_puerto');if(this.checked&amp;&amp;q.value=='8728')q.value='8729';"
+        "if(!this.checked&amp;&amp;q.value=='8729')q.value='8728';\"> Con certificado (API-SSL)</label></div></div>"
         "<label><input type=checkbox name=enabled value=1%s> Permitir enviar IPs a este MikroTik "
         "(cuarentena)</label>"
         "<div class=acciones><button class=btn type=submit>Guardar</button>"
         "<button class='btn sec' type=submit name=accion value=probar onclick='return papiProbar(this)'>"
         "Probar la conexión</button></div></form>"
         "<p class=hint>La conexión va por %s (%s). La clave se guarda cifrada con la clave maestra y no se "
-        "vuelve a mostrar.</p>%s%s"
+        "vuelve a mostrar. Cambiar el puerto recrea los contenedores del punto (un par de minutos sin "
+        "análisis).</p><p class=hint>En el router: <b>con certificado</b>, <code>%s</code>; <b>sin "
+        "certificado</b>, <code>/ip service set api disabled=no</code>. El puerto es el que diga "
+        "<code>/ip service print</code>.</p>%s"
         % (esc(pid), campo_token(), esc(rt.get("USER", "")), "(guardada)" if rt.get("PASS") else "",
            "dejar vacío para conservar" if rt.get("PASS") else "clave del usuario ids-api",
+           esc(p.get("api_puerto") or 8729), "" if tls_no else " checked",
            " checked" if rt.get("ENABLED") == "1" else "",
            ("la red local directa a %s" % esc(p.get("mk_ip") or "?")) if directo else "el relé del túnel del punto",
-           "API sin SSL, puerto 8728 del router: la clave viaja sin cifrar" if str(p.get("api_puerto")) == "8728"
-           else "API-SSL, puerto %s del router, sin exigir certificado salvo que fijes uno abajo"
+           ("API sin SSL, puerto %s del router: la clave viaja sin cifrar" if tls_no
+            else "API-SSL, puerto %s del router, sin exigir certificado salvo que fijes uno abajo")
            % esc(p.get("api_puerto") or 8729),
-           api_puerto_form(pid, p), caja_huella))
+           esc(CMD_CERT_API_SSL), caja_huella))
     # Espejo: ya no hay seccion (el espejo lo monta el operador a mano en el MikroTik, el user
     # 2026-10-16); lo que traiga extra_espejo (el resultado de una accion de la API) sale tras la API
     # Prefijos
@@ -2808,11 +2819,11 @@ def huella_caja(d, pid, p, rt, presentada="", error="", pedir=False):
     exige y se puede revisar) o distinta (aviso rojo y «Volver a confirmar»). `presentada`: la que
     presenta ahora el router, si se sabe; `pedir`: la ficha la trae por fetch (GET
     /puntos/<pid>/huella) y sustituye esta caja."""
-    if str(p.get("api_puerto") or "") == "8728":
-        # 2026-10-20 («debe aceptar sin ssl»): el panel habla la API en claro por el relé del punto
-        return ("<p class=hint>Este punto usa la API sin TLS (puerto 8728, el servicio <code>api</code> del "
+    if p.get("_tls_no") or (not rt.get("TLS") and str(p.get("api_puerto") or "") == "8728"):
+        # 2026-10-20 («si no, envia por api normal»): el panel habla la API en claro por el relé del punto
+        return ("<p class=hint>Este punto usa la API sin TLS (puerto %s, el servicio <code>api</code> del "
                 "router): no hay certificado ni huella que fijar, y la clave de la API viaja sin cifrar por la "
-                "red del punto.</p>")
+                "red del punto.</p>" % esc(p.get("api_puerto") or 8728))
     if hasattr(d, "huella_fijada"):
         fijada = d.huella_fijada(rt)
     else:
@@ -2934,21 +2945,6 @@ def logs(h, pid, consulta):
 # --------------------------------------------------------------------------------------------
 # Acciones de la ficha
 # --------------------------------------------------------------------------------------------
-def api_puerto_form(pid, p):
-    """Cambiar el puerto de la API del punto (2026-10-20): 8729 (API-SSL) u 8728 (API sin SSL). Es una
-    orden de la cola (punto.ajustar con api_puerto) que recrea los dos contenedores del punto."""
-    actual = 8728 if str(p.get("api_puerto")) == "8728" else 8729
-    otro = 8729 if actual == 8728 else 8728
-    nombre = {8729: "API-SSL (8729)", 8728: "API sin SSL (8728)"}
-    return ("<form method=post action='/puntos/%s/api' onsubmit=\"return confirm('¿Pasar la API de este punto "
-            "a %s? Se recrean sus contenedores: un par de minutos sin análisis.')\">"
-            "<input type=hidden name=accion value=puerto><input type=hidden name=api_puerto value=%d>%s"
-            "<p class=hint>Puerto de la API: <b>%s</b>. <button class='btn sec' type=submit>Pasar a %s</button>"
-            " Con %s, en el router: <code>%s</code>.</p></form>"
-            % (esc(pid), nombre[otro], otro, campo_token(), nombre[actual], nombre[otro], nombre[otro],
-               esc("/ip service set api disabled=no" if otro == 8728 else CMD_CERT_API_SSL)))
-
-
 # El certificado para la API-SSL del router (2026-10-20; = COMANDOS_CERT_API_SSL del orquestador):
 # hay RouterOS 7 que cierran la API-SSL sin certificado y conectan con este
 CMD_CERT_API_SSL = ("/certificate add name=ids-api common-name=ids-api days-valid=3650 trusted=yes "
@@ -2959,20 +2955,18 @@ CMD_CERT_API_SSL = ("/certificate add name=ids-api common-name=ids-api days-vali
 def accion_api(h, pid, form, ajax=False):
     """Guardar, probar u olvidar la huella de la API del router del punto. Un solo uso por
     formulario (A-08). Con ajax=1 (el boton «Probar la conexion»), {ok, mensaje} para un modal: la
-    prueba tarda 20-35 s con el router caido y la ficha no se queda en blanco. «puerto» cambia el
-    puerto de la API del punto (orden de la cola)."""
+    prueba tarda 20-35 s con el router caido y la ficha no se queda en blanco.
+
+    Desde 2026-10-20 el formulario lleva tambien el puerto de la API (el que tenga el router, puede
+    estar cambiado) y la casilla «Con certificado (API-SSL)»: la casilla se guarda aqui (TLS) y un
+    puerto distinto del del punto se encola como punto.ajustar (recrea los contenedores)."""
     d = _dash(h)
     acc = form.get("accion") or "guardar"
-    if acc not in ("guardar", "probar", "olvidar_huella", "confirmar_huella", "puerto"):
+    if acc not in ("guardar", "probar", "olvidar_huella", "confirmar_huella"):
         return _responder(h, pid, ("Acción de la API desconocida.", 400, False, ""), ajax)
-    if acc == "puerto":
-        puerto = (form.get("api_puerto") or "").strip()
-        if puerto not in ("8729", "8728"):
-            return _responder(h, pid, ("El puerto de la API tiene que ser 8729 (API-SSL) u 8728 (sin SSL).",
-                                       400, False, ""), ajax)
-        _bit(d, "PUNTO-API", pid=pid, objetivo="puerto", resultado=puerto)
-        return _encolar(h, pid, "punto.ajustar", {"pid": pid, "api_puerto": int(puerto)},
-                        token=form.get("op") or "")
+    p_actual = nodos.punto(pid) or {}
+    puerto_txt = (form.get("api_puerto") or "").strip()
+    nuevo_formulario = "api_puerto" in form      # uno viejo sin estos campos no toca TLS ni el puerto
     user = (form.get("user") or "").strip()[:64]
     huella = (form.get("huella") or "").strip().lower()
 
@@ -2982,6 +2976,13 @@ def accion_api(h, pid, form, ajax=False):
                     "estado del orquestador).", 409, False, "")
         if acc in ("guardar", "probar") and user and not re.match(r"^[A-Za-z0-9._@-]+\Z", user):
             return "El usuario de la API tiene caracteres no válidos.", 400, False, ""
+        if acc in ("guardar", "probar") and nuevo_formulario and not (
+                puerto_txt.isdigit() and 1 <= int(puerto_txt) <= 65535):
+            return "El puerto de la API tiene que ser un número entre 1 y 65535.", 400, False, ""
+        if (acc == "probar" and nuevo_formulario
+                and int(puerto_txt) != int(p_actual.get("api_puerto") or 8729)):
+            return ("Cambiaste el puerto de la API: pulsa antes «Guardar» (recrea los contenedores del punto) "
+                    "y prueba cuando termine.", 409, False, "")
         if acc == "confirmar_huella" and not RE_HUELLA_API.fullmatch(huella):
             return "Falta la huella que comparaste (64 caracteres hexadecimales).", 400, False, ""
         if acc == "confirmar_huella" and huella == SHA256_VACIO:
@@ -3005,14 +3006,26 @@ def accion_api(h, pid, form, ajax=False):
         if form.get("pass"):
             r["PASS"] = form["pass"]             # guardar_routers la cifra (router:<pid>:PASS)
         r["ENABLED"] = "1" if form.get("enabled") else "0"
+        if nuevo_formulario:
+            r["TLS"] = "1" if form.get("tls") else "0"
         try:
             d.guardar_routers([r])               # solo este punto; la huella no se toca aqui
         except Exception as e:
             return "No se pudo guardar: %s" % str(e)[:160], 500, False, ""
         if acc != "probar":
             _bit(d, "PUNTO-API", pid=pid, objetivo="conexion", resultado="guardada",
-                 extra="usuario=%s enviar=%s" % (user or "-", r["ENABLED"]))
-            return "Conexión de la API guardada.", 200, True, ""
+                 extra="usuario=%s enviar=%s tls=%s" % (user or "-", r["ENABLED"], r.get("TLS", "1")))
+            cifrado = "con certificado (API-SSL)" if r.get("TLS", "1") != "0" else "sin SSL (API normal)"
+            if nuevo_formulario and int(puerto_txt) != int(p_actual.get("api_puerto") or 8729):
+                est, op_id, msg = encolar_orden(d, pid, "punto.ajustar", {"pid": pid, "api_puerto": int(puerto_txt)},
+                                                _usuario(d), _ip(d), token=str(uuid.uuid4()))
+                if est not in ("aceptada", "repetida"):
+                    return ("Conexión guardada (%s), pero el puerto no se cambió: %s" % (cifrado, msg),
+                            409, False, "")
+                return ("Conexión guardada (%s). El puerto de la API pasa a %s: se recrean los contenedores del "
+                        "punto (un par de minutos); el avance está en Operaciones (%s)."
+                        % (cifrado, puerto_txt, op_id), 200, True, "")
+            return "Conexión de la API guardada (%s)." % cifrado, 200, True, ""
         ok, msg = probar_api(d, pid)
         _bit(d, "PUNTO-API", pid=pid, objetivo="probar", resultado="ok" if ok else "fallo")
         return "Prueba: " + msg, 200 if ok else 502, ok, ""

@@ -979,19 +979,17 @@ COMANDOS_CERT_API_SSL = (
 
 def comandos_directo(p, ip_host=None):
     """Lo que el MikroTik de un punto directo necesita saber: no hay VPN que crear, solo adónde manda
-    el espejo y desde dónde le llega el panel a la API (con API-SSL, el certificado que pide RouterOS
-    7; con 8728, encender la API sin SSL). Lo mismo en v6 y v7."""
+    el espejo y desde dónde le llega el panel a la API (el certificado que pide RouterOS 7 para la
+    API-SSL, o encender la API normal). Lo mismo en v6 y v7."""
     host = ip_host or "<IP-DEL-HOST>"
-    if int(p["api_puerto"]) == 8728:
-        api = ("# API: el panel entra a la API sin SSL (puerto 8728) del MikroTik (%s) desde %s.\n"
-               "# Si el router filtra la entrada, deja pasar ese puerto desde esa IP. La clave de la API\n"
-               "# viaja sin cifrar por la red. Para encenderla en el router:\n"
-               "/ip service set api disabled=no\n" % (p["mk_ip"], host))
-    else:
-        api = ("# API: el panel entra a la API-SSL (puerto %s) del MikroTik (%s) desde %s.\n"
-               "# Si el router filtra la entrada, deja pasar ese puerto desde esa IP.\n"
-               "# RouterOS 7 no acepta la API-SSL sin certificado. Si el router no tiene uno, pega:\n"
-               % (p["api_puerto"], p["mk_ip"], host) + COMANDOS_CERT_API_SSL)
+    # con o sin certificado lo elige la casilla de la ficha (panel); aquí van las dos (2026-10-20)
+    api = ("# API: el panel entra a la API del MikroTik (%s) por el puerto %s, desde %s.\n"
+           "# Si el router filtra la entrada, deja pasar ese puerto desde esa IP. El puerto tiene que ser\n"
+           "# el del servicio en el router (/ip service print).\n"
+           "# Con certificado (API-SSL; RouterOS 7 no la acepta sin uno). Si el router no tiene, pega:\n"
+           % (p["mk_ip"], p["api_puerto"], host) + COMANDOS_CERT_API_SSL
+           + "# Sin certificado (API normal; la clave viaja sin cifrar por la red):\n"
+             "/ip service set api disabled=no\n")
     return (
         "# ids-maat %s (%s) · N=%s · conexión directa (sin VPN, solo LAN) · MikroTik %s\n"
         "# Este punto no lleva VPN: no hay nada que pegar para conectarlo.\n"
@@ -1178,6 +1176,18 @@ def imagen_admite_directo(imagen):
     r = ejecutar(["docker", "image", "inspect", "--format", '{{index .Config.Labels "ids-maat.modos"}}', imagen],
                  timeout=60)
     return r.rc == 0 and "directo" in [x.strip() for x in r.out.strip().split(",")]
+
+
+PUERTOS_API_FIJOS = (8729, 8728)
+
+
+def imagen_admite_api_libre(imagen):
+    """¿La imagen vpn acepta cualquier puerto para la API del router (API_PUERTO 1-65535)? Lo dice su
+    etiqueta `ids-maat.api-puerto=libre` (desde 2026-10-20). Una anterior solo acepta 8729 u 8728: su
+    render.py no arrancaría el contenedor con otro y el punto quedaría en error."""
+    r = ejecutar(["docker", "image", "inspect", "--format", '{{index .Config.Labels "ids-maat.api-puerto"}}',
+                  imagen], timeout=60)
+    return r.rc == 0 and r.out.strip() == "libre"
 
 
 def digest12(imagen):
@@ -2378,7 +2388,8 @@ def validar_crear(params, cfg):
            "perfil": perfil, "hilos": _int(params.get("hilos", 1), "hilos", rango=(1, 2)),
            "ros_version": _int(params.get("ros_version", 7), "ros_version", validos=(6, 7)),
            "compat_v6": compat,
-           "api_puerto": _int(params.get("api_puerto", 8729), "api_puerto", validos=(8729, 8728)),
+           # el que tenga la API en el router (puede estar cambiado; el user, 2026-10-20)
+           "api_puerto": _int(params.get("api_puerto", 8729), "api_puerto", rango=(1, 65535)),
            "origen_ip": _ipv4(params["origen_ip"], "origen_ip") if params.get("origen_ip") else None,
            "pid": _pid(params["pid"]) if params.get("pid") else None,
            "n": _int(params["n"], "n", rango=(1, N_MAX)) if params.get("n") is not None else None,
@@ -2395,7 +2406,7 @@ def validar_ajustar(params, cfg):
         # recrea los dos contenedores del punto (reconfigurar) y no se mezcla con otros ajustes
         if set(params) - {"pid", "api_puerto"}:
             raise _inv("api_puerto se cambia solo, sin otros ajustes en la misma orden")
-        out["api_puerto"] = _int(params["api_puerto"], "api_puerto", validos=(8729, 8728))
+        out["api_puerto"] = _int(params["api_puerto"], "api_puerto", rango=(1, 65535))
         return out
     if params.get("perfil") is not None:
         if params["perfil"] not in PERFILES:
@@ -3923,6 +3934,9 @@ class Orquestador:
                 raise ErrorOrden("CONFLICTO", "la imagen vpn de este servidor no sabe hacer puntos directos (es "
                                               "anterior): actualiza el IDS a la versión que los trae o crea el "
                                               "punto por VPN")
+            if prm["api_puerto"] not in PUERTOS_API_FIJOS and not imagen_admite_api_libre(imgs["vpn"]):
+                raise ErrorOrden("CONFLICTO", "la imagen vpn de este servidor solo admite la API en 8729 u 8728 "
+                                              "(es anterior): vuelve a ejecutar install.sh para traer la nueva")
             # D11: la admisión de RAM también ANTES de reservar el pid (los pid no se reutilizan:
             # un alta que no cabe no debe gastar uno). Se repite tras asignar, como siempre.
             mem = meminfo()
@@ -4300,14 +4314,16 @@ class Orquestador:
         if anterior == puerto:
             ctx.mensaje = "sin cambios: la API ya va por el %d" % puerto
             return {"recreado": [], "api_puerto": puerto}
+        if puerto not in PUERTOS_API_FIJOS and not imagen_admite_api_libre(imagenes()["vpn"]):
+            raise ErrorOrden("CONFLICTO", "la imagen vpn de este servidor solo admite la API en 8729 u 8728 (es "
+                                          "anterior): vuelve a ejecutar install.sh para traer la nueva y repite")
         self.x("UPDATE punto SET api_puerto=?, actualizado=? WHERE pid=?", (puerto, ahora(), pid))
         try:
             r = self.o_reconfigurar(ctx, {"pid": pid})
         except BaseException:
             self.x("UPDATE punto SET api_puerto=?, actualizado=? WHERE pid=?", (anterior, ahora(), pid))
             raise
-        ctx.mensaje = "API del MikroTik por el %d (%s); %s" % (
-            puerto, "sin SSL" if puerto == 8728 else "API-SSL", ctx.mensaje)
+        ctx.mensaje = "API del MikroTik por el puerto %d; %s" % (puerto, ctx.mensaje)
         return dict(r, api_puerto=puerto)
 
     def o_reconfigurar(self, ctx, prm):
@@ -4933,6 +4949,17 @@ def formato_creado(d):
         d["comandos"].rstrip("\n")])
 
 
+def _puerto_api_arg(v):
+    """--api-puerto: el puerto de la API del router, 1-65535."""
+    try:
+        n = int(v)
+    except ValueError:
+        raise argparse.ArgumentTypeError("%r no es un puerto" % v) from None
+    if not 1 <= n <= 65535:
+        raise argparse.ArgumentTypeError("el puerto de la API va de 1 a 65535")
+    return n
+
+
 def _redes_arg(txt):
     return [x.strip() for x in txt.split(",") if x.strip()]
 
@@ -4953,7 +4980,8 @@ def construir_parser():
     c.add_argument("--hilos", type=int, choices=(1, 2))
     c.add_argument("--ros", type=int, choices=(6, 7))
     c.add_argument("--compat-v6", nargs="?", const="seclevel0", choices=("seclevel0", "legacy"))
-    c.add_argument("--api-puerto", type=int, choices=(8729, 8728))
+    c.add_argument("--api-puerto", type=_puerto_api_arg, metavar="1-65535",
+                   help="puerto de la API del router (8729 API-SSL, 8728 API normal, u otro si está cambiado)")
     c.add_argument("--origen-ip")
     c.add_argument("--modo", choices=MODOS, help="vpn (por defecto) o directo: sin VPN, solo LAN")
     c.add_argument("--mk-ip", help="punto directo: la IP del MikroTik en la LAN")
@@ -4978,8 +5006,8 @@ def construir_parser():
     g2 = a.add_mutually_exclusive_group()
     g2.add_argument("--origen-ip")
     g2.add_argument("--sin-origen-ip", action="store_true")
-    a.add_argument("--api-puerto", type=int, choices=(8729, 8728),
-                   help="8729 = API-SSL, 8728 = API sin SSL (va sola: recrea el punto)")
+    a.add_argument("--api-puerto", type=_puerto_api_arg, metavar="1-65535",
+                   help="puerto de la API del router (va solo: recrea el punto)")
     for nombre in ("ovpn-client", "vpn-regenerar", "api-huella", "medir"):
         x = ps.add_parser(nombre, parents=[comun])
         x.add_argument("pid")
