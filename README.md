@@ -76,5 +76,5 @@ opciones no reabre un acceso cerrado. Opcionales: `--tun-base 198.18` (si tus ab
 
 Sucesor en contenedores de [suricata-ids-lab](https://github.com/mtandazo35/suricata-ids-lab).
 
-**Estado:** versión publicada `v0.1.12` (la primera fue `v0.1.0`). La arquitectura está en
+**Estado:** versión publicada `v0.1.13` (la primera fue `v0.1.0`). La arquitectura está en
 [docs/ARQUITECTURA.md](docs/ARQUITECTURA.md), con sus anexos en docs/.
