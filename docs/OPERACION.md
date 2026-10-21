@@ -17,15 +17,30 @@ solo se muestran como referencia.
 
 Versiones soportadas: **RouterOS 6.49 o superior** en v6, y v7. Anteriores a 6.49, no.
 
-### 1.1 La API-SSL del router (sin certificado)
+### 1.1 La API del router: API-SSL (con o sin certificado) o API sin SSL
 
 El script no crea ningún certificado ni toca `/ip service api-ssl` (ni el certificado ni
 `address=`, §1.5): el panel usa la API-SSL (8729) del router tal como esté. Es como trabaja el
 proyecto original (decisión del dueño, 2026-10-15) y vale igual en 6.49 y en v7.
 
-- **Lo normal es `certificate=none`.** Con él, RouterOS negocia un cifrado anónimo (ADH). El panel
-  prueba primero ese cifrado (`ADH:@SECLEVEL=0`) y después los normales, por si el router tiene un
-  certificado asignado.
+- **Sin certificado (`certificate=none`)** RouterOS 6.49 y algunos 7 negocian un cifrado anónimo
+  (ADH). El panel prueba primero ese cifrado (`ADH:@SECLEVEL=0`) y después los normales, por si el
+  router tiene un certificado asignado.
+- **Hay RouterOS 7 que no aceptan la API-SSL sin certificado** (visto el 2026-10-20 en un cliente):
+  cierran el saludo TLS y «Probar la conexión» dice «el MikroTik cerró la API-SSL sin contestar al
+  saludo TLS». Con un certificado propio conectan. El panel da estas órdenes en el aviso y en los
+  datos del punto:
+
+  ```
+  /certificate add name=ids-api common-name=ids-api days-valid=3650 trusted=yes key-usage=key-cert-sign,crl-sign,digital-signature,key-encipherment,tls-server
+  /certificate sign ids-api
+  /ip service set api-ssl certificate=ids-api disabled=no
+  ```
+- **API sin SSL (8728).** Alternativa sin certificado: en la ficha del punto (API), «Pasar a API sin
+  SSL (8728)», o `ids-orq punto ajustar <pid> --api-puerto 8728`, y en el router
+  `/ip service set api disabled=no`. Recrea los dos contenedores del punto (con vuelta atrás si
+  falla). Sin SSL no hay certificado ni huella, y la clave de `ids-api` viaja sin cifrar por la red
+  del punto (decisión del dueño, 2026-10-20: «debe aceptar sin ssl»).
 - Si el servicio está deshabilitado: `/ip service enable api-ssl`.
 - **La clave de `ids-api` la protege el túnel.** Sin huella fijada, el panel hace `/login` con lo
   que presente el router, con certificado o sin él. La clave va por el túnel OpenVPN, en el que el
@@ -58,7 +73,8 @@ proyecto original (decisión del dueño, 2026-10-15) y vale igual en 6.49 y en v
   ```
 
   Que esté habilitado, que `address` incluya al sensor (`100.64.3.1`) o esté vacía y, si tiene un
-  certificado asignado, dejarlo sin él:
+  certificado asignado que corta la conexión, cambiarlo por el `ids-api` de arriba o, en RouterOS 6,
+  dejarlo sin él:
 
   ```
   /ip service set api-ssl certificate=none

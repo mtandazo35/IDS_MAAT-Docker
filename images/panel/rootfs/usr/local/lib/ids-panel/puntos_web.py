@@ -90,7 +90,7 @@ ETAPAS = (("vpn", "VPN conectada"), ("tzsp", "TZSP recibido"), ("suricata", "Tr�
 ORDENES = {"punto.crear": "Crear punto", "punto.borrar": "Borrar punto",
            "punto.vpn.regenerar": "Regenerar la clave de la VPN", "punto.arrancar": "Arrancar el punto",
            "punto.parar": "Parar el punto", "punto.reiniciar": "Reiniciar el punto",
-           "punto.ajustar": "Cambiar los prefijos del punto",
+           "punto.ajustar": "Ajustar el punto (prefijos o puerto de la API)",
            # trabajos que hace el propio panel contra el router (no van al orquestador); los del
            # espejo son de antes del 2026-10-16 (la ficha ya no lo monta) y siguen en el historial
            "panel.espejo.plan": "Vista previa del espejo", "panel.espejo.aplicar": "Aplicar el espejo",
@@ -2009,6 +2009,12 @@ def _cuerpo_fin(d, vm):
     elif vm.get("orden") == "punto.crear" and (r.get("ya_entregada") or vm.get("ya_existia")):
         cuerpo += aviso("Ese punto ya existía con los mismos datos. Los comandos para el MikroTik están en la "
                         "ficha del punto (VPN); si allí salen sin la clave, regenérala desde la misma ficha.", "amb")
+    elif vm.get("orden") == "punto.ajustar" and r.get("api_puerto"):
+        sin_ssl = str(r.get("api_puerto")) == "8728"
+        cuerpo += aviso("Puerto de la API cambiado: el panel habla con el MikroTik por la %s. En el router: "
+                        "%s. Después, «Probar la conexión» en la ficha (API)."
+                        % ("API sin SSL (8728)" if sin_ssl else "API-SSL (8729)",
+                           "/ip service set api disabled=no" if sin_ssl else CMD_CERT_API_SSL), "info")
     elif vm.get("orden") == "punto.ajustar":
         cuerpo += aviso("Prefijos cambiados en el punto. Si tu espejo del MikroTik filtra por una address-list (p. ej. «Redes Privadas»), añade ahí también los prefijos adicionales.", "info")
     elif vm.get("orden") in ORDENES_CON_CLAVE and vm.get("entrega_clave") == "no_llego":
@@ -2024,7 +2030,8 @@ def _cuerpo_fin(d, vm):
     else:
         cuerpo += aviso("La operación terminó bien.", "info")
     if pid and nodos.pid_valido(pid):
-        ancla = "#prefijos" if vm.get("orden") == "punto.ajustar" else ""
+        ancla = (("#api" if r.get("api_puerto") else "#prefijos") if vm.get("orden") == "punto.ajustar"
+                 else "")
         cuerpo += "<p><a class=btn href='/puntos/%s%s'>Ir a la ficha del punto</a></p>" % (esc(pid), ancla)
     return cuerpo
 
@@ -2662,14 +2669,16 @@ def ficha(h, pid, mensaje="", codigo=200, ok=False, extra_espejo=""):
         "<div class=acciones><button class=btn type=submit>Guardar</button>"
         "<button class='btn sec' type=submit name=accion value=probar onclick='return papiProbar(this)'>"
         "Probar la conexión</button></div></form>"
-        "<p class=hint>La conexión va por %s (API-SSL, puerto %s del router), sin "
-        "certificado salvo que fijes uno abajo. La clave se guarda cifrada con la clave maestra y no se "
-        "vuelve a mostrar.</p>%s"
+        "<p class=hint>La conexión va por %s (%s). La clave se guarda cifrada con la clave maestra y no se "
+        "vuelve a mostrar.</p>%s%s"
         % (esc(pid), campo_token(), esc(rt.get("USER", "")), "(guardada)" if rt.get("PASS") else "",
            "dejar vacío para conservar" if rt.get("PASS") else "clave del usuario ids-api",
            " checked" if rt.get("ENABLED") == "1" else "",
            ("la red local directa a %s" % esc(p.get("mk_ip") or "?")) if directo else "el relé del túnel del punto",
-           esc(p.get("api_puerto") or 8729), caja_huella))
+           "API sin SSL, puerto 8728 del router: la clave viaja sin cifrar" if str(p.get("api_puerto")) == "8728"
+           else "API-SSL, puerto %s del router, sin exigir certificado salvo que fijes uno abajo"
+           % esc(p.get("api_puerto") or 8729),
+           api_puerto_form(pid, p), caja_huella))
     # Espejo: ya no hay seccion (el espejo lo monta el operador a mano en el MikroTik, el user
     # 2026-10-16); lo que traiga extra_espejo (el resultado de una accion de la API) sale tras la API
     # Prefijos
@@ -2800,9 +2809,10 @@ def huella_caja(d, pid, p, rt, presentada="", error="", pedir=False):
     presenta ahora el router, si se sabe; `pedir`: la ficha la trae por fetch (GET
     /puntos/<pid>/huella) y sustituye esta caja."""
     if str(p.get("api_puerto") or "") == "8728":
-        return ("<p class=hint>Este punto usa la API sin TLS (puerto 8728) y el panel habla siempre API-SSL: "
-                "con 8728 <b>no conecta</b>. Hace falta un punto con API-SSL (puerto 8729, el servicio "
-                "<code>api-ssl</code> del router).</p>")
+        # 2026-10-20 («debe aceptar sin ssl»): el panel habla la API en claro por el relé del punto
+        return ("<p class=hint>Este punto usa la API sin TLS (puerto 8728, el servicio <code>api</code> del "
+                "router): no hay certificado ni huella que fijar, y la clave de la API viaja sin cifrar por la "
+                "red del punto.</p>")
     if hasattr(d, "huella_fijada"):
         fijada = d.huella_fijada(rt)
     else:
@@ -2924,14 +2934,45 @@ def logs(h, pid, consulta):
 # --------------------------------------------------------------------------------------------
 # Acciones de la ficha
 # --------------------------------------------------------------------------------------------
+def api_puerto_form(pid, p):
+    """Cambiar el puerto de la API del punto (2026-10-20): 8729 (API-SSL) u 8728 (API sin SSL). Es una
+    orden de la cola (punto.ajustar con api_puerto) que recrea los dos contenedores del punto."""
+    actual = 8728 if str(p.get("api_puerto")) == "8728" else 8729
+    otro = 8729 if actual == 8728 else 8728
+    nombre = {8729: "API-SSL (8729)", 8728: "API sin SSL (8728)"}
+    return ("<form method=post action='/puntos/%s/api' onsubmit=\"return confirm('¿Pasar la API de este punto "
+            "a %s? Se recrean sus contenedores: un par de minutos sin análisis.')\">"
+            "<input type=hidden name=accion value=puerto><input type=hidden name=api_puerto value=%d>%s"
+            "<p class=hint>Puerto de la API: <b>%s</b>. <button class='btn sec' type=submit>Pasar a %s</button>"
+            " Con %s, en el router: <code>%s</code>.</p></form>"
+            % (esc(pid), nombre[otro], otro, campo_token(), nombre[actual], nombre[otro], nombre[otro],
+               esc("/ip service set api disabled=no" if otro == 8728 else CMD_CERT_API_SSL)))
+
+
+# El certificado para la API-SSL del router (2026-10-20; = COMANDOS_CERT_API_SSL del orquestador):
+# hay RouterOS 7 que cierran la API-SSL sin certificado y conectan con este
+CMD_CERT_API_SSL = ("/certificate add name=ids-api common-name=ids-api days-valid=3650 trusted=yes "
+                    "key-usage=key-cert-sign,crl-sign,digital-signature,key-encipherment,tls-server ; "
+                    "/certificate sign ids-api ; /ip service set api-ssl certificate=ids-api disabled=no")
+
+
 def accion_api(h, pid, form, ajax=False):
     """Guardar, probar u olvidar la huella de la API del router del punto. Un solo uso por
     formulario (A-08). Con ajax=1 (el boton «Probar la conexion»), {ok, mensaje} para un modal: la
-    prueba tarda 20-35 s con el router caido y la ficha no se queda en blanco."""
+    prueba tarda 20-35 s con el router caido y la ficha no se queda en blanco. «puerto» cambia el
+    puerto de la API del punto (orden de la cola)."""
     d = _dash(h)
     acc = form.get("accion") or "guardar"
-    if acc not in ("guardar", "probar", "olvidar_huella", "confirmar_huella"):
+    if acc not in ("guardar", "probar", "olvidar_huella", "confirmar_huella", "puerto"):
         return _responder(h, pid, ("Acción de la API desconocida.", 400, False, ""), ajax)
+    if acc == "puerto":
+        puerto = (form.get("api_puerto") or "").strip()
+        if puerto not in ("8729", "8728"):
+            return _responder(h, pid, ("El puerto de la API tiene que ser 8729 (API-SSL) u 8728 (sin SSL).",
+                                       400, False, ""), ajax)
+        _bit(d, "PUNTO-API", pid=pid, objetivo="puerto", resultado=puerto)
+        return _encolar(h, pid, "punto.ajustar", {"pid": pid, "api_puerto": int(puerto)},
+                        token=form.get("op") or "")
     user = (form.get("user") or "").strip()[:64]
     huella = (form.get("huella") or "").strip().lower()
 

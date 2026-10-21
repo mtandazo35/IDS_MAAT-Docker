@@ -1313,6 +1313,10 @@ def olvidar_router(pid):
 # rebaje la conexion) y con otro no manda la clave. Nunca se fija sola (VPN-06).
 RE_HUELLA_SHA256 = re.compile(r"^[0-9a-f]{64}\Z")
 SHA256_VACIO = _hashlib.sha256(b"").hexdigest()   # API-SSL sin certificado (cifrado anonimo)
+# El certificado para la API-SSL del router (2026-10-20; = COMANDOS_CERT_API_SSL del orquestador)
+CMD_CERT_API_SSL = ("/certificate add name=ids-api common-name=ids-api days-valid=3650 trusted=yes "
+                    "key-usage=key-cert-sign,crl-sign,digital-signature,key-encipherment,tls-server ; "
+                    "/certificate sign ids-api ; /ip service set api-ssl certificate=ids-api disabled=no")
 HUELLA_VISTA_S = 600
 _HUELLA_VISTA = {}           # pid -> (instante, sha256 que presento el router al panel)
 _HUELLA_AVISADA = {}         # pid -> huella distinta ya apuntada en el Registro (una vez por huella)
@@ -1607,9 +1611,12 @@ def _mk_tls_wrap(host, port, timeout, con_certificado=False):
         pista = ("este punto tiene fijada la huella de un certificado y el panel lo exige: si le quitaste "
                  "el certificado a la API-SSL del router, olvida la huella en la ficha del punto (API)")
     else:
-        pista = ("revisa en el MikroTik /ip service print detail where name=api-ssl: habilitada, address "
-                 "con el sensor o vacía y, si tiene un certificado asignado, /ip service set api-ssl "
-                 "certificate=none (el panel conecta sin certificado)")
+        # 2026-10-20: hay RouterOS 7 que cierran la API-SSL sin certificado (no ofrecen el cifrado
+        # anonimo) y conectan en cuanto se le pone uno; antes aqui se pedia certificate=none
+        pista = ("revisa en el MikroTik /ip service print detail where name=api-ssl: habilitada y address "
+                 "con el sensor o vacía. Si no tiene certificado (RouterOS 7 no acepta la API-SSL sin él), "
+                 "o tiene uno y corta igual, ponle este: " + CMD_CERT_API_SSL + ". O cambia el punto a la "
+                 "API sin SSL (8728) en su ficha")
     cerro = fallos and all("EOF" in x for x in fallos)
     raise IOError("%s — %s. Detalle de los %d cifrados probados: %s" % (
         "el MikroTik cerró la API-SSL sin contestar al saludo TLS" if cerro else "TLS handshake falló",
@@ -1624,23 +1631,28 @@ def mk_conectar(d, timeout=6):
     host = "unix:" + nodos.api_sock(pid)
     port = int(d.get("PORT") or 8729)
     if port == 8728:
-        # el saludo TLS contra la API en claro fallaria igual, pero culpando al TLS (revision
-        # 2026-10-15, C7): se dice la causa de verdad
-        raise IOError("el punto usa la API sin TLS (8728) y el panel solo habla API-SSL (8729)")
-    # La API-SSL va sin certificado (decision del dueno 2026-10-15): sin huella fijada se hace
-    # /login con lo que presente el router, anonimo (ADH) o con certificado, y la clave de ids-api
-    # va protegida por el tunel OpenVPN del punto. Con la huella de un certificado fijada en la
-    # ficha (VPN-06) se exige ESE certificado: con otro, o sin el, NO hay /login. La huella es de
-    # ESE punto; la que presenta queda vista para la ficha, que ofrece fijarla.
-    esperada = huella_fijada(d)
-    sock = _mk_tls_wrap(host, port, timeout, con_certificado=bool(esperada))
-    fp = _hashlib.sha256(sock.getpeercert(binary_form=True) or b"").hexdigest()
-    _ver_huella(pid, fp)
-    if esperada and fp != esperada:
-        try: sock.close()
-        except Exception: pass
-        _avisar_huella_distinta(pid, esperada, fp)
-        raise HuellaNoConfirmada(pid, "distinta", fp, esperada)
+        # API sin TLS (el dueno, 2026-10-20: «debe aceptar sin ssl»): el relé del punto lleva el TCP
+        # al 8728 del router y aqui se habla la API en claro, sin certificado ni huella que
+        # comprobar. La clave de ids-api viaja sin cifrar por la red del punto: lo decide el cliente.
+        try:
+            sock = _mk_abrir_unix(host[len("unix:"):], timeout)
+        except Exception as e:
+            raise IOError("no se pudo abrir el relé de la API del punto (API sin SSL, 8728): %s" % e)
+    else:
+        # La API-SSL va sin certificado (decision del dueno 2026-10-15): sin huella fijada se hace
+        # /login con lo que presente el router, anonimo (ADH) o con certificado, y la clave de ids-api
+        # va protegida por el tunel OpenVPN del punto. Con la huella de un certificado fijada en la
+        # ficha (VPN-06) se exige ESE certificado: con otro, o sin el, NO hay /login. La huella es de
+        # ESE punto; la que presenta queda vista para la ficha, que ofrece fijarla.
+        esperada = huella_fijada(d)
+        sock = _mk_tls_wrap(host, port, timeout, con_certificado=bool(esperada))
+        fp = _hashlib.sha256(sock.getpeercert(binary_form=True) or b"").hexdigest()
+        _ver_huella(pid, fp)
+        if esperada and fp != esperada:
+            try: sock.close()
+            except Exception: pass
+            _avisar_huella_distinta(pid, esperada, fp)
+            raise HuellaNoConfirmada(pid, "distinta", fp, esperada)
     sock.settimeout(timeout)
     # login moderno (6.43+/v7): usuario y clave directos
     _mk_send(sock, ["/login", f"=name={d['USER']}", f"=password={d['PASS']}"])
@@ -1670,6 +1682,8 @@ def mk_huella_presentada(pid, timeout=8):
     conecta, o si tiene una huella fijada y el router no presenta certificado."""
     pid = nodos.exigir_pid(pid)
     d = cargar_mk_de(router_por_id(pid) or _router_vacio(pid))
+    if int(d.get("PORT") or 8729) == 8728:
+        raise IOError("el punto usa la API sin SSL (8728): no hay certificado ni huella")
     sock = _mk_tls_wrap("unix:" + nodos.api_sock(pid), int(d.get("PORT") or 8729), timeout,
                         con_certificado=bool(huella_fijada(d)))
     try:
@@ -14361,18 +14375,20 @@ conectar, la ficha dice «se comprobará cuando el MikroTik conecte»; conectado
 esperarla (dice «comprobando…» y la trae enseguida) y la recuerda 10 minutos.</p>
 <p>Si el script del router trae una línea <code># AVISO:</code> (por ejemplo, un punto dado de alta antes
 de la verificación del servidor), la ficha la enseña además en un aviso rojo encima de los comandos.</p>
-<h3>La API del router: API-SSL sin certificado</h3>
-<p>El panel habla con la API del MikroTik por <b>API-SSL</b> (8729) a través del túnel del punto y le
-manda la clave de <code>ids-api</code> (que puede escribir en el router). La API-SSL va <b>sin
-certificado</b>: RouterOS negocia entonces un cifrado anónimo y la clave va protegida por el túnel
-OpenVPN, en el que el MikroTik comprueba el certificado del servidor. El script del alta no crea
-certificados ni toca <code>/ip service api-ssl</code>.</p>
+<h3>La API del router: API-SSL o API sin SSL</h3>
+<p>El panel habla con la API del MikroTik a través del relé del punto (el túnel, o la red local en un punto
+directo) y le manda la clave de <code>ids-api</code> (que puede escribir en el router). Por defecto va por
+<b>API-SSL</b> (8729) sin exigir certificado: con lo que presente el router, también el cifrado anónimo si
+lo ofrece. El script del alta no crea certificados ni toca <code>/ip service api-ssl</code>.</p>
 <ul>
 <li><b>Probar la conexión</b> (ficha &rarr; API) dice si entra. Si contesta «el MikroTik cerró la API-SSL
 sin contestar al saludo TLS», revisa en el router <code>/ip service print detail where name=api-ssl</code>:
-que esté habilitada, que <code>address</code> incluya al sensor o esté vacía y, si tiene un certificado
-asignado (por ejemplo <code>ids-promax</code>, de un alta anterior), déjala sin él:
-<code>/ip service set api-ssl certificate=none</code>.</li>
+que esté habilitada y que <code>address</code> incluya al sensor o esté vacía. <b>Hay RouterOS 7 que no
+aceptan la API-SSL sin certificado</b>: si no tiene uno (o tiene uno y corta igual), pégale este y vuelve a
+probar:<br><code>/certificate add name=ids-api common-name=ids-api days-valid=3650 trusted=yes
+key-usage=key-cert-sign,crl-sign,digital-signature,key-encipherment,tls-server</code><br>
+<code>/certificate sign ids-api</code><br>
+<code>/ip service set api-ssl certificate=ids-api disabled=no</code></li>
 <li><b>Fijar la huella (opcional).</b> Si le pones un certificado a la API-SSL del router, la ficha enseña
 su <b>huella SHA-256</b> en bloques de 4 caracteres. Compárala en el router con <code>/certificate print
 detail</code> (el campo <code>fingerprint</code> del certificado que diga <code>/ip service print detail
@@ -14386,9 +14402,11 @@ en rojo (puede ser una suplantación o un certificado cambiado en el router) y e
 clave; el Registro lo apunta una vez. Si lo cambiaste tú, compara el nuevo en el router y pulsa
 <b>Volver a confirmar</b>. <b>Olvidar la huella</b> la borra y el panel vuelve a conectar sin exigir
 certificado (hazlo también si le quitaste el certificado al router).</li>
-<li><b>Puerto 8728</b> (API sin TLS): el panel habla siempre API-SSL, así que con un punto creado con
-8728 <b>no conecta</b> (la ficha y <b>Probar la conexión</b> lo dicen). Hace falta API-SSL (8729), el
-puerto con el que el panel crea los puntos.</li>
+<li><b>API sin SSL (8728).</b> Si prefieres no usar certificado, en la ficha (API) pulsa <b>Pasar a API sin
+SSL (8728)</b> (o <code>ids-orq punto ajustar &lt;punto&gt; --api-puerto 8728</code> en el servidor) y
+enciende la API en el router: <code>/ip service set api disabled=no</code>. Se recrean los contenedores del
+punto (un par de minutos sin análisis). Sin SSL no hay certificado ni huella, y <b>la clave de la API viaja
+sin cifrar</b> por la red del punto. Para volver, <b>Pasar a API-SSL (8729)</b>.</li>
 </ul>
 <h3>Origen fijo de la VPN</h3>
 <p>Cualquiera puede abrir el puerto VPN de un punto, y OpenVPN reserva una de sus <b>32 plazas</b> a cada

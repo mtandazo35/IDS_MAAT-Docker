@@ -77,7 +77,7 @@ def entorno(acepta):
     ns = {"_ssl": ssl_falso, "_socket": sock_falso}
     for n in ARBOL.body:
         nom = getattr(n, "name", None) or (getattr(n.targets[0], "id", "") if isinstance(n, ast.Assign) else "")
-        if nom in ("_MK_TLS_OK", "_mk_tls_wrap"):
+        if nom in ("_MK_TLS_OK", "_mk_tls_wrap", "CMD_CERT_API_SSL"):
             exec(ast.get_source_segment(DASH, n), ns)
     ns["_mk_abrir_unix"] = lambda ruta, timeout: (tcp.append(ruta), Raw())[1]
     return ns, tcp, probados

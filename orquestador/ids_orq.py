@@ -968,10 +968,30 @@ def ip_host_hacia(ip, t=None):
     return valor
 
 
+# Certificado para la API-SSL del router (2026-10-20): hay RouterOS 7 que cierran la API-SSL sin
+# certificado (no ofrecen el cifrado anónimo) y con este conecta; lo comprobó el dueño en un cliente.
+COMANDOS_CERT_API_SSL = (
+    "/certificate add name=ids-api common-name=ids-api days-valid=3650 trusted=yes "
+    "key-usage=key-cert-sign,crl-sign,digital-signature,key-encipherment,tls-server\n"
+    "/certificate sign ids-api\n"
+    "/ip service set api-ssl certificate=ids-api disabled=no\n")
+
+
 def comandos_directo(p, ip_host=None):
     """Lo que el MikroTik de un punto directo necesita saber: no hay VPN que crear, solo adónde manda
-    el espejo y desde dónde le llega el panel a la API. Lo mismo en v6 y v7."""
+    el espejo y desde dónde le llega el panel a la API (con API-SSL, el certificado que pide RouterOS
+    7; con 8728, encender la API sin SSL). Lo mismo en v6 y v7."""
     host = ip_host or "<IP-DEL-HOST>"
+    if int(p["api_puerto"]) == 8728:
+        api = ("# API: el panel entra a la API sin SSL (puerto 8728) del MikroTik (%s) desde %s.\n"
+               "# Si el router filtra la entrada, deja pasar ese puerto desde esa IP. La clave de la API\n"
+               "# viaja sin cifrar por la red. Para encenderla en el router:\n"
+               "/ip service set api disabled=no\n" % (p["mk_ip"], host))
+    else:
+        api = ("# API: el panel entra a la API-SSL (puerto %s) del MikroTik (%s) desde %s.\n"
+               "# Si el router filtra la entrada, deja pasar ese puerto desde esa IP.\n"
+               "# RouterOS 7 no acepta la API-SSL sin certificado. Si el router no tiene uno, pega:\n"
+               % (p["api_puerto"], p["mk_ip"], host) + COMANDOS_CERT_API_SSL)
     return (
         "# ids-maat %s (%s) · N=%s · conexión directa (sin VPN, solo LAN) · MikroTik %s\n"
         "# Este punto no lleva VPN: no hay nada que pegar para conectarlo.\n"
@@ -980,10 +1000,7 @@ def comandos_directo(p, ip_host=None):
         "#   sniff-target=%s sniff-target-port=%s\n"
         "# Se acepta desde cualquier IP del router; lo que importa es el puerto: %s.\n"
         "#\n"
-        "# API: el panel entra a la API-SSL (puerto %s) del MikroTik (%s) desde %s.\n"
-        "# Si el router filtra la entrada, deja pasar ese puerto desde esa IP.\n"
-        % (p["pid"], p["nombre"], p["n"], p["mk_ip"], host, p["puerto"], p["puerto"],
-           p["api_puerto"], p["mk_ip"], host))
+        % (p["pid"], p["nombre"], p["n"], p["mk_ip"], host, p["puerto"], p["puerto"])) + api
 
 
 def comandos_mikrotik(p, nombre_dns, clave=None, ca_pem=None, aviso_cert=None):
@@ -2371,8 +2388,15 @@ def validar_crear(params, cfg):
 
 def validar_ajustar(params, cfg):
     _solo(params, {"pid", "perfil", "hilos", "redes_abonados", "compat_v6", "ros_version",
-                   "origen_ip"}, ("pid",))
+                   "origen_ip", "api_puerto"}, ("pid",))
     out = {"pid": _pid(params["pid"])}
+    if params.get("api_puerto") is not None:
+        # 8729 = API-SSL; 8728 = API sin SSL (el dueño, 2026-10-20: «debe aceptar sin ssl»). Va sola:
+        # recrea los dos contenedores del punto (reconfigurar) y no se mezcla con otros ajustes
+        if set(params) - {"pid", "api_puerto"}:
+            raise _inv("api_puerto se cambia solo, sin otros ajustes en la misma orden")
+        out["api_puerto"] = _int(params["api_puerto"], "api_puerto", validos=(8729, 8728))
+        return out
     if params.get("perfil") is not None:
         if params["perfil"] not in PERFILES:
             raise _inv("perfil debe ser " + ", ".join(PERFILES))
@@ -4144,11 +4168,13 @@ class Orquestador:
                 ctx.mensaje = ("sustituida por la orden posterior %s: no aplica nada y el resultado "
                                "depende de esa orden" % f["op_id"])
                 return {"recreado": [], "sustituida_por": f["op_id"], "depende_de": f["op_id"]}
+        if "api_puerto" in prm:
+            return self._ajustar_api_puerto(ctx, p, prm["api_puerto"])
         cfg = config()
         directo = es_directo(p)
         if directo and prm.get("origen_ip"):
-            raise ErrorOrden("INVALIDO", "%s es un punto directo: el espejo solo entra desde la IP del "
-                                         "MikroTik (%s), no lleva origen de VPN" % (pid, p.get("mk_ip")))
+            raise ErrorOrden("INVALIDO", "%s es un punto directo: no lleva VPN, así que no tiene origen de "
+                                         "VPN que fijar" % pid)
         nuevo = dict(p)
         if "redes_abonados" in prm:
             nuevo["redes"] = prm["redes_abonados"]
@@ -4263,6 +4289,26 @@ class Orquestador:
     FICHEROS_RECONFIGURAR = (("server.conf", "vpn/server.conf", 0o644),
                              ("suricata.yaml", "suricata/suricata.yaml", 0o644),
                              ("compose.yml", "compose.yml", 0o600))
+
+    def _ajustar_api_puerto(self, ctx, p, puerto):
+        """punto.ajustar con api_puerto (2026-10-20): 8729 (API-SSL) u 8728 (API sin SSL). El puerto
+        va en el compose (API_PUERTO: el relé y la tabla ids_punto del contenedor vpn), así que se
+        guarda y se hace un reconfigurar, que reescribe el compose, recrea los dos contenedores y, si
+        algo falla, vuelve a los ficheros de antes; aquí se devuelve también el puerto de antes."""
+        pid = p["pid"]
+        anterior = int(p.get("api_puerto") or 8729)
+        if anterior == puerto:
+            ctx.mensaje = "sin cambios: la API ya va por el %d" % puerto
+            return {"recreado": [], "api_puerto": puerto}
+        self.x("UPDATE punto SET api_puerto=?, actualizado=? WHERE pid=?", (puerto, ahora(), pid))
+        try:
+            r = self.o_reconfigurar(ctx, {"pid": pid})
+        except BaseException:
+            self.x("UPDATE punto SET api_puerto=?, actualizado=? WHERE pid=?", (anterior, ahora(), pid))
+            raise
+        ctx.mensaje = "API del MikroTik por el %d (%s); %s" % (
+            puerto, "sin SSL" if puerto == 8728 else "API-SSL", ctx.mensaje)
+        return dict(r, api_puerto=puerto)
 
     def o_reconfigurar(self, ctx, prm):
         """punto.reconfigurar (revisión O3/R1): lleva un punto creado con plantillas o imágenes
@@ -4932,6 +4978,8 @@ def construir_parser():
     g2 = a.add_mutually_exclusive_group()
     g2.add_argument("--origen-ip")
     g2.add_argument("--sin-origen-ip", action="store_true")
+    a.add_argument("--api-puerto", type=int, choices=(8729, 8728),
+                   help="8729 = API-SSL, 8728 = API sin SSL (va sola: recrea el punto)")
     for nombre in ("ovpn-client", "vpn-regenerar", "api-huella", "medir"):
         x = ps.add_parser(nombre, parents=[comun])
         x.add_argument("pid")
@@ -5001,7 +5049,8 @@ def orden_desde_args(a):
         if s == "ajustar":
             p = {"pid": a.pid}
             for k, v in (("perfil", a.perfil), ("hilos", a.hilos), ("redes_abonados", a.redes),
-                         ("compat_v6", a.compat_v6), ("ros_version", a.ros), ("origen_ip", a.origen_ip)):
+                         ("compat_v6", a.compat_v6), ("ros_version", a.ros), ("origen_ip", a.origen_ip),
+                         ("api_puerto", a.api_puerto)):
                 if v is not None:
                     p[k] = v
             if a.sin_compat_v6:

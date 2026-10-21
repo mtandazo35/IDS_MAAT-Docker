@@ -962,7 +962,7 @@ que encolan, `--no-esperar` (imprime el `op_id` y sale).
 | `ids-orq punto borrar <pid> --confirmar <nombre>` | `punto.borrar` |
 | `ids-orq punto estado [<pid>\|'*']` | `punto.estado` |
 | `ids-orq punto arrancar\|parar\|reiniciar <pid> [--parte vpn\|suricata\|todo]` | `punto.*` |
-| `ids-orq punto ajustar <pid> [--perfil …] [--hilos …] [--redes …] [--compat-v6[=…]\|--sin-compat-v6] [--ros 6\|7] [--origen-ip IP\|--sin-origen-ip]` | `punto.ajustar` |
+| `ids-orq punto ajustar <pid> [--perfil …] [--hilos …] [--redes …] [--compat-v6[=…]\|--sin-compat-v6] [--ros 6\|7] [--origen-ip IP\|--sin-origen-ip] [--api-puerto 8729\|8728]` | `punto.ajustar` (`--api-puerto` va solo, 2026-10-20) |
 | `ids-orq punto reconfigurar <pid>` | `punto.reconfigurar` |
 | `ids-orq punto ovpn-client <pid>` | `punto.comandos` |
 | `ids-orq punto vpn-regenerar <pid>` | `punto.vpn.regenerar` |

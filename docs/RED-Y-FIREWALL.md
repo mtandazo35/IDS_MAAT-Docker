@@ -161,10 +161,12 @@ socat UNIX-LISTEN:/run/ids/api.sock,fork,unlink-early,mode=660,max-children=4 \
       TCP:100.64.${N}.2:${API_PUERTO:-8729},connect-timeout=5
 ```
 
-- **Un solo relé por punto, hacia 8729 (API-SSL), sin certificado.** El panel habla siempre TLS con
-  la API-SSL del router, que se usa tal como esté: el script no crea ningún certificado ni toca
-  `/ip service api-ssl` ([OPERACION.md](OPERACION.md) §1.1). Lo normal es `certificate=none`, con
-  el que RouterOS negocia un cifrado anónimo (ADH): el panel prueba primero `ADH:@SECLEVEL=0` y
+- **Un solo relé por punto, hacia `API_PUERTO`: 8729 (API-SSL) por defecto u 8728 (API sin SSL,
+  desde 2026-10-20; el panel habla entonces la API en claro y se cambia con `ids-orq punto ajustar
+  <pid> --api-puerto`).** Con 8729 el panel habla TLS con la API-SSL del router, que se usa tal como
+  esté: el script no crea ningún certificado ni toca `/ip service api-ssl` ([OPERACION.md](OPERACION.md)
+  §1.1; hay RouterOS 7 que necesitan un certificado, que el panel da en el aviso). Sin certificado
+  (`certificate=none`) RouterOS 6.49 y algunos 7 negocian un cifrado anónimo (ADH): el panel prueba primero `ADH:@SECLEVEL=0` y
   después los cifrados normales (router con certificado). **Sin huella fijada hace `/login` con lo
   que presente el router**, con certificado o sin él. Es la decisión del dueño (2026-10-15), como en
   el proyecto original: la clave de `ids-api` la protegen el túnel OpenVPN, en el que el MikroTik

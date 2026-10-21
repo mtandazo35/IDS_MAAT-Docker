@@ -33,6 +33,7 @@ import re
 import socket
 import sys
 import tempfile
+import threading
 import types
 import unittest
 
@@ -126,18 +127,37 @@ class HuellaNucleo(_Nucleo):
         self.conectar().close()
         self.assertEqual(len(_logins(self.srv)), 1)
 
-    def test_con_8728_no_intenta_tls_y_dice_por_que(self):
-        """Corrección de defecto (revisión 2026-10-15, C7): con la API en claro (8728) el saludo
-        TLS fallaba culpando al TLS; ahora mk_conectar dice la causa y no abre nada."""
+    def test_con_8728_habla_la_api_sin_tls(self):
+        """Capacidad nueva (2026-10-20, «debe aceptar sin ssl»): con 8728 mk_conectar abre el relé del
+        punto y hace /login en claro, sin intentar TLS ni mirar huellas. Antes se negaba (C7)."""
+        recibido = []
+
+        def abrir(ruta, timeout):
+            a, b = socket.socketpair()
+            a.settimeout(timeout)
+
+            def servir():
+                try:
+                    while True:
+                        w = self.d._mk_read(b)
+                        recibido.append(w)
+                        self.d._mk_send(b, ["!done"])
+                except (IOError, OSError, IndexError):
+                    pass
+                finally:
+                    b.close()
+            threading.Thread(target=servir, daemon=True).start()
+            return a
+
+        def sin_tls(*a, **k):
+            raise AssertionError("con 8728 no se intenta TLS")
+        self.d._mk_abrir_unix = abrir
+        self.d._mk_tls_wrap = sin_tls
         d = self.d.cargar_mk_de(self.d.router_por_id("p001"))
         d["PORT"] = "8728"
-        antes = self.aperturas
-        with self.assertRaises(IOError) as cm:
-            self.d.mk_conectar(d)
-        self.assertIn("8728", str(cm.exception))
-        self.assertIn("API-SSL", str(cm.exception))
-        self.assertEqual(self.aperturas, antes)
-        self.assertEqual(_logins(self.srv), [])
+        self.d.mk_conectar(d).close()
+        self.assertEqual([w for w in recibido if w and w[0] == "/login"],
+                         [["/login", "=name=ids-api", "=password=clave-api-1"]])
 
     def test_guardar_otra_cosa_no_pisa_la_huella_confirmada_entre_medias(self):
         """Corrección de defecto (revisión 2026-10-15, C9): la ficha lee los routers, otro admin
@@ -324,13 +344,17 @@ class SinCertificado(_Nucleo):
             self.conectar()
         txt = str(cm.exception)
         self.assertTrue(txt.startswith("el MikroTik cerró la API-SSL sin contestar al saludo TLS"), txt)
-        self.assertLess(txt.index("certificate=none"), txt.index("UNEXPECTED_EOF"))
+        # 2026-10-20: hay RouterOS 7 que solo aceptan la API-SSL con certificado: el aviso da el suyo
+        self.assertLess(txt.index("/ip service set api-ssl certificate=ids-api"), txt.index("UNEXPECTED_EOF"))
+        self.assertNotIn("certificate=none", txt)
+        self.assertIn("API sin SSL (8728)", txt)
         self.assertIn("Detalle de los 3 cifrados probados", txt)
         self.assertEqual(probados, ["ADH:@SECLEVEL=0", "DEFAULT:@SECLEVEL=0", None])
         self.assertEqual(enviado, [])
         ok, msg = puntos_web.probar_api(self.d, "p001")
         self.assertFalse(ok)
-        self.assertIn("/ip service set api-ssl certificate=none", msg)
+        self.assertIn("/certificate add name=ids-api", msg)
+        self.assertIn("/ip service set api-ssl certificate=ids-api", msg)
 
     def test_huella_vieja_de_api_anonima_se_respeta(self):
         """Conservación: un router que se fijó sin certificado (sha256 de nada) sigue conectando."""
@@ -563,12 +587,32 @@ class FichaHuella(_Panel):
         with open(ruta, "w", encoding="utf-8") as f:
             json.dump(e, f)
         h = self.get("/puntos/p002")
-        self.assertIn("API sin TLS (puerto 8728)", h)
-        # revisión 2026-10-15, C7: con 8728 el panel no conecta (habla siempre API-SSL); antes
-        # decía que «la clave va protegida solo por el túnel», como si funcionara
-        self.assertIn("<b>no conecta</b>", h)
+        self.assertIn("API sin TLS (puerto 8728", h)
+        # 2026-10-20 («debe aceptar sin ssl»): con 8728 el panel conecta en claro; la ficha dice que la
+        # clave viaja sin cifrar y ofrece volver a API-SSL
+        self.assertNotIn("<b>no conecta</b>", h)
+        self.assertIn("viaja sin cifrar", h)
+        self.assertIn("Pasar a API-SSL (8729)", h)
         self.assertNotIn("protegida solo por el túnel", h)
         self.assertNotIn("La huella coincide: confirmar", h)
+
+    def test_pasar_a_api_sin_ssl_encola_el_ajuste(self):
+        """2026-10-20: «Pasar a API sin SSL (8728)» encola punto.ajustar solo con api_puerto; un puerto
+        que no es 8729 ni 8728 no sale del panel."""
+        h = self.get("/puntos/p001")
+        self.assertIn("Pasar a API sin SSL (8728)", h)
+        self.assertIn("/ip service set api disabled=no", h)
+        tok = self.token_de(h, "value=puerto")
+        r = self.p.pedir("POST", "/puntos/p001/api", {"accion": "puerto", "api_puerto": "8728", "op": tok},
+                         cookie=self.ana)
+        self.assertIn(r.status, (200, 303), r.texto[:300])
+        ajustes = [x for x in self.pedidas if x["orden"] == "punto.ajustar"]
+        self.assertEqual([x["params"] for x in ajustes], [{"pid": "p001", "api_puerto": 8728}])
+        r = self.p.pedir("POST", "/puntos/p001/api", {"accion": "puerto", "api_puerto": "8080",
+                                                      "op": self.token_de(self.get("/puntos/p001"), "value=puerto")},
+                         cookie=self.ana)
+        self.assertEqual(r.status, 400, r.texto[:300])
+        self.assertEqual(len([x for x in self.pedidas if x["orden"] == "punto.ajustar"]), 1)
 
     def test_solo_admin(self):
         olga = self.p.entrar("olga")
@@ -704,8 +748,10 @@ class Textos(_Panel):
     def test_documentacion(self):
         doc = self.p.d.documentacion_page(pagina="todo")
         for txt in ("La huella coincide: confirmar", "Fijada automáticamente", "Desbanear IP del MikroTik",
-                    # la API-SSL va sin certificado (2026-10-15) y la doc dice qué revisar en el router
-                    "API-SSL sin certificado", "/ip service set api-ssl certificate=none",
+                    # la API-SSL va sin exigir certificado (2026-10-15); hay RouterOS 7 que lo necesitan y
+                    # la doc da el suyo, y la API sin SSL (8728) se elige en la ficha (2026-10-20)
+                    "La API del router: API-SSL o API sin SSL", "/ip service set api-ssl certificate=ids-api",
+                    "Pasar a API sin\nSSL (8728)", "/ip service set api disabled=no",
                     "verify-server-certificate", "ids-maat-ca-",
                     # el script no lleva firewall ni rutas (2026-10-15): lo dice y explica la limpieza
                     "Firewall y rutas del router: los gestionas tú", "no lleva reglas de firewall ni rutas",

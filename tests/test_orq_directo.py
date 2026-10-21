@@ -57,7 +57,10 @@ class Alta(unittest.TestCase):
         self.assertNotIn("Solo se acepta desde", com)
         self.assertIn("sin VPN", com)
         self.assertNotIn("ovpn-client", com)
-        self.assertNotIn("/certificate", com)
+        # nada de la CA de la VPN; sí el certificado de la API-SSL que piden algunos RouterOS 7 (2026-10-20)
+        self.assertNotIn("/certificate import", com)
+        self.assertNotIn("ids-maat-ca", com)
+        self.assertIn("/ip service set api-ssl certificate=ids-api", com)
 
     def test_firewall_publica_el_udp_desde_cualquier_ip(self):
         """2026-10-20 («necesito que escuche cualquier IP»): el puerto del espejo se publica sin filtro
