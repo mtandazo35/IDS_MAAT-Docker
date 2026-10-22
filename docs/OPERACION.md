@@ -603,6 +603,11 @@ mientras tanto, lo que aún no ha pasado decide por rol.
   (ver las IPs públicas; consultar AbuseIPDB; denunciar, global). Cada ruta pide el suyo (403 sin
   él). La página de Cuarentena enseña los botones si el usuario tiene alguno de los de actuar; cada
   envío vuelve a comprobar el suyo en el servidor.
+- **Fase 4 (Resumen).** El acordeón suma Resumen: En vivo, Top y Detalle; Histórico; Conducta (y
+  su CSV); Informe PDF; Eventos; y la vista «Todos» (global). Sin el permiso de una página no sale
+  su pestaña y la página da 403; sin «En vivo», la portada lleva a la primera pestaña que el usuario
+  sí puede ver (o a Ajustes). Sin «Vista Todos», un usuario que ve todos los puntos los mira de uno
+  en uno, como un limitado.
 
 **Qué ve un usuario limitado:**
 

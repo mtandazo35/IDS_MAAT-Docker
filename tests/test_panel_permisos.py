@@ -280,6 +280,57 @@ class CuarentenaPorPermiso(A.Base):
         self.assertEqual(self.post("/reputacion", {"ips": "203.0.113.9"}, "pepe").status, 403)
 
 
+# --------------------------------------------------------------------------------------------
+# Fase 4: Resumen, Histórico, Conducta, Informe, Eventos y la vista «Todos» por permiso
+# --------------------------------------------------------------------------------------------
+class ResumenPorPermiso(A.Base):
+    poner_permisos = PuntosPorPermiso.poner_permisos
+    sin = CuarentenaPorPermiso.sin
+
+    def test_sin_todos_ve_los_puntos_uno_a_uno(self):
+        """Capacidad nueva: un usuario sin lista de puntos pero sin «Vista Todos» los ve todos, de uno
+        en uno: «Todos» es 404, su vista por defecto es el primer punto y el selector no la ofrece."""
+        self.sin("pepe", "resumen.todos")
+        self.assertEqual(self.get("/?nodo=_todos", "pepe").status, 404)
+        r = self.get("/", "pepe")
+        self.assertEqual(r.status, 200, A.plano(r.texto))
+        vals, elegida, _sel = A.selector(r.texto)
+        self.assertEqual(elegida, "p001")
+        self.assertNotIn("_todos", vals or [])
+        self.assertEqual(self.get("/?nodo=p002", "pepe").status, 200)
+
+    def test_cada_pagina_su_permiso(self):
+        """Capacidad nueva: sin el permiso de una página, 403 y sin su pestaña en el menú."""
+        casos = (("resumen.historico", "/historico", "/historico"),
+                 ("resumen.conducta", "/conducta", "/conducta"),
+                 ("resumen.conducta", "/conducta.csv", None),
+                 ("resumen.informe", "/informe.pdf?dias=1", None),
+                 ("resumen.eventos", "/eventos", "/eventos"),
+                 ("resumen.ver", "/top", "/top"),
+                 ("resumen.ver", "/detalle", "/detalle"))
+        for perm, ruta, tab in casos:
+            with self.subTest(perm=perm, ruta=ruta):
+                self.sin("pepe", perm)
+                self.assertEqual(self.get(ruta, "pepe").status, 403)
+                if tab:
+                    h = self.get("/cuarentena", "pepe").texto
+                    self.no_esta('href="%s" class="tab' % tab, h, "menú sin " + perm)
+
+    def test_sin_en_vivo_va_a_lo_primero_que_puede(self):
+        """Capacidad nueva: sin «En vivo» la portada lleva a la primera página que sí puede ver."""
+        self.sin("pepe", "resumen.ver")
+        r = self.get("/", "pepe")
+        self.assertEqual(r.status, 303)
+        self.assertTrue((r.cab("Location") or "").startswith("/cuarentena"), r.cab("Location"))
+
+    def test_sin_nada_va_a_ajustes(self):
+        """Sin ninguna página de datos, la portada lleva a Ajustes (su clave y su foto)."""
+        self.poner_permisos("luis", [])
+        r = self.get("/", "luis")
+        self.assertEqual(r.status, 303)
+        self.assertTrue((r.cab("Location") or "").startswith("/ajustes"), r.cab("Location"))
+
+
 class AcordeonUsuarios(A.Base):
     def editar(self, objetivo, rol, perm=None, grupos="puntos"):
         form = {"accion": "edit_user", "user": objetivo, "nombre": "", "correo": "", "role": rol}
@@ -293,7 +344,7 @@ class AcordeonUsuarios(A.Base):
         """Capacidad nueva: Ajustes › Usuarios trae el acordeón «Permisos» con la sección Puntos, su
         «Activos X/Y» y una casilla por permiso; la fila lleva los permisos del usuario."""
         h = self.get("/ajustes", "ana").texto
-        self.esta("name=perm_grupos value='cuarentena,reputacion,puntos'", h, "ajustes")
+        self.esta("name=perm_grupos value='resumen,cuarentena,reputacion,puntos'", h, "ajustes")
         self.esta("class=pgrp data-g='cuarentena'", h, "ajustes")
         self.esta("class=pgrp data-g='reputacion'", h, "ajustes")
         self.esta("class=pgrp data-g='puntos'", h, "ajustes")

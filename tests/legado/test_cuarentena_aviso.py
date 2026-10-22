@@ -90,6 +90,10 @@ class _Peticion:
     def _operador(self):
         return True
 
+    def _puede(self, permiso):
+        # (adaptada, permisos 2026-10-22) el doble es un admin: tiene todos
+        return True
+
     def _redirect(self, u, cookie=None):
         self.salida.append(("redirect", u))
 

@@ -116,6 +116,9 @@ class Self:
         return True
     def _operador(self):
         return True
+    def _puede(self, permiso):
+        # (adaptada, permisos a la carta 2026-10-22) el doble es un admin: tiene todos
+        return True
     def _set_ctx(self):
         # (adaptada, CONTRATO-F2 §10.1) el _set_ctx real pone el nodo de la peticion: sin
         # ?nodo= ni nodo guardado en la sesion, la vista consolidada «Todos». El doble hace

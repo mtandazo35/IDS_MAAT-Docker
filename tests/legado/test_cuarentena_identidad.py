@@ -132,6 +132,8 @@ def llamar(ns, mk, ruta, campos, operador=True):
     visto = {}
     class Self:
         def _operador(self): return operador
+        # (adaptada, permisos 2026-10-22) el operador del doble tiene los de su plantilla
+        def _puede(self, permiso): return operador
         def _deny(self): return visto.update({"deny": True})
         def _prohibido(self): return visto.update({"deny": True})   # CONTRATO-F2 §10.2
         def _redirect(self, u): return visto.update({"redirect": u})

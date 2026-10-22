@@ -33,6 +33,8 @@ def correr(sels, operador=True, fallan=(), caido=False, estado=None, intentos=No
         "dns":  {"p001|198.51.100.5": {}}}
     class Self:
         def _operador(self): return operador
+        # (adaptada, permisos 2026-10-22) el operador del doble tiene los de su plantilla
+        def _puede(self, permiso): return operador
         def _deny(self): return ("DENY", 403)
         def _prohibido(self): return ("DENY", 403)   # CONTRATO-F2 §10.2: 403 por rol
         def _redirect(self, url): return ("REDIR", url)

@@ -6187,7 +6187,7 @@ def evidencia_reciente(clave, cq=None, ahora=None):
     # con las entradas de cada punto y su `router`). Un usuario limitado no puede abrir el de
     # «Todos» (mezcla los puntos de todos): solo el de su punto
     if cq is None:
-        cqs = [_cargar_cuarentena(pid)] + ([] if nodos.limitado() else [_cargar_cuarentena(nodos.TODOS)])
+        cqs = [_cargar_cuarentena(pid)] + ([] if not nodos.todos_visible() else [_cargar_cuarentena(nodos.TODOS)])
     else:
         cqs = list(cq) if isinstance(cq, (list, tuple)) else [cq]
     lim = evidencia_max_s(cqs[0])
@@ -6508,7 +6508,7 @@ def estado_ventana(nodo=None):
     vg = ventana_generada(nodo)
     # un usuario limitado cuenta solo sus puntos (pids_activos ya sale con su alcance): «Todos»
     # no lo puede abrir, y la consulta acababa en 404 cada 20 s
-    todos = pids_activos() + ([] if nodos.limitado() else [nodos.TODOS])
+    todos = pids_activos() + ([] if not nodos.todos_visible() else [nodos.TODOS])
     listos = sum(1 for n in todos if ventana_generada(n) == va)
     return {"elegida": va, "generada": vg, "pendiente": bool(vg and vg != va),
             "listos": listos, "total": len(todos), "v": version_resumen(nodo)[0]}
@@ -10114,6 +10114,22 @@ _NAV_LINKS = [("/", "En vivo"), ("/top", "Top orígenes"), ("/detalle", "Detalle
 # Ajustes y el menu del usuario): se abre desde Ajustes -> Puntos, y la ven el administrador y el
 # operador (cada uno sus puntos; puntos_web filtra y comprueba el permiso), no solo lectura
 _NAV_SOLO_ADMIN = ("/exclusiones",)
+# permiso de cada pestana y de cada pagina de datos (fase 4 de permisos): sin el, ni la pestana ni la
+# pagina (403); «/» sin el suyo lleva a la primera pagina que el usuario si puede ver
+NAV_PERMISO = {"/": "resumen.ver", "/top": "resumen.ver", "/detalle": "resumen.ver",
+               "/cuarentena": "cuarentena.ver", "/reputacion": "reputacion.ver",
+               "/historico": "resumen.historico", "/conducta": "resumen.conducta", "/eventos": "resumen.eventos"}
+PERMISO_RUTA_GET = dict(NAV_PERMISO, **{
+    "/index.html": "resumen.ver", "/duenos": "resumen.ver", "/ventana-estado": "resumen.ver",
+    "/conducta.csv": "resumen.conducta", "/informe.pdf": "resumen.informe",
+    "/eventos/detalle": "resumen.eventos"})
+
+def inicio_permitido():
+    """La primera pestana que el usuario puede ver (Ajustes si ninguna): adonde va «/» sin su permiso."""
+    for h, _t in _NAV_LINKS:
+        if h != "/" and h in NAV_PERMISO and puede_ctx(NAV_PERMISO[h]):
+            return h
+    return "/ajustes"
 # paginas que no dependen del nodo: no llevan selector (CONTRATO-F2 §10, inv_B §2)
 _NAV_SIN_NODO = ("/ajustes", "/puntos", "/registro", "/log", "/bitacora", "/documentacion")
 
@@ -10134,7 +10150,7 @@ def _selector_nodo(active):
         return ""
     actual = nodos.nodo_actual()
     fn = globals().get("salud_punto")
-    lim = nodos.limitado()
+    lim = not nodos.todos_visible()    # limitado, o sin el permiso de la vista «Todos»
     ops = [] if lim else ['<option value="%s"%s>Todos los nodos (acumulado)</option>'
                           % (nodos.TODOS, " selected" if actual == nodos.TODOS else "")]
     color = ""; sal_txt = ""
@@ -10908,6 +10924,8 @@ def nav(active=""):
     for h, t in _NAV_LINKS:
         if h in _NAV_SOLO_ADMIN and not es_admin_nav:
             continue   # exclusiones (ajuste de deteccion) es solo de admin
+        if h in NAV_PERMISO and not puede_ctx(NAV_PERMISO[h]):
+            continue   # sin el permiso de esa pagina
         cls = "tab on" if h == active else "tab"
         parts.append(f'<a href="{h}" class="{cls}">{t}</a>')
     brand = '<span class="brand"><img class="applogo" src="/logo.png" alt="Suricata">Estadísticas Suricata</span>'
@@ -19258,7 +19276,7 @@ def _enviar_confirmados(nodo_form, tipo):
             partes.append("%s: nada (MikroTik sin habilitar)" % nom)    # ese nodo esta en dry-run
             continue
         # el de «Todos» no lo abre un usuario limitado (mezcla los puntos de todos)
-        cq_pid = [_cargar_cuarentena(pid)] + ([] if nodos.limitado() else [_cargar_cuarentena(nodos.TODOS)])
+        cq_pid = [_cargar_cuarentena(pid)] + ([] if not nodos.todos_visible() else [_cargar_cuarentena(nodos.TODOS)])
         ok_n = err_n = 0; ult_err = ""
         nuevas = {}
         corte = ""
@@ -19585,7 +19603,9 @@ class H(BaseHTTPRequestHandler):
         # Alcance (2026-10-22): los puntos que ve el usuario (None = todos); sin sesion, ninguno.
         # Desde aqui, para un usuario limitado un punto ajeno no existe (nodos.py).
         nodos.poner_alcance(s.get("puntos") if s else [])
-        if nodos.limitado() and not nodos.pids():
+        # sin el permiso de la vista «Todos» (fase 4 de permisos), como un limitado para esa vista
+        nodos.poner_sin_todos(bool(s) and "resumen.todos" not in (s.get("permisos") or ()))
+        if not nodos.todos_visible() and not nodos.pids():
             self._html(_pagina_error("Sin puntos asignados", "Tu usuario todavía no tiene ningún punto "
                                      "asignado. Pídele a un administrador que te asigne los tuyos."), 403)
             return False
@@ -19594,7 +19614,7 @@ class H(BaseHTTPRequestHandler):
         # limitado, su primer punto: «Todos» mezcla los de todos). Un nodo mal formado es 400 y
         # uno que no existe (o es de otro) 404 (NodoInvalido/NodoInexistente, que _seguro
         # convierte): NUNCA se amplia a «Todos». El destino de una ACCION no sale de aqui.
-        defecto = nodos.pids()[0] if nodos.limitado() else nodos.TODOS
+        defecto = nodos.pids()[0] if not nodos.todos_visible() else nodos.TODOS
         q = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query, keep_blank_values=True)
         if "nodo" in q:
             nodo = nodos.poner_nodo(q["nodo"][0])
@@ -19892,8 +19912,13 @@ class H(BaseHTTPRequestHandler):
             _cq = {k: v[0] for k, v in _up.parse_qs(self.path.split("?", 1)[1]).items()} if "?" in self.path else {}
             if puntos_web.get(self, path, _cq):
                 return
+        _perm_ruta = PERMISO_RUTA_GET.get(path) or ("resumen.ver" if path.startswith("/r/report-") else None)
+        if _perm_ruta and not self._puede(_perm_ruta):
+            if path in ("/", "/index.html"):
+                return self._redirect(inicio_permitido())
+            return self._prohibido()
         if path in ("/eventos", "/eventos/detalle"):
-            # Eventos (modulo de E): todos los roles; el nodo ya esta validado en el contexto
+            # Eventos (modulo de E): con su permiso; el nodo ya esta validado en el contexto
             _cq = {k: v[0] for k, v in _up.parse_qs(self.path.split("?", 1)[1]).items()} if "?" in self.path else {}
             fn = eventos_web.pagina if path == "/eventos" else eventos_web.detalle
             try:
@@ -21030,7 +21055,7 @@ class H(BaseHTTPRequestHandler):
                 return self._json({"ok": True, "corriendo": feeds_corriendo()})
             return self._html(perfil_page("Actualizando feeds en segundo plano; recarga en un momento para ver el estado.", ok=True))
         if ruta == "/conducta/refrescar":
-            if not self._operador():
+            if not self._operador() or not self._puede("resumen.conducta"):
                 return self._prohibido()
             # No se genera dentro de la peticion: recorrer 3 dias de logs puede tardar
             # minutos y el navegador cortaria por timeout. Lo hace el hilo de fondo.

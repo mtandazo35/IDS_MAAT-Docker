@@ -188,7 +188,7 @@ def validar_nodo(nodo):
     """Lo que se puede MIRAR: TODOS (pedido expresamente) o un pid existente. Un usuario
     limitado no puede mirar TODOS: sus ficheros mezclan los puntos de todos (NodoInexistente)."""
     if nodo == TODOS:
-        if limitado():
+        if not todos_visible():
             raise NodoInexistente(TODOS)
         return TODOS
     return exigir_pid(nodo)
@@ -257,6 +257,18 @@ def poner_alcance(pids_usuario=None):
 
 def quitar_alcance():
     _CTX.alcance = None
+    _CTX.sin_todos = False
+
+
+def poner_sin_todos(valor=True):
+    """El usuario de la peticion no tiene el permiso de la vista «Todos» (permisos.py,
+    resumen.todos): como a un limitado, «Todos» no existe para el aunque vea todos los puntos."""
+    _CTX.sin_todos = bool(valor)
+
+
+def todos_visible():
+    """La vista «Todos» se puede mirar en esta peticion: ni usuario limitado ni sin su permiso."""
+    return not limitado() and not getattr(_CTX, "sin_todos", False)
 
 
 def alcance():
@@ -336,7 +348,7 @@ def dir_salida(nodo=None, crear=True):
     """Salidas del nodo (o de la vista acumulada): report-*.html, cuarentena.json..."""
     nodo = nodo if nodo is not None else nodo_actual()
     if nodo == TODOS:
-        if limitado():                             # «Todos» mezcla los puntos de todos
+        if not todos_visible():                    # «Todos» mezcla los puntos de todos
             raise NodoInexistente(TODOS)
     else:
         _pid_ruta(nodo)                            # formato y alcance

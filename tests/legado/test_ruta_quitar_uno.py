@@ -19,6 +19,8 @@ def correr(sel, operador=True, fallan=(), estado=None, logs=None, hablado=None):
     hablado = hablado if hablado is not None else []
     class Self:
         def _operador(self): return operador
+        # (adaptada, permisos 2026-10-22) el operador del doble tiene los de su plantilla
+        def _puede(self, permiso): return operador
         def _json(self, obj, code=200):
             resp.update(obj); resp["_code"] = code; return obj
     def _remove(ip, lista=None, router=None):
