@@ -207,7 +207,7 @@ def main():
           "listasRecargar()" in DASH and "Recargar las listas en el router" in DASH
           and "_accResultado('/mikrotik/listas/recargar'" in DASH, "")
     i = DASH.index('if ruta == "/mikrotik/listas/recargar":')
-    check("la ruta es solo de admin", "self._admin()" in DASH[i:i + 300], "")
+    check("la ruta es solo de admin", 'self._puede("ajustes.mikrotik")' in DASH[i:i + 300], "")
     check("en el desplegable de listas y en Cuarentena se ve 'falta en el router'",
           "falta en el router</span>" in DASH and "FALTA en el router" in DASH, "")
 

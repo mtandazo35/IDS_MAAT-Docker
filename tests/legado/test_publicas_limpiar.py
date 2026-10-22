@@ -150,7 +150,7 @@ def main():
 
     rv = ruta("/publicas/quitar-varias")
     check("existe la ruta de quitar varias", bool(rv), "")
-    check("es de administrador", "self._admin()" in rv, "")
+    check("es de administrador", 'self._puede("ajustes.publicas")' in rv, "")
     check("quita SOLO las marcadas, no la lista entera",
           "e not in fuera" in rv, rv[:300])
     check("si no marcas nada, no borra nada", "No marcaste ninguna" in rv, "")

@@ -106,7 +106,7 @@ def de_usuario(r):
 
 
 # Secciones que ya deciden por permiso y salen en el acordeón de Usuarios (crece en cada fase).
-EDITABLES = ("resumen", "cuarentena", "reputacion", "puntos", "usuarios")
+EDITABLES = ("resumen", "cuarentena", "reputacion", "puntos", "usuarios", "ajustes")   # todas (fase 6)
 
 
 def crudos(r):

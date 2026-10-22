@@ -171,6 +171,7 @@ def main():
         visto = {}
         class Self:
             def _admin(self): return admin
+            def _puede(self, permiso): return admin      # (adaptada, permisos fase 6)
             def _deny(self): visto["deny"] = True
             def _prohibido(self): visto["deny"] = True     # el _deny del original (§10.2)
             def send_response(self, *a): pass
@@ -250,7 +251,7 @@ def main():
     i = DASH.index('if ruta == "/mikrotik/reglas/estado":')
     tramo = DASH[i:DASH.index("self.wfile.write(b)", i)]
     check("la ruta de estado es solo de admin y contesta JSON (con _error si el router no responde)",
-          "self._admin()" in tramo and "estado_reglas(r)" in tramo and '"_error"' in tramo
+          'self._puede("ajustes.mikrotik")' in tramo and "estado_reglas(r)" in tramo and '"_error"' in tramo
           and "application/json" in tramo, "")
     check("se mira al abrir MikroTik (no al cargar Ajustes), al cambiar de router y tras aplicar/quitar",
           "if(id==='mikrotik'&&typeof accEstado==='function')accEstado();" in DASH

@@ -2770,7 +2770,7 @@ def ficha(h, pid, mensaje="", codigo=200, ok=False, extra_espejo=""):
                           "el router con la clave puesta, y desde entonces estos comandos salen completos. No "
                           "pegues password=<CLAVE-VPN> tal cual: el router se queda con ese texto de clave y no "
                           "conecta.", "amb")
-                    + "<p>%s</p>" % regenerar_form(pid)
+                    + ("<p>%s</p>" % regenerar_form(pid) if _puede(h, "puntos.vpn_regenerar") else "")
                     + comandos_html(cmds_txt, p.get("ros_version"), "ficha"))
     if not directo and not _puede(h, "puntos.vpn_ver"):
         vpn_html = "<p class=hint>Tu usuario no tiene permiso para ver los comandos ni la clave de la VPN.</p>"

@@ -614,6 +614,12 @@ mientras tanto, lo que aún no ha pasado decide por rol.
   suyos y con un rol que no sea mayor. En su lista no salen los demás; editarlos, borrarlos o
   desactivarlos responde «Ese usuario no existe». No se edita a sí mismo (su clave y su foto, sí,
   desde Perfil). Un administrador limitado a unos puntos es, así, el administrador de ese cliente.
+- **Fase 6 (Ajustes y cierre).** El acordeón suma Ajustes (empresa, MikroTik, IPs públicas, feeds e IA,
+  Telegram, DNS, exclusiones, IPs de confianza, ventana, actualizar reglas, actualizar el panel,
+  bitácora), todos globales: cada tarjeta de Ajustes, la pestaña Exclusiones y el aviso de
+  actualización salen con su permiso. Cuarentena enseña cada bloque con el suyo. Salvaguarda: no se
+  guarda un cambio que deje sin ningún administrador activo con todos los puntos y todos los
+  permisos. Con esto todas las secciones deciden por permiso; el rol queda como plantilla.
 
 **Qué ve un usuario limitado:**
 

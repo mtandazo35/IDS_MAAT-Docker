@@ -149,7 +149,7 @@ class DelFormulario(unittest.TestCase):
         grupos editables, None (formulario de antes: no se toca)."""
         f = permisos.del_formulario
         self.assertIsNone(f([""], ["puntos.ver"], "operador"))
-        self.assertIsNone(f(["ajustes"], ["ajustes.dns"], "admin"))
+        self.assertIsNone(f(["inventado"], ["ajustes.dns"], "admin"))
         r = set(f(["puntos"], ["puntos.ver", "inventado", "ajustes.dns"], "operador"))
         self.assertEqual(r & PUNTOS_TODOS, {"puntos.ver"})
         self.assertNotIn("ajustes.dns", r)
@@ -413,6 +413,42 @@ class UsuariosDelegados(A.Base):
         self.post("/perfil", {"accion": "toggle_user", "user": "luis"}, "olga")
         self.assertFalse(self.usuario("luis")["activo"])
 
+    def test_admin_recortado_no_se_devuelve_todo(self):
+        """Verificador final, H1: un admin con todos los puntos pero permisos recortados no se da
+        todos los permisos a sí mismo ni toca la cuenta de un admin con todo."""
+        us = self.d.cargar_usuarios()
+        x = dict(self.usuario("ana"), user="xavi", permisos=["resumen.ver", "usuarios.ver", "usuarios.editar"])
+        self.d.guardar_usuarios(us + [x])
+        todo = sorted(permisos.TODOS)
+        r = self.post("/perfil", {"accion": "edit_user", "user": "xavi", "nombre": "", "correo": "", "role": "admin",
+                                  "puntos_modo": "todos", "perm_grupos": ",".join(permisos.EDITABLES), "perm": todo},
+                      "xavi")
+        self.assertIn("Ese usuario no existe", r.texto)
+        self.assertEqual(self.usuario("xavi")["permisos"], x["permisos"])
+        hash_ana = self.usuario("ana")["hash"]
+        r = self.post("/perfil", {"accion": "edit_user", "user": "ana", "nombre": "", "correo": "", "role": "admin",
+                                  "npass": "clave-nueva-de-xavi"}, "xavi")
+        self.assertIn("Ese usuario no existe", r.texto)
+        self.assertEqual(self.usuario("ana")["hash"], hash_ana)
+
+    def test_cambiar_rol_no_reparte_de_mas(self):
+        """Verificador final, H2: cambiar el rol desde la tabla, delegado, da la plantilla del rol
+        nuevo dentro de lo que tiene quien la cambia."""
+        self.poner_permisos("olga", sorted(set(GESTOR) - {"puntos.vpn_regenerar"}))
+        self.post("/perfil", {"accion": "rol_user", "user": "luis", "role": "operador"}, "olga")
+        u = self.usuario("luis")
+        self.assertEqual(u["role"], "operador")
+        self.assertNotIn("puntos.vpn_regenerar", u.get("permisos", permisos.PLANTILLAS["operador"]))
+
+    def test_a_un_par_no(self):
+        """Verificador final, M1: a otro con su mismo rol y sus mismos permisos no lo ve ni lo toca
+        (le cambiaría la clave)."""
+        self.d.guardar_usuarios(self.d.cargar_usuarios() + [dict(self.usuario("olga"), user="olivia")])
+        self.no_esta("data-user='olivia'", self.get("/ajustes", "olga").texto, "par")
+        r = self.post("/perfil", {"accion": "edit_user", "user": "olivia", "nombre": "", "correo": "",
+                                  "role": "operador", "npass": "clave-nueva-de-olga"}, "olga")
+        self.assertIn("Ese usuario no existe", r.texto)
+
     def test_cada_accion_su_permiso(self):
         """Sin «Crear y editar», ni alta (403); sin «Borrar y desactivar», ni borrar (403); sin «Ver
         los usuarios», sin la lista."""
@@ -423,6 +459,61 @@ class UsuariosDelegados(A.Base):
         self.assertIsNotNone(self.usuario("luis"))
         self.poner_permisos("olga", sorted(set(GESTOR) - {"usuarios.ver"}))
         self.no_esta("data-user='luis'", self.get("/ajustes", "olga").texto, "sin ver")
+
+
+# --------------------------------------------------------------------------------------------
+# Fase 6: Ajustes por permiso, botones finos en Cuarentena y salvaguarda de permisos
+# --------------------------------------------------------------------------------------------
+class AjustesPorPermiso(A.Base):
+    poner_permisos = PuntosPorPermiso.poner_permisos
+
+    def test_un_ajuste_suelto(self):
+        """Capacidad nueva: un operador con todos los puntos y solo «Resolutores DNS» de Ajustes entra
+        en DNS (su tarjeta y su POST) y no en Empresa, Exclusiones, Registro ni Actualizar (403)."""
+        self.poner_permisos("pepe", sorted(permisos.PLANTILLAS["operador"] | {"ajustes.dns"}))
+        self.d.guardar_resolutores = lambda texto: 1
+        self.assertNotEqual(self.post("/dns", {"resolutores": "192.0.2.53"}, "pepe").status, 403)
+        for ruta in ("/exclusiones", "/registro", "/bitacora", "/actualizacion.json"):
+            with self.subTest(ruta=ruta):
+                self.assertEqual(self.get(ruta, "pepe").status, 403)
+        self.assertEqual(self.post("/empresa", {"nombre": "x"}, "pepe").status, 403)
+        h = self.get("/ajustes", "pepe").texto
+        self.esta("openm('dns')", h, "tarjeta DNS")
+        self.no_esta("openm('empresa')", h, "tarjeta Empresa")
+
+    def test_ajustes_son_globales(self):
+        """Con lista de puntos, un permiso de Ajustes no vale aunque esté marcado (403)."""
+        self.poner_permisos("olga", sorted(permisos.PLANTILLAS["operador"] | {"ajustes.dns", "ajustes.exclusiones"}))
+        self.assertEqual(self.post("/dns", {"resolutores": "192.0.2.53"}, "olga").status, 403)
+        self.assertEqual(self.get("/exclusiones", "olga").status, 403)
+
+    def test_exclusiones_con_su_permiso(self):
+        """Capacidad nueva: la pestaña y la página de Exclusiones salen con su permiso."""
+        self.poner_permisos("pepe", sorted(permisos.PLANTILLAS["operador"] | {"ajustes.exclusiones"}))
+        self.assertEqual(self.get("/exclusiones", "pepe").status, 200)
+        self.esta(">Exclusiones</a>", self.get("/cuarentena", "pepe").texto, "pestaña")
+        self.poner_permisos("pepe", sorted(permisos.PLANTILLAS["operador"]))
+        self.no_esta(">Exclusiones</a>", self.get("/cuarentena", "pepe").texto, "sin pestaña")
+
+    def test_botones_finos_en_cuarentena(self):
+        """Capacidad nueva: la página de Cuarentena enseña cada bloque según su permiso: sin «Destinos
+        de confianza», no sale el formulario de excluir destinos (el admin, sí)."""
+        self.esta("Excluir y liberar", self.get("/cuarentena?nodo=p001", "ana").texto, "admin")
+        self.poner_permisos("pepe", sorted(permisos.PLANTILLAS["operador"] - {"cuarentena.confianza"}))
+        h = self.get("/cuarentena?nodo=p001", "pepe").texto
+        self.no_esta("Excluir y liberar", h, "sin confianza")
+
+    def test_siempre_queda_un_admin_con_todo(self):
+        """Capacidad nueva: al único administrador con todos los puntos no se le pueden quitar
+        permisos (no se guarda); con otro igual, sí."""
+        form = {"accion": "edit_user", "user": "ana", "nombre": "", "correo": "", "role": "admin",
+                "perm_grupos": "ajustes"}
+        r = self.post("/perfil", form, "ana")
+        self.assertIn("tiene que quedar al menos un administrador", r.texto)
+        self.assertNotIn("permisos", self.usuario("ana"))
+        self.d.guardar_usuarios(self.d.cargar_usuarios() + [dict(self.usuario("ana"), user="beto")])
+        self.post("/perfil", form, "ana")
+        self.assertNotIn("ajustes.dns", self.usuario("ana").get("permisos", permisos.TODOS))
 
 
 class AcordeonUsuarios(A.Base):
@@ -438,7 +529,7 @@ class AcordeonUsuarios(A.Base):
         """Capacidad nueva: Ajustes › Usuarios trae el acordeón «Permisos» con la sección Puntos, su
         «Activos X/Y» y una casilla por permiso; la fila lleva los permisos del usuario."""
         h = self.get("/ajustes", "ana").texto
-        self.esta("name=perm_grupos value='resumen,cuarentena,reputacion,puntos,usuarios'", h, "ajustes")
+        self.esta("name=perm_grupos value='resumen,cuarentena,reputacion,puntos,usuarios,ajustes'", h, "ajustes")
         self.esta("class=pgrp data-g='cuarentena'", h, "ajustes")
         self.esta("class=pgrp data-g='reputacion'", h, "ajustes")
         self.esta("class=pgrp data-g='puntos'", h, "ajustes")

@@ -191,7 +191,7 @@ def main():
     check("el formulario envia a /dns", "action='/dns'" in DASH and "name=resolutores" in DASH, "")
     ruta = DASH[DASH.index('if ruta == "/dns":'):]
     ruta = ruta[:ruta.index('if ruta == "/feeds/groq":')]
-    check("la ruta exige admin", "self._admin()" in ruta, "")
+    check("la ruta exige admin", 'self._puede("ajustes.dns")' in ruta, "")
     check("guarda con validacion y deja bitacora", "guardar_resolutores(q.get(\"resolutores\"" in ruta
           and 'bitacora("CONFIG-DNS"' in ruta, "")
     check("explica que el CPE sigue contando",

@@ -190,8 +190,10 @@ def puntos_de_usuario(r):
 
 def admin_total(r):
     """Administrador que ve todos los puntos: el unico que toca lo global (ajustes, usuarios,
-    actualizaciones). Siempre tiene que quedar al menos uno activo (salvaguarda en _post_perfil)."""
-    return bool(r) and r.get("role") == "admin" and "puntos" not in r
+    actualizaciones), con todos los permisos (fase 6). Siempre tiene que quedar al menos uno activo
+    (salvaguarda en _post_perfil)."""
+    return (bool(r) and r.get("role") == "admin" and "puntos" not in r
+            and permisos.de_usuario(r) >= frozenset(permisos.TODOS))
 
 RANGO_ROL = {"lectura": 0, "operador": 1, "admin": 2}
 
@@ -209,9 +211,13 @@ def usuario_gestionable(r):
         pr = puntos_de_usuario(r)
         if pr is None or not set(pr) <= a:
             return False
-    if not permisos.de_usuario(r) <= (getattr(CTX, "permisos", None) or frozenset()):
+    suyos = frozenset(getattr(CTX, "permisos", None) or ())
+    de_r = permisos.de_usuario(r)
+    if not de_r <= suyos:
         return False
-    return RANGO_ROL.get(r.get("role"), 9) <= RANGO_ROL.get(getattr(CTX, "role", None), -1)
+    rr, ry = RANGO_ROL.get(r.get("role"), 9), RANGO_ROL.get(getattr(CTX, "role", None), -1)
+    # estrictamente menos (rol menor o menos permisos): a un par no, que le cambiaria la clave
+    return rr <= ry and (rr < ry or de_r < suyos)
 
 def permisos_concedibles(pm, rol):
     """Los permisos que se guardan para un usuario que crea o edita quien no es administrador con
@@ -225,8 +231,11 @@ def puede_ctx(permiso):
     return permiso in (getattr(CTX, "permisos", None) or ())
 
 def es_admin_ctx():
-    """La peticion es de un administrador sin limite de puntos (el rol de la sesion y el alcance)."""
-    return getattr(CTX, "role", None) == "admin" and not nodos.limitado()
+    """La peticion es de un administrador con todo: sin limite de puntos y con TODOS los permisos (el
+    mismo criterio que admin_total). Un admin con permisos recortados no se salta la gestion delegada
+    (verificador final, H1: se devolvia todos los permisos y tomaba otras cuentas)."""
+    return (getattr(CTX, "role", None) == "admin" and not nodos.limitado()
+            and frozenset(getattr(CTX, "permisos", None) or ()) >= frozenset(permisos.TODOS))
 
 SESSIONS = _cargar_sesiones()
 
@@ -10950,11 +10959,10 @@ def tarjeta_version():
         + (f" Última búsqueda: {esc(buscada)}." if buscada else "") + "</p></section>")
 
 def nav(active=""):
-    es_admin_nav = es_admin_ctx()   # exclusiones/tuning: solo admin sin limite de puntos
     parts = []
     for h, t in _NAV_LINKS:
-        if h in _NAV_SOLO_ADMIN and not es_admin_nav:
-            continue   # exclusiones (ajuste de deteccion) es solo de admin
+        if h in _NAV_SOLO_ADMIN and not puede_ctx("ajustes.exclusiones"):
+            continue   # exclusiones (ajuste de deteccion): con su permiso (fase 6)
         if h in NAV_PERMISO and not puede_ctx(NAV_PERMISO[h]):
             continue   # sin el permiso de esa pagina
         cls = "tab on" if h == active else "tab"
@@ -10962,7 +10970,7 @@ def nav(active=""):
     brand = '<span class="brand"><img class="applogo" src="/logo.png" alt="Suricata">Estadísticas Suricata</span>'
     selector = _selector_nodo(active)
     # «Actualizacion disponible» (solo admin): aviso dentro del menu del usuario, como en una app
-    _upd_aviso, _upd_ventana = _actualizacion_nav() if es_admin_nav else ("", "")
+    _upd_aviso, _upd_ventana = _actualizacion_nav() if puede_ctx("ajustes.actualizar") else ("", "")
     _ubtn, _upanel = _menu_usuario(aviso=_upd_aviso)
     navbar = ('<div class="nav"><div class="navwrap">' + brand + '<span class="push"></span>'
               + "".join(parts) + '<span class="push"></span>'
@@ -12128,7 +12136,7 @@ def perfil_page(msg="", ok=False, edit_user=None):
     usuarios = cargar_usuarios() if (puede_ctx("usuarios.ver") and yo) else []   # fase 5: filtrada abajo
     # --- tarjeta: gestion de empresa (nombre + logo en la barra; solo admin) ---
     card_empresa = ""
-    if es_admin and yo:
+    if puede_ctx("ajustes.empresa") and yo:
         emp = cargar_empresa()
         elogo = emp.get("logo", "")
         tiene_logo = elogo.startswith("data:image/")
@@ -12170,10 +12178,10 @@ def perfil_page(msg="", ok=False, edit_user=None):
     # «Buscar actualizaciones» pregunta a GitHub que hay nuevo en main; «Actualizar» lo pide al
     # orquestador (sistema.actualizar), que lleva el panel y el orquestador a ese commit con
     # respaldo y vuelta atras. Los puntos no se tocan.
-    card_update = tarjeta_version() if es_admin and yo else ""
+    card_update = tarjeta_version() if puede_ctx("ajustes.actualizar") and yo else ""
     # --- tarjeta: reputacion / feeds (Auth-Key abuse.ch + estado por fuente; solo admin) ---
     card_feeds = ""
-    if es_admin and yo:
+    if puede_ctx("ajustes.feeds") and yo:
         auth_ok = feeds_auth_configurada()
         def _groq_estado_linea():
             """Que esta haciendo la IA ahora mismo, en una linea."""
@@ -12437,7 +12445,7 @@ def perfil_page(msg="", ok=False, edit_user=None):
     # --- la VPN de cada MikroTik es la de su punto: se gestiona en Puntos (solo admin) ---
     # --- DNS: a que resolutores preguntan tus CPEs -------------------------------------
     card_dns = ""
-    if es_admin and yo:
+    if puede_ctx("ajustes.dns") and yo:
         _n_res = len(_resolutores_redes())
         card_dns = (
             "<section class=card><h2>DNS &mdash; resolutores conocidos</h2>"
@@ -12462,7 +12470,7 @@ def perfil_page(msg="", ok=False, edit_user=None):
             "<div class=actions><button class=primary type=submit>Guardar resolutores</button>"
             "</div></form></section>")
     card_mk = ""
-    if es_admin and yo:
+    if puede_ctx("ajustes.mikrotik") and yo:
         m = cargar_mk()
         # Aqui solo lo COMUN a todos los nodos (listas, acciones, caducidad, politicas). La
         # conexion de cada MikroTik (usuario y clave de la API, permitir enviar, huella) esta en
@@ -12728,7 +12736,7 @@ def perfil_page(msg="", ok=False, edit_user=None):
     # por entrada, «Usar mi IP», confirmacion al restringir y al abrir, botones con estilo (la
     # clase mini no existia aqui) y como volver a entrar si te quedas fuera.
     card_acceso = ""
-    if es_admin and yo:
+    if puede_ctx("ajustes.confianza") and yo:
         bloq = ips_bloqueadas()
         if bloq:
             brows = "".join(
@@ -13097,7 +13105,7 @@ def perfil_page(msg="", ok=False, edit_user=None):
              + _tile("dns", "DNS", _IC_DNS, bool(card_dns))
              + _tile("feeds", "Reputación", _IC_FEED, bool(card_feeds))
              + _tile("update", "Versión", _IC_DL, bool(card_update))
-             + _tile("registro", "Registro", _IC_AUDIT, es_admin)
+             + _tile("registro", "Registro", _IC_AUDIT, puede_ctx("ajustes.bitacora"))
              + _tile("doc", "Documentación", _IC_BOOK, True))
     hub = f"<div class='tw-my-5 tw-grid tw-gap-3.5 tw-grid-cols-[repeat(auto-fill,minmax(250px,1fr))]'>{tiles}</div>"
     def _modal(sid, contenido, clase=""):
@@ -13110,7 +13118,7 @@ def perfil_page(msg="", ok=False, edit_user=None):
               + _mcard("acceso", card_acceso, "plano medio") + _mcard("mikrotik", card_mk)
               + _mcard("dns", card_dns) + _mcard("feeds", card_feeds)
               + _mcard("update", card_update))
-    if es_admin:
+    if puede_ctx("ajustes.bitacora"):
         modals += _modal("registro", "<iframe class=aptframe data-src='/registro?embed=1'></iframe>", "ancho")
     modals += _modal("doc", "<iframe class=aptframe data-src='/documentacion?embed=1'></iframe>")
     hubcss = ("<style>"
@@ -13497,7 +13505,7 @@ def update_box():
     """Recuadro con el estado de las reglas y el boton de actualizacion manual (solo admin)."""
     ult = ultima_actualizacion_reglas()
     ult_txt = ult.strftime("%d/%m/%Y %H:%M") if ult else "desconocida"
-    es_admin = es_admin_ctx()
+    es_admin = puede_ctx("ajustes.reglas")
     if UPDATE["running"]:
         h = datetime.fromtimestamp(UPDATE["started"], TZ_EC).strftime("%H:%M:%S")
         estado = (f'<div style="background:#eda100;color:#fff;padding:9px 13px;border-radius:8px;'
@@ -15006,6 +15014,8 @@ cuarentena, no entra en Puntos ni edita nada.</li>
 contraseña</b>); un administrador además crea/borra usuarios, cambia roles y elige los puntos que ve cada
 uno en <b>Ajustes &rarr; Usuarios y roles</b>. <b>Cada acción exige su rol y se comprueba en el
 servidor</b>: no basta con ocultar un botón, y cambiar el nodo en la dirección no da más permisos.</p>
+<h3>Permisos de cada usuario</h3>
+<p>Cada usuario tiene, además de su rol, un acordeón <b>Permisos</b> por secciones (Resumen, Cuarentena, Reputación, Puntos, Usuarios y Ajustes) con «Activos X/Y» y una casilla por permiso. El rol es una <b>plantilla</b>: al elegirlo se marcan sus casillas y luego se ajustan; <b>Usar los del rol</b> las repone. Cada página, pestaña y botón sale solo con su permiso y el servidor rechaza el resto. Los marcados <b>global</b> (los de Ajustes, la vista «Todos», crear y borrar puntos, desbanear, destinos de confianza y denunciar) solo valen si el usuario ve todos los puntos. Quien gestiona usuarios sin ser administrador con todos los puntos solo ve y edita a quien no tiene más que él y nunca da más de lo suyo. Siempre queda al menos un administrador activo con todos los puntos y todos los permisos.</p>
 <h3>Puntos que ve cada usuario</h3>
 <p>Al crear o editar un usuario, <b>Puntos que ve</b> tiene dos opciones: <b>Todos los puntos</b> (lo de
 siempre: un usuario creado antes de esta opción ve todos) o <b>Solo estos puntos</b>, con una casilla por
@@ -18604,6 +18614,9 @@ def cuarentena_page(msg="", es_admin=False):
     """Cuarentena: CPEs INFECTADOS CONFIRMADOS. Si el MikroTik esta configurado y HABILITADO
     y quien mira es admin, aparece el boton Enviar (a la address-list) / Quitar. Si no, dry-run.
     La lista de candidatos la calcula el reporte (cuarentena.json)."""
+    # botones finos (fase 6 de permisos): cada uno con su permiso; es_admin = tiene alguno de actuar
+    def _pp(pref):
+        return puede_ctx("cuarentena.dns" if pref.endswith("/dns") else "cuarentena.enviar")
     esc = html.escape
     data, gen, vmin, cand = {}, 0, 0, []
     try:
@@ -18701,11 +18714,11 @@ def cuarentena_page(msg="", es_admin=False):
                           f"<button class='qbtn quit' onclick=\"return ask(this,"
                           f"'Sacar de la lista','{esc(ip)} sale de {esc(lista_name)} en el "
                           f"MikroTik y vuelve a tener salida.','Quitar','danger')\">Quitar</button></form>"
-                          ) if es_admin else ""
+                          ) if es_admin and _pp(pref) else ""
                 meta = _rev(env_map[k])
                 meta_html = f"<div class='rowmeta'>desde {cuando}{(' · ' + meta) if meta else ''}</div>"
                 return f"<span class='enq' title='En {esc(lista_name)} desde {cuando}'>En lista</span> {quitar}{meta_html}"
-            if es_admin and rid_de(k) in _listos:
+            if es_admin and _pp(pref) and rid_de(k) in _listos:
                 # la lista REAL de ese CPE, no la de la seccion: el envio enruta por
                 # categoria (clientes-botnet, clientes-escaneo...). Decir otra cosa aqui
                 # es prometer un destino y usar otro.
@@ -18744,7 +18757,7 @@ def cuarentena_page(msg="", es_admin=False):
         # 'Enviar todos' solo actua sobre los CONFIRMADOS (2+ pruebas independientes)
         pend_alta = [c for c in pend if c.get("confianza") == "alta"]
         btn = ""
-        if es_admin and activo and pend_alta:
+        if es_admin and _pp(pref) and puede_ctx("cuarentena.masivo") and activo and pend_alta:
             # el formulario dice QUE lista se vio (el nodo o «Todos»); el destino de cada CPE
             # sale de su propia identidad pid|ip, y el servidor reparte el envio por nodo
             btn = (f"<form method=post action='/{pref}/enviar-todos' style='display:inline;margin-left:auto'>"
@@ -18863,7 +18876,7 @@ def cuarentena_page(msg="", es_admin=False):
         _ya = [x for x in _dst if x["enviado"]]
         def _fila_dst(x):
             acc = ""
-            if es_admin and activo:
+            if puede_ctx("cuarentena.destinos") and activo:
                 if x["enviado"]:
                     acc = ("<form method=post action='/cuarentena/destino/quitar' style='display:inline'>"
                            f"<input type=hidden name=ip value='{esc(x['ip'])}'>"
@@ -18931,7 +18944,7 @@ def cuarentena_page(msg="", es_admin=False):
                   f"<button class='qbtn quit' onclick=\"return ask(this,'Sacar de la lista',"
                   f"'{esc(ip)} sale de {esc(lista)} y vuelve a tener salida.',"
                   f"'Quitar','danger')\">Quitar</button></form>"
-                  ) if es_admin else ""
+                  ) if es_admin and _pp(pref) else ""
         # sin motivo guardado: decir de donde vino en vez de afirmar "manual", que era
         # falso justo para los que envio la politica (la fila mostraba Por=politica y
         # Motivo=manual a la vez)
@@ -18945,7 +18958,7 @@ def cuarentena_page(msg="", es_admin=False):
         # sacarla y, con varios nodos, de que router
         _tok = ("dns|" if pref.endswith("/dns") else "cuar|") + clave
         marca = (f"<td data-label='Seleccionar' class='selc'><input type=checkbox class=selm "
-                 f"value='{esc(_tok)}' aria-label='Seleccionar {esc(ip)}'></td>") if es_admin else ""
+                 f"value='{esc(_tok)}' aria-label='Seleccionar {esc(ip)}'></td>") if es_admin and puede_ctx("cuarentena.enviar") else ""
         return (f"<tr>{marca}<td data-label='CPE' class='mono ipx'>{esc(ip)}"
                 f"{_chip_nodo_panel(clave)}{_cli(ip, rid_de(clave))}</td>"
                 f"<td data-label='Lista' class='mono'>{esc(lista)}</td>"
@@ -18962,11 +18975,11 @@ def cuarentena_page(msg="", es_admin=False):
     if manual_rows:
         # --- quitado masivo: casillas + boton que abre un modal de confirmacion ---
         selth = ("<th data-nosort class=selc><input type=checkbox id=selall "
-                 "aria-label='Seleccionar todas'></th>") if es_admin else ""
+                 "aria-label='Seleccionar todas'></th>") if es_admin and puede_ctx("cuarentena.enviar") else ""
         barra = ("<div class=masivo><button type=button id=bmasivo class='qbtn quit' disabled>"
                  "Quitar seleccionados <span id=nmasivo>(0)</span></button>"
                  "<span class=mashint>Marca las casillas para sacar varias IPs de una vez</span></div>"
-                 ) if es_admin else ""
+                 ) if es_admin and puede_ctx("cuarentena.enviar") else ""
         modal = ("<div id=mmasivo class=masov onmousedown=\"this._dn=event.target\" onclick=\"if(event.target===this&&this._dn===this){masCerrar()}\">"
                  "<div class=masbox><h3 id=mastit>Quitar de la lista</h3>"
                  "<p class=massub id=massub>Se sacarán del MikroTik estas IPs. Es <b>reversible</b>: puedes volver "
@@ -18981,7 +18994,7 @@ def cuarentena_page(msg="", es_admin=False):
                  "<div id=mascampos></div><div class=masacts id=masacts>"
                  "<button type=button class=masno id=masno onclick=masCerrar()>Cancelar</button>"
                  "<button type=submit class=massi id=massi>Quitar</button></div></form></div></div>"
-                 ) if es_admin else ""
+                 ) if es_admin and puede_ctx("cuarentena.enviar") else ""
         sec_manual = ("<div class='seccion'><div class='shead'><div><h2>Enviados manualmente</h2>"
                       "<p class='sub'>IPs que pusiste a mano (p.ej. desde Top orígenes) y no son candidatos actuales. "
                       "Salen solas cuando ya no tienen ninguna alerta como origen; con alertas, aunque sean de "
@@ -18998,7 +19011,7 @@ def cuarentena_page(msg="", es_admin=False):
     # --- Excluir destino (falso positivo): un DNS u otro destino que dispara alertas en muchos CPEs ---
     # es_admin aqui = operador o admin (pueden operar la cuarentena). La lista de destinos de
     # confianza es de toda la instalacion: un usuario limitado ni la ve ni la toca (2026-10-22)
-    if es_admin and not nodos.limitado():
+    if puede_ctx("cuarentena.confianza"):
         dests_ok = sorted(_dest_ok_set())
         chips = ("".join(
             f"<span class=destchip><span class=mono>{esc(dp)}</span>"
@@ -19978,7 +19991,7 @@ class H(BaseHTTPRequestHandler):
         if path in ("/destinos.rsc", "/blocklist.rsc"):
             # Descarga para importar a mano en el router (/import). Antes se la bajaba el propio
             # MikroTik con /tool fetch, pero por el tunel solo pasan el espejo y la API.
-            if not self._admin():
+            if not self._puede("ajustes.mikrotik"):
                 return self._prohibido()
             cuerpo = (destinos_rsc() if path == "/destinos.rsc" else blocklist_rsc()).encode("utf-8")
             self.send_response(200)
@@ -20000,7 +20013,7 @@ class H(BaseHTTPRequestHandler):
             wsel = ""
             pendiente = False   # mientras se genera otra ventana la pagina pregunta por
                                 # /ventana-estado y se recarga UNA vez al terminar
-            if es_admin_ctx():
+            if puede_ctx("ajustes.ventana"):
                 va = ventana_actual()
                 opts = "".join(f"<option value={v}{' selected' if v == va else ''}>{t}</option>"
                                for v, t in VENTANAS)
@@ -20052,14 +20065,14 @@ class H(BaseHTTPRequestHandler):
             return self._html(page)
         if path == "/feeds/tabla":
             # la tabla de fuentes para refrescarla en Ajustes sin recargar (solo admin, como la tarjeta)
-            if not self._admin():
+            if not self._puede("ajustes.feeds"):
                 return self._prohibido()
             _f, _g, _gt = feeds_tabla()
             return self._json({"filas": _f, "gen": _g, "genT": _gt, "corriendo": feeds_corriendo()})
         if path == "/publicas/estado":
             # que publicas se estan revisando ahora (la pantalla de Reputacion lo pregunta tras
             # «Agregar» para quitar el «revisando…» sin recargar). Solo entradas, sin datos.
-            if not self._admin():
+            if not self._puede("ajustes.publicas"):
                 return self._prohibido()
             return self._json({"revisando": publicas_revisando()})
         if path == "/ventana-estado":
@@ -20179,17 +20192,17 @@ class H(BaseHTTPRequestHandler):
             return self._html(ficha_page(_qs.get("ip", [""])[0],
                                          embed=("embed=1" in (self.path.split("?", 1)[1] if "?" in self.path else ""))))
         if path == "/registro":
-            if not self._admin():
+            if not self._puede("ajustes.bitacora"):
                 return self._prohibido()   # el registro (accesos y auditoria) es solo de admin
             _qr = urllib.parse.parse_qs(self.path.split("?", 1)[1]) if "?" in self.path else {}
             return self._html(registro_page(embed=_qr.get("embed", [""])[0] == "1",
                                             tipo=(_qr.get("tipo", [""])[0] or "")))
         if path == "/log":
-            if not self._admin():
+            if not self._puede("ajustes.bitacora"):
                 return self._prohibido()   # lectura no ve el log de accesos
             return self._html(log_page(embed=("embed=1" in (self.path.split("?", 1)[1] if "?" in self.path else ""))))
         if path == "/bitacora":
-            if not self._admin():
+            if not self._puede("ajustes.bitacora"):
                 return self._prohibido()   # la bitacora (auditoria) es solo de admin
             return self._html(bitacora_page(embed=("embed=1" in (self.path.split("?", 1)[1] if "?" in self.path else ""))))
         if path == "/perfil":
@@ -20212,7 +20225,7 @@ class H(BaseHTTPRequestHandler):
             _av = rep_aviso_tomar(_qj.get("msg", [""])[0])      # (texto, {"ok": …})
             return self._html(perfil_page(_av[0], ok=bool(_av[1].get("ok"))))
         if path in ("/actualizando", "/actualizacion.json"):
-            if not self._admin():
+            if not self._puede("ajustes.actualizar"):
                 return self._prohibido()   # actualizar el panel es de admin
             _qa = _up.parse_qs(self.path.split("?", 1)[1]) if "?" in self.path else {}
             _op = (_qa.get("op", [""])[0] or "").strip()
@@ -20220,7 +20233,7 @@ class H(BaseHTTPRequestHandler):
                 return self._json(act_estado_json(_op))
             return self._html(actualizando_page(_op))
         if path == "/exclusiones/export":
-            if not self._admin():
+            if not self._puede("ajustes.exclusiones"):
                 return self._prohibido()
             propias = [r for r in cargar_exclusiones() if r.get("motivo") != "(conf)"]
             data = json.dumps(propias, ensure_ascii=False, indent=2).encode("utf-8")
@@ -20232,7 +20245,7 @@ class H(BaseHTTPRequestHandler):
             self.wfile.write(data)
             return
         if path == "/exclusiones":
-            if not self._admin():
+            if not self._puede("ajustes.exclusiones"):
                 return self._prohibido()   # lectura no gestiona exclusiones
             edit = None
             if "?" in self.path:
@@ -20269,14 +20282,14 @@ class H(BaseHTTPRequestHandler):
             if _t:
                 _res, _av = aidb_lote(_t, refrescar=bool(_qr.get("refrescar")))
                 return self._html(reputacion_page(res=_res, texto=_t, msg=_av, ok=not _av,
-                                                  es_admin=self._admin(),
+                                                  es_admin=self._puede("ajustes.publicas"),
                                                   volver=(_qr.get("volver", [""])[0]).strip()))
             # el resultado de agregar/quitar/detectar llega aqui tras el redirect: sin
             # leerlo, el aviso de "no hay interfaces WAN" no lo veia nadie. ?msg= es un
             # CODIGO de un solo uso (rep_aviso_url), no el texto: un texto metido en la URL
             # a mano no se pinta en el modal del panel
             _av = rep_aviso_tomar(_qr.get("msg", [""])[0])     # (texto, marcar)
-            return self._html(reputacion_page(es_admin=self._admin(), modal=True,
+            return self._html(reputacion_page(es_admin=self._puede("ajustes.publicas"), modal=True,
                                               msg=_av[0], marcar=_av[1],
                                               es_operador=self._puede("reputacion.consultar")))
         if path == "/documentacion":
@@ -20362,7 +20375,7 @@ class H(BaseHTTPRequestHandler):
             if puntos_web.post(self, ruta, {k: v[0] for k, v in q.items()}):
                 return
         if ruta == "/update-reglas":
-            if not self._admin():
+            if not self._puede("ajustes.reglas"):
                 return self._prohibido()   # accion de admin
             with _UPDATE_LOCK:
                 _lanzar = not UPDATE["running"]
@@ -20375,7 +20388,7 @@ class H(BaseHTTPRequestHandler):
                                  daemon=True).start()
             return self._redirect("/documentacion?p=reglas")
         if ruta == "/buscar-actualizacion":
-            if not self._admin():
+            if not self._puede("ajustes.actualizar"):
                 return self._prohibido()
             _d = act_buscar_ahora()
             if _d.get("disponible"):
@@ -20387,7 +20400,7 @@ class H(BaseHTTPRequestHandler):
             return self._redirect(ajustes_aviso_url(_m, _ok))
         if ruta == "/actualizar-panel":
             # boton «Actualizar» (como el del original): lo hace el orquestador (sistema.actualizar)
-            if not self._admin():
+            if not self._puede("ajustes.actualizar"):
                 return self._prohibido()
             _c = (q.get("commit", [""])[0] or "").strip()
             if not actualizaciones.RE_SHA.match(_c):
@@ -20400,7 +20413,7 @@ class H(BaseHTTPRequestHandler):
                     _r.get("codigo"), _r.get("mensaje"), _r.get("datos")), False))
             return self._redirect("/actualizando?op=" + _op)
         if ruta == "/ventana":
-            if not self._admin():
+            if not self._puede("ajustes.ventana"):
                 return self._prohibido()
             try:
                 m = int(q.get("min", ["1440"])[0])
@@ -20429,7 +20442,7 @@ class H(BaseHTTPRequestHandler):
                     time.sleep(0.2)
             return self._redirect("/")
         if ruta == "/exclusiones":
-            if not self._admin():
+            if not self._puede("ajustes.exclusiones"):
                 return self._prohibido()   # lectura no gestiona exclusiones
             with _EXCL_LOCK:      # leer-modificar-guardar entero bajo el cerrojo (A-16)
                 return self._post_exclusiones(q)
@@ -20438,7 +20451,7 @@ class H(BaseHTTPRequestHandler):
             with usuarios_cerrojo():
                 return self._post_perfil(q)
         if ruta == "/empresa":
-            if not self._admin():
+            if not self._puede("ajustes.empresa"):
                 return self._prohibido()
             nombre = (q.get("nombre", [""])[0]).strip()[:60]
             logo = q.get("logo", [""])[0]
@@ -20455,7 +20468,7 @@ class H(BaseHTTPRequestHandler):
                 return self._html(perfil_page(f"No se pudo guardar: {ex}", ok=False))
             return self._html(perfil_page("Datos de la empresa guardados.", ok=True))
         if ruta == "/mikrotik":
-            if not self._admin():
+            if not self._puede("ajustes.mikrotik"):
                 return self._prohibido()
             m = cargar_mk()
             # Solo lo comun a todos los nodos. La conexion de cada router (usuario, clave, enviar)
@@ -20535,7 +20548,7 @@ class H(BaseHTTPRequestHandler):
         if ruta == "/mikrotik/reglas/verificar":
             # Verificar un bloque de reglas propias SIN guardarlo ni aplicarlo: estatico y,
             # si hay router configurado, contra el router. Texto para el modal.
-            if not self._admin():
+            if not self._puede("ajustes.mikrotik"):
                 return self._prohibido()
             def _txtv(texto):
                 b = ("OK " + texto).encode("utf-8")
@@ -20573,7 +20586,7 @@ class H(BaseHTTPRequestHandler):
             return _txtv(cab + "\n" + "\n".join(lineas_verificacion(ver)))
         if ruta == "/mikrotik/listas/recargar":
             # Vuelve a cargar en el router las IPs en cuarentena que faltan en su lista.
-            if not self._admin():
+            if not self._puede("ajustes.mikrotik"):
                 return self._prohibido()
             rid = (q.get("rid", [""])[0]).strip()
             r = _router_de_pid(rid)     # el nodo de la operacion, validado; nunca uno por defecto
@@ -20593,7 +20606,7 @@ class H(BaseHTTPRequestHandler):
         if ruta == "/mikrotik/reglas/estado":
             # La etiqueta de cada clase en Ajustes ("Reglas aplicadas" en verde, o lo que
             # falta). JSON; con el router caido, {"_error": motivo} y la pagina no se rompe.
-            if not self._admin():
+            if not self._puede("ajustes.mikrotik"):
                 return self._prohibido()
             rid = (q.get("rid", [""])[0]).strip()
             r = _router_de_pid(rid)     # el nodo de la operacion, validado; nunca uno por defecto
@@ -20618,7 +20631,7 @@ class H(BaseHTTPRequestHandler):
             # «Ver reglas»: todas las reglas de la clase y como esta cada una en el router. Solo
             # lee; sin la API del router ensena la plantilla igual, sin comparar.
             # "OK cabecera\n!E/!W/!I verificacion\n@estado<TAB>descripcion<TAB>linea" o "ERR: motivo"
-            if not self._admin():
+            if not self._puede("ajustes.mikrotik"):
                 return self._prohibido()
             cat = (q.get("cat", [""])[0]).strip()
             rid = (q.get("rid", [""])[0]).strip()
@@ -20650,7 +20663,7 @@ class H(BaseHTTPRequestHandler):
         if ruta in ("/mikrotik/reglas/plan", "/mikrotik/reglas/aplicar", "/mikrotik/reglas/quitar"):
             # Las reglas de una clase en UN router: vista previa (sin tocar), aplicar o quitar.
             # Responde texto plano para el modal: "OK <cabecera>\n<rsc...>" o "ERR: motivo".
-            if not self._admin():
+            if not self._puede("ajustes.mikrotik"):
                 return self._prohibido()
             def _txt(okr, texto):
                 b = (("OK " if okr else "ERR: ") + texto).encode("utf-8")
@@ -20692,7 +20705,7 @@ class H(BaseHTTPRequestHandler):
             except Exception as ex:
                 return _txt(False, "no se pudo hablar con el router: %s" % ex)
         if ruta == "/feeds":
-            if not self._admin():
+            if not self._puede("ajustes.feeds"):
                 return self._prohibido()
             ak = q.get("authkey", [""])[0]
             if ak.strip() == "BORRAR":
@@ -20726,7 +20739,7 @@ class H(BaseHTTPRequestHandler):
             if res:
                 bitacora("CONSULTA-ABUSEIPDB", f"{len(res)} entrada(s)")
             return self._html(reputacion_page(res=res, texto=texto, msg=aviso, ok=not aviso,
-                                              es_admin=self._admin()))
+                                              es_admin=self._puede("ajustes.publicas")))
         if ruta == "/reputacion/denunciar":
             # permiso global: a un limitado no le vale nunca (sale el ERR de abajo, que lee el boton)
             if not self._puede("reputacion.denunciar") and self._sin_limite():
@@ -20758,7 +20771,7 @@ class H(BaseHTTPRequestHandler):
             self.end_headers(); self.wfile.write(b)
             return
         if ruta == "/feeds/reportar":
-            if not self._admin():
+            if not self._puede("ajustes.feeds"):
                 return self._prohibido()
             on = bool(q.get("reportar"))
             aidb_set_reportar(on)
@@ -20767,7 +20780,7 @@ class H(BaseHTTPRequestHandler):
                 "Denuncias a AbuseIPDB ACTIVADAS: aparecerá un botón en cada atacante entrante."
                 if on else "Denuncias a AbuseIPDB desactivadas.", ok=True))
         if ruta == "/publicas":
-            if not self._admin():
+            if not self._puede("ajustes.publicas"):
                 return self._prohibido()
             rid = (q.get("rid", [""])[0]).strip()
             if not _router_de_pid(rid):
@@ -20780,7 +20793,7 @@ class H(BaseHTTPRequestHandler):
             threading.Thread(target=vigilar_publicas, daemon=True).start()
             return self._redirect("/reputacion")
         if ruta == "/publicas/agregar":
-            if not self._admin():
+            if not self._puede("ajustes.publicas"):
                 return self._prohibido()
             rid = (q.get("rid", [""])[0]).strip()
             if not _router_de_pid(rid):
@@ -20809,7 +20822,7 @@ class H(BaseHTTPRequestHandler):
             return self._redirect(rep_aviso_url("No se agregó: " + mal[0]) if mal
                                   else "/reputacion")
         if ruta == "/publicas/quitar":
-            if not self._admin():
+            if not self._puede("ajustes.publicas"):
                 return self._prohibido()
             rid = (q.get("rid", [""])[0]).strip()
             # 'solo' lo manda la x de un chip. Va aparte de 'entrada' a proposito: los
@@ -20826,7 +20839,7 @@ class H(BaseHTTPRequestHandler):
             # Vaciar la lista entera de un boton resulto una trampa: una deteccion mala
             # metia trece entradas basura y limpiarlas se llevaba por delante la unica
             # buena, que ademas tenia historial detras. Aqui se elige que se va.
-            if not self._admin():
+            if not self._puede("ajustes.publicas"):
                 return self._prohibido()
             rid = (q.get("rid", [""])[0]).strip()
             if not _router_de_pid(rid):
@@ -20840,7 +20853,7 @@ class H(BaseHTTPRequestHandler):
             return self._redirect(rep_aviso_url(
                 "%d entrada(s) quitada(s). El historial de listas negras se conserva." % len(fuera)))
         if ruta == "/publicas/detectar":
-            if not self._admin():
+            if not self._puede("ajustes.publicas"):
                 return self._prohibido()
             rid = (q.get("rid", [""])[0]).strip()
             r = _router_de_pid(rid)
@@ -20892,7 +20905,7 @@ class H(BaseHTTPRequestHandler):
                  else "El MikroTik no tiene ninguna pública que no estuviera ya") + "."
                 + nota_viejas, marcar))
         if ruta == "/publicas/revisar":
-            if not self._admin():           # revisar publicas (DNSBL) es de admin (§10.2, B-18)
+            if not self._puede("ajustes.publicas"):           # revisar publicas (DNSBL) es de admin (§10.2, B-18)
                 return self._prohibido()
             # en segundo plano: revisar un /24 en 6 listas son ~1.500 consultas DNS y la
             # peticion se quedaria colgada
@@ -20900,7 +20913,7 @@ class H(BaseHTTPRequestHandler):
             threading.Thread(target=vigilar_publicas, daemon=True).start()
             return self._redirect("/reputacion")
         if ruta == "/feeds/aidb":
-            if not self._admin():
+            if not self._puede("ajustes.feeds"):
                 return self._prohibido()
             k = q.get("aidbkey", [""])[0]
             if k.strip() == "BORRAR":
@@ -20928,7 +20941,7 @@ class H(BaseHTTPRequestHandler):
             bitacora("CONFIG-ABUSEIPDB", f"guardada sin validar ({det})")
             return self._html(perfil_page(f"Clave guardada, pero {det}.", ok=True))
         if ruta == "/dns":
-            if not self._admin():
+            if not self._puede("ajustes.dns"):
                 return self._prohibido()
             n = guardar_resolutores(q.get("resolutores", [""])[0])
             bitacora("CONFIG-DNS", "%d resolutor(es)" % n)
@@ -20937,7 +20950,7 @@ class H(BaseHTTPRequestHandler):
                 "cuentan contra el CPE, no como ataque al DNS; se nota en el próximo reporte." % n,
                 ok=True))
         if ruta == "/feeds/groq":
-            if not self._admin():
+            if not self._puede("ajustes.feeds"):
                 return self._prohibido()
             k = q.get("groqkey", [""])[0]
             mod = (q.get("groqmodel", [""])[0] or "").strip()
@@ -20992,7 +21005,7 @@ class H(BaseHTTPRequestHandler):
         if ruta == "/telegram":
             # token y chat del bot: el token se cifra AL GUARDAR (antes habia que escribirlo a
             # mano en report.conf y quedaba en claro hasta el siguiente arranque: B-20)
-            if not self._admin():
+            if not self._puede("ajustes.telegram"):
                 return self._prohibido()
             tok = (q.get("tgtoken", [""])[0] or "").strip()
             chat = (q.get("tgchat", [""])[0] or "").strip()[:40]
@@ -21043,7 +21056,7 @@ class H(BaseHTTPRequestHandler):
         if ruta == "/feeds/probar":
             # «Comprobar»: la clave pegada (o la guardada si el campo va vacio) contra su servicio,
             # SIN guardarla. Si era la guardada, el resultado queda en la etiqueta del bloque.
-            if not self._admin():
+            if not self._puede("ajustes.feeds"):
                 return self._prohibido()
             _sv = (q.get("servicio", [""])[0] or "").strip()
             if _sv not in SERVICIOS_CLAVE:
@@ -21059,7 +21072,7 @@ class H(BaseHTTPRequestHandler):
         if ruta == "/telegram/detectar":
             # «Detectar Chat ID»: los chats que escribieron al bot, sin abrir la URL con el token ni
             # leer JSON. Con el token del formulario (aun sin guardar) o con el guardado. JSON.
-            if not self._admin():
+            if not self._puede("ajustes.telegram"):
                 return self._prohibido()
             _tk = (q.get("tgtoken", [""])[0] or "").strip()
             if _tk and _tk != "BORRAR" and not RE_TG_TOKEN.match(_tk):
@@ -21077,7 +21090,7 @@ class H(BaseHTTPRequestHandler):
         if ruta == "/telegram/prueba":
             # «Enviar mensaje de prueba»: el sendMessage que el user hacia con curl. Con lo del
             # formulario (aun sin guardar) o con lo guardado. No guarda nada.
-            if not self._admin():
+            if not self._puede("ajustes.telegram"):
                 return self._prohibido()
             _tk = (q.get("tgtoken", [""])[0] or "").strip()
             _ch = (q.get("tgchat", [""])[0] or "").strip()[:40] or telegram_chat()
@@ -21090,7 +21103,7 @@ class H(BaseHTTPRequestHandler):
             bitacora("TELEGRAM-PRUEBA", "chat=%s: %s" % (_ch, "ok" if _e else "fallo"))
             return self._json({"ok": _e is True, "msg": _msg})
         if ruta == "/feeds/actualizar":
-            if not self._admin():
+            if not self._puede("ajustes.feeds"):
                 return self._prohibido()
             actualizar_feeds_async(); bitacora("ACTUALIZAR-FEEDS", "manual")
             if q.get("ajax"):                  # desde el boton: sin recargar la pagina
@@ -21602,7 +21615,7 @@ class H(BaseHTTPRequestHandler):
         elif accion in ("del_user", "toggle_user"):
             if not self._puede("usuarios.borrar"):
                 return self._prohibido()
-        elif not self._admin():
+        elif not self._puede("ajustes.confianza"):
             return self._prohibido()
         _todo = es_admin_ctx()
         if accion in ("edit_user", "rol_user", "del_user", "toggle_user") and not _todo:
@@ -21750,6 +21763,11 @@ class H(BaseHTTPRequestHandler):
                                               "los puntos.", ok=False))
             obj["role"] = nrole
             obj.pop("permisos", None)        # con el rol nuevo, los permisos de su plantilla
+            if not es_admin_ctx():
+                # delegado: nunca mas de lo suyo (verificador final, H2)
+                _pc = permisos_concedibles(None, nrole)
+                if frozenset(_pc) != permisos.PLANTILLAS.get(nrole, frozenset()):
+                    obj["permisos"] = _pc
             try:
                 guardar_usuarios(us)
             except OSError as ex:
@@ -21816,6 +21834,11 @@ class H(BaseHTTPRequestHandler):
                     obj.pop("permisos", None)
                 else:
                     obj["permisos"] = _pm
+            # salvaguarda (fase 6): tras el cambio sigue habiendo un administrador activo con todos los
+            # puntos y todos los permisos; si no, nadie podria volver a tocar los ajustes ni los usuarios
+            if not any(admin_total(x) and x.get("activo", True) for x in us):
+                return self._html(perfil_page("No se guardó: tiene que quedar al menos un administrador "
+                                              "activo con todos los puntos y todos los permisos.", ok=False))
             try:
                 guardar_usuarios(us)
             except OSError as ex:

@@ -198,7 +198,7 @@ def main():
     _proh = DASH[DASH.index("    def _prohibido(self):"):]
     _proh = _proh[:_proh.index("\n    def ", 10)]
     check("guardar la clave es solo de administrador",
-          "if not self._admin():\n                return self._prohibido()" in _rt
+          'if not self._puede("ajustes.feeds"):\n                return self._prohibido()' in _rt
           and "403" in _proh and "SIN-PERMISO" in _proh, _rt[:120])
     check("BORRAR se lleva tambien el modelo, no deja uno huerfano",
           'groq_set(""); groq_set_modelo("")' in _rt, "")
