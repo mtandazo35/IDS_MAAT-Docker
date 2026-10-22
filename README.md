@@ -6,6 +6,8 @@ OpenVPN y su propio Suricata.
 
 - Cada punto en su red aislada: los puntos pueden repetir IPs privadas; el panel filtra
   por punto.
+- Un VPS puede dar servicio a varios clientes: el admin asigna a cada usuario sus puntos y cada uno
+  ve solo los suyos, como si tuviera un panel propio (docs/OPERACION.md §6).
 - Por la VPN de cada punto solo entran el espejo de trafico (TZSP), la API del MikroTik y su ping al sensor; el panel y SSH solo
   desde las redes de gestion.
 - Alta de un punto desde el panel: crea los contenedores y entrega el `/interface

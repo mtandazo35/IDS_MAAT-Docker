@@ -11,7 +11,7 @@ Anexo de [ARQUITECTURA.md](ARQUITECTURA.md). Este anexo cubre:
 
 | Almacén | Contenido | Por qué así |
 |---|---|---|
-| `estado.db` (SQLite, WAL) | configuración, puntos, instancias, MikroTik, usuarios, roles, visibilidad, sesiones, abonados, cuarentenas, exclusiones, públicas, operaciones | transacciones y `UNIQUE(punto_id, ip, …)` en lugar de unos 40 JSON con cerrojos a mano; es pequeña y se respalda rápido |
+| `estado.db` (SQLite, WAL) | configuración, puntos, instancias, MikroTik, usuarios, roles, sesiones, abonados, cuarentenas, exclusiones, públicas, operaciones | transacciones y `UNIQUE(punto_id, ip, …)` en lugar de unos 40 JSON con cerrojos a mano; es pequeña y se respalda rápido |
 | `eventos.db` (SQLite, WAL) | alertas, agregados por hora y por día, offsets de ingesta, espejo por hora | es grande y se puede reconstruir desde los eve; va aparte para podar sin bloquear el estado |
 | `bitacora.db` (SQLite, WAL, solo se añaden filas) | auditoría e intentos de login | retención larga y cadena de hashes |
 | `eve.json` / `dns.json` por instancia | eventos crudos | fuente de verdad del crudo; solo se agrega lo que el panel consulta |
@@ -64,7 +64,7 @@ punto (`punto_id NULL` = toda la empresa).
 | `vpn_usuario` | P | `(punto_id, usuario)`, creado, rotado | el hash vive en el fichero del orquestador |
 | `mikrotik` | P (1:1) | `cert_fp`, usuario, `clave_cifrada` (`enc1:`, sin `kid`: §6), `identidad`, `sw_id`, `version_ros`, listas, TTL, `envio_habilitado` (0 por defecto) | el destino es el relé del punto; no hay host configurable |
 | `usuario`, `rol` | G | `login` inmutable; roles `admin` / `operador` / `lectura` | — |
-| `visibilidad` | G | `(usuario_id, punto_id NULL, recurso, nivel)` | hoy cada usuario tiene una sola fila `(NULL, '*', 'actuar')` |
+| puntos que ve cada usuario | G | campo opcional `puntos` (lista de pids) de cada usuario en `conf/usuarios.json` | sin el campo, todos; lista vacía, ninguno; el rol `admin` ve siempre todos (§3.2). Desde 2026-10-22 sustituye a la tabla `visibilidad` del diseño, que nunca llegó al código |
 | `sesion` | G | `token_sha256`, `csrf`, expira, ip, `punto_sel` | nunca se guarda el token |
 | `abonado`, `abonado_hist` | P | `(punto_id, ip)` | el mapa se pide a cada router por separado |
 | `alerta` | P | `(punto_id, ts)`, `cpe_ip`, `sid`, `dir` | en `eventos.db` |
@@ -117,8 +117,23 @@ trate un CPE recibe `CpeRef(punto_id, ip)`:
 - **Repositorio:** las consultas por punto solo se hacen con `repo.para(alcance)`. La vista «Toda
   la empresa» es `alcance = puntos_visibles`, nunca una consulta sin filtro. Llamar sin alcance
   lanza `AlcanceRequerido`.
-- **Visibilidad:** todo pasa por `alcance(usuario)` y `puede(usuario, punto_id, recurso, nivel)`.
-  Restringir más adelante será cuestión de datos, no de código.
+- **Puntos que ve cada usuario** (decisión del dueño, 2026-10-22). Cada usuario de
+  `conf/usuarios.json` puede llevar el campo `puntos`, una lista de pids:
+
+  | `puntos` | Ve |
+  |---|---|
+  | sin el campo | todos los puntos (los usuarios de antes siguen igual) |
+  | `["p001", "p003"]` | solo esos |
+  | `[]`, o un valor que no es una lista | ninguno: el panel le contesta «Sin puntos asignados» |
+  | cualquiera, con rol `admin` | todos |
+
+  El panel lee el usuario en cada petición y pone su alcance en el hilo de esa petición
+  (`nodos.poner_alcance`). Desde ahí, las funciones comunes de `nodos.py` (`puntos()`, `pids()`,
+  `existe()`, `exigir_pid()`, `validar_nodo()`, las rutas por punto y `dir_salida()`) dejan fuera
+  los puntos ajenos: para ese usuario no existen (404). Tampoco puede pedir la vista «Toda la
+  empresa», porque sus ficheros mezclan todos los puntos. Un cambio en la lista vale en la
+  siguiente petición, sin cerrar la sesión. Los hilos de fondo no tienen alcance y trabajan con
+  todos los puntos.
 - **Cachés:** las claves son `(punto_id, …)` y se invalidan por punto. Las de IP externas van en
   otro módulo.
 - **Reportes:** se generan por punto. El de empresa se calcula desde la base con una columna Punto.
@@ -136,7 +151,7 @@ trate un CPE recibe `CpeRef(punto_id, ip)`:
 
 | Global de la empresa | Por punto | Global con sobrescritura por punto |
 |---|---|---|
-| empresa, usuarios, roles, visibilidad, sesiones | punto, instancia, VPN, MikroTik | política automática |
+| empresa, usuarios, roles, puntos que ve cada usuario, sesiones | punto, instancia, VPN, MikroTik | política automática |
 | redes de gestión, IP del proxy y acceso | abonados y su historial | acciones por categoría |
 | feeds, AbuseIPDB (cuota), Groq, Telegram | alertas, agregados, espejo, ingesta | listas y TTL |
 | reputación de IP públicas, destinos malos (la IP) | cuarentenas, entrega de destinos | exclusiones, nunca bloquear |
@@ -219,7 +234,7 @@ retención posterior (§8).
   solo hashes, sin datos.
 - **Qué se audita:**
   - los logins correctos y fallidos;
-  - los cambios de usuarios, roles y visibilidad;
+  - los cambios de usuarios, roles y puntos que ve cada uno;
   - cada acción sobre un router, con el sha del plan y del respaldo;
   - cada orden al orquestador;
   - los cambios de acceso, las actualizaciones y las exportaciones.
@@ -235,7 +250,8 @@ información de un punto viejo nunca se mezcle con la de uno nuevo. El flujo est
 
 | Dónde | Qué se borra |
 |---|---|
-| `estado.db` | la fila `punto` y todas las filas con su `punto_id`: `instancia`, `vpn_usuario`, `mikrotik` (clave cifrada incluida), `abonado`, `abonado_hist`, `cuarentena`, `destino_envio`, `exclusion` y `nunca_bloquear` del punto, `publica`, `ajuste_punto`, `operacion`, y las filas de `visibilidad` que lo nombran. Las sesiones que lo tenían seleccionado vuelven a «Toda la empresa» |
+| `estado.db` | la fila `punto` y todas las filas con su `punto_id`: `instancia`, `vpn_usuario`, `mikrotik` (clave cifrada incluida), `abonado`, `abonado_hist`, `cuarentena`, `destino_envio`, `exclusion` y `nunca_bloquear` del punto, `publica`, `ajuste_punto` y `operacion`. Las sesiones que lo tenían seleccionado vuelven a «Toda la empresa» (las de un usuario limitado, a su primer punto) |
+| `/srv/ids/panel/conf/usuarios.json` | el pid, de la lista `puntos` de cada usuario que lo tenga (§3.2). Quien se queda con la lista vacía ve «Sin puntos asignados» hasta que el admin le asigne otro; quien no tenía lista sigue viéndolo todo |
 | `eventos.db` | `alerta`, `resumen_hora`, `detalle_dia`, `espejo_hora` e `ingesta` del punto, seguido de un vacuum incremental |
 | `bitacora.db` | la cadena entera del punto |
 | `/srv/ids/panel/` | `reportes/<pid>/` y `respaldos/<pid>/` (los `.rsc` de su router) |

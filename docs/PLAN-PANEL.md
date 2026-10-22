@@ -153,6 +153,14 @@ Son los más importantes de los 30 inventariados:
 - En la vista de empresa, toda tabla de CPE lleva la columna **Punto**. La misma IP en dos puntos
   aparece en **dos filas**.
 
+> **Nota (2026-10-22, usuarios por punto).** El alcance de cada usuario no sale de una tabla
+> `visibilidad` (no hay `estado.db`): es el campo opcional `puntos` de su entrada en
+> `conf/usuarios.json` ([DATOS.md](DATOS.md) §3.2). Sin el campo ve todos; el admin, siempre todos.
+> Un usuario limitado no tiene «Toda la empresa» (sus ficheros mezclan todos los puntos), mira un
+> punto a la vez y, con uno solo, no ve el selector; un punto ajeno es un 404. El valor viaja en
+> `?nodo=` ([CONTRATO-F2-panel.md](CONTRATO-F2-panel.md) §10.1). Cómo se asigna:
+> [OPERACION.md](OPERACION.md) §6.
+
 | Página | Por punto | «Toda la empresa» | Notas |
 |---|---|---|---|
 | En vivo, Top, Detalle | sí | sí (suma, con desglose) | «3/4 puntos con espejo» |
@@ -252,7 +260,7 @@ El avance se guarda en `punto.estado`. El asistente se puede cerrar y retomar de
 | Uso de la IP real y del protocolo | La IP real alimenta el freno de login, la bitácora y los accesos. `X-Forwarded-Host`/`-Proto` alimentan la comprobación de origen del CSRF. Las cookies `Secure` y `__Host-` se emiten cuando `X-Forwarded-Proto=https` llega de un proxy de confianza |
 | CSRF | `Origin`/`Sec-Fetch-Site`, comparados con el host público (`X-Forwarded-Host` del proxy), más un token por sesión en la cabecera `X-CSRF` en todo POST, PUT y DELETE |
 | Cookie | `__Host-ids_s`, `SameSite=Strict`, `HttpOnly`, `Secure`. Por el túnel SSH de emergencia (`http://localhost:5637`), los navegadores tratan `localhost` como contexto seguro y la cookie funciona |
-| Sesiones | se guarda `sha256(token)` de 256 bits; 12 h absolutas y 2 h de inactividad; rotación al iniciar sesión; se invalidan al cambiar la clave, el rol o la visibilidad, o al desactivar al usuario; máximo 10 por usuario |
+| Sesiones | se guarda `sha256(token)` de 256 bits; 12 h absolutas y 2 h de inactividad; rotación al iniciar sesión; se invalidan al cambiar la clave, el rol o la visibilidad, o al desactivar al usuario; máximo 10 por usuario. Nota (2026-10-22): el rol y los puntos que ve el usuario se releen en cada petición, así que su cambio vale en la siguiente sin cerrar la sesión |
 | Claves | PBKDF2-SHA256 con 600 000 iteraciones; `iter` por fila con actualización transparente; mínimo 12 caracteres; `hmac.compare_digest` |
 | Fuerza bruta | 8 fallos en 10 min por **IP real del cliente** y también por login, en el propio panel. fail2ban no sirve aquí: todas las conexiones llegan desde la IP del proxy |
 | Cabeceras | CSP `default-src 'self'` con nonce, `X-Frame-Options: DENY`, `Referrer-Policy: same-origin`, `nosniff` |

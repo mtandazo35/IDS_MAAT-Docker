@@ -168,7 +168,21 @@ def sesion_de(token):
         return None
     v = dict(s)
     v["role"] = r.get("role")
+    v["puntos"] = puntos_de_usuario(r)   # releido como el rol: un cambio vale en la siguiente peticion
     return v
+
+def puntos_de_usuario(r):
+    """Los puntos que ve un usuario (2026-10-22): None = todos (admin, o usuario sin lista
+    `puntos`); si no, su lista, que puede estar vacia (no ve ninguno). Una lista mal formada no
+    ve ninguno: nunca se amplia a todos."""
+    if not r or r.get("role") == "admin":
+        return None
+    if "puntos" not in r:
+        return None
+    p = r.get("puntos")
+    if not isinstance(p, list):          # null u otra cosa: ninguno
+        return []
+    return [x for x in p if nodos.pid_valido(x)]
 
 SESSIONS = _cargar_sesiones()
 
@@ -419,7 +433,9 @@ def escribir_threshold(reglas=None, quien=None):
     avisos = []
     nuevo = {}
     cli = None
-    for pid in nodos.pids():
+    # TODOS los puntos aunque lo pida un usuario limitado (2026-10-22): las exclusiones son de
+    # toda la instalacion y, con su alcance, las huellas de los demas se perdian del registro
+    for pid in nodos.pids_todos():
         contenido = threshold_contenido(reglas, pid)
         huella = hashlib.sha256(contenido.encode("utf-8")).hexdigest()
         if prev.get(pid) == huella:
@@ -1259,13 +1275,18 @@ def guardar_routers(lst, huella=False):
 
     La huella (CERT_FP*) solo se escribe con `huella=True` (olvidarla). La fija
     confirmar_huella bajo el cerrojo; si aqui se copiara, un `lst` leido antes con
-    cargar_routers() la pisaria con la foto vieja (revision 2026-10-15, C9)."""
-    vivos = set(nodos.pids())
+    cargar_routers() la pisaria con la foto vieja (revision 2026-10-15, C9).
+
+    Con TODOS los puntos aunque guarde la peticion de un usuario limitado (2026-10-22): con
+    los que ve el (nodos.pids() con alcance) se borraban de routers.json los routers de los
+    demas y el mapa del generador se quedaba solo con los suyos. Un punto ajeno no se escribe.
+    Devuelve los routers que ve quien guarda."""
+    vivos = set(nodos.pids_todos())
     with _ROUTERS_LOCK:
         guardados = {k: v for k, v in _routers_guardados().items() if k in vivos}
         for r in lst or []:
             pid = (r or {}).get("id") or ""
-            if pid not in vivos:
+            if pid not in vivos or not nodos.puede_ver(pid):
                 continue
             g = dict(guardados.get(pid) or {})
             for k in CAMPOS_USUARIO:
@@ -1293,9 +1314,10 @@ def guardar_routers(lst, huella=False):
             json.dump({"v": 2, "routers": guardados}, f, ensure_ascii=False, indent=1)
         os.chmod(tmp, 0o600)
         os.replace(tmp, ROUTERS_CONF)
-    salida = cargar_routers()
+    with nodos.sin_alcance():                # el mapa del generador lleva todos los puntos
+        salida = cargar_routers()
     publicar_routers_map(salida)
-    return salida
+    return [r for r in salida if nodos.puede_ver(r.get("id", ""))]
 
 def olvidar_router(pid):
     """Baja de un punto: borra lo suyo de routers.json (lo llama el apartado Puntos)."""
@@ -1421,7 +1443,9 @@ def publicar_routers_map(lst=None):
     reporte. Va aparte a proposito: el archivo de routers lleva las CLAVES de la API y
     el generador no tiene por que verlas."""
     try:
-        lst = lst if lst is not None else cargar_routers()
+        if lst is None:
+            with nodos.sin_alcance():        # el generador necesita TODOS, mire quien mire
+                lst = cargar_routers()
         datos = [{"id": r.get("id", ""), "nombre": r.get("nombre", "") or r.get("id", ""),
                   "iface": r.get("iface", "")} for r in lst]
         tmp = "%s.%d.tmp" % (ROUTERS_MAP, os.getpid())
@@ -3105,8 +3129,10 @@ def cargar_acciones(nodo=None):
         nodo = nodos.nodo_actual() if nodos.hay_nodo() else nodos.TODOS
     if nodo == nodos.TODOS:
         dias = d.get("dias")
-    elif "nodos" not in d and nodos.pids() == [nodo]:
-        dias = d.get("dias")                 # acciones.json de antes y un solo punto: es todo suyo
+    elif "nodos" not in d and not nodos.limitado() and nodos.pids() == [nodo]:
+        # acciones.json de antes y un solo punto: es todo suyo. No para un usuario limitado: su
+        # unico punto no es el unico que hay, y el total seria el de toda la empresa
+        dias = d.get("dias")
     else:
         dias = (d.get("nodos") or {}).get(nodo)
     return dias if isinstance(dias, dict) else {}
@@ -3128,14 +3154,17 @@ def contar_accion(accion, pid=""):
         dia[accion] = int(dia.get(accion, 0)) + 1
         dias[hoy] = dia
         return {k: v for k, v in dias.items() if k >= lim}
+    # todos los puntos, aunque la accion la haga un usuario limitado (2026-10-22): con su alcance
+    # «un solo punto» seria el suyo y se quedaria con la cuenta vieja de toda la empresa
+    vivos = nodos.pids_todos()
     try:
         with _ACC_LOCK:
             d = _leer_acciones()
             por_nodo = d.get("nodos") if isinstance(d.get("nodos"), dict) else {}
-            if "nodos" not in d and isinstance(d.get("dias"), dict) and len(nodos.pids()) == 1:
+            if "nodos" not in d and isinstance(d.get("dias"), dict) and len(vivos) == 1:
                 # acciones.json de antes de contar por punto: con un solo punto, lo hecho es suyo
-                por_nodo[nodos.pids()[0]] = json.loads(json.dumps(d["dias"]))
-            if nodos.pid_valido(pid) and pid in nodos.pids():      # nunca cuentas de puntos que no existen
+                por_nodo[vivos[0]] = json.loads(json.dumps(d["dias"]))
+            if nodos.pid_valido(pid) and pid in vivos:      # nunca cuentas de puntos que no existen
                 por_nodo[pid] = _sumar(por_nodo.get(pid))
             tmp = "%s.%d.tmp" % (ACCIONES_FILE, os.getpid())
             with open(tmp, "w", encoding="utf-8") as f:
@@ -3784,7 +3813,10 @@ def destino_bloqueable(ip, propias=None):
     if es_mi_cpe(ip):
         return False, "es de tus redes"
     if _en_redes(o, _redes_publicas_propias() if propias is None else propias):
-        return False, "es una de tus IPs públicas declaradas"
+        # a un limitado no se le dice por qué: las públicas declaradas son de todos los puntos y
+        # así no sabría si esa IP es de otro cliente (el freno se mantiene)
+        return False, ("no se puede bloquear ese destino" if nodos.limitado()
+                       else "es una de tus IPs públicas declaradas")
     return True, ""
 
 def destinos_malos(solo_confiables=True):
@@ -3792,6 +3824,10 @@ def destinos_malos(solo_confiables=True):
     env = cargar_enviados(MK_SENT_DST)
     dest_ok = _dest_ok_set()
     propias = _redes_publicas_propias()
+    # un usuario limitado ve «bloqueado» solo si lo esta en el router de alguno de SUS puntos
+    # (2026-10-22): el bloqueo de otro punto ni se le enseña ni se lo puede quitar
+    lim = nodos.limitado()
+    vis = set(nodos.pids()) if lim else set()
     out = []
     for ip, d in cargar_destinos_malos().items():
         ok, _porque = destino_bloqueable(ip, propias)
@@ -3805,7 +3841,8 @@ def destinos_malos(solo_confiables=True):
                     "fuente": d.get("fuente", ""), "categoria": cat,
                     "pais": d.get("pais", ""), "firma": d.get("firma", ""),
                     "puertos": d.get("puertos") or [], "vigente": bool(d.get("vigente")),
-                    "enviado": ip in env})
+                    "enviado": ip in env and (not lim or bool(
+                        vis & set((env.get(ip) if isinstance(env.get(ip), dict) else {}).get("puntos") or [])))})
     out.sort(key=lambda x: (x["enviado"], -x["alertas"]))
     return out
 
@@ -6129,9 +6166,10 @@ def evidencia_reciente(clave, cq=None, ahora=None):
     pid = nodos.exigir_pid(rid_de(clave or ""))
     ip = ip_de(clave)
     # el reporte de SU punto y, si no lo trae, el de «Todos» (lo genera el mismo generador
-    # con las entradas de cada punto y su `router`)
+    # con las entradas de cada punto y su `router`). Un usuario limitado no puede abrir el de
+    # «Todos» (mezcla los puntos de todos): solo el de su punto
     if cq is None:
-        cqs = [_cargar_cuarentena(pid), _cargar_cuarentena(nodos.TODOS)]
+        cqs = [_cargar_cuarentena(pid)] + ([] if nodos.limitado() else [_cargar_cuarentena(nodos.TODOS)])
     else:
         cqs = list(cq) if isinstance(cq, (list, tuple)) else [cq]
     lim = evidencia_max_s(cqs[0])
@@ -6403,9 +6441,9 @@ ROLES = ("admin", "operador", "lectura")   # operador: gestiona incidentes y cua
 # selector de rol al crear o editar (el user, 2026-10-13: «no se sabe que hace cada uno»).
 ROL_DESC = {
     "admin": "Todo: usuarios, MikroTik, puntos, exclusiones, listas y actualizaciones.",
-    "operador": "La cuarentena: envía y quita CPEs de las listas del MikroTik, excluye destinos y "
-                "denuncia IPs. No toca usuarios ni ajustes.",
-    "lectura": "Ve paneles, eventos y reportes. No cambia nada.",
+    "operador": "La cuarentena y la ficha de sus puntos: envía y quita CPEs de las listas del MikroTik; "
+                "si ve todos los puntos, además excluye destinos y denuncia IPs. No toca usuarios ni ajustes.",
+    "lectura": "Ve paneles, eventos y reportes de sus puntos. No cambia nada.",
 }
 CLAVE_MIN = 10   # claves nuevas o cambiadas (antes 6); las que ya existen siguen valiendo
 PBKDF2_ITER = 200_000
@@ -6449,7 +6487,9 @@ def estado_ventana(nodo=None):
     (si hay un resumen nuevo que pintar)."""
     va = ventana_actual()
     vg = ventana_generada(nodo)
-    todos = pids_activos() + [nodos.TODOS]
+    # un usuario limitado cuenta solo sus puntos (pids_activos ya sale con su alcance): «Todos»
+    # no lo puede abrir, y la consulta acababa en 404 cada 20 s
+    todos = pids_activos() + ([] if nodos.limitado() else [nodos.TODOS])
     listos = sum(1 for n in todos if ventana_generada(n) == va)
     return {"elegida": va, "generada": vg, "pendiente": bool(vg and vg != va),
             "listos": listos, "total": len(todos), "v": version_resumen(nodo)[0]}
@@ -7199,9 +7239,37 @@ def aidb_consultar_red(cidr, refrescar=False):
         _aidb_guardar_cache(cache)
     return res, "api", ""
 
+AIDB_FUERA_ALCANCE = ("fuera de tus IPs públicas: con tu usuario solo se consultan las de tus "
+                      "puntos (Consultar IP → Tus IPs públicas)")   # texto: se escapa al pintarlo
+
+def aidb_al_alcance(t):
+    """Si el usuario de la peticion puede consultar `t` (IP o red) en AbuseIPDB (2026-10-22):
+    sin limite de puntos, cualquiera; uno limitado, solo lo que cae DENTRO de las publicas
+    declaradas de sus puntos. La cuota es de toda la instalacion y una IP ajena (o la publica
+    de otro punto) no es asunto suyo. Lo que no se entiende, no."""
+    if not nodos.limitado():
+        return True
+    try:
+        red = ipaddress.ip_network((t or "").strip(), strict=False)
+    except ValueError:
+        return False
+    vis = set(nodos.pids())
+    for rid, entradas in cargar_publicas().items():
+        if rid not in vis:
+            continue
+        for e in entradas:
+            try:
+                n = ipaddress.ip_network(e, strict=False)
+            except ValueError:
+                continue
+            if n.version == red.version and red.subnet_of(n):
+                return True
+    return False
+
 def aidb_lote(texto, refrescar=False):
     """Reparte lo que pego el usuario: lo que lleva '/' va al endpoint de REDES (una
-    peticion por red) y el resto a consultas por IP. Devuelve (resultados, aviso)."""
+    peticion por red) y el resto a consultas por IP. Devuelve (resultados, aviso). Un usuario
+    limitado solo consulta las publicas de sus puntos (aidb_al_alcance): lo demas no gasta cuota."""
     pedidas = [t.strip() for t in re.split(r"[\s,;]+", texto or "") if t.strip()]
     vistas = []
     for t in pedidas:
@@ -7210,7 +7278,9 @@ def aidb_lote(texto, refrescar=False):
     sobran = max(0, len(vistas) - AIDB_MAX_LOTE)
     res = []
     for t in vistas[:AIDB_MAX_LOTE]:
-        if "/" in t:
+        if nodos.limitado() and not aidb_al_alcance(t):
+            res.append((t, None, "", AIDB_FUERA_ALCANCE))
+        elif "/" in t:
             res.append((t,) + aidb_consultar_red(t, refrescar=refrescar))
         else:
             res.append((t,) + aidb_consultar(t, refrescar=refrescar))
@@ -7858,8 +7928,9 @@ def por_que_sin_culpables(cats):
             "actual: pudo pasar antes, o salir por otro nodo.")
 
 def _cpes_del_nodo(rid):
-    """CPEs con actividad del reporte actual DE ESE PUNTO, con lo que hace falta para el cruce."""
-    if not nodos.pid_valido(rid or ""):
+    """CPEs con actividad del reporte actual DE ESE PUNTO, con lo que hace falta para el cruce.
+    Los de un punto ajeno, para un usuario limitado, ninguno (2026-10-22)."""
+    if not nodos.pid_valido(rid or "") or not nodos.puede_ver(rid):
         return []
     cq = _cargar_cuarentena(rid)
     fuera = {}
@@ -9343,6 +9414,47 @@ def buscar_usuario(user):
             return r
     return None
 
+# ---- puntos que ve cada usuario (el dueño, 2026-10-22: «multi-usuario por punto») ----
+# usuarios.json: `puntos` = lista de pids que ve ese usuario. Sin la clave ve todos (como hasta
+# ahora); el administrador ve siempre todos (se le borra la clave); una lista vacia no ve ninguno.
+# Quien lo aplica en cada peticion es sesion_de/puntos_de_usuario y nodos.poner_alcance.
+
+def puntos_marcados(valores):
+    """Los pids marcados en el formulario de Usuarios (casillas name=puntos): los que existen,
+    ordenados y sin repetir. Lo mal formado o que no existe se ignora."""
+    return sorted({(p or "").strip() for p in (valores or []) if nodos.existe((p or "").strip())})
+
+def quitar_punto_de_usuarios(pid, quien=None):
+    """Baja de un punto: sale de la lista `puntos` de cada usuario. Quien se queda sin ninguno
+    NO pasa a ver todos: se queda con la lista vacia (no ve ninguno) hasta que un administrador
+    le asigne otro. Bajo el cerrojo de usuarios.json. Devuelve cuantos usuarios cambio."""
+    if not nodos.pid_valido(pid):
+        raise nodos.NodoInvalido(pid)
+    cambiados = []
+    with usuarios_cerrojo():
+        us = cargar_usuarios()
+        for r in us:
+            p = r.get("puntos")
+            if isinstance(p, list) and pid in p:
+                r["puntos"] = [x for x in p if x != pid]
+                cambiados.append(r.get("user", "?"))
+        if cambiados:
+            guardar_usuarios(us)
+    if cambiados:
+        bitacora("USUARIO-PUNTOS", "punto=%s quitado de %s (baja del punto)" % (pid, ", ".join(cambiados)),
+                 quien=quien)
+    return len(cambiados)
+
+def puntos_txt(r, nombres=None):
+    """Que puntos ve ese usuario, en palabras: «Todos», «Ninguno» o sus nombres."""
+    if (r or {}).get("role") == "admin" or "puntos" not in (r or {}):
+        return "Todos"
+    p = puntos_de_usuario(r) or []
+    if not p:
+        return "Ninguno"
+    nombres = nombres if nombres is not None else {x["pid"]: x.get("nombre") or x["pid"] for x in nodos.puntos()}
+    return ", ".join(nombres.get(x, x) for x in p)
+
 # ---- datos de la empresa (nombre + logo que se muestra en la barra) ----
 EMPRESA_FILE = nodos.ruta("conf", "empresa.json")
 
@@ -9940,8 +10052,10 @@ _NAV_LINKS = [("/", "En vivo"), ("/top", "Top orígenes"), ("/detalle", "Detalle
               ("/exclusiones", "Exclusiones"),
               ("/ajustes", "Ajustes")]   # Log y Documentacion viven dentro de Ajustes
 # Puntos no es pestana (con el selector, Eventos y Puntos arriba la barra no cabia y se comia
-# Ajustes y el menu del usuario): se abre desde Ajustes -> Puntos
-_NAV_SOLO_ADMIN = ("/exclusiones", "/puntos")
+# Ajustes y el menu del usuario): se abre desde Ajustes -> Puntos, y la ven el administrador y el
+# operador (cada uno sus puntos; puntos_web filtra y comprueba el permiso), no solo lectura
+_NAV_SOLO_ADMIN = ("/exclusiones",)
+_ROLES_PUNTOS = ("admin", "operador")
 # paginas que no dependen del nodo: no llevan selector (CONTRATO-F2 §10, inv_B §2)
 _NAV_SIN_NODO = ("/ajustes", "/puntos", "/registro", "/log", "/bitacora", "/documentacion")
 
@@ -9954,23 +10068,34 @@ def qs_nodo(prefijo="&"):
 
 def _selector_nodo(active):
     """Selector de nodo de la barra: «Todos los nodos (acumulado)» y cada punto con el estado de
-    su salud por etapas. Formulario GET con name=nodo: el servidor valida (400/404) y lo guarda."""
+    su salud por etapas. Formulario GET con name=nodo: el servidor valida (400/404) y lo guarda.
+
+    Un usuario limitado (2026-10-22) mira un punto a la vez: sin «Todos» (sus ficheros mezclan
+    los puntos de todos) y solo con los suyos; con uno solo, su nombre y nada que elegir."""
     if not active or active in _NAV_SIN_NODO or active.startswith("/puntos") or not nodos.hay_nodo():
         return ""
     actual = nodos.nodo_actual()
     fn = globals().get("salud_punto")
-    ops = ['<option value="%s"%s>Todos los nodos (acumulado)</option>'
-           % (nodos.TODOS, " selected" if actual == nodos.TODOS else "")]
-    color = ""
-    for p in nodos.puntos():
+    lim = nodos.limitado()
+    ops = [] if lim else ['<option value="%s"%s>Todos los nodos (acumulado)</option>'
+                          % (nodos.TODOS, " selected" if actual == nodos.TODOS else "")]
+    color = ""; sal_txt = ""
+    pts = nodos.puntos()
+    for p in pts:
         sal = puntos_web.salud(fn, p["pid"])
         if p["pid"] == actual:
             color = puntos_web.SALUD_COLOR.get(sal["estado"], "#9a9a95")
+            sal_txt = puntos_web.salud_texto(sal)
         ops.append('<option value="%s"%s>%s (%s) &middot; %s</option>'
                    % (html.escape(p["pid"]), " selected" if p["pid"] == actual else "",
                       html.escape(p.get("nombre") or p["pid"]), html.escape(p["pid"]),
                       html.escape(puntos_web.salud_texto(sal))))
     punto = ('<span class=nsdot style="background:%s" title="Salud del nodo"></span>' % color) if color else ""
+    if lim and len(pts) == 1:
+        # un solo punto: no hay nada que elegir, se dice cual es (sin formulario)
+        p = pts[0]
+        return ('<div class=nodosel>%s<label>Nodo</label><span class=nodouno title="%s">%s (%s)</span></div>'
+                % (punto, html.escape(sal_txt), html.escape(p.get("nombre") or p["pid"]), html.escape(p["pid"])))
     return ('<form method=get action="%s" class=nodosel>%s<label for=nodosel>Nodo</label>'
             '<select id=nodosel name=nodo onchange="this.form.submit()">%s</select>'
             '<noscript><button type=submit>Ver</button></noscript></form>'
@@ -10055,6 +10180,8 @@ box-shadow:0 10px 32px rgba(0,0,0,.22);padding:6px 0;font:14px system-ui,-apple-
 .empbar .nodosel select{max-width:320px;padding:6px 9px;border-radius:8px;border:1px solid #d7d6d2;
 background:#fff;color:#0b0b0b;font:13px system-ui;cursor:pointer}
 .empbar .nodosel .nsdot{width:9px;height:9px;border-radius:50%;flex:none}
+.empbar .nodosel .nodouno{color:#0b0b0b;font:600 13px system-ui;white-space:nowrap;max-width:320px;
+overflow:hidden;text-overflow:ellipsis}  /* usuario con un solo punto: su nombre, sin desplegable */
 .empbar .push{margin-left:auto}
 .nodochip{display:inline-block;margin-left:6px;padding:1px 8px;border-radius:20px;background:#eef2f7;
 color:#33322f;font:600 11px system-ui;vertical-align:middle}
@@ -10719,11 +10846,11 @@ def tarjeta_version():
 
 def nav(active=""):
     _rl = getattr(CTX, "role", None)
-    es_admin_nav = _rl == "admin"   # exclusiones/tuning y Puntos: solo admin (ni operador ni lectura)
+    es_admin_nav = _rl == "admin"   # exclusiones/tuning: solo admin (ni operador ni lectura)
     parts = []
     for h, t in _NAV_LINKS:
         if h in _NAV_SOLO_ADMIN and not es_admin_nav:
-            continue   # exclusiones (ajuste de deteccion) y Puntos son solo de admin
+            continue   # exclusiones (ajuste de deteccion) es solo de admin
         cls = "tab on" if h == active else "tab"
         parts.append(f'<a href="{h}" class="{cls}">{t}</a>')
     brand = '<span class="brand"><img class="applogo" src="/logo.png" alt="Suricata">Estadísticas Suricata</span>'
@@ -11383,7 +11510,8 @@ def purgar_punto(pid, quien=None):
     """Baja de un punto en el PANEL (la del orquestador la pide el apartado Puntos): borra
     sus claves `pid|...` de los registros globales (enviados, avisos, abonados y su
     historial, politicas), sus publicas, sus exclusiones con nodo, su diagnostico, su
-    entrada de routers.json, sus respaldos del espejo y nodos/<pid>/. El pid ya puede no
+    entrada de routers.json, el punto en la lista `puntos` de cada usuario, sus respaldos
+    del espejo y nodos/<pid>/. El pid ya puede no
     estar en estado.json: solo se valida el formato. Idempotente: la repite el barrido de
     fondo (barrer_bajas) si la baja se hizo por la CLI o nadie abrio la operacion.
     Devuelve {registro: cuantas entradas quito}. Deja linea en la bitacora."""
@@ -11456,6 +11584,10 @@ def purgar_punto(pid, quien=None):
                 os.replace(tmp, EXCL_FILE)
             hecho["exclusiones"] = len(excl) - len(quedan)
         hecho["routers"] = 1 if olvidar_router(pid) else 0
+        try:                                     # y de la lista de puntos de cada usuario (2026-10-22)
+            hecho["usuarios"] = quitar_punto_de_usuarios(pid, quien=quien or "panel")
+        except OSError as ex:
+            sys.stderr.write("purgar_punto(%s): usuarios: %s\n" % (pid, ex))
         with _ACC_LOCK:                          # su cuenta del Historico (el total se queda)
             acc = _leer_acciones()
             if pid in (acc.get("nodos") or {}):
@@ -11543,7 +11675,9 @@ def barrer_bajas(ahora=None):
                   and time.time() - float(est.get("ts") or 0) <= ESTADO_FRESCO_S)
     except (TypeError, ValueError):
         fresco = False
-    vivos = set(nodos.pids())
+    # TODOS los puntos: corre en el fondo, pero si un dia lo llama una peticion de un usuario
+    # limitado, con su alcance los puntos de los demas parecerian dados de baja y se purgarian
+    vivos = set(nodos.pids_todos())
     hechos = []
     for pid in sorted(_pids_con_restos()):
         if pid in vivos and pid not in _BAJAS:
@@ -12297,6 +12431,10 @@ def perfil_page(msg="", ok=False, edit_user=None):
     if es_admin and yo:
         rows = []
         hay_correo = any((r.get("correo") or "").strip() for r in usuarios)
+        # «Puntos que ve» cada usuario (2026-10-22). El administrador no tiene alcance: aqui salen
+        # todos los puntos que existen
+        _pts = nodos.puntos()
+        _nom_pts = {p["pid"]: p.get("nombre") or p["pid"] for p in _pts}
         for r in usuarios:
             uraw = r.get("user", ""); un = esc(uraw); rl = r.get("role", "admin")
             nombre = r.get("nombre", ""); correo = r.get("correo", "")
@@ -12329,21 +12467,58 @@ def perfil_page(msg="", ok=False, edit_user=None):
                       f"<button class='ic danger' title=Eliminar type=submit>{_IC_DEL}</button></form>")
             correo_c = (f"<td class=cmail>{esc(correo) if correo else '<span class=dash>&mdash;</span>'}</td>"
                         if hay_correo else "")
+            # sus puntos: «Todos» (admin o sin lista), «Ninguno» (lista vacia: no ve nada) o los nombres
+            _pl = None if rl == "admin" else puntos_de_usuario(r)
+            _ptxt = puntos_txt(r, _nom_pts)
+            if _pl is None:
+                pts_c = ("<span class=ptodos title='El administrador ve todos los puntos'>Todos</span>"
+                         if rl == "admin" else "<span class=ptodos>Todos</span>")
+            elif not _pl:
+                pts_c = ("<span class=pninguno title='No ve ningún punto: no puede usar el panel hasta "
+                         "que le asignes uno'>Ninguno</span>")
+            else:
+                pts_c = f"<span class=plista title=\"{esc(_ptxt)}\">{esc(_ptxt)}</span>"
             rows.append(
                 f"<tr data-f=\"{filtro}\">"
                 f"<td><div class=nmcell>{_avatar(nombre, uraw, r.get('avatar'))}{quien}</div></td>"
-                f"{correo_c}<td>{_rol_badge(rl)}</td><td>{estado}</td>"
+                f"{correo_c}<td>{_rol_badge(rl)}</td><td>{estado}</td><td>{pts_c}</td>"
                 "<td class=acts>"
                 f"<button class=ic title=Editar type=button onclick=\"abrirEdit(this)\" "
                 f"data-user='{un}' data-nombre=\"{esc(nombre)}\" data-correo=\"{esc(correo)}\" "
-                f"data-role='{rl}'>{_IC_EDIT}</button>{borrar}"
+                f"data-role='{rl}' data-pmodo='{'todos' if _pl is None else 'solo'}' "
+                f"data-puntos='{esc(','.join(_pl or []))}'>{_IC_EDIT}</button>{borrar}"
                 "</td></tr>")
 
         def _rol_select(nombre_campo, sid, hid, defecto):
             ops = "".join(f"<option value={k}{' selected' if k == defecto else ''}>{_ROL_TXT[k]}</option>"
                           for k in ("lectura", "operador", "admin"))
-            return (f"<select name={nombre_campo} id={sid} onchange=\"rolHint(this,'{hid}')\">{ops}</select>"
+            # con rol administrador «Puntos que ve» no aplica (ptsSync lo esconde)
+            return (f"<select name={nombre_campo} id={sid} onchange=\"rolHint(this,'{hid}');ptsSync(this.form)\">"
+                    f"{ops}</select>"
                     f"<div class=hint id={hid}>{esc(ROL_DESC[defecto])}</div>")
+
+        def _puntos_campo():
+            # «Puntos que ve» (2026-10-22): todos, o solo los marcados (campo puntos_modo y casillas
+            # name=puntos, value=pid). Las casillas solo se ven con «Solo estos puntos»; con rol
+            # administrador no aplica: ve todos
+            if _pts:
+                cas = "".join(
+                    f"<label class=chk><input type=checkbox name=puntos value='{esc(p['pid'])}'>"
+                    f"{esc(p.get('nombre') or p['pid'])} <span class=ulog>{esc(p['pid'])}</span></label>"
+                    for p in _pts)
+            else:
+                cas = "<div class=hint>Todavía no hay puntos dados de alta.</div>"
+            return ("<div class='field ptsf'><label>Puntos que ve</label>"
+                    "<div class='hint ptsadm' hidden>El administrador ve todos los puntos.</div>"
+                    "<div class=ptsbox>"
+                    "<label class=chk><input type=radio name=puntos_modo value=todos checked "
+                    "onchange='ptsSync(this.form)'>Todos los puntos</label>"
+                    "<label class=chk><input type=radio name=puntos_modo value=solo "
+                    "onchange='ptsSync(this.form)'>Solo estos puntos</label>"
+                    f"<div class=ptslist hidden>{cas}"
+                    "<div class=hint>Ve sus puntos uno a uno (sin la vista «Todos») y nada de lo que es "
+                    "de toda la instalación. Sin ninguno marcado no ve ningún punto y no puede usar el "
+                    "panel hasta que le asignes uno.</div></div></div></div>")
 
         def _clave(pid, hid, requerida, ayuda):
             extra = " required" if requerida else " placeholder='Vacía = no se cambia'"
@@ -12382,6 +12557,7 @@ def perfil_page(msg="", ok=False, edit_user=None):
             "<div class=grid2><div class=field><label for=ncor>Correo</label>"
             "<input id=ncor type=email name=ncorreo maxlength=80 autocomplete=off placeholder='Opcional'></div>"
             "<div class=field><label for=nrol>Rol</label>" + _rol_select("nrole", "nrol", "nrolh", "lectura") + "</div></div>"
+            + _puntos_campo() +
             "<div class=field><label for=npw>Clave</label>"
             + _clave("npw", "npwh", True, f"Mínimo {CLAVE_MIN} caracteres. Con «Generar» se crea una segura y se copia.")
             + "</div>"
@@ -12405,6 +12581,7 @@ def perfil_page(msg="", ok=False, edit_user=None):
             "<input type=text name=nombre id=en maxlength=60 oninput=\"ufIni('e')\"></div>"
             "<div class=field><label for=ec>Correo</label><input type=email name=correo id=ec maxlength=80></div></div>"
             "<div class=field><label for=er>Rol</label>" + _rol_select("role", "er", "erolh", "lectura") + "</div>"
+            + _puntos_campo() +
             "<div class=field><label for=epw>Clave nueva (opcional)</label>"
             + _clave("epw", "epwh", False, f"Si la escribes, mínimo {CLAVE_MIN} caracteres.")
             + "</div>"
@@ -12422,7 +12599,8 @@ def perfil_page(msg="", ok=False, edit_user=None):
             "<button class='primary sm' type=button onclick=\"abrir('ovlNew')\">+ Nuevo usuario</button></div></div>"
             "<div class=roles>" + leyenda + "</div>"
             "<div class=twrap><table class=ut><thead><tr>"
-            "<th>Usuario</th>" + ("<th>Correo</th>" if hay_correo else "") + "<th>Rol</th><th>Estado</th><th></th>"
+            "<th>Usuario</th>" + ("<th>Correo</th>" if hay_correo else "") + "<th>Rol</th><th>Estado</th>"
+            "<th>Puntos</th><th></th>"
             f"</tr></thead><tbody id=ubody>{''.join(rows)}</tbody></table></div>"
             "</section>" + modal_new + modal_edit)
     # --- tarjeta: IPs de confianza + bloqueos por fallos (solo admin) ---
@@ -12624,6 +12802,14 @@ def perfil_page(msg="", ok=False, edit_user=None):
         ".ulog{font:12px ui-monospace,Consolas,monospace;color:#8a8a86}"
         ".usrs .av{width:34px;height:34px;font-size:12px}"
         ".icph{display:inline-block;width:30px}"
+        # «Puntos que ve»: la celda de la tabla y el campo de los modales (con display propio,
+        # [hidden] solo esconde si se dice aqui)
+        ".ptodos{color:#6b6a66}.pninguno{color:#b26a00;font-weight:700}"
+        ".plista{display:inline-block;max-width:240px;overflow:hidden;text-overflow:ellipsis;vertical-align:bottom}"
+        ".ptsbox{display:flex;flex-direction:column;gap:7px}"
+        ".ptslist{display:flex;flex-direction:column;gap:6px;max-height:190px;overflow:auto;border:1px solid #eee;"
+        "border-radius:9px;padding:9px 11px;margin-top:2px;background:#fafafa}"
+        ".ptsbox[hidden],.ptslist[hidden],.ptsadm[hidden]{display:none}"
         # la celda de acciones con display:flex deja de ser celda: la linea y el hover de la fila
         # se cortaban antes de los botones
         ".ut td.acts{display:table-cell;text-align:right;white-space:nowrap}.ut td.acts>*+*{margin-left:8px}"
@@ -12686,6 +12872,16 @@ def perfil_page(msg="", ok=False, edit_user=None):
               "var fi=document.getElementById(p+'file');if(fi)fi.value='';}"
               "var ROLD=" + json.dumps(ROL_DESC) + ";"
               "function rolHint(sel,h){var e=document.getElementById(h);if(e&&sel)e.textContent=ROLD[sel.value]||'';}"
+              # «Puntos que ve»: con rol administrador no aplica; las casillas, solo con «Solo estos»
+              "function ptsSync(f){if(!f)return;var r=f.querySelector('select[name=nrole],select[name=role]'),"
+              "adm=!!r&&r.value==='admin',a=f.querySelector('.ptsadm'),b=f.querySelector('.ptsbox'),"
+              "l=f.querySelector('.ptslist'),s=f.querySelector('input[name=puntos_modo][value=solo]');"
+              "if(a)a.hidden=!adm;if(b)b.hidden=adm;if(l)l.hidden=adm||!(s&&s.checked);}"
+              "function ptsPoner(f,modo,lista){var v=(lista||'').split(',');"
+              "var rs=f.querySelectorAll('input[name=puntos_modo]');for(var i=0;i<rs.length;i++)"
+              "rs[i].checked=rs[i].value===(modo==='solo'?'solo':'todos');"
+              "var cs=f.querySelectorAll('input[name=puntos]');for(var j=0;j<cs.length;j++)"
+              "cs[j].checked=v.indexOf(cs[j].value)>=0;ptsSync(f);}"
               "function verClave(id,b){var i=document.getElementById(id);if(!i)return;"
               "var ver=i.type==='password';i.type=ver?'text':'password';b.textContent=ver?'Ocultar':'Ver';}"
               # 14 de un alfabeto sin 0/O/1/l/I; getRandomValues vale tambien por http
@@ -12726,6 +12922,8 @@ def perfil_page(msg="", ok=False, edit_user=None):
               "document.getElementById('ec').placeholder='Sin correo guardado';"
               "document.getElementById('er').value=b.getAttribute('data-role')||'lectura';"
               "rolHint(document.getElementById('er'),'erolh');"
+              # sus puntos vienen marcados (data-pmodo / data-puntos de la fila)
+              "ptsPoner(document.getElementById('er').form,b.getAttribute('data-pmodo'),b.getAttribute('data-puntos'));"
               "var p=document.querySelector('#ovlEdit input[name=npass]');if(p){p.value='';p.type='password';"
               "var vb=p.parentNode.querySelector('.pwb');if(vb)vb.textContent='Ver';}"
               "var ph=document.getElementById('epwh');if(ph){ph.classList.remove('mal');ph.textContent='Si la escribes, mínimo " + str(CLAVE_MIN) + " caracteres.';}"
@@ -12740,6 +12938,8 @@ def perfil_page(msg="", ok=False, edit_user=None):
               "var f=rs[i].getAttribute('data-f')||'';rs[i].style.display=f.indexOf(q)>=0?'':'none';}}"
               "document.addEventListener('keydown',function(e){if(e.key==='Escape'){cerrar('ovlNew');cerrar('ovlEdit');}});"
               "if(document.getElementById('nini'))ufIni('n');"
+              # el navegador puede devolver marcado «Solo estos» al volver a la pagina
+              "var _pf=document.querySelectorAll('.ptsf');for(var _i=0;_i<_pf.length;_i++)ptsSync(_pf[_i].closest('form'));"
               "</script>")
     # --- hub de accesos: cada apartado abre en su MODAL (Log y Documentacion incluidos) ---
     # tarjetas de acceso (Tailwind compilado, prefijo tw-): icono + nombre + para que sirve
@@ -12769,7 +12969,8 @@ def perfil_page(msg="", ok=False, edit_user=None):
              + _tile("usuarios", "Usuarios y roles", _IC_USERS, bool(card_users))
              + _tile("acceso", "IPs de confianza", _IC_SHIELD, bool(card_acceso))
              + _tile("mikrotik", "MikroTik", _IC_RTR, bool(card_mk))
-             + (_tile_html("puntos", "Puntos", _IC_VPN, "/puntos") if es_admin else "")
+             # Puntos: admin y operador (el operador, la ficha de los puntos que ve; puntos_web filtra)
+             + (_tile_html("puntos", "Puntos", _IC_VPN, "/puntos") if mirol in _ROLES_PUNTOS else "")
              + _tile("dns", "DNS", _IC_DNS, bool(card_dns))
              + _tile("feeds", "Reputación", _IC_FEED, bool(card_feeds))
              + _tile("update", "Versión", _IC_DL, bool(card_update))
@@ -13256,11 +13457,12 @@ tu monitoreo SNMP, un falso positivo puntual). Permite exclusiones <b>temporales
 <b>firma (SID)</b> y por <b>nodo</b>. Se explica en "Módulo de Exclusiones". Solo <b>administrador</b>.</td></tr>
 <tr><td><b>Ajustes</b></td><td>Un panel de tarjetas; cada una abre su ventana. Todos ven
 <b>Documentación</b> y, si no son administradores, su <b>Perfil</b> (clave y foto). El
+<b>operador</b> ve también <b>Puntos</b>, con la ficha de los puntos que tiene asignados. El
 <b>administrador</b> ve además:
 <ul>
 <li><b>Empresa</b>: nombre y logo que salen en la barra.</li>
-<li><b>Usuarios y roles</b>: crear, editar, borrar y cambiar el rol (su propia clave la cambia con el
-lápiz de su fila).</li>
+<li><b>Usuarios y roles</b>: crear, editar, borrar, cambiar el rol y elegir los <b>puntos que ve</b> cada
+uno (su propia clave la cambia con el lápiz de su fila). Ver "Usuarios, roles y clave".</li>
 <li><b>IPs de confianza</b>: desde dónde se puede entrar al panel y las IPs bloqueadas por fallar la clave.</li>
 <li><b>MikroTik</b>: lo común a todos los routers (listas por categoría, acciones y políticas de cuarentena).</li>
 <li><b>Puntos</b>: alta, ficha y baja de cada MikroTik. No es pestaña: se abre desde aquí.</li>
@@ -13270,8 +13472,9 @@ lápiz de su fila).</li>
 <li><b>Versión</b>: la versión instalada (solo lectura).</li>
 <li><b>Registro</b>: accesos y cambios en una sola tabla.</li>
 </ul></td></tr>
-<tr><td><b>Puntos</b> (en Ajustes)</td><td>Solo <b>administrador</b>. Alta, ficha y baja de cada MikroTik: un
-punto es un MikroTik con su propia VPN y su propio Suricata. Se explica en "Puntos: un MikroTik, su VPN
+<tr><td><b>Puntos</b> (en Ajustes)</td><td><b>Administrador</b> y <b>operador</b>. Alta, ficha y baja de
+cada MikroTik: un punto es un MikroTik con su propia VPN y su propio Suricata. El operador solo ve y
+gestiona la <b>ficha</b> de los puntos que tiene asignados; solo lectura no entra. Se explica en "Puntos: un MikroTik, su VPN
 y su Suricata".</td></tr>
 <tr><td><b>Documentación</b> (en Ajustes)</td><td>Esta guía. Se abre desde <b>Ajustes &rarr;
 Documentación</b>.</td></tr>
@@ -13281,7 +13484,10 @@ muestra solo sus datos. En «Todos» se ve todo junto y una IP repetida en dos n
 filas</b>, cada una con la etiqueta de su nodo: son dos abonados distintos y nunca se suman. El nodo
 va en la dirección (<code>?nodo=</code>), así que un enlace copiado abre lo mismo en otra pestaña; sin
 elegir, vale el último de tu sesión y, si no hay, «Todos». Un nodo mal escrito da error (no se cambia
-por «Todos»). No sale en Ajustes, Puntos, Registro ni Documentación, que no dependen del nodo.</td></tr>
+por «Todos»). No sale en Ajustes, Puntos, Registro ni Documentación, que no dependen del nodo.
+Un usuario con <b>puntos asignados</b> mira un punto a la vez: su selector no trae «Todos» (esa vista
+mezcla los datos de todos los puntos) y solo lista los suyos; con uno solo, sale su nombre sin
+desplegable. Un punto que no es suyo no existe para él (la dirección da «Punto inexistente»).</td></tr>
 <tr><td><b>Tu usuario</b> (arriba a la derecha)</td><td>Tu foto (o tus iniciales) y tu nombre; al tocarlo se
 abre un menú con tu rol y: <b>Mi cuenta</b> (el administrador, su ficha de usuario: nombre, correo,
 foto; operador y solo lectura, su <b>Perfil</b>: foto y clave), <b>Cambiar contraseña</b>,
@@ -14665,18 +14871,43 @@ si tu <code>input</code> acaba en <code>drop</code>, deja puesto tu propio <code
 <li><b>Administrador</b>: acceso total (Puntos, exclusiones, MikroTik y políticas, feeds, actualizar
 reglas, gestionar usuarios y ver el Registro).</li>
 <li><b>Operador</b>: opera el día a día. Ve las pestañas de datos (En vivo, Top orígenes, Detalle,
-Cuarentena, Consultar IP, Histórico, Reporte, Eventos) y <b>gestiona la cuarentena</b> (enviar/quitar
-CPEs, excluir un destino de falso positivo, consultar o denunciar reputación). <b>No</b> ve Puntos,
-Exclusiones ni el Registro, y en Ajustes solo tiene su Perfil y la Documentación. No toca usuarios,
-conexión MikroTik ni reglas. Cada acción suya queda en el <b>Registro</b>.</li>
-<li><b>Solo lectura</b>: ve los paneles y reportes y cambia su propia clave; no opera cuarentena
-ni edita nada.</li>
+Cuarentena, Consultar IP, Histórico, Reporte, Eventos), <b>gestiona la cuarentena</b> (enviar/quitar
+CPEs, excluir un destino de falso positivo, consultar o denunciar reputación) y la <b>ficha de sus
+puntos</b> en Ajustes &rarr; Puntos. <b>No</b> ve Exclusiones ni el Registro, y en Ajustes tiene su
+Perfil, Puntos y la Documentación. No toca usuarios, la configuración común del MikroTik ni reglas. Cada
+acción suya queda en el <b>Registro</b>.</li>
+<li><b>Solo lectura</b>: ve los paneles y reportes de sus puntos y cambia su propia clave; no opera
+cuarentena, no entra en Puntos ni edita nada.</li>
 </ul>
 <p>Cada uno cambia su clave desde su usuario (arriba a la derecha &rarr; <b>Cambiar
-contraseña</b>); un administrador además crea/borra usuarios y cambia roles en <b>Ajustes &rarr;
-Usuarios y roles</b>. Todos los usuarios ven todos los nodos de la empresa, pero
-<b>cada acción exige su rol y se comprueba en el servidor</b>: no basta con ocultar un botón, y cambiar
-el nodo en la dirección no da más permisos.</p>
+contraseña</b>); un administrador además crea/borra usuarios, cambia roles y elige los puntos que ve cada
+uno en <b>Ajustes &rarr; Usuarios y roles</b>. <b>Cada acción exige su rol y se comprueba en el
+servidor</b>: no basta con ocultar un botón, y cambiar el nodo en la dirección no da más permisos.</p>
+<h3>Puntos que ve cada usuario</h3>
+<p>Al crear o editar un usuario, <b>Puntos que ve</b> tiene dos opciones: <b>Todos los puntos</b> (lo de
+siempre: un usuario creado antes de esta opción ve todos) o <b>Solo estos puntos</b>, con una casilla por
+punto. El <b>administrador ve siempre todos</b>: para él la opción no aplica. La columna <b>Puntos</b> de la
+tabla dice qué ve cada uno: «Todos», los nombres de sus puntos o «Ninguno». Con «Solo estos puntos» y
+ninguno marcado el usuario no ve nada y no puede usar el panel («Sin puntos asignados») hasta que le
+asignes uno. El cambio vale en su siguiente clic, sin cerrarle la sesión.</p>
+<p>Un usuario con puntos asignados trabaja como si tuviera <b>su propio panel</b>:</p>
+<ul>
+<li>Mira <b>un punto a la vez</b>: no tiene la vista «Todos» (mezcla los datos de todos los puntos); el
+selector de nodo solo trae los suyos y, si tiene uno solo, enseña su nombre sin desplegable.</li>
+<li>Un punto que no es suyo <b>no existe</b> para él: ni sus datos, ni su ficha de evidencia, ni sus
+CPEs; cualquier dirección o formulario con ese punto da «Punto inexistente» y no hace nada.</li>
+<li>Como <b>operador</b>, envía y quita de la cuarentena solo CPEs de sus puntos, bloquea un destino de
+mala reputación solo en el MikroTik de sus puntos y gestiona la <b>ficha</b> de sus puntos. En
+<b>Consultar IP</b> solo consulta las IPs públicas declaradas de sus puntos (la cuota de AbuseIPDB es de
+toda la empresa).</li>
+<li>Lo que es de <b>toda la instalación</b> queda para el administrador o para un usuario sin puntos
+asignados: la lista de <b>destinos de confianza</b> (excluir destino), <b>denunciar</b> a AbuseIPDB, y lo
+que ya era de administrador (ajustes, feeds, IA, Telegram, DNS, empresa, MikroTik común, exclusiones,
+Registro, actualizaciones, ventana, usuarios e IPs de confianza). Un usuario limitado ni lo ve ni lo toca.</li>
+<li>Los avisos de Telegram y las tareas de fondo no cambian: siguen cubriendo todos los puntos.</li>
+<li>Cuando un punto se da de baja, sale de la lista de cada usuario. Quien se queda sin ninguno no pasa a
+ver todos: se queda sin puntos hasta que le asignes otro.</li>
+</ul>
 <p><b>El usuario no se cambia nunca</b>, tampoco el <code>admin</code> que deja el instalador:
 de una cuenta se cambia la clave, el <b>nombre a mostrar</b>, el correo, el rol y la foto, o se
 elimina. El nombre a mostrar es el que sale arriba a la derecha y en la tabla, pero para entrar
@@ -15230,12 +15461,15 @@ def rid_de_publica(ip):
     """De que nodo es esa publica, segun lo declarado. "" si no cae en ninguno.
 
     Hace falta para saber ENTRE QUE CPEs buscar: los abonados de un nodo no tienen nada
-    que ver con los de otro, y sin esto habria que preguntarselo al usuario cada vez."""
+    que ver con los de otro, y sin esto habria que preguntarselo al usuario cada vez. Para un
+    usuario limitado solo cuentan sus puntos (2026-10-22): una publica de otro no es de nadie."""
     try:
         o = ipaddress.ip_address(ip)
     except ValueError:
         return ""
     for rid, entradas in cargar_publicas().items():
+        if not nodos.puede_ver(rid):
+            continue
         for e in entradas:
             try:
                 if o.version == ipaddress.ip_network(e, strict=False).version and \
@@ -15808,6 +16042,9 @@ def reputacion_page(res=None, texto="", msg="", ok=False, es_admin=False, volver
             "<p class=sub2>Qué ataques se le denuncian a una IP pública, en qué listas de bloqueo "
             "esta, y &mdash;si es tuya&mdash; que abonado la está ensuciando. "
             f"Hoy quedan <b>{quedan:,}</b> consultas por IP y <b>{quedan_red:,}</b> por red.</p>"
+            # un usuario limitado solo consulta las publicas declaradas de sus puntos (aidb_lote)
+            + ("<p class=hint style='margin:-8px 0 14px'>Con tu usuario solo se consultan las IPs "
+               "públicas de tus puntos (las de abajo).</p>" if es_operador and nodos.limitado() else "")
             + banner + atras
             + ("".join(tarjetas) if tarjetas else "")
             + ("" if res else pub_html)
@@ -17855,7 +18092,9 @@ def _ficha_elegir_nodo(ip, claves, embed=False):
     _e = "&embed=1" if embed else ""
     filas = "".join(
         "<li><a href='/cuarentena/ficha?ip=%s%s&nodo=%s'>%s</a> <span class=rowmeta>en %s</span></li>"
-        % (_up.quote(k, safe=""), _e, _up.quote(nodos.TODOS, safe=""), esc(ip_de(k)), esc(nodos.nombre(rid_de(k))))
+        # el nodo que se mira (aqui «Todos»), nunca uno fijo: un limitado no tiene «Todos»
+        % (_up.quote(k, safe=""), _e, _up.quote(nodos.nodo_actual() if nodos.hay_nodo() else nodos.TODOS, safe=""),
+           esc(ip_de(k)), esc(nodos.nombre(rid_de(k))))
         for k in claves)
     cuerpo = ("<p class=sub2>La IP <b>" + esc(ip) + "</b> está en " + str(len(claves))
               + " nodos y en cada uno es un abonado distinto. Elige cuál quieres ver:</p><ul>" + filas + "</ul>")
@@ -17883,6 +18122,11 @@ def ficha_page(ip, embed=False):
             elif _cl:
                 return _ficha_elegir_nodo(ip, _cl, embed)
     _pid = rid_de(ip)
+    if nodos.limitado():
+        # un usuario limitado solo ve las fichas de SUS puntos (2026-10-22): un pid ajeno, mal
+        # escrito o ninguno es 404/400 como un punto que no existe, antes de leer nada (ni el
+        # registro global de enviados ni el abonado, que no van por punto)
+        nodos.exigir_pid(_pid)
     try:
         _dir = nodos.dir_salida(nodos.exigir_pid(_pid) if _pid else None)
     except (nodos.NodoInvalido, nodos.NodoInexistente):
@@ -18419,7 +18663,9 @@ def cuarentena_page(msg="", es_admin=False):
             return "a mano (%s)" % por if por and por != "?" else "a mano"
         for cat, nom, lst, n in listas_en_uso():
             total += n
-            miembros = [e for e in dentro.get(lst, []) if not e.get("router") or e["router"] in _vis]
+            # sin router (registro viejo) no se sabe de que punto es: un usuario limitado no lo ve
+            miembros = [e for e in dentro.get(lst, [])
+                        if (e["router"] in _vis if e.get("router") else not nodos.limitado())]
             if miembros:
                 items = ""
                 for e in miembros[:200]:
@@ -18487,6 +18733,8 @@ def cuarentena_page(msg="", es_admin=False):
     # Solo IPs PUBLICAS: una privada aqui seria de tu propia red y bloquearla como destino
     # dejaria a tus abonados sin verse entre si.
     _dst = destinos_malos()
+    # donde se bloquea: en todos los nodos o, para un usuario limitado, solo en los suyos
+    _dst_donde = "en el MikroTik de tus puntos" if nodos.limitado() else "en TODOS los nodos"
     if _dst:
         _pend = [x for x in _dst if not x["enviado"]]
         _ya = [x for x in _dst if x["enviado"]]
@@ -18502,7 +18750,7 @@ def cuarentena_page(msg="", es_admin=False):
                            f"<input type=hidden name=ip value='{esc(x['ip'])}'>"
                            f"<button class='qbtn send' onclick=\"return ask(this,"
                            f"'Bloquear el destino','Se corta la salida hacia {esc(x['ip'])} "
-                           f"en TODOS los nodos, para todos los abonados a la vez.',"
+                           f"{_dst_donde}, para todos los abonados a la vez.',"
                            f"'Bloquear','danger')\">Bloquear</button></form>")
             elif not activo:
                 acc = "<span class=dry>solo sugerencia</span>"
@@ -18625,7 +18873,9 @@ def cuarentena_page(msg="", es_admin=False):
     else:
         sec_manual = ""
     # --- Excluir destino (falso positivo): un DNS u otro destino que dispara alertas en muchos CPEs ---
-    if es_admin:   # es_admin aqui = operador o admin (pueden operar la cuarentena)
+    # es_admin aqui = operador o admin (pueden operar la cuarentena). La lista de destinos de
+    # confianza es de toda la instalacion: un usuario limitado ni la ve ni la toca (2026-10-22)
+    if es_admin and not nodos.limitado():
         dests_ok = sorted(_dest_ok_set())
         chips = ("".join(
             f"<span class=destchip><span class=mono>{esc(dp)}</span>"
@@ -18944,7 +19194,8 @@ def _enviar_confirmados(nodo_form, tipo):
         if not mk_listo(dr):
             partes.append("%s: nada (MikroTik sin habilitar)" % nom)    # ese nodo esta en dry-run
             continue
-        cq_pid = [_cargar_cuarentena(pid), _cargar_cuarentena(nodos.TODOS)]
+        # el de «Todos» no lo abre un usuario limitado (mezcla los puntos de todos)
+        cq_pid = [_cargar_cuarentena(pid)] + ([] if nodos.limitado() else [_cargar_cuarentena(nodos.TODOS)])
         ok_n = err_n = 0; ult_err = ""
         nuevas = {}
         corte = ""
@@ -19253,15 +19504,29 @@ class H(BaseHTTPRequestHandler):
     def _operador(self):
         # puede gestionar cuarentenas/incidentes: admin u operador, con sesion.
         return self._sesion_ok() and self._rol() in ("admin", "operador")
+    def _sin_limite(self):
+        # usuario SIN limite de puntos (admin, o sin lista `puntos`), con sesion. Lo global (la
+        # lista de destinos de confianza, denunciar a AbuseIPDB...) no es de quien solo ve unos
+        # puntos (2026-10-22). El alcance lo pone _set_ctx antes de atender la ruta.
+        return self._sesion_ok() and not nodos.limitado()
     def _set_ctx(self):
         s = self._sesion()
         CTX.user = s.get("user"); CTX.role = s.get("role"); CTX.ip = self._client_ip()
         CTX.peer = self._peer_ip()
         CTX.exp = s.get("exp")   # el menu del usuario dice cuanto le queda a la sesion
+        # Alcance (2026-10-22): los puntos que ve el usuario (None = todos); sin sesion, ninguno.
+        # Desde aqui, para un usuario limitado un punto ajeno no existe (nodos.py).
+        nodos.poner_alcance(s.get("puntos") if s else [])
+        if nodos.limitado() and not nodos.pids():
+            self._html(_pagina_error("Sin puntos asignados", "Tu usuario todavía no tiene ningún punto "
+                                     "asignado. Pídele a un administrador que te asigne los tuyos."), 403)
+            return False
         # El nodo que se MIRA (CONTRATO-F2 §10.1): ?nodo= de la URL (y se recuerda en la
-        # sesion); sin parametro, el de la sesion; si no, la vista «Todos». Un nodo mal
-        # formado es 400 y uno que no existe 404 (NodoInvalido/NodoInexistente, que _seguro
+        # sesion); sin parametro, el de la sesion; si no, la vista «Todos» (para un usuario
+        # limitado, su primer punto: «Todos» mezcla los de todos). Un nodo mal formado es 400 y
+        # uno que no existe (o es de otro) 404 (NodoInvalido/NodoInexistente, que _seguro
         # convierte): NUNCA se amplia a «Todos». El destino de una ACCION no sale de aqui.
+        defecto = nodos.pids()[0] if nodos.limitado() else nodos.TODOS
         q = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query, keep_blank_values=True)
         if "nodo" in q:
             nodo = nodos.poner_nodo(q["nodo"][0])
@@ -19273,9 +19538,9 @@ class H(BaseHTTPRequestHandler):
         else:
             guardado = s.get("nodo") if s else None
             try:
-                nodos.poner_nodo(guardado if guardado else nodos.TODOS)
+                nodos.poner_nodo(guardado if guardado else defecto)
             except (nodos.NodoInvalido, nodos.NodoInexistente):
-                nodos.poner_nodo(nodos.TODOS)      # el punto de la sesion se dio de baja
+                nodos.poner_nodo(defecto)          # el punto de la sesion se dio de baja (o ya no es suyo)
         CTX.nodo = nodos.nodo_actual()
     def _auth_ok(self):
         # Solo sesion (cookie del formulario). Sin usuarios NO se entra: no hay modo sin
@@ -19336,6 +19601,7 @@ class H(BaseHTTPRequestHandler):
         for k in ("user", "role", "ip", "peer", "exp", "nodo", "form"):
             setattr(CTX, k, None)
         nodos.quitar_nodo()
+        nodos.quitar_alcance()
         self.__dict__.pop("_ses_cache", None)
 
     def _seguro(self, fn):
@@ -19363,7 +19629,7 @@ class H(BaseHTTPRequestHandler):
                 tit, txt, code = "Punto inexistente", "Ese punto no existe (o se dio de baja).", 404
             try:
                 self._html("<!doctype html><meta charset=utf-8><title>%s</title><h1>%s</h1><p>%s</p>"
-                           "<p><a href='/?nodo=_todos'>Volver a todos los nodos</a></p>" % (tit, tit, txt), code)
+                           "<p><a href='/'>Volver al inicio</a></p>" % (tit, tit, txt), code)
             except Exception:
                 self.close_connection = True
         except Exception:
@@ -19554,7 +19820,7 @@ class H(BaseHTTPRequestHandler):
         if not self._ctx_nodo():
             return                  # nodo mal escrito (400) o inexistente (404): ya respondido
         if path == "/puntos" or path.startswith(("/puntos/", "/operaciones/")):
-            # apartado Puntos: solo admin, comprobado dentro (403)
+            # apartado Puntos: admin y operador (la ficha de sus puntos), comprobado dentro (403)
             _cq = {k: v[0] for k, v in _up.parse_qs(self.path.split("?", 1)[1]).items()} if "?" in self.path else {}
             if puntos_web.get(self, path, _cq):
                 return
@@ -19839,8 +20105,10 @@ class H(BaseHTTPRequestHandler):
                 return self._prohibido()
             _qf = _up.parse_qs(self.path.split("?", 1)[1]) if "?" in self.path else {}
             _ip = (_qf.get("ip", [""])[0]).strip()
-            if not aidb_ip_valida(_ip):
+            if not aidb_ip_valida(_ip)[0]:    # devuelve (ok, motivo): la tupla sola siempre es cierta
                 return self._html("<p class=hint>Dirección no válida.</p>")
+            if not aidb_al_alcance(_ip):      # un usuario limitado: solo las publicas de sus puntos
+                return self._html("<p class=hint>No se consultó: %s.</p>" % html.escape(AIDB_FUERA_ALCANCE))
             _d, _org, _err = aidb_consultar(_ip)
             if not _d:
                 return self._html("<p class=hint>No se pudo consultar: %s</p>"
@@ -19944,7 +20212,8 @@ class H(BaseHTTPRequestHandler):
         if not self._ctx_nodo():
             return                  # nodo mal escrito (400) o inexistente (404): ya respondido
         if ruta.startswith("/puntos/"):
-            # apartado Puntos: solo admin, comprobado dentro (403); el pid sale de la ruta
+            # apartado Puntos: admin y operador (la ficha de sus puntos), comprobado dentro (403);
+            # el pid sale de la ruta
             if puntos_web.post(self, ruta, {k: v[0] for k, v in q.items()}):
                 return
         if ruta == "/update-reglas":
@@ -20316,6 +20585,20 @@ class H(BaseHTTPRequestHandler):
         if ruta == "/reputacion/denunciar":
             if not self._operador():
                 return self._prohibido()
+            if not self._sin_limite():
+                # denunciar es publico, a nombre de la empresa y gasta su cuota: no es de quien
+                # solo ve unos puntos (2026-10-22). Texto plano: lo lee el boton del reporte
+                try:
+                    bitacora("SIN-PERMISO", "POST /reputacion/denunciar (usuario con puntos asignados)")
+                except Exception:
+                    pass
+                b = ("ERR: denunciar a AbuseIPDB es de un administrador o de un usuario que ve todos "
+                     "los puntos").encode("utf-8")
+                self.send_response(403)
+                self.send_header("Content-Type", "text/plain; charset=utf-8")
+                self.send_header("Content-Length", str(len(b)))
+                self.end_headers(); self.wfile.write(b)
+                return
             ip = (q.get("ip", [""])[0]).strip()
             okd, det = aidb_denunciar(ip, firma=q.get("firma", [""])[0],
                                       dport=q.get("dport", [""])[0],
@@ -20766,9 +21049,12 @@ class H(BaseHTTPRequestHandler):
             # Operacion MULTIPUNTO declarada: el destino es malo para todos los abonados, asi
             # que va a cada punto, con resultado POR PUNTO y registro por punto (auditoria
             # A-07): la marca de un punto solo se quita si SU router lo confirma, y un punto
-            # que falla no se da por hecho.
+            # que falla no se da por hecho. Un usuario limitado (2026-10-22): solo en los routers
+            # de SUS puntos (cargar_routers ya sale con su alcance; aqui se dice expresamente).
             hechos, errores = [], []
             for r in cargar_routers():
+                if not nodos.puede_ver(r.get("id", "")):
+                    continue
                 d = cargar_mk_de(r)
                 if not mk_listo(d):
                     continue
@@ -21044,12 +21330,14 @@ class H(BaseHTTPRequestHandler):
                 resumen += f". Quedan {sobran} sin procesar (tope de {TOPE} por petición): repite la operación."
             return self._redirect(cuar_aviso_url(resumen + corte))
         if ruta == "/cuarentena/excluir-destino":
-            if not self._operador():
+            # la lista de destinos de confianza es de TODA la instalacion (y libera CPEs de todos
+            # los puntos): un usuario limitado no la toca (2026-10-22)
+            if not self._operador() or not self._sin_limite():
                 return self._prohibido()
             n, msg = excluir_destino((q.get("destino", [""])[0]).strip())
             return self._redirect(cuar_aviso_url(msg))
         if ruta == "/cuarentena/quitar-destino":
-            if not self._operador():
+            if not self._operador() or not self._sin_limite():
                 return self._prohibido()
             d = (q.get("destino", [""])[0]).strip()
             modificar_dest_ok(quitar=d)
@@ -21080,13 +21368,14 @@ class H(BaseHTTPRequestHandler):
                 ip = ip_de(clave); score = (q.get("score", [""])[0]).strip()[:8]
                 try: ipaddress.ip_address(ip)
                 except Exception: return self._redirect(cuar_aviso_url("IP inválida"))
+                # el destino primero, como en las demas: un punto ajeno no llega a mirar nada mas
+                if not _destino_ok(clave):
+                    return self._redirect(cuar_aviso_url("destino no válido: hace falta el nodo de la IP (nodo|IP) y que ese punto exista"))
                 if not es_mi_cpe(ip):
                     return self._redirect(cuar_aviso_url(
                         f"{ip} no es de tus redes: se corta en el borde, no en la cuarentena de CPEs"))
                 if nunca_bloquear(clave):
                     return self._redirect(cuar_aviso_url(f"{ip} está en la lista 'Nunca bloquear'"))
-                if not _destino_ok(clave):
-                    return self._redirect(cuar_aviso_url("destino no válido: hace falta el nodo de la IP (nodo|IP) y que ese punto exista"))
                 rt = _router_de_pid(rid_de(clave)); dr = cargar_mk_de(rt)
                 if not mk_listo(dr):
                     return self._redirect(cuar_aviso_url("Ese MikroTik no está habilitado para enviar"))
@@ -21225,18 +21514,29 @@ class H(BaseHTTPRequestHandler):
                 return self._html(perfil_page(f"La clave del usuario debe tener al menos {CLAVE_MIN} caracteres.", ok=False))
             if foto and (not foto.startswith("data:image/") or len(foto) > 300_000):
                 return self._html(perfil_page("La foto no es una imagen válida o pesa demasiado.", ok=False))
+            # «Puntos que ve» (2026-10-22): `todos` (o rol admin) = sin clave `puntos`; `solo` = los
+            # marcados que existen (ninguno = no ve ninguno). Sin el campo (formulario de antes): todos
+            pmodo = (q.get("puntos_modo", [""])[0] or "").strip()
+            if pmodo not in ("", "todos", "solo"):
+                return self._html(perfil_page("Puntos que ve: opción no válida.", ok=False))
             us = cargar_usuarios()
             if any(r.get("user") == nu for r in us):
                 return self._html(perfil_page(f"Ya existe un usuario llamado {nu}.", ok=False))
             salt, h = _hash_pw(npw)
-            us.append({"user": nu, "salt": salt, "hash": h, "role": nrole,
-                       "nombre": nombre, "correo": correo, "activo": True, "avatar": foto})
+            nuevo = {"user": nu, "salt": salt, "hash": h, "role": nrole,
+                     "nombre": nombre, "correo": correo, "activo": True, "avatar": foto}
+            if pmodo == "solo" and nrole != "admin":
+                nuevo["puntos"] = puntos_marcados(q.get("puntos", []))
+            us.append(nuevo)
             try:
                 guardar_usuarios(us)
             except OSError as ex:
                 return self._html(perfil_page(f"No se pudo guardar: {ex}", ok=False))
-            bitacora("USUARIO-CREADO", f"{nu} rol={nrole}")
-            return self._html(perfil_page(f"Usuario '{nu}' creado como {nrole}.", ok=True))
+            bitacora("USUARIO-CREADO", f"{nu} rol={nrole}"
+                     + (" puntos=%s" % (",".join(nuevo["puntos"]) or "ninguno") if "puntos" in nuevo else ""))
+            return self._html(perfil_page(f"Usuario '{nu}' creado como {nrole}."
+                                          + (" No ve ningún punto hasta que le asignes uno."
+                                             if nuevo.get("puntos") == [] else ""), ok=True))
         if accion == "del_user":
             objetivo = q.get("user", [""])[0]
             us = cargar_usuarios()
@@ -21273,6 +21573,8 @@ class H(BaseHTTPRequestHandler):
             if obj.get("role") == "admin" and nrole != "admin" and len(admins) <= 1:
                 return self._html(perfil_page("No puedes quitar el rol al único administrador.", ok=False))
             obj["role"] = nrole
+            if nrole == "admin":
+                obj.pop("puntos", None)      # el administrador ve siempre todos los puntos
             try:
                 guardar_usuarios(us)
             except OSError as ex:
@@ -21296,6 +21598,9 @@ class H(BaseHTTPRequestHandler):
             npw = q.get("npass", [""])[0]
             if nrole not in ROLES:
                 return self._html(perfil_page("Rol inválido.", ok=False))
+            pmodo = (q.get("puntos_modo", [""])[0] or "").strip()    # «Puntos que ve», como en add_user
+            if pmodo not in ("", "todos", "solo"):
+                return self._html(perfil_page("Puntos que ve: opción no válida.", ok=False))
             us = cargar_usuarios()
             admins = [r for r in us if r.get("role") == "admin"]
             obj = next((r for r in us if r.get("user") == objetivo), None)
@@ -21315,18 +21620,30 @@ class H(BaseHTTPRequestHandler):
                     return self._html(perfil_page("La foto no es una imagen válida o pesa demasiado.", ok=False))
                 obj["avatar"] = foto
             obj["nombre"] = nombre; obj["correo"] = correo; obj["role"] = nrole
+            # `todos` o rol admin: se borra la lista (ve todos); `solo`: los marcados que existen
+            # (ninguno = no ve ninguno). Sin el campo (formulario de antes) no se toca lo que tenia.
+            # Vale en su siguiente peticion: sesion_de relee el usuario, no hace falta echarle
+            if nrole == "admin" or pmodo == "todos":
+                obj.pop("puntos", None)
+            elif pmodo == "solo":
+                obj["puntos"] = puntos_marcados(q.get("puntos", []))
             try:
                 guardar_usuarios(us)
             except OSError as ex:
                 return self._html(perfil_page(f"No se pudo guardar: {ex}", ok=False))
-            bitacora("USUARIO-EDITADO", f"{objetivo} rol={nrole}" + (" clave=cambiada" if npw else ""))
+            _pl = obj.get("puntos")         # una lista mal formada no ve ninguno (puntos_de_usuario)
+            _ptxt = ("todos" if _pl is None else
+                     (",".join(str(x) for x in _pl) or "ninguno") if isinstance(_pl, list) else "ninguno")
+            bitacora("USUARIO-EDITADO", f"{objetivo} rol={nrole}" + (" clave=cambiada" if npw else "")
+                     + " puntos=" + _ptxt)
             if npw and objetivo == yo:
                 sesion_renovar(self._sid())   # el admin que cambia su propia clave sigue dentro
+            _sin_pts = " No ve ningún punto hasta que le asignes uno." if _ptxt == "ninguno" else ""
             if npw:
                 return self._html(perfil_page(
                     f"Usuario '{objetivo}' actualizado. La clave nueva ya vale: se entra con el "
-                    f"usuario '{objetivo}' (el nombre a mostrar no sirve para entrar).", ok=True))
-            return self._html(perfil_page(f"Usuario '{objetivo}' actualizado.", ok=True))
+                    f"usuario '{objetivo}' (el nombre a mostrar no sirve para entrar).{_sin_pts}", ok=True))
+            return self._html(perfil_page(f"Usuario '{objetivo}' actualizado.{_sin_pts}", ok=True))
         if accion == "toggle_user":
             objetivo = q.get("user", [""])[0]
             us = cargar_usuarios()

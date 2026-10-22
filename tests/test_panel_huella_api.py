@@ -639,12 +639,14 @@ class FichaHuella(_Panel):
         self.assertEqual(r.status, 200, r.texto[:300])
         self.assertEqual(self.guardados()["p001"]["TLS"], "1")
 
-    def test_solo_admin(self):
-        olga = self.p.entrar("olga")
+    def test_lectura_no(self):
+        """Lectura no confirma ni lee la huella. Desde 2026-10-22 el operador sí, en sus puntos
+        (tests/test_panel_alcance.py)."""
+        luis = self.p.entrar("luis")
         r = self.p.pedir("POST", "/puntos/p001/api", {"accion": "confirmar_huella", "huella": self.presenta,
-                                                       "ajax": "1"}, cookie=olga)
+                                                       "ajax": "1"}, cookie=luis)
         self.assertEqual(r.status, 403)
-        self.assertEqual(self.p.pedir("GET", "/puntos/p001/huella", cookie=olga).status, 403)
+        self.assertEqual(self.p.pedir("GET", "/puntos/p001/huella", cookie=luis).status, 403)
         self.assertFalse(self.guardados().get("p001", {}).get("CERT_FP"))
 
     def test_probar_con_huella_distinta_dice_por_que_y_no_manda_la_clave(self):

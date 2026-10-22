@@ -170,11 +170,14 @@ class Avance(_Base):
             self.assertNotIn("CLAVE-VPN-UNICA-7Q2", fh.read())
 
     def test_json_de_otro_usuario_o_inexistente(self):
-        """Conservación: el avance solo lo ve quien pidió la operación."""
+        """Conservación: el avance solo lo ve quien pidió la operación. Desde 2026-10-22 el operador
+        entra en Puntos: la de otro usuario le da 404 (no existe para él); lectura sigue con 403."""
         tok = self.token(self.ficha(), "reiniciar")
         self.p.pedir("POST", "/puntos/p001/reiniciar", {"op": tok}, cookie=self.ana)
         olga = self.p.entrar("olga")
-        self.assertEqual(self.p.pedir("GET", "/operaciones/%s?json=1" % tok, cookie=olga).status, 403)
+        self.assertEqual(self.p.pedir("GET", "/operaciones/%s?json=1" % tok, cookie=olga).status, 404)
+        luis = self.p.entrar("luis")
+        self.assertEqual(self.p.pedir("GET", "/operaciones/%s?json=1" % tok, cookie=luis).status, 403)
         r = self.p.pedir("GET", "/operaciones/%s?json=1" % ("0" * 8 + "-0000-4000-8000-" + "0" * 12), cookie=self.ana)
         self.assertEqual(r.status, 404)
 

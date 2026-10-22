@@ -8,8 +8,16 @@ lo monta el operador a mano en el MikroTik (reglas sniff-tzsp): el panel ya no l
 
 Lo pinta el dashboard con su barra (`nav`) y sus modales (`ask`/`aviso`, nunca alert/confirm):
 este modulo no importa el dashboard (puede correr como __main__); usa el modulo del manejador
-que lo llama (`sys.modules[type(h).__module__]`). Todo es solo de admin y se comprueba aqui, en
-el servidor, en cada ruta (GET y POST).
+que lo llama (`sys.modules[type(h).__module__]`). Los permisos se comprueban aqui, en el
+servidor, en cada ruta (GET y POST), no solo escondiendo botones (el dueño, 2026-10-22,
+«multi-usuario por punto»):
+  - admin: todo.
+  - operador: la lista y la ficha de SUS puntos (el alcance que pone el nucleo en cada peticion
+    deja fuera los ajenos: 404, igual que un punto que no existe), sus logs y su huella, la API
+    del MikroTik, los prefijos, la VPN (comandos con su clave y regenerarla), arrancar, parar y
+    reiniciar, y sus operaciones. NO: crear ni borrar puntos, ni desbanear (fail2ban es global:
+    la VPN de todos los puntos y el panel): 403.
+  - lectura: nada de Puntos ni de Operaciones (403).
 
 Reutiliza la logica del panel F1b-min (idspanel/app.py y vistas.py: validar_formulario_punto,
 vista_op, la tabla y la ficha) y sus clientes idspanel/orq.py y operaciones.py.
@@ -22,7 +30,8 @@ Rutas (h = manejador H del dashboard; consulta/form = dict con un valor por camp
   GET  /operaciones/<op_id>             avance; al terminar, usuario y clave VPN UNA sola vez
   GET  /operaciones/<op_id>?json=1      el mismo avance en JSON (la pagina y la ficha lo consultan
                                         sin recargar; al terminar trae el cuerpo del resultado)
-  GET  /puntos/<pid>                    ficha (Resumen, VPN, API, Prefijos, Logs, Baja)
+  GET  /puntos/<pid>                    ficha (Resumen, VPN, API, Prefijos, Logs, Baja; la Baja y el
+                                        desbaneo, solo con admin)
   GET  /puntos/<pid>/logs?parte=vpn|suricata
   GET  /puntos/<pid>/huella             huella que presenta el certificado API-SSL del router y la caja
                                         de la ficha que la confirma (JSON, cache 10 min; VPN-06)
@@ -164,6 +173,22 @@ def _bit(d, accion, pid="", objetivo="", resultado="", extra="", quien=None, ip=
             d.bitacora(accion, det[:400], quien=quien, ip=ip)
     except Exception:
         pass
+
+
+# Roles (el dueño, 2026-10-22): el operador gestiona la ficha de los puntos que ve; crear, borrar y
+# desbanear siguen siendo del administrador (ver el reparto arriba, en la cabecera del modulo)
+SOLO_ADMIN = ("borrar", "desbanear")
+
+
+def _es_admin(h):
+    return bool(h._admin())
+
+
+def _gestiona(h):
+    """Admin u operador: los que entran en Puntos. El operador, solo en sus puntos: el alcance de la
+    peticion lo pone el nucleo (nodos.poner_alcance) y un punto ajeno no existe para el."""
+    f = getattr(h, "_operador", None)
+    return bool(f() if callable(f) else h._admin())
 
 
 # El alta solo pide el nombre (el user, 2026-10-15: «los prefijos no van, solo es nombre del punto»).
@@ -544,6 +569,10 @@ def cobertura_prefijos(pid, punto=None, ahora=None):
     "fuera": [(red /24, veces)] de mas a menos, "sugeridas": [red /24]} (las /24 de fuera que
     pasan de COB_SUGERIR_PCT, como mucho COB_MAX_SUGERIDAS). Cache de COB_CACHE_S por punto."""
     ahora = ahora or time.time()
+    if not nodos.puede_ver(pid):
+        # un punto fuera del alcance de la peticion: ni la cache (la llenan otros usuarios y el
+        # fondo) ni una muestra vacia que la envenene para ellos
+        return None
     c = _COB.get(pid)
     if c and 0 <= ahora - c[0] < COB_CACHE_S:
         return c[1]
@@ -605,7 +634,7 @@ def fuera_de_prefijos(cob):
 
 def cobertura_html(cob):
     """Aviso de la ficha: que redes llegan por el espejo sin estar en los prefijos, y un boton que
-    las añade al cuadro de Prefijos (no guarda: el admin revisa y pulsa «Guardar prefijos»)."""
+    las añade al cuadro de Prefijos (no guarda: quien mira la ficha revisa y pulsa «Guardar prefijos»)."""
     if not fuera_de_prefijos(cob):
         return ""
     total = cob["muestra"]
@@ -655,8 +684,8 @@ def espejo_pps(pid):
     """Paquetes de espejo por segundo aceptados en la ultima ventana del receptor TZSP."""
     try:
         d = _leer_json_pequeno(nodos.tzsp_json(pid), TOPE_TZSP_BYTES)
-    except (OSError, ValueError, RecursionError, nodos.NodoInvalido):
-        return None, None
+    except (OSError, ValueError, RecursionError, nodos.NodoInvalido, nodos.NodoInexistente):
+        return None, None        # NodoInexistente: un punto fuera del alcance de la peticion
     if not isinstance(d, dict):
         return None, None
     v = d.get("ventana") if isinstance(d.get("ventana"), dict) else {}
@@ -1012,9 +1041,14 @@ def pagina(d, titulo, cuerpo, refresco=0, refresco_sin_js=0):
 
 
 def _prohibido(h):
+    """403 por rol. El del nucleo (H._prohibido) deja ademas la linea SIN-PERMISO en la bitacora;
+    sin el (dobles de las pruebas viejas), la misma respuesta aqui."""
+    f = getattr(h, "_prohibido", None)
+    if callable(f):
+        return f()
     d = _dash(h)
-    return h._html(pagina(d, "Sin permiso", "<h1>Sin permiso</h1><p>Esta parte del panel es solo "
-                          "para administradores.</p>"), 403)
+    return h._html(pagina(d, "Sin permiso", "<h1>Sin permiso</h1><p>Tu rol no permite esta parte del "
+                          "panel. Si la necesitas, pídesela a un administrador.</p>"), 403)
 
 
 def _bloque(ide, titulo, texto):
@@ -1113,8 +1147,9 @@ def pill_vpn(p):
             % ("amb" if s["clave"] == "esperando" else "gris", esc(s["motivo"]), esc(s["texto"])))
 
 
-def _kpis(total, operativos, vpn, alertas):
-    """Franja de cuatro indicadores sobre la lista (Tailwind compilado, prefijo tw-)."""
+def _kpis(total, operativos, vpn, alertas, de_quien="todos los puntos"):
+    """Franja de cuatro indicadores sobre la lista (Tailwind compilado, prefijo tw-). `de_quien`:
+    de que puntos son las alertas (un usuario limitado solo suma los suyos)."""
     def k(titulo, valor, sub, tono):
         return ("<div class='tw-rounded-md tw-border tw-border-line tw-bg-surface tw-p-4 tw-shadow-1'>"
                 "<div class='tw-text-xs tw-font-semibold tw-uppercase tw-tracking-wide tw-text-ink-2'>%s</div>"
@@ -1127,13 +1162,20 @@ def _kpis(total, operativos, vpn, alertas):
             + k("Operativos", "%s / %s" % (_num(operativos), _num(total)), "salud por etapas", sano)
             + k("MikroTik conectados", "%s / %s" % (_num(vpn), _num(total)), "por VPN o directo",
                 "tw-text-ok" if total and vpn == total else "tw-text-warn")
-            + k("Alertas 24 h", _num(alertas), "todos los puntos", "tw-text-ink")
+            + k("Alertas 24 h", _num(alertas), de_quien, "tw-text-ink")
             + "</div>")
 
 
 def lista(h, consulta):
     d = _dash(h)
-    barrer_bajas(d)              # limpieza de bajas sin depender de quien las pidio (A-09)
+    admin = _es_admin(h)
+    limitado = nodos.limitado()
+    if admin:
+        # limpieza de bajas sin depender de quien las pidio (A-09). La de la peticion de un operador
+        # no limpia puntos que no son suyos: la hace igual el refrescador en cada vuelta
+        barrer_bajas(d)
+    # estado.json tal cual (lo global: cola y capacidad); los puntos salen de nodos.puntos(), que
+    # con un usuario limitado ya trae solo los suyos
     est = nodos.leer_estado() or {}
     ahora = time.time()
     filas = ""
@@ -1180,16 +1222,30 @@ def lista(h, consulta):
                + (("<div class=hint>hace %s</div>" % _edad(ahora - ultimo)) if ultimo else ""),
                esc(_contenedor(cont.get("suricata"))), descarte,
                celda_24,
-               retencion_html(retencion(pid, p), ahora), _acciones_fila(p)))
+               retencion_html(retencion(pid, p), ahora), _acciones_fila(p, admin)))
     if not filas:
         filas = ("<tr><td colspan=9 class=hint style='padding:16px'>Todavía no hay puntos. "
-                 "<a href='/puntos/nuevo' onclick='palta();return false;'>Agrega el primero</a>.</td></tr>")
+                 + ("<a href='/puntos/nuevo' onclick='palta();return false;'>Agrega el primero</a>."
+                    if admin else "Los da de alta un administrador.")
+                 + "</td></tr>")
     cola = est.get("cola") or {}
     en = cola.get("en_curso")
     linea_cola = ("en curso: %s %s (%s)" % (en.get("orden"), en.get("pid") or "", en.get("paso") or "")
                   if isinstance(en, dict) else "libre")
     cap = ((est.get("capacidad") or {}).get("caben")) or {}
     caben = ", ".join("%s %s" % (k, v) for k, v in cap.items()) if cap else "-"
+    sub_cola = ("Cola del orquestador: %s &middot; pendientes: %s &middot; caben más puntos: %s"
+                % (esc(linea_cola), esc(cola.get("pendientes", 0)), esc(caben)))
+    if limitado:
+        # la cola es de todos los puntos: un usuario limitado solo ve la orden en curso si es de uno
+        # de los suyos (ni las de otros ni cuantas hay pendientes); la capacidad es para el alta
+        sub_cola = (("Cola del orquestador: %s" % esc(linea_cola))
+                    if isinstance(en, dict) and nodos.pid_valido(en.get("pid")) and nodos.puede_ver(en["pid"])
+                    else "")
+    elif not admin:
+        # sin «caben más puntos»: el alta es del administrador
+        sub_cola = ("Cola del orquestador: %s &middot; pendientes: %s"
+                    % (esc(linea_cola), esc(cola.get("pendientes", 0))))
     viejo = ""
     try:
         edad_est = int(ahora - float(est.get("ts", 0))) if est else None
@@ -1203,27 +1259,29 @@ def lista(h, consulta):
                       % _edad(edad_est), "amb")
     cuerpo = (
         "<div class=ptit><div><h1>Puntos</h1><p class=sub>Cada punto es un MikroTik con su propia VPN (o "
-        "directo por la red local) y su propio Suricata. Cola del orquestador: %s &middot; pendientes: %s &middot; caben más puntos: %s</p></div>"
-        "<div class=ptbtns><a class='btn sec' href='/ajustes'>Volver a Ajustes</a>"
-        "<a class=btn href='/puntos/nuevo' onclick='palta();return false;'>Agregar punto</a></div></div>%s%s"
+        "directo por la red local) y su propio Suricata.%s</p></div>"
+        "<div class=ptbtns><a class='btn sec' href='/ajustes'>Volver a Ajustes</a>%s</div></div>%s%s"
         "<div class='card tablewrap'><table><thead><tr><th>Punto</th><th>Estado</th><th>Salud por etapas</th>"
         "<th>Conexión</th><th>Espejo</th><th>Suricata</th><th class=num>Alertas 24 h</th>"
         "<th>Retención efectiva</th><th>Acciones</th></tr></thead><tbody>%s</tbody></table></div>"
         "<p class=hint>Retención: el objetivo es %d días de eventos por punto; la columna dice desde cuando "
         "hay datos de verdad (si el disco se llena, se borran antes los más viejos y aquí se ve). La "
         "captura es reducida: los primeros 10 KB de cada conexión de los prefijos elegidos.</p>"
-        % (esc(linea_cola), esc(cola.get("pendientes", 0)), esc(caben), viejo, _kpis(len(nodos.puntos()), n_ok, n_vpn, tot_24),
+        % ((" " + sub_cola) if sub_cola else "",
+           "<a class=btn href='/puntos/nuevo' onclick='palta();return false;'>Agregar punto</a>" if admin else "",
+           viejo, _kpis(len(nodos.puntos()), n_ok, n_vpn, tot_24, "tus puntos" if limitado else "todos los puntos"),
            filas, RETENCION_OBJETIVO_DIAS))
     # sin <meta refresh>: recargaria la pagina con el modal de Eliminar a medio escribir. Se recarga
-    # cada 30 s solo si no hay ningun modal abierto.
-    return h._html(pagina(d, "Puntos", cuerpo + _MODAL_BAJA + modal_alta(cap) + _RECARGA_LISTA
-                          + _retomar_lista_html(d)))
+    # cada 30 s solo si no hay ningun modal abierto. El alta y la baja (y sus modales), solo con admin.
+    return h._html(pagina(d, "Puntos", cuerpo + (_MODAL_BAJA + modal_alta(cap) if admin else "")
+                          + _RECARGA_LISTA + _retomar_lista_html(d)))
 
 
-def _acciones_fila(p):
+def _acciones_fila(p, admin=True):
     """Iniciar o Detener (segun como este el punto) y Eliminar, en la propia lista. Iniciar/Detener
     son las ordenes de la ficha (punto.arrancar / punto.parar, con su token y el modal de confirmar);
-    Eliminar abre el modal de baja con lo mismo que la ficha: escribir el nombre y limpiar el MikroTik."""
+    Eliminar abre el modal de baja con lo mismo que la ficha: escribir el nombre y limpiar el MikroTik.
+    Eliminar, solo con `admin` (el operador arranca y para sus puntos, no los borra)."""
     pid, nombre = p["pid"], p.get("nombre") or p["pid"]
     parado = p.get("deseado") == "parado" or p.get("estado") == "parado"
     # textos fijos: el nombre no entra en el JavaScript del onsubmit
@@ -1231,13 +1289,12 @@ def _acciones_fila(p):
                            if parado else
                            ("parar", "Detener", "Para la VPN y el Suricata del punto: deja de vigilarse hasta "
                                                 "que lo inicies.", ",'danger'"))
+    eliminar = ("<button class='btn peligro chico' type=button data-pid='%s' data-nombre='%s' data-op='%s' "
+                "onclick='pbaja(this)'>Eliminar</button>" % (esc(pid), esc(nombre), uuid.uuid4())) if admin else ""
     return ("<div class=pacc>"
             "<form method=post action='/puntos/%s/%s' onsubmit=\"return ask(this,'%s','%s','%s'%s)\">%s"
-            "<button class='btn sec chico' type=submit>%s</button></form>"
-            "<button class='btn peligro chico' type=button data-pid='%s' data-nombre='%s' data-op='%s' "
-            "onclick='pbaja(this)'>Eliminar</button></div>"
-            % (esc(pid), acc, tit, txt, tit, tono, campo_token(), tit,
-               esc(pid), esc(nombre), uuid.uuid4()))
+            "<button class='btn sec chico' type=submit>%s</button></form>%s</div>"
+            % (esc(pid), acc, tit, txt, tit, tono, campo_token(), tit, eliminar))
 
 
 _MODAL_BAJA = (
@@ -1282,6 +1339,8 @@ def _retomar_lista_html(d):
     for op_id, rec in sorted(ops().listar().items(), key=lambda kv: kv[1].get("creada") or 0):
         if rec.get("usuario") != usuario or rec.get("orden") != "panel.baja":
             continue
+        if not (nodos.pid_valido(rec.get("pid")) and nodos.puede_ver(rec["pid"])):
+            continue                     # de un punto que ya no ve (alcance): su operacion da 404
         if ahora - (rec.get("creada") or 0) > RETOMAR_S or (rec.get("terminada") and rec.get("vista")):
             continue
         ultima = {"id": op_id, "orden": "panel.baja"}
@@ -1807,9 +1866,18 @@ def _entrega_clave(orden, codigo, res):
 
 
 def vista_op(d, op_id, usuario):
-    """Modelo de la pagina de una operacion. None si no existe o no es de este usuario."""
+    """Modelo de la pagina de una operacion. None si no existe, no es de este usuario o es de un
+    punto que no ve (alcance, 2026-10-22)."""
     rec = ops().obtener(op_id)
     if rec is None or rec.get("usuario") != usuario:
+        return None
+    # Antes de preguntar nada al orquestador (op.estado entrega la clave de la VPN UNA vez): la
+    # operacion de un punto fuera del alcance no existe para el usuario (404, como la de otro). Un
+    # usuario limitado tampoco ve las que aun no llevan punto (un alta a medias): fallar cerrado.
+    pid_op = rec.get("pid")
+    if pid_op and not (nodos.pid_valido(pid_op) and nodos.puede_ver(pid_op)):
+        return None
+    if not pid_op and nodos.limitado():
         return None
     if es_panel(rec.get("orden")):
         return _vm_trabajo(op_id, rec)        # lo hace el panel: el orquestador no lo conoce
@@ -1932,8 +2000,10 @@ def _avance_html(vm):
 
 def pagina_op(h, op_id):
     d = _dash(h)
-    # la limpieza de las bajas no depende de quien abra la operacion (A-09)
-    barrer_bajas(d)
+    # la limpieza de las bajas no depende de quien abra la operacion (A-09); desde la peticion,
+    # solo con admin (la del operador la hace el refrescador, como en la lista)
+    if _es_admin(h):
+        barrer_bajas(d)
     vm = vista_op(d, op_id, _usuario(d))
     if vm is None:
         return _html_privado(h, pagina(d, "Operación", "<h1>Operación desconocida</h1><p>Esa operación no "
@@ -2084,7 +2154,8 @@ def json_op(h, op_id):
     para pintarlo sin recargar. Al terminar trae el cuerpo del resultado (`html`, el mismo de la
     pagina) y se apunta como vista (la ficha ya no lo vuelve a ensenar)."""
     d = _dash(h)
-    barrer_bajas(d)
+    if _es_admin(h):
+        barrer_bajas(d)
     vm = vista_op(d, op_id, _usuario(d))
     if vm is None:
         return _json_privado(h, {"error": "Esa operación no existe o no la pediste tú."}, 404)
@@ -2440,11 +2511,14 @@ def _quitar_restos(pid):
 
 def barrer_bajas(d, ahora=None, esperar=False):
     """Limpia del panel los puntos dados de baja (ver arriba). Devuelve los pids limpiados.
-    Si otro hilo esta barriendo, no espera (salvo `esperar`) y devuelve []."""
+    Si otro hilo esta barriendo, no espera (salvo `esperar`) y devuelve []. Corre sin el alcance
+    de la peticion, como el hilo de fondo: con el de un usuario limitado, cualquier nodos.pids() de
+    por medio (la purga del nucleo, guardar_routers) daria por muertos los puntos que no ve."""
     if not _BAJAS_LOCK.acquire(blocking=esperar):
         return []
     try:
-        return _barrer(d, time.time() if ahora is None else ahora)
+        with nodos.sin_alcance():
+            return _barrer(d, time.time() if ahora is None else ahora)
     except Exception:
         return []
     finally:
@@ -2579,6 +2653,9 @@ def _router(d, pid):
 
 def ficha(h, pid, mensaje="", codigo=200, ok=False, extra_espejo=""):
     d = _dash(h)
+    # la ficha la ven admin y operador (el operador, de sus puntos: get/post ya lo comprobaron);
+    # la baja y el desbaneo de fail2ban (global: la VPN de todos los puntos y el panel), solo admin
+    admin = _es_admin(h)
     p = nodos.punto(pid) or {}
     nombre = p.get("nombre") or pid
     ahora = time.time()
@@ -2601,8 +2678,8 @@ def ficha(h, pid, mensaje="", codigo=200, ok=False, extra_espejo=""):
     else:
         mk_txt = "sin conectar"
     # punto en error: el motivo, desde cuando y «Reintentar arranque» (encola punto.arrancar como el
-    # boton Arrancar de Servicio: mismo token de un solo uso y la misma pagina de operacion). Toda la
-    # ficha es solo de admin (get/post lo comprueban en el servidor).
+    # boton Arrancar de Servicio: mismo token de un solo uso y la misma pagina de operacion). Lo
+    # pueden admin y operador (get/post lo comprueban en el servidor).
     reintentar = (
         "<form method=post action='/puntos/%s/arrancar' onsubmit=\"return ask(this,'Reintentar arranque',"
         "'El orquestador vuelve a levantar la VPN y el Suricata del punto. Si falla otra vez, verás el "
@@ -2630,7 +2707,7 @@ def ficha(h, pid, mensaje="", codigo=200, ok=False, extra_espejo=""):
                                         p.get("mk_ip") or "?", p.get("api_puerto") or 8729))),)
              if directo else
              (("Puerto VPN / red del túnel", esc("%s/tcp · %s" % (p.get("puerto") or "-", p.get("tun_net") or "-"))),)
-             + ((("Origen de la VPN", origen_html(pid, p)),) if "origen_ip" in p else ())) + (
+             + ((("Origen de la VPN", origen_html(pid, p, admin)),) if "origen_ip" in p else ())) + (
             ("Perfil / RouterOS", esc("%s · %s" % (p.get("perfil") or "-", ros_txt(p.get("ros_version"))))),
             ("Prefijos espejados", "todas las redes privadas y el CGNAT" + (
                 " + " + esc(", ".join(p.get("redes") or [])) if p.get("redes") else "")),
@@ -2782,13 +2859,13 @@ def ficha(h, pid, mensaje="", codigo=200, ok=False, extra_espejo=""):
         "<label class=l>Para confirmar, escribe el nombre del punto: <b>%s</b></label>"
         "<input class=t name=confirmar autocomplete=off maxlength=31 oninput='pnombre(this)'>"
         "<div class=acciones><button class='btn peligro' type=submit disabled>Dar de baja</button></div></form>"
-        "</div>" % (esc(pid), esc(nombre), campo_token(), esc(nombre)))
+        "</div>" % (esc(pid), esc(nombre), campo_token(), esc(nombre))) if admin else ""
     cuerpo = (
         "<div class=ptit><h1>%s <span class=hint>%s</span></h1><a class='btn sec' href='/puntos'>Volver a "
         "Puntos</a></div>%s%s%s"
         "<nav class=secnav><a href='#resumen'>Resumen</a><a href='#vpn'>%s</a><a href='#api'>API</a>"
         "<a href='#prefijos'>Prefijos</a><a href='/puntos/%s/logs?parte=vpn'>Logs</a>"
-        "<a href='#baja'>Baja</a></nav>"
+        "%s</nav>"
         "<section class=card id=resumen><h2>Resumen</h2><div class=datos>%s</div>%s"
         "<h3 style='font-size:14px'>Salud por etapas</h3>%s</section>"
         "<section class=card><h2>Servicio</h2><div class=acciones>%s</div>%s</section>"
@@ -2796,14 +2873,15 @@ def ficha(h, pid, mensaje="", codigo=200, ok=False, extra_espejo=""):
         "<section class=card id=api><h2>API del MikroTik</h2>%s</section>"
         "%s"
         "<section class=card id=prefijos><h2>Prefijos adicionales</h2>%s</section>"
-        "<div id=baja>%s</div>%s"
+        "%s%s"
         % (esc(nombre), esc(pid), aviso(mensaje, "ok" if ok else "err"), caja_error,
            "" if p else aviso("El punto aún no aparece en el estado del orquestador (se actualiza cada 15 s).", "info"),
-           "Conexión" if directo else "VPN", esc(pid), datos, cobertura_html(cobertura_prefijos(pid, p, ahora)),
-           salud_etapas_html(sal), serv, desbanear_html(p, pid),
+           "Conexión" if directo else "VPN", esc(pid), "<a href='#baja'>Baja</a>" if admin else "",
+           datos, cobertura_html(cobertura_prefijos(pid, p, ahora)),
+           salud_etapas_html(sal), serv, desbanear_html(p, pid) if admin else "",
            "Conexión directa: datos para el MikroTik" if directo else "VPN: comandos para el MikroTik",
            vpn_html, api_html, extra_espejo,
-           pref_html, baja,
+           pref_html, ("<div id=baja>%s</div>" % baja) if admin else "",
            _retomar_html(d, pid)))
     # lleva la clave de la VPN: ni el navegador ni un proxy la guardan (como la pagina de la operacion)
     return _html_privado(h, pagina(d, nombre, cuerpo), codigo)
@@ -2855,7 +2933,8 @@ def _huella_form(pid, fp, boton, titulo, texto, tono=""):
 
 
 def huella_caja(d, pid, p, rt, presentada="", error="", pedir=False):
-    """El estado de la huella del certificado API-SSL del router en la ficha (solo admin, VPN-06).
+    """El estado de la huella del certificado API-SSL del router en la ficha (admin u operador del
+    punto, VPN-06).
     La API-SSL va sin certificado (2026-10-15) y la huella es opcional: sin fijar (el panel conecta
     sin exigir certificado; si el router presenta uno, su huella y «La huella coincide: confirmar»;
     sin certificado, que no hay huella que fijar), confirmada, fijada automaticamente (de antes: se
@@ -3040,7 +3119,7 @@ def accion_api(h, pid, form, ajax=False):
                     "estado del orquestador).", 409, False, "")
         if acc == "olvidar_huella":
             r.update({"CERT_FP": "", "CERT_FP_QUIEN": "", "CERT_FP_CUANDO": ""})
-            d.guardar_routers([r], huella=True)
+            _guardar_router(d, r, huella=True)
             _bit(d, "PUNTO-API", pid=pid, objetivo="huella", resultado="olvidada")
             return ("Huella olvidada: el panel conecta con este router sin exigir certificado.", 200, True, "")
         r["USER"] = user
@@ -3050,7 +3129,7 @@ def accion_api(h, pid, form, ajax=False):
         if nuevo_formulario:
             r["TLS"] = "1" if form.get("tls") else "0"
         try:
-            d.guardar_routers([r])               # solo este punto; la huella no se toca aqui
+            _guardar_router(d, r)                # solo este punto; la huella no se toca aqui
         except Exception as e:
             return "No se pudo guardar: %s" % str(e)[:160], 500, False, ""
         if acc != "probar":
@@ -3076,10 +3155,21 @@ def accion_api(h, pid, form, ajax=False):
     return _con_token(h, pid, "api-" + acc, form, hacer, validar, ajax=ajax)
 
 
+def _guardar_router(d, r, **kw):
+    """d.guardar_routers([r]) sin el alcance de la peticion. guardar_routers reescribe routers.json
+    con los puntos de nodos.pids() y quita lo de los demas: con el alcance de un operador limitado
+    puesto borraria la API (clave incluida) de los puntos que no ve y publicaria el mapa de routers
+    solo con los suyos. `r` es el router del punto de la peticion, ya validado contra su alcance.
+    No devuelve nada: guardar_routers devuelve los routers de TODOS los puntos (claves incluidas)."""
+    with nodos.sin_alcance():
+        d.guardar_routers([r], **kw)
+
+
 def confirmar_huella(d, pid, huella):
     """«La huella coincide: confirmar» / «Volver a confirmar» (VPN-06): se vuelve a leer la huella que
-    presenta el router (sin login) y solo se fija si sigue siendo la que el administrador comparo.
-    (mensaje, codigo, ok, extra). Queda en el Registro quien la confirmo y cual (sus 16 primeros)."""
+    presenta el router (sin login) y solo se fija si sigue siendo la que comparo quien la confirma
+    (admin u operador del punto). (mensaje, codigo, ok, extra). Queda en el Registro quien la
+    confirmo y cual (sus 16 primeros)."""
     leer = getattr(d, "mk_huella_presentada", None)
     if leer is None or getattr(d, "confirmar_huella", None) is None:
         return "Este panel no puede confirmar huellas (núcleo viejo).", 501, False, ""
@@ -3122,15 +3212,20 @@ def _ip_valida(v):
         return ""
 
 
-def origen_html(pid, p):
+def origen_html(pid, p, admin=True):
     """Origen de la VPN en la ficha (revisión 2026-10-15, C6). Con origen fijo la VPN solo acepta
     conexiones desde esa IP y nadie más ocupa sus plazas; sin él cualquiera puede abrir el puerto y
-    unas 10 IP llenarían las 32 plazas: se recomienda fijarlo, con la IP desde la que conecta."""
+    unas 10 IP llenarían las 32 plazas: se recomienda fijarlo, con la IP desde la que conecta. Se
+    fija en la consola del servidor: al operador (2026-10-22) no se le da la orden, sino a quién
+    pedírselo."""
     fijo = _ip_valida(p.get("origen_ip"))
     if fijo:
         return "solo desde <code>%s</code> (origen fijo)" % esc(fijo)
     vc = p.get("vpn_cliente") or {}
     ip = _ip_valida(vc.get("ip_real")) if vc.get("conectado") else ""
+    if not admin:
+        return ("cualquiera<div class=hint>Si el MikroTik sale siempre por la misma IP pública, pídele al "
+                "administrador que la fije: nadie más podrá ocupar las plazas de su VPN.</div>")
     orden = "ids-orq punto ajustar %s --origen-ip %s" % (pid, ip or "<IP pública del MikroTik>")
     return ("cualquiera<div class=hint>Si el MikroTik sale siempre por la misma IP pública, fíjala y nadie "
             "más podrá ocupar las plazas de su VPN: <code>%s</code></div>" % esc(orden))
@@ -3608,14 +3703,19 @@ def get(h, ruta, consulta):
     """Atiende un GET del apartado. True si la ruta es suya (ya respondio)."""
     if not (ruta == "/puntos" or ruta.startswith("/puntos/") or ruta.startswith("/operaciones/")):
         return False
-    if not h._admin():
+    # admin y operador (el operador, sus puntos: el alcance ya filtra nodos.puntos()/existe());
+    # lectura y sin sesion, nada (403)
+    if not _gestiona(h):
         _prohibido(h)
         return True
     if ruta == "/puntos":
         lista(h, consulta)
         return True
     if ruta == "/puntos/nuevo":
-        form_nuevo(h)
+        if not _es_admin(h):
+            _prohibido(h)            # crear puntos es del administrador
+        else:
+            form_nuevo(h)
         return True
     m = RE_RUTA_OP.match(ruta)
     if m:
@@ -3632,6 +3732,7 @@ def get(h, ruta, consulta):
         return True
     pid = m.group(1)
     if not nodos.existe(pid):
+        # con un usuario limitado, un punto ajeno tampoco existe: la misma respuesta (sin enumeracion)
         h._html(pagina(_dash(h), "Punto inexistente", "<h1>Punto inexistente</h1><p>No hay ningún punto %s "
                        "(quizá se dio de baja).</p>" % esc(pid)), 404)
         return True
@@ -3648,11 +3749,14 @@ def post(h, ruta, form):
     """Atiende un POST del apartado. True si la ruta es suya (ya respondio)."""
     if not ruta.startswith("/puntos/"):
         return False
-    if not h._admin():
+    if not _gestiona(h):
         _prohibido(h)
         return True
     if ruta == "/puntos/nuevo":
-        crear(h, form)
+        if not _es_admin(h):
+            _prohibido(h)            # crear puntos es del administrador
+        else:
+            crear(h, form)
         return True
     m = RE_RUTA_PID.match(ruta)
     acciones = ("borrar", "regenerar", "arrancar", "parar", "reiniciar", "ajustar", "api", "desbanear")
@@ -3660,7 +3764,13 @@ def post(h, ruta, form):
         h._html("<h1>No encontrado</h1>", 404)
         return True
     pid, acc = m.group(1), m.group(2)
+    if acc in SOLO_ADMIN and not _es_admin(h):
+        # borrar y desbanear (fail2ban es global): del administrador. Antes de mirar el pid: el mismo
+        # 403 para un punto suyo, uno ajeno o uno que no existe
+        _prohibido(h)
+        return True
     try:
+        # el pid de la ruta, contra el alcance: un punto ajeno es 404, como uno que no existe
         nodos.exigir_pid(pid)
     except (nodos.NodoInvalido, nodos.NodoInexistente):
         h._html(pagina(_dash(h), "Punto inexistente", "<h1>Punto inexistente</h1>"), 404)

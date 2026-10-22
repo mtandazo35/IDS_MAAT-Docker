@@ -87,12 +87,15 @@ class Permisos(unittest.TestCase):
         self.assertEqual(self.p.pedir("GET", "/cuarentena?nodo=p001", cookie=luis).status, 200)
 
     def test_operador_no_toca_puntos_ni_espejo(self):
-        """Correccion de defecto: Puntos y espejo son solo de admin, GET y POST (403)."""
+        """Correccion de defecto: alta, baja, espejo y MikroTik global son solo de admin (403). Desde
+        2026-10-22 el operador entra en la ficha de sus puntos (tests/test_panel_alcance.py)."""
         olga = self.p.entrar("olga")
-        for ruta in ("/puntos", "/puntos/nuevo", "/puntos/p001", "/puntos/p001/logs"):
-            self.assertEqual(self.p.pedir("GET", ruta, cookie=olga).status, 403, ruta)
-        for ruta, form in (("/puntos/p001/espejo", {"accion": "aplicar"}), ("/puntos/p001/espejo", {"accion": "plan"}),
-                           ("/puntos/nuevo", {"nombre": "este", "redes": "10.1.0.0/24"}),
+        self.assertEqual(self.p.pedir("GET", "/puntos/nuevo", cookie=olga).status, 403)
+        for ruta in ("/puntos", "/puntos/p001", "/puntos/p001/logs"):
+            self.assertEqual(self.p.pedir("GET", ruta, cookie=olga).status, 200, ruta)
+        for ruta, form in (("/puntos/p001/espejo", {"accion": "aplicar"}), ("/puntos/p001/espejo", {"accion": "plan"})):
+            self.assertIn(self.p.pedir("POST", ruta, form, cookie=olga).status, (403, 404), ruta)
+        for ruta, form in (("/puntos/nuevo", {"nombre": "este", "redes": "10.1.0.0/24"}),
                            ("/puntos/p001/borrar", {"confirmar": "norte"}), ("/mikrotik", {"nodo": "p001"})):
             self.assertEqual(self.p.pedir("POST", ruta, form, cookie=olga).status, 403, ruta)
         self.assertEqual(self.p.espejo, [])

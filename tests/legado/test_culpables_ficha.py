@@ -69,7 +69,9 @@ def entorno():
           "_cpes_del_nodo": lambda rid: CPES.get(rid, []),
           "cargar_enviados": lambda path=None: {},
           "MK_SENT": "", "MK_SENT_DNS": "",
-          "ip_de": lambda k: k.split("|", 1)[-1]}
+          "ip_de": lambda k: k.split("|", 1)[-1],
+          # alcance (2026-10-22): sin usuario limitado se ven todos los puntos
+          "nodos": __import__("types").SimpleNamespace(puede_ver=lambda pid: True)}
     for n in ARBOL.body:
         nom = getattr(n, "name", None) or (
             getattr(n.targets[0], "id", "") if isinstance(n, ast.Assign) and n.targets else "")

@@ -5,7 +5,8 @@ Anexo de [ARQUITECTURA.md](ARQUITECTURA.md). Este anexo reúne lo que se ejecuta
 - los comandos del MikroTik (v7 y v6);
 - los respaldos y la recuperación;
 - el acceso de emergencia;
-- el mantenimiento.
+- el mantenimiento;
+- los usuarios y los puntos que ve cada uno.
 
 En F5 se completa y se prueba al pie de la letra.
 
@@ -70,7 +71,7 @@ certificado») y el router no tiene ninguno (abajo, 2026-10-20).
   entonces el panel exige ese certificado: ya no prueba el cifrado anónimo, para que nadie pueda
   rebajar la conexión, y si el router presenta otro no le manda la clave, con aviso rojo en la ficha
   y una línea `MK-HUELLA-DISTINTA` en el Registro. Si el certificado del router cambia a propósito,
-  «Volver a confirmar» en la ficha (admin). «Olvidar la huella» vuelve a conectar sin exigir
+  «Volver a confirmar» en la ficha (admin, o el operador del punto: §6). «Olvidar la huella» vuelve a conectar sin exigir
   certificado.
 - **Sin certificado no hay huella que fijar.** La ficha lo dice: la API-SSL no tiene certificado, no
   hay huella que fijar y la clave de `ids-api` va protegida por el túnel. Una huella vacía guardada
@@ -560,3 +561,52 @@ usuario viejo, detrás de la misma IP pública que otro punto):
    conecta, la última que se le conoció; se puede cambiar. Deja una línea en el Registro.
 4. Si la IP es fija y del dueño, puede ir en `--dueno-ip` (es el `ignoreip` de fail2ban). Las redes
    de gestión nunca van en `ignoreip`.
+
+## 6. Usuarios por punto
+
+Un VPS puede dar servicio a varios clientes: el admin asigna a cada usuario los puntos que ve, y cada
+usuario ve solo los suyos, como si tuviera un panel propio (decisión del dueño, 2026-10-22). Llega a
+un servidor ya instalado con **Actualizar**: solo cambia el panel; el orquestador, las imágenes y los
+puntos no se tocan.
+
+**Asignar.** En **Ajustes › Usuarios**, al crear o editar un usuario, «Puntos que ve»:
+
+- «Todos los puntos»: los de hoy y los que se den de alta después;
+- «Solo estos puntos»: una casilla por punto.
+
+La columna «Puntos» de la tabla de usuarios dice qué ve cada uno. El cambio vale en la siguiente
+petición del usuario, sin cerrarle la sesión. En el servidor es el campo opcional `puntos` de
+`/srv/ids/panel/conf/usuarios.json` ([DATOS.md](DATOS.md) §3.2): sin el campo ve todos, con `[]`
+ninguno, y el rol `admin` ve siempre todos.
+
+**Qué ve un usuario limitado:**
+
+- un punto a la vez: no tiene la vista «Todos», porque sus ficheros mezclan todos los puntos. Con un
+  solo punto no ve el selector;
+- un punto ajeno no existe para él: en la URL o en un formulario da 404, igual que uno que no
+  existe;
+- sin ningún punto asignado, el panel le dice «Sin puntos asignados» y no le enseña nada más.
+
+**Qué puede cada rol dentro de sus puntos:**
+
+| | lectura | operador | admin |
+|---|---|---|---|
+| Ver paneles, eventos y reportes | sí | sí | sí, de todos |
+| Incidentes y cuarentenas; bloquear un destino (si es limitado, solo en sus routers) | no | sí | sí |
+| Ficha del punto: API del MikroTik (usuario, clave, puerto, «Con certificado», «Probar la conexión», confirmar u olvidar la huella), prefijos, comandos de la VPN y regenerar su clave, arrancar, parar y reiniciar, logs | no | sí | sí |
+| Dar de alta o de baja un punto; desbanear una IP (fail2ban es global) | no | no | sí |
+
+Un operador sin límite gana la ficha de todos los puntos, pero tampoco crea ni borra puntos.
+
+**Lo global nunca lo toca un usuario limitado.** Para los demás manda su rol, como antes (casi todo es
+solo del admin): ajustes del sistema, feeds, IA, Telegram, DNS, empresa, ajustes MikroTik globales,
+exclusiones, bitácora y registro, actualizaciones, la ventana del resumen, usuarios, IPs de confianza,
+la lista global de destinos de confianza y denunciar a AbuseIPDB.
+
+**Lo que no cambia:**
+
+- **Telegram** es un único chat global, el del admin, que recibe los avisos de todos los puntos;
+- los procesos de fondo (informes, políticas, sincronización con los routers) trabajan con todos los
+  puntos;
+- la baja de un punto lo quita de la lista `puntos` de cada usuario; quien se queda sin ninguno ve
+  «Sin puntos asignados» hasta que el admin le asigne otro.

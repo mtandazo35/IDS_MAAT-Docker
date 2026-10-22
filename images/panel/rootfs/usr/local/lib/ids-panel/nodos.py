@@ -14,6 +14,13 @@ Lo comparten dashboard.py y html_report.py: los dos leen y escriben los mismos f
 El nodo que se está mirando va en un contexto por hilo: el servidor lo pone en cada petición
 (`?nodo=` o la sesión) y los hilos de fondo con `contexto(pid)` al recorrer los nodos.
 
+Alcance (el dueño, 2026-10-22: «cada usuario ve sus nodos, como un panel independiente»): el
+servidor pone en cada petición los puntos que ve su usuario (`poner_alcance`). Para un usuario
+limitado, un punto ajeno NO EXISTE: `puntos()`, `pids()`, `existe()`, `exigir_pid()` y las rutas
+por punto lo dejan fuera (404), y la vista «Todos» tampoco se puede pedir, porque sus ficheros
+(`nodos/_todos/`) ya vienen mezclados con todos los puntos. Los hilos de fondo no tienen alcance
+y ven todos los puntos.
+
 Reglas (CONTRATO-F2 §3.1): «Todos» solo se mira si se pide expresamente (`TODOS`); un nodo mal
 formado o que no existe es un error, NUNCA se amplía a «Todos». Sin contexto puesto no hay nodo:
 `nodo_actual()` falla en vez de suponer uno. El contexto solo decide qué se MIRA; el destino de una
@@ -116,12 +123,16 @@ def purgados():
 def puntos():
     """Puntos existentes, ordenados por pid: [{pid, nombre, n, estado, deseado, redes,
     api_puerto, sensor, tzsp_puerto, ...}]. Lo que falte en estado.json va vacío. Un punto que
-    el panel ya dio de baja no sale aunque estado.json aun lo liste unos segundos."""
+    el panel ya dio de baja no sale aunque estado.json aun lo liste unos segundos. En una
+    petición de un usuario limitado, solo los suyos (alcance)."""
     ps = leer_estado().get("puntos") or {}
     fuera = purgados()
+    a = alcance()
     salida = []
     for pid in sorted(ps):
         if not RE_PID.match(pid) or not isinstance(ps[pid], dict) or pid in fuera:
+            continue
+        if a is not None and pid not in a:
             continue
         d = dict(ps[pid])
         d["pid"] = pid
@@ -174,8 +185,11 @@ def exigir_pid(pid):
 
 
 def validar_nodo(nodo):
-    """Lo que se puede MIRAR: TODOS (pedido expresamente) o un pid existente."""
+    """Lo que se puede MIRAR: TODOS (pedido expresamente) o un pid existente. Un usuario
+    limitado no puede mirar TODOS: sus ficheros mezclan los puntos de todos (NodoInexistente)."""
     if nodo == TODOS:
+        if limitado():
+            raise NodoInexistente(TODOS)
         return TODOS
     return exigir_pid(nodo)
 
@@ -230,6 +244,55 @@ def es_todos(nodo=None):
     return (nodo if nodo is not None else nodo_actual()) == TODOS
 
 
+# --------------------------------------------------------------------------------------------
+# Alcance: qué puntos ve el usuario de la petición
+# --------------------------------------------------------------------------------------------
+def poner_alcance(pids_usuario=None):
+    """None = sin límite (admin, usuario sin lista, hilo de fondo). Si no, los pids que ve el
+    usuario; una lista vacía no ve ninguno (nunca se amplía a todos)."""
+    _CTX.alcance = None if pids_usuario is None else frozenset(
+        p for p in pids_usuario if pid_valido(p))
+    return _CTX.alcance
+
+
+def quitar_alcance():
+    _CTX.alcance = None
+
+
+def alcance():
+    """frozenset de los pids que ve el usuario de la petición, o None si no tiene límite."""
+    return getattr(_CTX, "alcance", None)
+
+
+def limitado():
+    return alcance() is not None
+
+
+def puede_ver(pid):
+    a = alcance()
+    return a is None or pid in a
+
+
+@contextlib.contextmanager
+def sin_alcance():
+    """Quita el alcance durante el bloque y deja el anterior al salir, también con excepción.
+    Para el código de una petición que ESCRIBE o poda datos de todos los puntos (routers.json,
+    threshold...): con el alcance de un limitado, `pids()` solo trae los suyos y se borraría lo
+    de los demás. Nunca para enseñar nada."""
+    previo = getattr(_CTX, "alcance", None)
+    _CTX.alcance = None
+    try:
+        yield
+    finally:
+        _CTX.alcance = previo
+
+
+def pids_todos():
+    """Todos los puntos existentes, sin alcance: solo para decidir qué se conserva al escribir."""
+    with sin_alcance():
+        return pids()
+
+
 def nodos_de(nodo=None):
     """Los pids que abarca un nodo: él mismo (si existe), o todos en la vista acumulada."""
     nodo = validar_nodo(nodo if nodo is not None else nodo_actual())
@@ -242,6 +305,8 @@ def nodos_de(nodo=None):
 def _pid_ruta(pid):
     if not pid_valido(pid):                        # nunca una ruta con un id sin validar
         raise NodoInvalido(pid)
+    if not puede_ver(pid):                         # ni una ruta a los datos de un punto ajeno
+        raise NodoInexistente(pid)
     return pid
 
 
@@ -270,8 +335,11 @@ def ficheros_eventos(nodo=None, patrones=("eve.json*", "dns.json*")):
 def dir_salida(nodo=None, crear=True):
     """Salidas del nodo (o de la vista acumulada): report-*.html, cuarentena.json..."""
     nodo = nodo if nodo is not None else nodo_actual()
-    if nodo != TODOS and not pid_valido(nodo):     # nunca una ruta con un id sin validar
-        raise NodoInvalido(nodo)
+    if nodo == TODOS:
+        if limitado():                             # «Todos» mezcla los puntos de todos
+            raise NodoInexistente(TODOS)
+    else:
+        _pid_ruta(nodo)                            # formato y alcance
     d = os.path.join(NODOS, nodo)
     # solo se crea para la vista acumulada o un punto que existe: una tarea de fondo tardia no
     # resucita nodos/<pid> de un punto dado de baja (auditoria A-09)

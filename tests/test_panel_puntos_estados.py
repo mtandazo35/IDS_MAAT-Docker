@@ -163,11 +163,12 @@ class Error(_Base):
         # un punto sano no lo trae
         self.assertNotIn("Reintentar arranque", self.get("/puntos/p002"))
 
-    def test_operador_no_ve_la_ficha(self):
-        """Conservación. Reintentar es solo de admin: el resto de roles no llega a la ficha ni al POST."""
-        olga = self.p.entrar("olga")
-        self.assertEqual(self.p.pedir("GET", "/puntos/p001", cookie=olga).status, 403)
-        self.assertEqual(self.p.pedir("POST", "/puntos/p001/arrancar", {}, cookie=olga).status, 403)
+    def test_lectura_no_ve_la_ficha(self):
+        """Lectura no llega a la ficha ni al POST. Desde 2026-10-22 el operador gestiona la ficha de sus
+        puntos (tests/test_panel_alcance.py), así que esto ya solo vale para lectura."""
+        luis = self.p.entrar("luis")
+        self.assertEqual(self.p.pedir("GET", "/puntos/p001", cookie=luis).status, 403)
+        self.assertEqual(self.p.pedir("POST", "/puntos/p001/arrancar", {}, cookie=luis).status, 403)
         self.assertEqual(self.p.orq.ordenes("punto.arrancar"), [])
 
 

@@ -192,7 +192,8 @@ socat UNIX-LISTEN:/run/ids/api-claro.sock,fork,unlink-early,mode=660,max-childre
   al confirmar, la fija. Desde entonces el panel exige ese certificado: ya no prueba ADH, para que
   nadie pueda rebajar la conexión, y si el router presenta otro **no hace `/login`** (aviso rojo en
   la ficha y `MK-HUELLA-DISTINTA` en el Registro). Cambiarla («Volver a confirmar», «Olvidar la
-  huella») es una acción explícita del admin en la ficha del punto, con bitácora; «Olvidar» vuelve
+  huella») es una acción explícita del admin (o del operador del punto, desde 2026-10-22) en la ficha del
+  punto, con bitácora; «Olvidar» vuelve
   a conectar sin exigir certificado. Sin certificado no hay huella que fijar. Las huellas que una
   versión anterior fijó sola se siguen exigiendo igual que una confirmada (la ficha las marca
   «fijada automáticamente»), y una huella **vacía** guardada antes (el sha256 de nada, de un

@@ -48,8 +48,9 @@ Este documento resume y decide. El detalle está en los anexos, y cada tema vive
 
 ### 1.1 Qué es
 
-IDS_MAAT-Docker es el sucesor en contenedores de `suricata-ids-lab`. Cada empresa (un ISP cliente)
-tiene **un VPS** propio, normalmente de 8 CPU y 8 GB con Debian 13. En ese VPS corren:
+IDS_MAAT-Docker es el sucesor en contenedores de `suricata-ids-lab`. Cada empresa que lo administra
+tiene **un VPS** propio, normalmente de 8 CPU y 8 GB con Debian 13. Ese VPS puede dar servicio a
+varios clientes, cada uno con sus usuarios y sus puntos (§1.2). En él corren:
 
 - **Un panel central**: el panel actual, dividido en módulos, que es a la vez la web y la API.
 - **Un orquestador**: un servicio del host que crea, para y actualiza las instancias. Solo acepta
@@ -71,7 +72,12 @@ a su API por la red local ([RED-Y-FIREWALL.md](RED-Y-FIREWALL.md) §11).
 ### 1.2 Qué no es
 
 - **No es un IPS en línea.** Analiza una copia y actúa con address-lists en el router.
-- **No es multiempresa.** Dos empresas, dos VPS.
+- **No es multiempresa.** Un VPS lo administra una sola empresa: lo global (ajustes, feeds,
+  Telegram, usuarios, actualizaciones) es uno solo y lo lleva el admin. Dos empresas que administran
+  cada una lo suyo, dos VPS. Lo que sí admite (decisión del dueño, 2026-10-22) es **dar servicio a
+  varios clientes desde el mismo VPS**: el admin asigna a cada usuario sus puntos y cada uno ve solo
+  los suyos, como si tuviera un panel propio ([OPERACION.md](OPERACION.md) §6). Los clientes
+  comparten la RAM, las reglas y los feeds del VPS.
 - **No da acceso a las LAN de abonados.** El VPS no tiene rutas hacia ellas.
 - **No es una vía de gestión.** Por la VPN no se llega al panel ni al SSH.
 - **No termina TLS.** El HTTPS del panel lo pone un proxy inverso externo al VPS.
@@ -120,13 +126,13 @@ aprendido en `suricata-ids-lab` y de la auditoría del diseño.
 
 | Decisión | Por qué | Detalle |
 |---|---|---|
-| **(D)** 1 VPS = 1 empresa; 1 MikroTik = 1 punto. | Aísla a los clientes del ISP y deja el dimensionado en cada VPS. | — |
+| **(D)** 1 VPS = 1 empresa que lo administra; 1 MikroTik = 1 punto. Desde 2026-10-22 ese VPS puede dar servicio a varios clientes, cada uno con sus usuarios y sus puntos. | Aísla a las empresas entre sí y deja el dimensionado en cada VPS; dentro de un VPS, cada cliente ve solo sus puntos (fila de usuarios por punto). | §1.2 |
 | **(D)** Por punto, `vpn` y `suricata` en un netns compartido; un OpenVPN y un Suricata por MikroTik. | Cada punto tiene su túnel, su interfaz de captura y su firewall. | [INSTANCIA](INSTANCIA.md) |
 | **(D)** Puerto OpenVPN propio por punto (1194, 1195, …) y red de túnel `100.64.N.0/24`: sensor `.1`, MikroTik `.2`. | Puertos fijos; los túneles no se solapan entre puntos. | [RED](RED-Y-FIREWALL.md) §2 |
 | **(D)** Punto **directo** opcional (0.1.9): sin VPN, solo con el MikroTik en la red local (IP privada), espejo por UDP a `37008+N-1` aceptado desde cualquier IP (desde 2026-10-20; antes solo desde la IP del MikroTik). | Hay quien trabaja en local y no quiere la VPN; por internet el espejo iría sin cifrar, así que una IP pública se rechaza. | [RED](RED-Y-FIREWALL.md) §11 |
 | **(D)** Un solo panel, que es también la API; crea las instancias por el orquestador y nunca ve `docker.sock`. | Un panel comprometido no se convierte en root. | [ORQUESTADOR](ORQUESTADOR.md) |
-| **(D)** Todo dato lleva su punto. Filtro por punto y vista «Toda la empresa». | Los puntos pueden repetir LAN privadas. | §5, [DATOS](DATOS.md) |
-| **(D)** Hoy todos ven todo; el modelo está preparado para restringir por punto. | Tabla `visibilidad` desde el primer día. | [DATOS](DATOS.md) §2 |
+| **(D)** Todo dato lleva su punto. Filtro por punto y vista «Toda la empresa» (para quien ve todos los puntos). | Los puntos pueden repetir LAN privadas. | §5, [DATOS](DATOS.md) |
+| **(D)** Usuarios por punto (2026-10-22): el admin asigna a cada usuario los puntos que ve (campo `puntos` de `usuarios.json`). Sin asignar, ve todos; el admin, siempre todos. Un usuario limitado mira un punto a la vez, sin «Toda la empresa», y un punto ajeno para él no existe (404). Su rol vale dentro de sus puntos; lo global sigue siendo del admin. Telegram sigue siendo un único chat global. | Un VPS da servicio a varios clientes como si cada uno tuviera su panel. El panel pone el alcance del usuario en cada petición y lo aplican las funciones comunes de `nodos.py`, así que ninguna página se lo salta; los procesos de fondo siguen con todos los puntos. Sustituye a la tabla `visibilidad` del diseño, que nunca llegó al código. | [DATOS](DATOS.md) §3.2, [OPERACION](OPERACION.md) §6 |
 | **(D)** Sin EveBox. | Una web menos que asegurar. | — |
 | **(D)** Imágenes en GHCR construidas con GitHub Actions. | Versionadas, firmadas y reversibles. | [ACTUALIZACIONES](ACTUALIZACIONES.md) |
 | **(D)** SSH solo desde las redes de gestión. Por la VPN, solo el espejo (udp 37008) y las respuestas a lo que abre el sensor. fail2ban. Modo seguro con reversión. | La VPN transporta datos, nunca sirve para gestionar. | §6 |
@@ -229,7 +235,8 @@ Cuatro ideas fijan la red (el detalle está en [RED-Y-FIREWALL.md](RED-Y-FIREWAL
   compara con el campo `host` del eve (`sensor-name`); una discrepancia descarta la línea y avisa
   con `EVE-MEZCLA`.
 - **`punto_id` es la primera columna** de toda PK e índice por punto. El repositorio exige un
-  alcance: «Toda la empresa» es el conjunto de puntos visibles, nunca una consulta sin filtro.
+  alcance: «Toda la empresa» es el conjunto de puntos visibles, nunca una consulta sin filtro. Un
+  usuario limitado a unos puntos no la tiene: mira uno a la vez.
 - **Cada acción sobre un router usa solo el relé de su punto**, con el `punto_id` explícito en el
   formulario. Antes de escribir se comprueban `identidad` y `sw_id`
   (`ROUTER-NO-COINCIDE`).

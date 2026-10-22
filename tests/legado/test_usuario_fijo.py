@@ -76,8 +76,10 @@ def main():
     # (sesion_renovar) y las demas de ese usuario dejan de valer. Se cargan las piezas reales
     # (el guardado a disco sigue siendo el doble _guardar_sesiones de arriba).
     ns["threading"] = __import__("threading")
+    # puntos_de_usuario (2026-10-22): sesion_de devuelve los puntos que ve el usuario
+    ns["nodos"] = __import__("types").SimpleNamespace(pid_valido=lambda p: isinstance(p, str))
     _comun.piezas(ns, ("SESSION_TTL", "_SES_LOCK", "_hash_token", "marca_usuario",
-                       "sesion_abrir", "sesion_de", "sesion_renovar"))
+                       "sesion_abrir", "sesion_de", "sesion_renovar", "puntos_de_usuario"))
     exec(fuente("_post_perfil").replace("\n    ", "\n").lstrip(), ns)
     post = ns["_post_perfil"]
 

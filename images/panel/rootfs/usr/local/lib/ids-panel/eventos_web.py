@@ -478,8 +478,8 @@ def nombre_valido(nombre):
 
 def _fichero_seguro(pid, nombre):
     """(ruta_real, stat) del fichero `nombre` del punto, o None. Rechaza nombres que no son
-    eve.json*/dns.json*, enlaces cuyo fichero real esta fuera de DATOS/<pid> y lo que no es
-    un fichero regular."""
+    eve.json*/dns.json*, enlaces cuyo fichero real esta fuera de DATOS/<pid>, lo que no es
+    un fichero regular y los ficheros de un punto fuera del alcance de la peticion."""
     if not nombre_valido(nombre):
         return None
     try:
@@ -489,7 +489,7 @@ def _fichero_seguro(pid, nombre):
         if os.path.dirname(real) != base or not nombre_valido(os.path.basename(real)):
             return None
         st = os.stat(real)
-    except (OSError, ValueError):
+    except (OSError, ValueError, nodos.NodoInexistente):
         return None
     if not stat.S_ISREG(st.st_mode):
         return None
@@ -1015,9 +1015,11 @@ def ref(pid, nombre, offset, h):
 
 def validar_ref(consulta, nodo):
     """(pid, nombre, offset, huella) de una referencia valida; RefInvalida si no lo es.
-    No se toca el disco hasta que todo cuadra (firma incluida)."""
+    No se toca el disco hasta que todo cuadra (firma incluida). Un punto fuera del alcance del
+    usuario es «desconocido», como uno que no existe (nodos.pids() ya lo deja fuera; se mira
+    tambien aqui por si acaso, sin decir si existe)."""
     pid, nombre, o, h, s = (_q(consulta, k, 300) for k in ("p", "f", "o", "h", "s"))
-    if not nodos.pid_valido(pid) or pid not in nodos.pids():
+    if not nodos.pid_valido(pid) or not nodos.puede_ver(pid) or pid not in nodos.pids():
         raise RefInvalida("punto desconocido")
     if pid not in nodos.nodos_de(nodo):
         raise RefInvalida("el evento no es del nodo que se está mirando")

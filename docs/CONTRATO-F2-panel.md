@@ -6,7 +6,8 @@ añaden las mejoras de contenedores**:
 
 1. **Selector de nodo** en la barra: «Todos los nodos (acumulado)» y cada MikroTik. Con un nodo elegido, cada
    pantalla muestra solo sus datos. En «Todos» se ve todo junto y **una IP repetida en dos nodos sale en dos
-   filas**, cada una con la etiqueta de su nodo (nunca se suman).
+   filas**, cada una con la etiqueta de su nodo (nunca se suman). Desde 2026-10-22, un usuario limitado a
+   unos puntos no tiene «Todos» y, con un solo punto, no ve el selector (§10.1).
 2. **Apartado Puntos**: alta de cada MikroTik con su propia VPN y su propio Suricata (contenedores que crea el
    orquestador), comandos para pegar en el router, conexión API, espejo, baja.
 
@@ -50,6 +51,7 @@ Inventarios de partida (números de línea de `dashboard.py` = los del heredoc `
 | `dir_salida(nodo)`, `salida(fichero, nodo)` | salidas por nodo: `NODOS/<pid>/` o `NODOS/_todos/` |
 | `api_sock(pid)`, `tzsp_json(pid)` | relé API-SSL y latido TZSP del punto |
 | `clave(pid, ip)` | identidad del CPE |
+| `poner_alcance(pids)`, `alcance()`, `limitado()`, `puede_ver(pid)` | (añadido 2026-10-22) puntos que ve el usuario de la petición, por hilo; `None` = sin límite (admin, usuario sin campo `puntos`, hilos de fondo). Con alcance, `puntos()`, `pids()`, `existe()`, `exigir_pid()`, `validar_nodo()`, las rutas por punto y `dir_salida()` dejan fuera los ajenos (`NodoInexistente`), y `TODOS` no se puede mirar |
 
 Árbol de `PANEL` (`/srv/ids/panel`, uid 10500, 0700): `conf/` (panel.conf, mikrotik.conf, routers.json,
 feeds.conf, report.conf, exclusiones.json, listas `.lst`, empresa, usuarios, confianza…), `estado/` (registros
@@ -66,6 +68,10 @@ está en `inv_A.md` §1 y `inv_C.md` §1; se respeta salvo motivo que se explica
 | historial (`historial.db`) y conducta | una base / un fichero por nodo en `dir_salida(pid)` | se unen las filas de cada nodo con su columna **Nodo** |
 | enviados, acciones, abonados, públicas, exclusiones | ficheros globales; claves `pid|ip` o campo `nodo` | todos |
 | configuración, usuarios, feeds, bitácora, login | global | global |
+
+- **Usuario limitado** (2026-10-22, [OPERACION.md](OPERACION.md) §6): no tiene la columna «Todos», porque los
+  ficheros de `dir_salida(TODOS)` mezclan los puntos de todos. Mira un punto a la vez, y lo global de la última
+  fila no lo ve.
 
 - **Acciones (cuarentena, liberar, reglas, listas, públicas)** van siempre contra el router **del pid de la
   clave** (`pid|ip`) o del `rid` del formulario, **nunca** el del contexto ni un «router por defecto».
@@ -101,7 +107,8 @@ está en `inv_A.md` §1 y `inv_C.md` §1; se respeta salvo motivo que se explica
 
 ## 5. Apartado Puntos (nuevo, sobre el estilo del dashboard)
 
-Pestaña **Puntos** (solo admin) en `_NAV_LINKS` y mosaico en Ajustes (sustituye a VPN/OpenVPN). Reutiliza la
+Pestaña **Puntos** (solo admin; desde 2026-10-22 el operador también entra, a la ficha de sus puntos sin alta
+ni baja, §10.2) en `_NAV_LINKS` y mosaico en Ajustes (sustituye a VPN/OpenVPN). Reutiliza la
 lógica del panel F1b-min (`idspanel/orq.py`, `estado.py`, `operaciones.py` y las funciones de `app.py`/`vistas.py`
 listadas en `inv_C.md` §5.1), pintada con `wrap()`/`nav()` del dashboard y sus modales (nunca `alert`/`confirm`).
 
@@ -206,10 +213,12 @@ Respuestas al documento «Suricata IDS Lab: definición de la evolución multiso
 
 | Situación | Respuesta |
 |---|---|
-| `?nodo=_todos` (selección expresa de Todos) | vista consolidada |
-| Sin `?nodo=` | el de la sesión; si no hay, la vista consolidada (valor por defecto de la interfaz, documentado) |
+| `?nodo=_todos` (selección expresa de Todos) | vista consolidada; para un usuario limitado, **404** (2026-10-22) |
+| Sin `?nodo=` | el de la sesión; si no hay, la vista consolidada (valor por defecto de la interfaz, documentado). Un usuario limitado: el de la sesión si sigue siendo suyo; si no, su primer punto |
 | Identificador mal formado | `NodoInvalido` → **400**, sin ampliar el alcance |
 | Formato correcto pero no existe | `NodoInexistente` → **404** «punto inexistente» |
+| Punto ajeno para un usuario limitado (en `?nodo=` o en el destino de una acción) | **404**, igual que uno que no existe (2026-10-22) |
+| Usuario limitado sin ningún punto | **403** «Sin puntos asignados», en cualquier página |
 | Sin contexto en un hilo | `SinContexto` (error de programación; nunca se supone un nodo) |
 | Acción | destino = el de la propia operación (`pid|ip` o pid del formulario) validado con `exigir_pid()`; **nunca** el selector, la sesión ni `TODOS`. Sin destino inequívoco no se ejecuta |
 
@@ -222,23 +231,30 @@ cada acción su destino; cambiar el selector en una no cambia lo que hace la otr
 
 Roles del dashboard (se conservan): **admin**, **operador**, **lectura**. Se comprueban en el servidor en cada
 ruta (GET y POST), con `_admin()`/`_operador()` (sin el antiguo `None` = sin autenticación). Ocultar un botón no
-cuenta como control. Cambiar el nodo en URL/formulario no da más permisos: todos los usuarios de la empresa ven
-todos sus puntos (decisión del usuario), pero cada operación exige su rol.
+cuenta como control. Cambiar el nodo en URL/formulario no da más permisos ni más puntos: cada usuario ve los
+puntos que el admin le asignó (todos si no tiene lista; el admin, siempre todos) y cada operación exige su rol.
+Decisión del dueño, 2026-10-22 ([OPERACION.md](OPERACION.md) §6), que sustituye a la de 2026-10-11 («todos los
+usuarios de la empresa ven todos sus puntos»). Lo que dice la tabla vale dentro de los puntos de cada usuario;
+un usuario limitado no toca nada global (feeds, IA, Telegram, DNS, empresa, ajustes MikroTik globales,
+exclusiones, bitácora, actualizaciones, usuarios, IPs de confianza, destinos de confianza, denunciar a
+AbuseIPDB) y su «Bloquear destino» solo va a sus routers.
 
 | Operación | lectura | operador | admin |
 |---|---|---|---|
 | Ver En vivo, Top, Detalle, Cuarentena, Consultar IP, Histórico, Reporte, **Eventos** (lista y detalle), descargar CSV/reportes, cambiar de nodo | sí | sí | sí |
 | Cambiar su propia clave | sí | sí | sí |
 | Cuarentena: enviar, quitar, graduada, masivas; excluir/quitar destino de confianza; DNS sospechoso; consultar/denunciar reputación | no | sí | sí |
-| Exclusiones de detección, MikroTik (conexión, listas, reglas, políticas), públicas, feeds y claves, DNS, IA, empresa | no | no | sí |
-| **Puntos**: ver la gestión, alta, baja, arrancar/parar/reiniciar, regenerar VPN, ajustar prefijos, API, **espejo** (plan/aplicar/pausar/retirar), logs | no | no | sí |
+| Exclusiones de detección, MikroTik (ajustes globales: listas, reglas, políticas; la conexión de cada punto va en su ficha), públicas, feeds y claves, DNS, IA, empresa | no | no | sí |
+| **Puntos**, ficha de sus puntos (2026-10-22): API (usuario, clave, puerto, «Con certificado», «Probar la conexión»), prefijos, ver los comandos de la VPN y regenerar su clave, arrancar/parar/reiniciar, logs | no | sí | sí |
+| **Puntos**: alta, baja, desbanear la IP del MikroTik (fail2ban es global) | no | no | sí |
 | Usuarios y roles, log de accesos, bitácora, actualizar reglas | no | no | sí |
 
 Precisiones (auditoría B-18, 2026-10-12): «ver Cuarentena» incluye la **ficha de evidencia** de un CPE
 (lectura); **refrescar el reporte de conducta** es de operador (lanza trabajo de fondo); **revisar públicas
 (DNSBL)** es de admin, como el resto de públicas. Un botón que el rol no puede usar no se muestra.
 
-La vista de estado de cada punto (colores del selector) la ven todos. Toda operación deja en la bitácora:
+La vista de estado de cada punto (colores del selector) la ven todos los que ven ese punto. Toda operación deja
+en la bitácora:
 usuario o proceso, punto, objetivo, operación, fecha y resultado, sin secretos. Una masiva desde «Todos» se
 descompone por punto y da el resultado por punto.
 
