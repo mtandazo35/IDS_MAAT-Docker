@@ -590,6 +590,15 @@ no se le pueden limitar los puntos, quitar el rol, borrar ni desactivar.
 Cada fase pasa una sección a pedir su permiso concreto y la muestra en el acordeón de Usuarios;
 mientras tanto, lo que aún no ha pasado decide por rol.
 
+- **Fase 2 (Puntos).** En Ajustes › Usuarios, cada usuario tiene el acordeón «Permisos» con la
+  sección Puntos («Activos X/10»): ver la lista y la ficha, API del MikroTik, prefijos, ver los
+  comandos y la clave de la VPN, regenerarla, arrancar/parar/reiniciar, logs, crear, borrar y
+  desbanear. Al cambiar el rol se marcan los de su plantilla («Usar los del rol» los repone). Crear,
+  borrar y desbanear son **globales**: solo valen si el usuario ve todos los puntos. La ficha enseña
+  solo lo que el usuario puede usar y el servidor rechaza (403) el resto. Si los marcados coinciden
+  con la plantilla del rol no se guarda lista (`permisos` en usuarios.json), y cambiar el rol desde
+  la tabla la borra.
+
 **Qué ve un usuario limitado:**
 
 - un punto a la vez: no tiene la vista «Todos», porque sus ficheros mezclan todos los puntos. Con un

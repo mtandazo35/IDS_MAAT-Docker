@@ -46,7 +46,7 @@ CATALOGO = (
         ("puntos.arrancar", "Arrancar, parar y reiniciar", False),
         ("puntos.logs", "Logs", False),
         ("puntos.crear", "Crear puntos", True),
-        ("puntos.borrar", "Borrar puntos", False),
+        ("puntos.borrar", "Borrar puntos (libera su puerto y su firewall)", True),
         ("puntos.desbanear", "Desbanear una IP (fail2ban, global)", True),
     )),
     ("usuarios", "Usuarios", (
@@ -103,6 +103,39 @@ def de_usuario(r):
     if "puntos" in r:
         efectivos = efectivos - GLOBALES
     return efectivos
+
+
+# Secciones que ya deciden por permiso y salen en el acordeón de Usuarios (crece en cada fase).
+EDITABLES = ("puntos",)
+
+
+def crudos(r):
+    """Los permisos guardados del usuario (o los de la plantilla de su rol), SIN quitar los globales:
+    lo que se marca al editarlo. Lo que vale de verdad es de_usuario()."""
+    if not r:
+        return frozenset()
+    if "permisos" in r:
+        p = r.get("permisos")
+        return frozenset(x for x in p if x in TODOS) if isinstance(p, list) else frozenset()
+    return PLANTILLAS.get(r.get("role"), frozenset())
+
+
+def del_formulario(grupos, marcados, rol):
+    """La lista `permisos` que se guarda al crear o editar un usuario: en los grupos que trae el
+    formulario (y son editables), los marcados; en los demás, los de la plantilla del rol (siguen
+    decidiendo por rol). None si el formulario no trae ningún grupo (uno de antes: no se toca)."""
+    grupos = [g for g in grupos if g in EDITABLES]
+    if not grupos:
+        return None
+    marcados = set(marcados)
+    salida = set(PLANTILLAS.get(rol, frozenset()))
+    for g, _t, ps in CATALOGO:
+        if g in grupos:
+            for p, _e, _gl in ps:
+                salida.discard(p)
+                if p in marcados:
+                    salida.add(p)
+    return sorted(salida)
 
 
 def activos(permisos, grupo):

@@ -21,6 +21,7 @@ _AQUI = os.path.dirname(os.path.abspath(__file__))
 if _AQUI not in sys.path:
     sys.path.insert(0, _AQUI)
 import nodos, secretos   # noqa: E402  (rutas/nodo del hilo y secretos cifrados: CONTRATO-F2 §2, §10.3)
+import permisos          # noqa: E402  (permisos a la carta por secciones, 2026-10-22)
 import geo_base          # noqa: E402  (base GeoIP del mapa: la de la imagen y la que renueva el panel)
 
 IDS_TZ = (os.environ.get("IDS_TZ") or "America/Guayaquil").strip() or "America/Guayaquil"
@@ -169,6 +170,7 @@ def sesion_de(token):
     v = dict(s)
     v["role"] = r.get("role")
     v["puntos"] = puntos_de_usuario(r)   # releido como el rol: un cambio vale en la siguiente peticion
+    v["permisos"] = sorted(permisos.de_usuario(r))   # igual: los suyos o los de la plantilla de su rol
     return v
 
 def puntos_de_usuario(r):
@@ -190,6 +192,11 @@ def admin_total(r):
     """Administrador que ve todos los puntos: el unico que toca lo global (ajustes, usuarios,
     actualizaciones). Siempre tiene que quedar al menos uno activo (salvaguarda en _post_perfil)."""
     return bool(r) and r.get("role") == "admin" and "puntos" not in r
+
+def puede_ctx(permiso):
+    """El usuario de la peticion tiene ese permiso (permisos.py; los globales solo si ve todos los
+    puntos). Para las paginas; en las rutas, H._puede."""
+    return permiso in (getattr(CTX, "permisos", None) or ())
 
 def es_admin_ctx():
     """La peticion es de un administrador sin limite de puntos (el rol de la sesion y el alcance)."""
@@ -9457,6 +9464,46 @@ def quitar_punto_de_usuarios(pid, quien=None):
                  quien=quien)
     return len(cambiados)
 
+def permisos_acordeon_html():
+    """«Permisos»: un acordeón por sección (las que ya deciden por permiso, permisos.EDITABLES) con
+    «Activos X/Y» y una casilla por permiso (name=perm). perm_grupos dice qué grupos trae el
+    formulario: los demás siguen el rol. Los globales llevan aviso: solo valen con todos los puntos."""
+    esc = html.escape
+    glob_txt = " <span class=pglob title='Solo vale si el usuario ve todos los puntos'>global</span>"
+    grupos = []
+    for g, tit, ps in permisos.CATALOGO:
+        if g not in permisos.EDITABLES:
+            continue
+        cas = "".join(
+            f"<label class=chk><input type=checkbox name=perm value='{esc(p)}' onchange='permSync(this.form)'>"
+            f"{esc(et)}{glob_txt if gl else ''}</label>" for p, et, gl in ps)
+        grupos.append(f"<details class=pgrp data-g='{esc(g)}'><summary><span class=pgt>{esc(tit)}</span>"
+                      f"<span class=pga>Activos <b class=pgn>0</b>/{len(ps)}</span></summary>"
+                      f"<div class=pgl>{cas}</div></details>")
+    return ("<div class='field permf'><label>Permisos</label>"
+            f"<input type=hidden name=perm_grupos value='{esc(','.join(permisos.EDITABLES))}'>"
+            "<style>.pgrp{border:1px solid #e7e6e2;border-radius:8px;margin:6px 0;background:#fff}"
+            ".pgrp summary{display:flex;justify-content:space-between;align-items:center;padding:9px 12px;"
+            "cursor:pointer;font-weight:600}.pga{color:#52514e;font-size:12px;font-weight:400}"
+            ".pgl{display:grid;grid-template-columns:1fr 1fr;gap:4px 14px;padding:4px 12px 10px}"
+            ".pglob{font-size:11px;color:#8a5a12;background:#fff7ed;border-radius:4px;padding:0 4px}"
+            "@media(max-width:560px){.pgl{grid-template-columns:1fr}}</style>"
+            + "".join(grupos) +
+            "<div class=hint>Al cambiar el rol se marcan los de su plantilla; luego ajusta lo que quieras. "
+            "Los marcados <b>global</b> solo valen si el usuario ve todos los puntos. Las demás secciones "
+            "siguen el rol mientras pasan a permisos.</div>"
+            "<button type=button class=cancelbtn onclick='permPlantilla(this.form)'>Usar los del rol</button></div>")
+
+# JS del acordeón: PERM_PLANT (plantillas por rol), contar activos, aplicar plantilla, poner lista
+PERM_JS = ("var PERM_PLANT=" + json.dumps({k: sorted(v) for k, v in permisos.PLANTILLAS.items()}) + ";"
+           "function permSync(f){if(!f)return;var gs=f.querySelectorAll('.pgrp');for(var i=0;i<gs.length;i++){"
+           "var n=gs[i].querySelectorAll('input[name=perm]:checked').length,b=gs[i].querySelector('.pgn');"
+           "if(b)b.textContent=n;}}"
+           "function permPoner(f,lista){if(!f)return;var v=(lista||'').split(','),cs=f.querySelectorAll('input[name=perm]');"
+           "for(var i=0;i<cs.length;i++)cs[i].checked=v.indexOf(cs[i].value)>=0;permSync(f);}"
+           "function permPlantilla(f){if(!f)return;var r=f.querySelector('select[name=nrole],select[name=role]');"
+           "permPoner(f,((r&&PERM_PLANT[r.value])||[]).join(','));}")
+
 def puntos_txt(r, nombres=None):
     """Que puntos ve ese usuario, en palabras: «Todos», «Ninguno» o sus nombres."""
     if "puntos" not in (r or {}):
@@ -10067,7 +10114,6 @@ _NAV_LINKS = [("/", "En vivo"), ("/top", "Top orígenes"), ("/detalle", "Detalle
 # Ajustes y el menu del usuario): se abre desde Ajustes -> Puntos, y la ven el administrador y el
 # operador (cada uno sus puntos; puntos_web filtra y comprueba el permiso), no solo lectura
 _NAV_SOLO_ADMIN = ("/exclusiones",)
-_ROLES_PUNTOS = ("admin", "operador")
 # paginas que no dependen del nodo: no llevan selector (CONTRATO-F2 §10, inv_B §2)
 _NAV_SIN_NODO = ("/ajustes", "/puntos", "/registro", "/log", "/bitacora", "/documentacion")
 
@@ -12497,14 +12543,16 @@ def perfil_page(msg="", ok=False, edit_user=None):
                 f"<button class=ic title=Editar type=button onclick=\"abrirEdit(this)\" "
                 f"data-user='{un}' data-nombre=\"{esc(nombre)}\" data-correo=\"{esc(correo)}\" "
                 f"data-role='{rl}' data-pmodo='{'todos' if _pl is None else 'solo'}' "
-                f"data-puntos='{esc(','.join(_pl or []))}'>{_IC_EDIT}</button>{borrar}"
+                f"data-puntos='{esc(','.join(_pl or []))}' "
+                f"data-permisos='{esc(','.join(sorted(permisos.crudos(r))))}'>{_IC_EDIT}</button>{borrar}"
                 "</td></tr>")
 
         def _rol_select(nombre_campo, sid, hid, defecto):
             ops = "".join(f"<option value={k}{' selected' if k == defecto else ''}>{_ROL_TXT[k]}</option>"
                           for k in ("lectura", "operador", "admin"))
             # con rol administrador «Puntos que ve» no aplica (ptsSync lo esconde)
-            return (f"<select name={nombre_campo} id={sid} onchange=\"rolHint(this,'{hid}');ptsSync(this.form)\">"
+            return (f"<select name={nombre_campo} id={sid} onchange=\"rolHint(this,'{hid}');ptsSync(this.form);"
+                    f"permPlantilla(this.form)\">"
                     f"{ops}</select>"
                     f"<div class=hint id={hid}>{esc(ROL_DESC[defecto])}</div>")
 
@@ -12569,7 +12617,7 @@ def perfil_page(msg="", ok=False, edit_user=None):
             "<div class=grid2><div class=field><label for=ncor>Correo</label>"
             "<input id=ncor type=email name=ncorreo maxlength=80 autocomplete=off placeholder='Opcional'></div>"
             "<div class=field><label for=nrol>Rol</label>" + _rol_select("nrole", "nrol", "nrolh", "lectura") + "</div></div>"
-            + _puntos_campo() +
+            + _puntos_campo() + permisos_acordeon_html() +
             "<div class=field><label for=npw>Clave</label>"
             + _clave("npw", "npwh", True, f"Mínimo {CLAVE_MIN} caracteres. Con «Generar» se crea una segura y se copia.")
             + "</div>"
@@ -12593,7 +12641,7 @@ def perfil_page(msg="", ok=False, edit_user=None):
             "<input type=text name=nombre id=en maxlength=60 oninput=\"ufIni('e')\"></div>"
             "<div class=field><label for=ec>Correo</label><input type=email name=correo id=ec maxlength=80></div></div>"
             "<div class=field><label for=er>Rol</label>" + _rol_select("role", "er", "erolh", "lectura") + "</div>"
-            + _puntos_campo() +
+            + _puntos_campo() + permisos_acordeon_html() +
             "<div class=field><label for=epw>Clave nueva (opcional)</label>"
             + _clave("epw", "epwh", False, f"Si la escribes, mínimo {CLAVE_MIN} caracteres.")
             + "</div>"
@@ -12921,7 +12969,9 @@ def perfil_page(msg="", ok=False, edit_user=None):
               "function usarMiIp(b){var i=document.getElementById('cip'),n=document.getElementById('cnota');"
               "if(!i)return;i.value=b.getAttribute('data-ip')||'';"
               "if(n){if(!n.value)n.value=b.getAttribute('data-nota')||'';n.focus();n.select();}}"
-              "function abrir(id){document.getElementById(id).hidden=false;}"
+              + PERM_JS +
+              "function abrir(id){document.getElementById(id).hidden=false;"
+              "if(id==='ovlNew'){var nf=document.querySelector('#ovlNew form');if(nf&&!nf._perm){nf._perm=1;permPlantilla(nf);}}}"
               "function cerrar(id){document.getElementById(id).hidden=true;}"
               "function abrirEdit(b){document.getElementById('eu').value=b.getAttribute('data-user');"
               "document.getElementById('en').value=b.getAttribute('data-nombre')||'';"
@@ -12936,6 +12986,7 @@ def perfil_page(msg="", ok=False, edit_user=None):
               "rolHint(document.getElementById('er'),'erolh');"
               # sus puntos vienen marcados (data-pmodo / data-puntos de la fila)
               "ptsPoner(document.getElementById('er').form,b.getAttribute('data-pmodo'),b.getAttribute('data-puntos'));"
+              "permPoner(document.getElementById('er').form,b.getAttribute('data-permisos'));"
               "var p=document.querySelector('#ovlEdit input[name=npass]');if(p){p.value='';p.type='password';"
               "var vb=p.parentNode.querySelector('.pwb');if(vb)vb.textContent='Ver';}"
               "var ph=document.getElementById('epwh');if(ph){ph.classList.remove('mal');ph.textContent='Si la escribes, mínimo " + str(CLAVE_MIN) + " caracteres.';}"
@@ -12982,7 +13033,7 @@ def perfil_page(msg="", ok=False, edit_user=None):
              + _tile("acceso", "IPs de confianza", _IC_SHIELD, bool(card_acceso))
              + _tile("mikrotik", "MikroTik", _IC_RTR, bool(card_mk))
              # Puntos: admin y operador (el operador, la ficha de los puntos que ve; puntos_web filtra)
-             + (_tile_html("puntos", "Puntos", _IC_VPN, "/puntos") if mirol in _ROLES_PUNTOS else "")
+             + (_tile_html("puntos", "Puntos", _IC_VPN, "/puntos") if puede_ctx("puntos.ver") else "")
              + _tile("dns", "DNS", _IC_DNS, bool(card_dns))
              + _tile("feeds", "Reputación", _IC_FEED, bool(card_feeds))
              + _tile("update", "Versión", _IC_DL, bool(card_update))
@@ -19514,6 +19565,9 @@ class H(BaseHTTPRequestHandler):
         # solo un admin con sesion. Ya no existe el modo sin autenticacion (rol None).
         # desde la fase 1 de permisos, un admin limitado a unos puntos no toca lo global
         return self._sesion_ok() and self._rol() == "admin" and not nodos.limitado()
+    def _puede(self, permiso):
+        # permisos a la carta (permisos.py): sesion valida y ese permiso entre los suyos
+        return self._sesion_ok() and permiso in (self._sesion().get("permisos") or ())
     def _operador(self):
         # puede gestionar cuarentenas/incidentes: admin u operador, con sesion.
         return self._sesion_ok() and self._rol() in ("admin", "operador")
@@ -19527,6 +19581,7 @@ class H(BaseHTTPRequestHandler):
         CTX.user = s.get("user"); CTX.role = s.get("role"); CTX.ip = self._client_ip()
         CTX.peer = self._peer_ip()
         CTX.exp = s.get("exp")   # el menu del usuario dice cuanto le queda a la sesion
+        CTX.permisos = frozenset(s.get("permisos") or ())   # permisos.py: los de esta peticion
         # Alcance (2026-10-22): los puntos que ve el usuario (None = todos); sin sesion, ninguno.
         # Desde aqui, para un usuario limitado un punto ajeno no existe (nodos.py).
         nodos.poner_alcance(s.get("puntos") if s else [])
@@ -19611,7 +19666,7 @@ class H(BaseHTTPRequestHandler):
     def _limpiar_ctx(self):
         # El hilo se reutiliza entre peticiones de la misma conexion (keep-alive): nada del
         # usuario ni del nodo de la peticion anterior puede quedar puesto.
-        for k in ("user", "role", "ip", "peer", "exp", "nodo", "form"):
+        for k in ("user", "role", "ip", "peer", "exp", "nodo", "form", "permisos"):
             setattr(CTX, k, None)
         nodos.quitar_nodo()
         nodos.quitar_alcance()
@@ -21540,6 +21595,11 @@ class H(BaseHTTPRequestHandler):
                      "nombre": nombre, "correo": correo, "activo": True, "avatar": foto}
             if pmodo == "solo":
                 nuevo["puntos"] = puntos_marcados(q.get("puntos", []))
+            # permisos del acordeon (fase 2): solo se guarda la lista si no es la de su plantilla
+            _pm = permisos.del_formulario((q.get("perm_grupos", [""])[0] or "").split(","),
+                                          q.get("perm", []), nrole)
+            if _pm is not None and frozenset(_pm) != permisos.PLANTILLAS.get(nrole, frozenset()):
+                nuevo["permisos"] = _pm
             us.append(nuevo)
             try:
                 guardar_usuarios(us)
@@ -21587,6 +21647,7 @@ class H(BaseHTTPRequestHandler):
                 return self._html(perfil_page("No puedes quitar el rol al único administrador con todos "
                                               "los puntos.", ok=False))
             obj["role"] = nrole
+            obj.pop("permisos", None)        # con el rol nuevo, los permisos de su plantilla
             try:
                 guardar_usuarios(us)
             except OSError as ex:
@@ -21642,6 +21703,15 @@ class H(BaseHTTPRequestHandler):
                 obj.pop("puntos", None)
             elif pmodo == "solo":
                 obj["puntos"] = puntos_marcados(q.get("puntos", []))
+            # permisos del acordeon (fase 2): los de su plantilla no se guardan (se borra la lista);
+            # un formulario sin perm_grupos (de antes) no los toca
+            _pm = permisos.del_formulario((q.get("perm_grupos", [""])[0] or "").split(","),
+                                          q.get("perm", []), nrole)
+            if _pm is not None:
+                if frozenset(_pm) == permisos.PLANTILLAS.get(nrole, frozenset()):
+                    obj.pop("permisos", None)
+                else:
+                    obj["permisos"] = _pm
             try:
                 guardar_usuarios(us)
             except OSError as ex:

@@ -60,7 +60,8 @@ class Catalogo(unittest.TestCase):
         self.assertEqual(de(None), frozenset())
         lim = de({"role": "admin", "puntos": ["p001"]})
         self.assertFalse(lim & permisos.GLOBALES)
-        self.assertIn("puntos.borrar", lim)
+        self.assertNotIn("puntos.borrar", lim)          # borrar puntos es global
+        self.assertIn("puntos.api", lim)
         self.assertIn("usuarios.editar", lim)
 
 
@@ -131,6 +132,146 @@ class Salvaguarda(A.Base):
         self.assertEqual(r.status, 200, A.plano(r.texto))
         self.assertEqual(self.usuario("beto").get("puntos"), ["p001", "p003"])
         self.assertEqual(self.get("/?nodo=p002", "beto").status, 404)
+
+
+# --------------------------------------------------------------------------------------------
+# Fase 2: la sección Puntos decide por permiso; el acordeón de Usuarios
+# --------------------------------------------------------------------------------------------
+PUNTOS_TODOS = frozenset(x for x in permisos.TODOS if x.startswith("puntos."))
+
+
+class DelFormulario(unittest.TestCase):
+    def test_grupos_editables_y_plantilla(self):
+        """Lo que se guarda: en Puntos, lo marcado (válido); el resto, la plantilla del rol; sin
+        grupos editables, None (formulario de antes: no se toca)."""
+        f = permisos.del_formulario
+        self.assertIsNone(f([""], ["puntos.ver"], "operador"))
+        self.assertIsNone(f(["ajustes"], ["ajustes.dns"], "admin"))
+        r = set(f(["puntos"], ["puntos.ver", "inventado", "ajustes.dns"], "operador"))
+        self.assertEqual(r & PUNTOS_TODOS, {"puntos.ver"})
+        self.assertNotIn("ajustes.dns", r)
+        self.assertTrue(permisos.PLANTILLAS["operador"] - PUNTOS_TODOS <= r)
+        self.assertEqual(set(f(["puntos"], [], "lectura")), permisos.PLANTILLAS["lectura"])
+
+
+class PuntosPorPermiso(A.Base):
+    def poner_permisos(self, quien, lista):
+        us = self.d.cargar_usuarios()
+        for r in us:
+            if r["user"] == quien:
+                r["permisos"] = list(lista)
+        self.d.guardar_usuarios(us)
+
+    def test_solo_ver_la_ficha(self):
+        """Capacidad nueva: un operador sin lista de puntos y solo con «Ver la lista y la ficha» entra
+        en la ficha, pero no arranca, no toca la API, ni prefijos, ni la VPN, ni logs (403 sin
+        efectos) y la ficha no le ofrece esos botones ni le enseña los comandos de la VPN."""
+        self.poner_permisos("pepe", sorted((permisos.PLANTILLAS["operador"] - PUNTOS_TODOS) | {"puntos.ver"}))
+        r = self.get("/puntos/p001", "pepe")
+        self.assertEqual(r.status, 200, A.plano(r.texto))
+        for no in ("value=guardar", "Regenerar la clave VPN", "Guardar prefijos", "/puntos/p001/arrancar",
+                   "/puntos/p001/logs", "id=baja"):
+            self.no_esta(no, r.texto, "ficha pepe")
+        self.esta("no tiene permiso para ver los comandos", r.texto, "ficha pepe")
+        for ruta, form in (("/puntos/p001/arrancar", {}), ("/puntos/p001/regenerar", {}),
+                           ("/puntos/p001/ajustar", {"redes": ""}), ("/puntos/p001/api", {"accion": "guardar"})):
+            with self.subTest(ruta=ruta):
+                self.assertEqual(self.post(ruta, form, "pepe").status, 403)
+        self.assertEqual(self.get("/puntos/p001/logs", "pepe").status, 403)
+        self.assertEqual(self.get("/puntos/p001/huella", "pepe").status, 403)
+        self.assertEqual(self.p.orq.ordenes("punto.arrancar"), [])
+
+    def test_lectura_con_permiso_entra(self):
+        """Capacidad nueva: un usuario de lectura con «Ver la lista y la ficha» entra en Puntos."""
+        self.poner_permisos("luis", sorted(permisos.PLANTILLAS["lectura"] | {"puntos.ver"}))
+        self.assertEqual(self.get("/puntos", "luis").status, 200)
+        self.assertEqual(self.get("/puntos/p001", "luis").status, 200)
+        self.assertEqual(self.post("/puntos/p001/arrancar", {}, "luis").status, 403)
+
+    def test_borrar_es_global(self):
+        """Borrar puntos es global: con lista de puntos no vale aunque esté marcado (403); sin lista,
+        la ficha ofrece la baja."""
+        con_borrar = sorted(permisos.PLANTILLAS["operador"] | {"puntos.borrar"})
+        self.poner_permisos("olga", con_borrar)          # olga ve solo p001
+        self.assertEqual(self.post("/puntos/p001/borrar", {"confirmar": "x"}, "olga").status, 403)
+        self.no_esta("id=baja", self.get("/puntos/p001", "olga").texto, "ficha olga")
+        self.poner_permisos("pepe", con_borrar)          # pepe ve todos
+        self.esta("id=baja", self.get("/puntos/p001", "pepe").texto, "ficha pepe")
+
+    def test_sin_lista_como_antes(self):
+        """Conservación: sin `permisos`, cada rol tiene los de su plantilla (operador arranca, lectura no
+        entra en Puntos)."""
+        r = self.post("/puntos/p001/arrancar", {}, "olga")
+        self.assertEqual(r.status, 303, A.plano(r.texto))
+        self.assertEqual(self.get("/puntos", "luis").status, 403)
+
+
+class AcordeonUsuarios(A.Base):
+    def editar(self, objetivo, rol, perm=None, grupos="puntos"):
+        form = {"accion": "edit_user", "user": objetivo, "nombre": "", "correo": "", "role": rol}
+        if grupos is not None:
+            form["perm_grupos"] = grupos
+        if perm:
+            form["perm"] = list(perm)
+        return self.post("/perfil", form, "ana")
+
+    def test_el_formulario_trae_el_acordeon(self):
+        """Capacidad nueva: Ajustes › Usuarios trae el acordeón «Permisos» con la sección Puntos, su
+        «Activos X/Y» y una casilla por permiso; la fila lleva los permisos del usuario."""
+        h = self.get("/ajustes", "ana").texto
+        self.esta("name=perm_grupos value='puntos'", h, "ajustes")
+        self.esta("class=pgrp data-g='puntos'", h, "ajustes")
+        self.esta("Activos <b class=pgn>0</b>/10", h, "ajustes")
+        for p in sorted(PUNTOS_TODOS):
+            self.esta("name=perm value='%s'" % p, h, "ajustes")
+        self.esta("data-permisos='", h, "ajustes")
+
+    def test_el_javascript_de_ajustes_compila(self):
+        """El JS de Ajustes (con el del acordeón) no tiene errores de sintaxis (node --check); sin
+        node, se salta."""
+        import re
+        import shutil
+        import subprocess
+        import tempfile
+        node = shutil.which("node")
+        if not node:
+            self.skipTest("sin node")
+        h = self.get("/ajustes", "ana").texto
+        js = "\n;\n".join(re.findall(r"<script>(.*?)</script>", h, re.S))
+        self.assertIn("function permPlantilla", js)
+        with tempfile.NamedTemporaryFile("w", suffix=".js", delete=False, encoding="utf-8",
+                                         dir=os.environ.get("TMPDIR", "/tmp")) as f:
+            f.write(js)
+        self.addCleanup(os.unlink, f.name)
+        r = subprocess.run([node, "--check", f.name], capture_output=True, text=True, timeout=120)
+        self.assertEqual(r.returncode, 0, r.stderr[-800:])
+
+    def test_guardar_y_volver_a_la_plantilla(self):
+        """Capacidad nueva: editar con el acordeón guarda la lista si difiere de la plantilla y la
+        borra si es igual; sin perm_grupos (formulario de antes) no se toca; cambiar el rol la borra.
+        Y vale en la siguiente petición."""
+        self.editar("olga", "operador", ["puntos.ver"])
+        r = self.usuario("olga")
+        self.assertIn("puntos.ver", r["permisos"])
+        self.assertNotIn("puntos.arrancar", r["permisos"])
+        self.assertEqual(self.post("/puntos/p001/arrancar", {}, "olga").status, 403)
+        self.editar("olga", "operador", None, grupos=None)
+        self.assertIn("permisos", self.usuario("olga"))
+        self.editar("olga", "operador", sorted(permisos.PLANTILLAS["operador"] & PUNTOS_TODOS))
+        self.assertNotIn("permisos", self.usuario("olga"))
+        self.editar("olga", "operador", ["puntos.ver"])
+        self.post("/perfil", {"accion": "rol_user", "user": "olga", "role": "lectura"}, "ana")
+        self.assertNotIn("permisos", self.usuario("olga"))
+
+    def test_alta_con_permisos(self):
+        """Capacidad nueva: al crear, lo marcado; si coincide con la plantilla no se guarda lista."""
+        base = {"accion": "add_user", "npass": "clave-larga-de-prueba", "nrole": "operador",
+                "puntos_modo": "todos", "perm_grupos": "puntos"}
+        self.post("/perfil", dict(base, nuser="np1", perm=["puntos.ver", "puntos.logs"]), "ana")
+        self.assertEqual(set(self.usuario("np1")["permisos"]) & PUNTOS_TODOS, {"puntos.ver", "puntos.logs"})
+        self.post("/perfil", dict(base, nuser="np2", perm=sorted(permisos.PLANTILLAS["operador"] & PUNTOS_TODOS)),
+                  "ana")
+        self.assertNotIn("permisos", self.usuario("np2"))
 
 
 if __name__ == "__main__":
