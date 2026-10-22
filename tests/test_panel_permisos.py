@@ -82,7 +82,9 @@ class AdminLimitado(A.Base):
         sin crear puntos; usuarios.json intacto."""
         antes = self.d.cargar_usuarios()
         h = self.get("/ajustes", "adela").texto
-        self.assertNotIn("value=add_user", h)
+        # (fase 5) gestiona usuarios de sus puntos, pero no ve a quien tiene más que ella
+        self.assertNotIn("data-user='ana'", h)
+        self.assertNotIn("data-user='pepe'", h)
         self.assertEqual(self.get("/exclusiones", "adela").status, 403)
         self.assertEqual(self.get("/puntos/nuevo", "adela").status, 403)
         r = self.post("/perfil", {"accion": "add_user", "nuser": "intruso", "npass": "clave-larga-de-prueba",
@@ -90,7 +92,8 @@ class AdminLimitado(A.Base):
         self.assertEqual(r.status, 403)
         r = self.post("/perfil", {"accion": "edit_user", "user": "adela", "nombre": "", "correo": "",
                                   "role": "admin", "puntos_modo": "todos"}, "adela")
-        self.assertEqual(r.status, 403)
+        self.assertIn(r.status, (403, 200))
+        self.assertIn("puntos", self.usuario("adela"))     # no se amplía a todos los puntos
         self.assertEqual(self.d.cargar_usuarios(), antes)
 
     def test_gestiona_la_ficha_de_su_punto(self):
@@ -331,6 +334,97 @@ class ResumenPorPermiso(A.Base):
         self.assertTrue((r.cab("Location") or "").startswith("/ajustes"), r.cab("Location"))
 
 
+# --------------------------------------------------------------------------------------------
+# Fase 5: un cliente administra a su gente sin dar más de lo que tiene
+# --------------------------------------------------------------------------------------------
+GESTOR = sorted(permisos.PLANTILLAS["operador"] | {"usuarios.ver", "usuarios.editar", "usuarios.borrar"})
+
+
+class UsuariosDelegados(A.Base):
+    poner_permisos = PuntosPorPermiso.poner_permisos
+
+    def setUp(self):
+        super().setUp()
+        self.poner_permisos("olga", GESTOR)            # olga: operador, solo p001, gestiona usuarios
+
+    def alta(self, nombre, rol="lectura", modo="solo", puntos=("p001",), perm=None, quien="olga"):
+        form = {"accion": "add_user", "nuser": nombre, "npass": "clave-larga-de-prueba", "nrole": rol,
+                "puntos_modo": modo, "perm_grupos": "resumen,cuarentena,reputacion,puntos,usuarios"}
+        if puntos:
+            form["puntos"] = list(puntos)
+        if perm is not None:
+            form["perm"] = list(perm)
+        return self.post("/perfil", form, quien)
+
+    def test_ve_solo_a_quien_puede_gestionar(self):
+        """Capacidad nueva: en su lista sale ella y luis (lectura, p001); no pepe (todos los puntos),
+        ni dora (p003), ni los administradores."""
+        h = self.get("/ajustes", "olga").texto
+        self.esta("value=add_user", h, "ajustes olga")
+        for u in ("luis",):
+            self.esta("data-user='%s'" % u, h, "ajustes olga")
+        for u in ("pepe", "dora", "ana", "adela"):
+            self.no_esta("data-user='%s'" % u, h, "ajustes olga")
+        self.no_esta("data-user='olga'", h, "ajustes olga (no se edita a sí misma)")
+
+    def test_alta_dentro_de_lo_suyo(self):
+        """Capacidad nueva: crea usuarios solo con sus puntos y sus permisos: un punto ajeno o un
+        permiso que no tiene se quedan fuera."""
+        r = self.alta("nuevo1", puntos=("p001", "p002"),
+                      perm=["resumen.ver", "cuarentena.enviar", "puntos.borrar", "usuarios.editar"])
+        self.assertEqual(r.status, 200, A.plano(r.texto))
+        u = self.usuario("nuevo1")
+        self.assertEqual(u.get("puntos"), ["p001"])
+        self.assertIn("cuarentena.enviar", u["permisos"])
+        self.assertNotIn("puntos.borrar", u["permisos"])
+        self.assertTrue(set(u["permisos"]) <= set(GESTOR))
+
+    def test_no_da_mas_que_lo_suyo(self):
+        """Capacidad nueva: ni rol administrador, ni «todos los puntos» (403, sin usuario nuevo)."""
+        self.assertEqual(self.alta("nuevo2", rol="admin").status, 403)
+        self.assertEqual(self.alta("nuevo3", modo="todos", puntos=()).status, 403)
+        self.assertIsNone(self.usuario("nuevo2"))
+        self.assertIsNone(self.usuario("nuevo3"))
+
+    def test_no_toca_a_quien_tiene_mas(self):
+        """Capacidad nueva: editar, cambiar el rol, borrar o desactivar a pepe, dora, ana o a sí misma
+        responde «no existe» y no cambia nada."""
+        antes = self.d.cargar_usuarios()
+        for u in ("pepe", "dora", "ana", "olga"):
+            for form in ({"accion": "edit_user", "user": u, "nombre": "x", "correo": "", "role": "lectura",
+                          "puntos_modo": "solo", "puntos": ["p001"]},
+                         {"accion": "rol_user", "user": u, "role": "lectura"},
+                         {"accion": "del_user", "user": u}, {"accion": "toggle_user", "user": u}):
+                with self.subTest(u=u, accion=form["accion"]):
+                    r = self.post("/perfil", form, "olga")
+                    self.assertIn("Ese usuario no existe", r.texto)
+        self.assertEqual(self.d.cargar_usuarios(), antes)
+
+    def test_edita_a_los_suyos(self):
+        """Capacidad nueva: a luis (lectura, p001) lo edita y lo desactiva."""
+        r = self.post("/perfil", {"accion": "edit_user", "user": "luis", "nombre": "Luis", "correo": "",
+                                  "role": "operador", "puntos_modo": "solo", "puntos": ["p001"],
+                                  "perm_grupos": "cuarentena", "perm": ["cuarentena.ver", "cuarentena.enviar"]},
+                      "olga")
+        self.assertEqual(r.status, 200, A.plano(r.texto))
+        u = self.usuario("luis")
+        self.assertEqual((u["role"], u["nombre"]), ("operador", "Luis"))
+        self.assertTrue(set(u["permisos"]) <= set(GESTOR))
+        self.post("/perfil", {"accion": "toggle_user", "user": "luis"}, "olga")
+        self.assertFalse(self.usuario("luis")["activo"])
+
+    def test_cada_accion_su_permiso(self):
+        """Sin «Crear y editar», ni alta (403); sin «Borrar y desactivar», ni borrar (403); sin «Ver
+        los usuarios», sin la lista."""
+        self.poner_permisos("olga", sorted(set(GESTOR) - {"usuarios.editar"}))
+        self.assertEqual(self.alta("nuevo4").status, 403)
+        self.poner_permisos("olga", sorted(set(GESTOR) - {"usuarios.borrar"}))
+        self.assertEqual(self.post("/perfil", {"accion": "del_user", "user": "luis"}, "olga").status, 403)
+        self.assertIsNotNone(self.usuario("luis"))
+        self.poner_permisos("olga", sorted(set(GESTOR) - {"usuarios.ver"}))
+        self.no_esta("data-user='luis'", self.get("/ajustes", "olga").texto, "sin ver")
+
+
 class AcordeonUsuarios(A.Base):
     def editar(self, objetivo, rol, perm=None, grupos="puntos"):
         form = {"accion": "edit_user", "user": objetivo, "nombre": "", "correo": "", "role": rol}
@@ -344,7 +438,7 @@ class AcordeonUsuarios(A.Base):
         """Capacidad nueva: Ajustes › Usuarios trae el acordeón «Permisos» con la sección Puntos, su
         «Activos X/Y» y una casilla por permiso; la fila lleva los permisos del usuario."""
         h = self.get("/ajustes", "ana").texto
-        self.esta("name=perm_grupos value='resumen,cuarentena,reputacion,puntos'", h, "ajustes")
+        self.esta("name=perm_grupos value='resumen,cuarentena,reputacion,puntos,usuarios'", h, "ajustes")
         self.esta("class=pgrp data-g='cuarentena'", h, "ajustes")
         self.esta("class=pgrp data-g='reputacion'", h, "ajustes")
         self.esta("class=pgrp data-g='puntos'", h, "ajustes")

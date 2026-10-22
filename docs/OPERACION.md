@@ -608,6 +608,12 @@ mientras tanto, lo que aún no ha pasado decide por rol.
   su pestaña y la página da 403; sin «En vivo», la portada lleva a la primera pestaña que el usuario
   sí puede ver (o a Ajustes). Sin «Vista Todos», un usuario que ve todos los puntos los mira de uno
   en uno, como un limitado.
+- **Fase 5 (Usuarios).** El acordeón suma Usuarios: ver, crear y editar, borrar y desactivar. Quien
+  no es administrador con todos los puntos gestiona solo a quien no tiene más que él: con sus
+  puntos (si está limitado, solo «Solo estos puntos» y de los suyos), con permisos dentro de los
+  suyos y con un rol que no sea mayor. En su lista no salen los demás; editarlos, borrarlos o
+  desactivarlos responde «Ese usuario no existe». No se edita a sí mismo (su clave y su foto, sí,
+  desde Perfil). Un administrador limitado a unos puntos es, así, el administrador de ese cliente.
 
 **Qué ve un usuario limitado:**
 

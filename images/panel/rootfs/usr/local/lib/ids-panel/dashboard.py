@@ -193,6 +193,32 @@ def admin_total(r):
     actualizaciones). Siempre tiene que quedar al menos uno activo (salvaguarda en _post_perfil)."""
     return bool(r) and r.get("role") == "admin" and "puntos" not in r
 
+RANGO_ROL = {"lectura": 0, "operador": 1, "admin": 2}
+
+def usuario_gestionable(r):
+    """El usuario de la peticion puede ver y gestionar a `r` (fase 5 de permisos): un administrador con
+    todos los puntos, a todos (como siempre); los demas, solo a quien no tenga mas que ellos: puntos
+    dentro de los suyos (si estan limitados, `r` tambien), permisos dentro de los suyos y un rol que
+    no sea mayor. Asi un cliente administra a su gente sin poder darle mas de lo que tiene."""
+    if not r:
+        return False
+    if es_admin_ctx():
+        return True
+    a = nodos.alcance()
+    if a is not None:
+        pr = puntos_de_usuario(r)
+        if pr is None or not set(pr) <= a:
+            return False
+    if not permisos.de_usuario(r) <= (getattr(CTX, "permisos", None) or frozenset()):
+        return False
+    return RANGO_ROL.get(r.get("role"), 9) <= RANGO_ROL.get(getattr(CTX, "role", None), -1)
+
+def permisos_concedibles(pm, rol):
+    """Los permisos que se guardan para un usuario que crea o edita quien no es administrador con
+    todos los puntos: lo pedido (o, sin acordeon, la plantilla del rol) dentro de los suyos."""
+    base = set(pm) if pm is not None else set(permisos.PLANTILLAS.get(rol, frozenset()))
+    return sorted(base & (getattr(CTX, "permisos", None) or frozenset()))
+
 def puede_ctx(permiso):
     """El usuario de la peticion tiene ese permiso (permisos.py; los globales solo si ve todos los
     puntos). Para las paginas; en las rutas, H._puede."""
@@ -9471,8 +9497,13 @@ def permisos_acordeon_html():
     esc = html.escape
     glob_txt = " <span class=pglob title='Solo vale si el usuario ve todos los puntos'>global</span>"
     grupos = []
+    todo = es_admin_ctx()
     for g, tit, ps in permisos.CATALOGO:
         if g not in permisos.EDITABLES:
+            continue
+        # quien no es administrador con todos los puntos solo reparte los permisos que tiene
+        ps = [x for x in ps if todo or puede_ctx(x[0])]
+        if not ps:
             continue
         cas = "".join(
             f"<label class=chk><input type=checkbox name=perm value='{esc(p)}' onchange='permSync(this.form)'>"
@@ -12094,7 +12125,7 @@ def perfil_page(msg="", ok=False, edit_user=None):
             "</form></section>")
     else:
         card_pw = ""   # admin: cambia su clave con el lapiz de su fila
-    usuarios = cargar_usuarios() if (es_admin and yo) else []
+    usuarios = cargar_usuarios() if (puede_ctx("usuarios.ver") and yo) else []   # fase 5: filtrada abajo
     # --- tarjeta: gestion de empresa (nombre + logo en la barra; solo admin) ---
     card_empresa = ""
     if es_admin and yo:
@@ -12504,7 +12535,10 @@ def perfil_page(msg="", ok=False, edit_user=None):
     # papelera ni interruptor (te sacaba del panel). Altas: foto con boton propio, clave con
     # Ver/Generar y minimo CLAVE_MIN.
     card_users = ""
-    if es_admin and yo:
+    # la ven quien tiene «Ver los usuarios» (fase 5): un administrador con todos, a todos; los
+    # demas, solo a quien pueden gestionar (usuario_gestionable) y a si mismos
+    if puede_ctx("usuarios.ver") and yo:
+        _ed, _bo = puede_ctx("usuarios.editar"), puede_ctx("usuarios.borrar")
         rows = []
         hay_correo = any((r.get("correo") or "").strip() for r in usuarios)
         # «Puntos que ve» cada usuario (2026-10-22). El administrador no tiene alcance: aqui salen
@@ -12516,6 +12550,8 @@ def perfil_page(msg="", ok=False, edit_user=None):
             nombre = r.get("nombre", ""); correo = r.get("correo", "")
             activo = r.get("activo", True)
             soy = uraw == yo
+            if not soy and not usuario_gestionable(r):
+                continue                 # quien tiene mas que tu no sale en tu lista
             tu = " <span class=me>tu</span>" if soy else ""
             filtro = esc(((nombre + " " + uraw + " " + correo).lower()))
             # nombre arriba y el usuario de entrar debajo; sin nombre guardado, solo el usuario
@@ -12523,9 +12559,10 @@ def perfil_page(msg="", ok=False, edit_user=None):
                      f"<span class=ulog>{un}</span></div>" if nombre else
                      f"<div class=quien><div class=l1><span class='nm mono'>{un}</span>{tu}</div></div>")
             est_cls = "on" if activo else "off"; est_txt = "Activo" if activo else "Desactivado"
-            if soy:
+            if soy or not _bo:
                 estado = (f"<span class='estado {est_cls} fijo' title='Tu propia cuenta no se desactiva "
-                          f"desde aquí'>{est_txt}</span>")
+                          f"desde aquí'>{est_txt}</span>" if soy else
+                          f"<span class='estado {est_cls} fijo'>{est_txt}</span>")
             else:
                 confirma = (f" onsubmit=\"return ask(this,'Desactivar usuario',"
                             f"{js_attr(uraw + ' no podrá entrar hasta que lo vuelvas a activar. Sus sesiones abiertas se cierran.')},"
@@ -12534,7 +12571,7 @@ def perfil_page(msg="", ok=False, edit_user=None):
                           f"<input type=hidden name=accion value=toggle_user><input type=hidden name=user value='{un}'>"
                           f"<button class='estado {est_cls}' type=submit "
                           f"title='Clic para {'desactivar' if activo else 'activar'}'>{est_txt}</button></form>")
-            borrar = ("<span class=icph></span>" if soy else
+            borrar = ("<span class=icph></span>" if soy or not _bo else
                       "<form method=post action='/perfil' class=inl "
                       f"onsubmit=\"return ask(this,'Eliminar usuario',"
                       f"{js_attr(uraw + ' dejará de poder entrar al panel. No se borra nada de lo que haya hecho.')},"
@@ -12558,16 +12595,18 @@ def perfil_page(msg="", ok=False, edit_user=None):
                 f"<td><div class=nmcell>{_avatar(nombre, uraw, r.get('avatar'))}{quien}</div></td>"
                 f"{correo_c}<td>{_rol_badge(rl)}</td><td>{estado}</td><td>{pts_c}</td>"
                 "<td class=acts>"
+                + ("<span class=icph></span>" if not _ed or (soy and not es_admin_ctx()) else
                 f"<button class=ic title=Editar type=button onclick=\"abrirEdit(this)\" "
                 f"data-user='{un}' data-nombre=\"{esc(nombre)}\" data-correo=\"{esc(correo)}\" "
                 f"data-role='{rl}' data-pmodo='{'todos' if _pl is None else 'solo'}' "
                 f"data-puntos='{esc(','.join(_pl or []))}' "
-                f"data-permisos='{esc(','.join(sorted(permisos.crudos(r))))}'>{_IC_EDIT}</button>{borrar}"
-                "</td></tr>")
+                f"data-permisos='{esc(','.join(sorted(permisos.crudos(r))))}'>{_IC_EDIT}</button>")
+                + f"{borrar}</td></tr>")
 
         def _rol_select(nombre_campo, sid, hid, defecto):
+            _mx = 2 if es_admin_ctx() else RANGO_ROL.get(mirol, 0)     # no mas que el suyo
             ops = "".join(f"<option value={k}{' selected' if k == defecto else ''}>{_ROL_TXT[k]}</option>"
-                          for k in ("lectura", "operador", "admin"))
+                          for k in ("lectura", "operador", "admin") if RANGO_ROL[k] <= _mx)
             # con rol administrador «Puntos que ve» no aplica (ptsSync lo esconde)
             return (f"<select name={nombre_campo} id={sid} onchange=\"rolHint(this,'{hid}');ptsSync(this.form);"
                     f"permPlantilla(this.form)\">"
@@ -12589,10 +12628,12 @@ def perfil_page(msg="", ok=False, edit_user=None):
                     "<div class='hint ptsadm' hidden>Un administrador con «Solo estos puntos» gestiona solo esos; "
                     "los ajustes, los usuarios y las actualizaciones quedan para un administrador con todos.</div>"
                     "<div class=ptsbox>"
-                    "<label class=chk><input type=radio name=puntos_modo value=todos checked "
-                    "onchange='ptsSync(this.form)'>Todos los puntos</label>"
-                    "<label class=chk><input type=radio name=puntos_modo value=solo "
-                    "onchange='ptsSync(this.form)'>Solo estos puntos</label>"
+                    + ("" if nodos.limitado() else
+                       "<label class=chk><input type=radio name=puntos_modo value=todos checked "
+                       "onchange='ptsSync(this.form)'>Todos los puntos</label>")
+                    + "<label class=chk><input type=radio name=puntos_modo value=solo "
+                    + ("checked " if nodos.limitado() else "")
+                    + "onchange='ptsSync(this.form)'>Solo estos puntos</label>"
                     f"<div class=ptslist hidden>{cas}"
                     "<div class=hint>Ve sus puntos uno a uno (sin la vista «Todos») y nada de lo que es "
                     "de toda la instalación. Sin ninguno marcado no ve ningún punto y no puede usar el "
@@ -12671,10 +12712,11 @@ def perfil_page(msg="", ok=False, edit_user=None):
                           for k in ("admin", "operador", "lectura"))
         card_users = (
             "<section class='card usrs'>"
-            "<div class=uhead><h2>Usuarios <span class=cnt>" + str(len(usuarios)) + "</span></h2>"
+            "<div class=uhead><h2>Usuarios <span class=cnt>" + str(len(rows)) + "</span></h2>"
             "<div class=tools>"
             "<input class=search id=usearch placeholder='Buscar...' oninput='ufiltrar()'>"
-            "<button class='primary sm' type=button onclick=\"abrir('ovlNew')\">+ Nuevo usuario</button></div></div>"
+            + ("<button class='primary sm' type=button onclick=\"abrir('ovlNew')\">+ Nuevo usuario</button>"
+               if _ed else "") + "</div></div>"
             "<div class=roles>" + leyenda + "</div>"
             "<div class=twrap><table class=ut><thead><tr>"
             "<th>Usuario</th>" + ("<th>Correo</th>" if hay_correo else "") + "<th>Rol</th><th>Estado</th>"
@@ -21551,9 +21593,30 @@ class H(BaseHTTPRequestHandler):
             except OSError as ex:
                 return self._html(perfil_page(f"No se pudo guardar: {ex}", ok=False))
             return self._html(perfil_page("Tu foto fue actualizada." if foto != "__BORRAR__" else "Foto quitada.", ok=True))
-        # --- gestion de usuarios (solo admin) ---
-        if not self._admin():
+        # --- gestion de usuarios (fase 5 de permisos): crear, editar y cambiar el rol con «Crear y
+        # editar»; borrar y desactivar con «Borrar y desactivar»; cada uno solo sobre quien puede
+        # gestionar (usuario_gestionable). Lo demas (IPs de confianza, desbloqueos), solo admin.
+        if accion in ("add_user", "edit_user", "rol_user"):
+            if not self._puede("usuarios.editar"):
+                return self._prohibido()
+        elif accion in ("del_user", "toggle_user"):
+            if not self._puede("usuarios.borrar"):
+                return self._prohibido()
+        elif not self._admin():
             return self._prohibido()
+        _todo = es_admin_ctx()
+        if accion in ("edit_user", "rol_user", "del_user", "toggle_user") and not _todo:
+            _obj = buscar_usuario(q.get("user", [""])[0])
+            if not usuario_gestionable(_obj) or (_obj or {}).get("user") == yo:
+                # el mismo mensaje que si no existiera: no se sabe quien hay por encima
+                return self._html(perfil_page("Ese usuario no existe.", ok=False))
+        if accion in ("add_user", "edit_user", "rol_user") and not _todo:
+            _nr = q.get("nrole" if accion == "add_user" else "role", ["lectura"])[0]
+            if RANGO_ROL.get(_nr, 9) > RANGO_ROL.get(getattr(CTX, "role", None), -1):
+                return self._prohibido()
+            _pmo = (q.get("puntos_modo", [""])[0] or "").strip()
+            if nodos.limitado() and (_pmo == "todos" or (accion == "add_user" and _pmo != "solo")):
+                return self._prohibido()      # un limitado no da «todos los puntos»
         if accion == "unlock_ip":
             ip = q.get("ip", [""])[0].strip()
             existia = LOGIN_FAILS.pop(ip, None)
@@ -21635,6 +21698,8 @@ class H(BaseHTTPRequestHandler):
             # permisos del acordeon (fase 2): solo se guarda la lista si no es la de su plantilla
             _pm = permisos.del_formulario((q.get("perm_grupos", [""])[0] or "").split(","),
                                           q.get("perm", []), nrole)
+            if not es_admin_ctx():
+                _pm = permisos_concedibles(_pm, nrole)     # nunca mas de lo que tiene quien lo crea
             if _pm is not None and frozenset(_pm) != permisos.PLANTILLAS.get(nrole, frozenset()):
                 nuevo["permisos"] = _pm
             us.append(nuevo)
@@ -21744,6 +21809,8 @@ class H(BaseHTTPRequestHandler):
             # un formulario sin perm_grupos (de antes) no los toca
             _pm = permisos.del_formulario((q.get("perm_grupos", [""])[0] or "").split(","),
                                           q.get("perm", []), nrole)
+            if not es_admin_ctx():
+                _pm = permisos_concedibles(_pm if _pm is not None else permisos.crudos(obj), nrole)
             if _pm is not None:
                 if frozenset(_pm) == permisos.PLANTILLAS.get(nrole, frozenset()):
                     obj.pop("permisos", None)

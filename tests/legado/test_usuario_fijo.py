@@ -89,8 +89,14 @@ def main():
     exec(fuente("_post_perfil").replace("\n    ", "\n").lstrip(), ns)
     post = ns["_post_perfil"]
 
+    # (adaptada, permisos fase 5) quien edita es un administrador con todos los puntos
+    ns["es_admin_ctx"] = lambda: True
+
     class Yo(object):
         def _admin(self):
+            return True
+
+        def _puede(self, permiso):
             return True
 
         def _deny(self):
