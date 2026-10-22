@@ -206,6 +206,80 @@ class PuntosPorPermiso(A.Base):
         self.assertEqual(self.get("/puntos", "luis").status, 403)
 
 
+# --------------------------------------------------------------------------------------------
+# Fase 3: Cuarentena y Reputación deciden por permiso
+# --------------------------------------------------------------------------------------------
+class CuarentenaPorPermiso(A.Base):
+    poner_permisos = PuntosPorPermiso.poner_permisos
+
+    def sin(self, quien, *quitar):
+        r = self.usuario(quien)
+        self.poner_permisos(quien, sorted(permisos.PLANTILLAS[r["role"]] - set(quitar)))
+
+    def test_sin_enviar_no_envia(self):
+        """Capacidad nueva: un operador sin «Enviar y quitar» recibe 403 y nada llega al router; con
+        el resto de su plantilla, la graduada sí."""
+        self.sin("olga", "cuarentena.enviar")
+        r = self.post("/cuarentena/enviar", {"ip": "p001|" + A.IP_PROPIA_CAND, "score": "80"}, "olga")
+        self.assertEqual(r.status, 403)
+        self.assertEqual(self.post("/cuarentena/quitar", {"ip": "p001|" + A.IP_PROPIA}, "olga").status, 403)
+        self.assertEqual(self.p.mk, [])
+
+    def test_lectura_con_enviar_si_envia(self):
+        """Capacidad nueva: un usuario de lectura (luis, p001) con «Enviar y quitar» manda a cuarentena
+        en su punto."""
+        self.poner_permisos("luis", sorted(permisos.PLANTILLAS["lectura"] | {"cuarentena.enviar"}))
+        r = self.post("/cuarentena/enviar", {"ip": "p001|" + A.IP_PROPIA_CAND, "score": "80"}, "luis")
+        self.assertEqual(r.status, 303, A.plano(r.texto))
+        self.assertIn(("add", A.IP_PROPIA_CAND, "p001"), self.p.mk)
+
+    def test_sin_ver_no_ve(self):
+        """Capacidad nueva: sin «Ver candidatos...», ni la página ni la ficha del abonado (403)."""
+        self.sin("pepe", "cuarentena.ver")
+        self.assertEqual(self.get("/cuarentena", "pepe").status, 403)
+        self.assertEqual(self.get("/cuarentena/ficha?ip=p001%7C" + A.IP_PROPIA, "pepe").status, 403)
+
+    def test_cada_accion_su_permiso(self):
+        """Capacidad nueva: graduada, DNS, envío masivo y destinos, cada uno con el suyo (403 sin él)."""
+        casos = (("cuarentena.graduada", "/cuarentena/graduada", {"ip": "p001|" + A.IP_PROPIA_CAND}),
+                 ("cuarentena.dns", "/cuarentena/dns/enviar", {"ip": "p001|" + A.IP_PROPIA_CAND}),
+                 ("cuarentena.masivo", "/cuarentena/enviar-todos", {"nodo": "p001"}),
+                 ("cuarentena.destinos", "/cuarentena/destino/bloquear", {"ip": "203.0.113.60"}))
+        for perm, ruta, form in casos:
+            with self.subTest(perm=perm):
+                self.sin("pepe", perm)
+                self.assertEqual(self.post(ruta, form, "pepe").status, 403)
+        self.assertEqual(self.p.mk, [])
+
+    def test_confianza_global_y_denunciar(self):
+        """Destinos de confianza y denunciar son globales: un limitado con ellos marcados sigue con
+        403; uno sin lista de puntos y sin ellos, también."""
+        llamadas = []
+        self.d.excluir_destino = lambda dd: (llamadas.append(dd) or (1, "excluido"))
+        self.d.aidb_denunciar = lambda ip, **k: (llamadas.append(ip) or (True, "denunciada"))
+        self.poner_permisos("olga", sorted(permisos.PLANTILLAS["operador"]))
+        self.sin("pepe", "cuarentena.confianza", "reputacion.denunciar")
+        for quien in ("olga", "pepe"):
+            with self.subTest(quien=quien):
+                self.assertEqual(self.post("/cuarentena/excluir-destino", {"destino": "203.0.113.50"},
+                                           quien).status, 403)
+                self.assertEqual(self.post("/reputacion/denunciar", {"ip": "203.0.113.52", "firma": "ET x",
+                                                                     "dport": "443", "proto": "TCP", "n": "3"},
+                                           quien).status, 403)
+        self.assertEqual(llamadas, [])
+
+    def test_reputacion(self):
+        """Capacidad nueva: sin «Ver las IPs públicas» no hay página; sin «Consultar AbuseIPDB», ni
+        consulta ni ficha (403)."""
+        self.sin("luis", "reputacion.ver")
+        self.assertEqual(self.get("/reputacion", "luis").status, 403)
+        self.sin("pepe", "reputacion.consultar")
+        self.assertEqual(self.get("/reputacion", "pepe").status, 200)
+        self.assertEqual(self.get("/reputacion?ips=203.0.113.9", "pepe").status, 403)
+        self.assertEqual(self.get("/reputacion/ficha?ip=203.0.113.9", "pepe").status, 403)
+        self.assertEqual(self.post("/reputacion", {"ips": "203.0.113.9"}, "pepe").status, 403)
+
+
 class AcordeonUsuarios(A.Base):
     def editar(self, objetivo, rol, perm=None, grupos="puntos"):
         form = {"accion": "edit_user", "user": objetivo, "nombre": "", "correo": "", "role": rol}
@@ -219,7 +293,9 @@ class AcordeonUsuarios(A.Base):
         """Capacidad nueva: Ajustes › Usuarios trae el acordeón «Permisos» con la sección Puntos, su
         «Activos X/Y» y una casilla por permiso; la fila lleva los permisos del usuario."""
         h = self.get("/ajustes", "ana").texto
-        self.esta("name=perm_grupos value='puntos'", h, "ajustes")
+        self.esta("name=perm_grupos value='cuarentena,reputacion,puntos'", h, "ajustes")
+        self.esta("class=pgrp data-g='cuarentena'", h, "ajustes")
+        self.esta("class=pgrp data-g='reputacion'", h, "ajustes")
         self.esta("class=pgrp data-g='puntos'", h, "ajustes")
         self.esta("Activos <b class=pgn>0</b>/10", h, "ajustes")
         for p in sorted(PUNTOS_TODOS):

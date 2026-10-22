@@ -598,6 +598,11 @@ mientras tanto, lo que aún no ha pasado decide por rol.
   solo lo que el usuario puede usar y el servidor rechaza (403) el resto. Si los marcados coinciden
   con la plantilla del rol no se guarda lista (`permisos` en usuarios.json), y cambiar el rol desde
   la tabla la borra.
+- **Fase 3 (Cuarentena y Reputación).** El acordeón suma Cuarentena (ver; enviar y quitar;
+  graduada; lista DNS; envío masivo; bloquear destinos; destinos de confianza, global) y Reputación
+  (ver las IPs públicas; consultar AbuseIPDB; denunciar, global). Cada ruta pide el suyo (403 sin
+  él). La página de Cuarentena enseña los botones si el usuario tiene alguno de los de actuar; cada
+  envío vuelve a comprobar el suyo en el servidor.
 
 **Qué ve un usuario limitado:**
 

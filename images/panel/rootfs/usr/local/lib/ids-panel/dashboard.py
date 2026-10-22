@@ -20093,12 +20093,21 @@ class H(BaseHTTPRequestHandler):
                     _cmsg = "%d entrada(s) quitada(s)" % _nq + ("; %d con error" % _ne if _ne else "")
                 except (ValueError, TypeError):
                     _cmsg = ""
-            return self._html(cuarentena_page(msg=_cmsg, es_admin=self._operador()))
+            # fase 3 de permisos: ver la pagina y, los botones, con alguno de los de actuar (cada
+            # accion vuelve a comprobar el suyo en el POST)
+            if not self._puede("cuarentena.ver"):
+                return self._prohibido()
+            _actua = any(self._puede(x) for x in ("cuarentena.enviar", "cuarentena.graduada",
+                                                   "cuarentena.dns", "cuarentena.masivo",
+                                                   "cuarentena.destinos"))
+            return self._html(cuarentena_page(msg=_cmsg, es_admin=_actua))
         if path == "/cuarentena/ficha":
             # la ficha de evidencia es parte de «ver Cuarentena»: tambien lectura (CONTRATO-F2
             # §10.2, precision B-18). No tiene botones de accion.
             if not self._sesion_ok():
                 return self._deny()
+            if not self._puede("cuarentena.ver"):
+                return self._prohibido()
             _qs = _up.parse_qs(self.path.split("?", 1)[1]) if "?" in self.path else {}
             return self._html(ficha_page(_qs.get("ip", [""])[0],
                                          embed=("embed=1" in (self.path.split("?", 1)[1] if "?" in self.path else ""))))
@@ -20169,7 +20178,7 @@ class H(BaseHTTPRequestHandler):
             # Devuelve SOLO la ficha de una IP, para desplegarla dentro de la tabla del
             # rango sin cambiar de pagina. Se consulta a demanda, al abrir: pintar las
             # nueve de un /28 de golpe gastaria nueve consultas de la cuota por mirar una.
-            if not self._operador():
+            if not self._puede("reputacion.consultar"):
                 return self._prohibido()
             _qf = _up.parse_qs(self.path.split("?", 1)[1]) if "?" in self.path else {}
             _ip = (_qf.get("ip", [""])[0]).strip()
@@ -20188,7 +20197,7 @@ class H(BaseHTTPRequestHandler):
             # ?ips=... para poder enlazar una IP concreta desde la tabla de una red
             _qr = _up.parse_qs(self.path.split("?", 1)[1]) if "?" in self.path else {}
             _t = (_qr.get("ips", [""])[0]).strip()
-            if _t and not self._operador():
+            if not self._puede("reputacion.ver") or (_t and not self._puede("reputacion.consultar")):
                 return self._prohibido()
             if _t:
                 _res, _av = aidb_lote(_t, refrescar=bool(_qr.get("refrescar")))
@@ -20201,7 +20210,8 @@ class H(BaseHTTPRequestHandler):
             # a mano no se pinta en el modal del panel
             _av = rep_aviso_tomar(_qr.get("msg", [""])[0])     # (texto, marcar)
             return self._html(reputacion_page(es_admin=self._admin(), modal=True,
-                                              msg=_av[0], marcar=_av[1], es_operador=self._operador()))
+                                              msg=_av[0], marcar=_av[1],
+                                              es_operador=self._puede("reputacion.consultar")))
         if path == "/documentacion":
             _qd = _up.parse_qs(self.path.split("?", 1)[1]) if "?" in self.path else {}
             return self._html(documentacion_page(embed=("1" in _qd.get("embed", [])),
@@ -20642,7 +20652,7 @@ class H(BaseHTTPRequestHandler):
             bitacora("CONFIG-FEEDS-AUTHKEY", f"guardada sin validar ({det})")
             return self._html(perfil_page(f"Auth-Key guardada, pero {det}. Se reintentará en la próxima actualización.", ok=True))
         if ruta == "/reputacion":
-            if not self._operador():
+            if not self._puede('reputacion.consultar'):
                 return self._prohibido()
             texto = q.get("ips", [""])[0]
             res, aviso = aidb_lote(texto, refrescar=bool(q.get("refrescar")))
@@ -20651,7 +20661,8 @@ class H(BaseHTTPRequestHandler):
             return self._html(reputacion_page(res=res, texto=texto, msg=aviso, ok=not aviso,
                                               es_admin=self._admin()))
         if ruta == "/reputacion/denunciar":
-            if not self._operador():
+            # permiso global: a un limitado no le vale nunca (sale el ERR de abajo, que lee el boton)
+            if not self._puede("reputacion.denunciar") and self._sin_limite():
                 return self._prohibido()
             if not self._sin_limite():
                 # denunciar es publico, a nombre de la empresa y gasta su cuota: no es de quien
@@ -21027,7 +21038,7 @@ class H(BaseHTTPRequestHandler):
             return self._redirect(rep_aviso_url(
                 "Generando en segundo plano; recarga en un rato.", pagina="/conducta"))
         if ruta == "/cuarentena/enviar":
-            if not self._operador():
+            if not self._puede('cuarentena.enviar'):
                 return self._prohibido()
             ajax = bool(q.get("ajax"))   # desde el Top: responde texto plano y NO redirige
             def _fin(okr, texto):
@@ -21105,7 +21116,7 @@ class H(BaseHTTPRequestHandler):
             mk_log("ERROR-ENVIO", ip, getattr(CTX, "user", "?"), f"{err}" + _suf_nodo(clave))
             return _fin(False, f"No se pudo enviar {ip}: {err}")
         if ruta in ("/cuarentena/destino/bloquear", "/cuarentena/destino/quitar"):
-            if not self._operador():
+            if not self._puede('cuarentena.destinos'):
                 return self._prohibido()
             ip = (q.get("ip", [""])[0]).strip()
             quitar = ruta.endswith("/quitar")
@@ -21171,7 +21182,7 @@ class H(BaseHTTPRequestHandler):
         if ruta == "/cuarentena/graduada":
             # Corte PARCIAL: se le cortan los puertos de abuso y se le deja el resto. El
             # abonado sigue navegando, no llama a soporte, y por eso el corte aguanta.
-            if not self._operador():
+            if not self._puede("cuarentena.graduada"):
                 return self._prohibido()
             ajax_g = bool(q.get("ajax"))
             def _fin_g(okr, texto):
@@ -21231,7 +21242,7 @@ class H(BaseHTTPRequestHandler):
                 pass
             return _fin_g(True, f"{ip} con corte parcial en {lst}{aviso}")
         if ruta == "/cuarentena/graduada/quitar":
-            if not self._operador():
+            if not self._puede('cuarentena.graduada'):
                 return self._prohibido()
             clave = (q.get("ip", [""])[0]).strip()
             ip = ip_de(clave); rt = _router_de_pid(rid_de(clave))
@@ -21255,7 +21266,7 @@ class H(BaseHTTPRequestHandler):
             return self._redirect(cuar_aviso_url(
                 f"{ip}: corte parcial retirado" if ok else f"No se pudo quitar {ip}: {err}"))
         if ruta == "/cuarentena/enviar-todos":
-            if not self._operador():
+            if not self._puede('cuarentena.masivo'):
                 return self._prohibido()
             if not (q.get("nodo", [""])[0] or "").strip():
                 return self._html(_pagina_error("Falta el nodo", "El formulario no dice de que nodo es la "
@@ -21266,7 +21277,7 @@ class H(BaseHTTPRequestHandler):
                                 f"por {getattr(CTX, 'user', '?')}. {resumen}")
             return self._redirect(cuar_aviso_url(resumen))
         if ruta == "/cuarentena/quitar":
-            if not self._operador():
+            if not self._puede('cuarentena.enviar'):
                 return self._prohibido()
             # primero se separa la identidad y luego se valida la IP: al reves, un
             # "router|IP" se rechazaba como "IP invalida" y el CPE no se podia liberar
@@ -21296,7 +21307,7 @@ class H(BaseHTTPRequestHandler):
             # Quita UNA IP y responde JSON enseguida. La usa el quitado masivo para ir
             # marcando el avance: cada IP es una llamada al MikroTik y en bloque puede
             # tardar bastante; asi se ve cual va saliendo en vez de una pantalla colgada.
-            if not self._operador():
+            if not self._puede("cuarentena.enviar"):
                 return self._json({"ok": False, "err": "sin permiso"}, 403)
             # la seleccion llega como "cuar|IP" o, con varios nodos, "cuar|router|IP":
             # primero se separa el tipo de lista, y lo que queda ES la identidad del CPE
@@ -21336,7 +21347,7 @@ class H(BaseHTTPRequestHandler):
         if ruta == "/cuarentena/quitar-varios":
             # quitado masivo desde la tabla "Enviados manualmente". Cada seleccion llega como
             # "cuar|IP" o "dns|IP" porque cada una vive en una address-list distinta.
-            if not self._operador():
+            if not self._puede("cuarentena.enviar"):
                 return self._prohibido()
             sels = q.get("sel", [])
             if not sels:
@@ -21400,12 +21411,12 @@ class H(BaseHTTPRequestHandler):
         if ruta == "/cuarentena/excluir-destino":
             # la lista de destinos de confianza es de TODA la instalacion (y libera CPEs de todos
             # los puntos): un usuario limitado no la toca (2026-10-22)
-            if not self._operador() or not self._sin_limite():
+            if not self._puede("cuarentena.confianza"):      # global: un limitado nunca
                 return self._prohibido()
             n, msg = excluir_destino((q.get("destino", [""])[0]).strip())
             return self._redirect(cuar_aviso_url(msg))
         if ruta == "/cuarentena/quitar-destino":
-            if not self._operador() or not self._sin_limite():
+            if not self._puede("cuarentena.confianza"):
                 return self._prohibido()
             d = (q.get("destino", [""])[0]).strip()
             modificar_dest_ok(quitar=d)
@@ -21413,7 +21424,8 @@ class H(BaseHTTPRequestHandler):
             bitacora("QUITAR-DESTINO-CONFIABLE", d)
             return self._redirect(cuar_aviso_url(f"'{d}' ya no es destino confiable"))
         if ruta in ("/cuarentena/dns/enviar", "/cuarentena/dns/quitar", "/cuarentena/dns/enviar-todos"):
-            if not self._operador():
+            if not self._puede("cuarentena.dns") or (ruta.endswith("enviar-todos")
+                                                     and not self._puede("cuarentena.masivo")):
                 return self._prohibido()
             m = cargar_mk(); lst = m.get("LIST_DNS", "suricata-dns-sospechoso"); ttl = _ttl_efectivo(m, "TTL_DNS")
             if ruta == "/cuarentena/dns/quitar":
