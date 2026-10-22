@@ -351,14 +351,15 @@ class DashBase(unittest.TestCase):
 
 class SesionYPuntos(DashBase):
     def test_puntos_de_usuario(self):
-        """Capacidad nueva: None = todos (admin siempre, o sin la clave `puntos`); una lista = esos
-        pids bien formados; vacia o mal formada (no lista) = ninguno, nunca todos."""
+        """Capacidad nueva: None = todos (sin la clave `puntos`, tambien el admin); una lista = esos
+        pids bien formados (desde la fase 1 de permisos, tambien para el admin); vacia o mal formada
+        (no lista) = ninguno, nunca todos."""
         f = self.d.puntos_de_usuario
         casos = [
             (None, None),
             (self.u("a", "admin"), None),
-            (self.u("a", "admin", puntos=["p001"]), None),
-            (self.u("a", "admin", puntos=[]), None),
+            (self.u("a", "admin", puntos=["p001"]), ["p001"]),
+            (self.u("a", "admin", puntos=[]), []),
             (self.u("o", "operador"), None),
             (self.u("l", "lectura"), None),
             (self.u("o", "operador", puntos=["p002", "p001"]), ["p001", "p002"]),
@@ -374,12 +375,13 @@ class SesionYPuntos(DashBase):
 
     def test_sesion_trae_los_puntos_y_se_relee(self):
         """Capacidad nueva: sesion_de devuelve los puntos del usuario releidos en cada peticion: un
-        cambio del admin vale en la siguiente, sin volver a entrar; el admin siempre None."""
+        cambio del admin vale en la siguiente, sin volver a entrar (el admin con lista, desde la
+        fase 1 de permisos, tambien se limita)."""
         d = self.d
         d.guardar_usuarios([self.u("ana", "admin", puntos=["p001"]), self.u("olga", "operador", puntos=["p001"]),
                             self.u("pepe", "operador")])
         t = {n: d.sesion_abrir(n, r) for n, r in (("ana", "admin"), ("olga", "operador"), ("pepe", "operador"))}
-        self.assertIsNone(d.sesion_de(t["ana"])["puntos"])
+        self.assertEqual(d.sesion_de(t["ana"])["puntos"], ["p001"])
         self.assertEqual(d.sesion_de(t["olga"])["puntos"], ["p001"])
         self.assertIsNone(d.sesion_de(t["pepe"])["puntos"])
         us = d.cargar_usuarios()
@@ -1066,8 +1068,9 @@ class UsuariosEnAjustes(Base):
 
     def test_alta_con_sus_puntos(self):
         """Capacidad nueva: al crear un usuario, «solo» guarda la lista ordenada y sin repetidos de
-        los puntos existentes (los inexistentes o mal formados se ignoran); «todos» o rol admin no
-        guardan lista; «solo» sin ninguno guarda []. Y el usuario entra viendo solo lo suyo."""
+        los puntos existentes (los inexistentes o mal formados se ignoran); «todos» no guarda lista
+        (desde la fase 1 de permisos tambien el admin se limita); «solo» sin ninguno guarda []. Y el
+        usuario entra viendo solo lo suyo."""
         self.alta("nuevo1", "operador", "solo", ["p003", "p001", "p001", "p999", "../p002", "p0002", ""])
         self.alta("nuevo2", "lectura", "todos", ["p001"])
         self.alta("nuevo3", "admin", "solo", ["p001"])
@@ -1077,7 +1080,7 @@ class UsuariosEnAjustes(Base):
             self.assertIsNotNone(r, n)
         self.assertEqual(us["nuevo1"].get("puntos"), ["p001", "p003"])
         self.assertNotIn("puntos", us["nuevo2"])
-        self.assertNotIn("puntos", us["nuevo3"])
+        self.assertEqual(us["nuevo3"].get("puntos"), ["p001"])
         self.assertEqual(us["nuevo4"].get("puntos"), [])
         self.assertEqual(self.get("/?nodo=p002", "nuevo1").status, 404)
         self.assertEqual(self.get("/?nodo=p003", "nuevo1").status, 200)
@@ -1086,12 +1089,13 @@ class UsuariosEnAjustes(Base):
 
     def test_edicion_cambia_sus_puntos(self):
         """Capacidad nueva: editar un usuario cambia su lista: «todos» la borra, «solo» la fija
-        (ordenada, sin repetidos ni inexistentes), «solo» sin ninguno deja [] y el rol admin la borra."""
+        (ordenada, sin repetidos ni inexistentes), «solo» sin ninguno deja [] y, desde la fase 1 de
+        permisos, el rol admin tambien la conserva."""
         pasos = ((("operador", "todos", ["p001"]), None),
                  (("operador", "solo", ["p002"]), ["p002"]),
                  (("operador", "solo", ["p003", "p002", "p003", "p777"]), ["p002", "p003"]),
                  (("operador", "solo", []), []),
-                 (("admin", "solo", ["p001"]), None))
+                 (("admin", "solo", ["p001"]), ["p001"]))
         for (rol, modo, pts), esperado in pasos:
             with self.subTest(rol=rol, modo=modo, puntos=pts):
                 self.editar("olga", rol, modo, pts)
@@ -1144,9 +1148,10 @@ class UsuariosEnAjustes(Base):
 
 class AdminSinCambios(Base):
     def test_admin_y_usuarios_sin_lista_lo_ven_todo(self):
-        """Conservacion: el admin (aunque tenga lista: se ignora) y el usuario sin lista ven todos los
-        puntos y la vista acumulada, que es su vista por defecto; el selector trae «Todos» y los tres."""
-        for quien in ("ana", "adela", "pepe"):
+        """Conservacion: el admin sin lista y el usuario sin lista ven todos los puntos y la vista
+        acumulada, que es su vista por defecto; el selector trae «Todos» y los tres. (Un admin con
+        lista, desde la fase 1 de permisos, se limita: test_panel_permisos.)"""
+        for quien in ("ana", "pepe"):
             with self.subTest(quien=quien):
                 r = self.get("/", quien)
                 self.assertEqual(r.status, 200, plano(r.texto))

@@ -172,10 +172,12 @@ def sesion_de(token):
     return v
 
 def puntos_de_usuario(r):
-    """Los puntos que ve un usuario (2026-10-22): None = todos (admin, o usuario sin lista
-    `puntos`); si no, su lista, que puede estar vacia (no ve ninguno). Una lista mal formada no
-    ve ninguno: nunca se amplia a todos."""
-    if not r or r.get("role") == "admin":
+    """Los puntos que ve un usuario (2026-10-22): None = todos (usuario sin lista `puntos`); si
+    no, su lista, que puede estar vacia (no ve ninguno). Una lista mal formada no ve ninguno:
+    nunca se amplia a todos. Desde la fase 1 de permisos tambien un administrador se limita: con
+    lista es «administrador de sus puntos» y lo global (ajustes, usuarios) queda para un
+    administrador sin limite (admin_total)."""
+    if not r:
         return None
     if "puntos" not in r:
         return None
@@ -183,6 +185,15 @@ def puntos_de_usuario(r):
     if not isinstance(p, list):          # null u otra cosa: ninguno
         return []
     return [x for x in p if nodos.pid_valido(x)]
+
+def admin_total(r):
+    """Administrador que ve todos los puntos: el unico que toca lo global (ajustes, usuarios,
+    actualizaciones). Siempre tiene que quedar al menos uno activo (salvaguarda en _post_perfil)."""
+    return bool(r) and r.get("role") == "admin" and "puntos" not in r
+
+def es_admin_ctx():
+    """La peticion es de un administrador sin limite de puntos (el rol de la sesion y el alcance)."""
+    return getattr(CTX, "role", None) == "admin" and not nodos.limitado()
 
 SESSIONS = _cargar_sesiones()
 
@@ -6440,7 +6451,8 @@ ROLES = ("admin", "operador", "lectura")   # operador: gestiona incidentes y cua
 # Lo que puede cada rol, en palabras del operador: sale en la leyenda de Usuarios y debajo del
 # selector de rol al crear o editar (el user, 2026-10-13: «no se sabe que hace cada uno»).
 ROL_DESC = {
-    "admin": "Todo: usuarios, MikroTik, puntos, exclusiones, listas y actualizaciones.",
+    "admin": "Todo: usuarios, MikroTik, puntos, exclusiones, listas y actualizaciones. Con «Solo estos "
+             "puntos», solo esos y como operador: sin ajustes, usuarios ni actualizaciones.",
     "operador": "La cuarentena y la ficha de sus puntos: envía y quita CPEs de las listas del MikroTik; "
                 "si ve todos los puntos, además excluye destinos y denuncia IPs. No toca usuarios ni ajustes.",
     "lectura": "Ve paneles, eventos y reportes de sus puntos. No cambia nada.",
@@ -9447,7 +9459,7 @@ def quitar_punto_de_usuarios(pid, quien=None):
 
 def puntos_txt(r, nombres=None):
     """Que puntos ve ese usuario, en palabras: «Todos», «Ninguno» o sus nombres."""
-    if (r or {}).get("role") == "admin" or "puntos" not in (r or {}):
+    if "puntos" not in (r or {}):
         return "Todos"
     p = puntos_de_usuario(r) or []
     if not p:
@@ -10845,8 +10857,7 @@ def tarjeta_version():
         + (f" Última búsqueda: {esc(buscada)}." if buscada else "") + "</p></section>")
 
 def nav(active=""):
-    _rl = getattr(CTX, "role", None)
-    es_admin_nav = _rl == "admin"   # exclusiones/tuning: solo admin (ni operador ni lectura)
+    es_admin_nav = es_admin_ctx()   # exclusiones/tuning: solo admin sin limite de puntos
     parts = []
     for h, t in _NAV_LINKS:
         if h in _NAV_SOLO_ADMIN and not es_admin_nav:
@@ -11985,7 +11996,8 @@ def perfil_page(msg="", ok=False, edit_user=None):
     esc = html.escape
     yo = getattr(CTX, "user", None)
     mirol = getattr(CTX, "role", None)
-    es_admin = mirol == "admin"   # operador NO ve tarjetas de admin (usuarios/mikrotik/puntos/bitacora)
+    # operador (y admin limitado a unos puntos) NO ve tarjetas de admin (usuarios/mikrotik/bitacora)
+    es_admin = es_admin_ctx()
     mi = buscar_usuario(yo) if yo else None
     mi_foto = (mi or {}).get("avatar", "")
     big_av = (f'<img class=avatar src="{esc(mi_foto)}" alt="">' if mi_foto.startswith("data:image/")
@@ -12468,11 +12480,10 @@ def perfil_page(msg="", ok=False, edit_user=None):
             correo_c = (f"<td class=cmail>{esc(correo) if correo else '<span class=dash>&mdash;</span>'}</td>"
                         if hay_correo else "")
             # sus puntos: «Todos» (admin o sin lista), «Ninguno» (lista vacia: no ve nada) o los nombres
-            _pl = None if rl == "admin" else puntos_de_usuario(r)
+            _pl = puntos_de_usuario(r)
             _ptxt = puntos_txt(r, _nom_pts)
             if _pl is None:
-                pts_c = ("<span class=ptodos title='El administrador ve todos los puntos'>Todos</span>"
-                         if rl == "admin" else "<span class=ptodos>Todos</span>")
+                pts_c = "<span class=ptodos>Todos</span>"
             elif not _pl:
                 pts_c = ("<span class=pninguno title='No ve ningún punto: no puede usar el panel hasta "
                          "que le asignes uno'>Ninguno</span>")
@@ -12500,7 +12511,7 @@ def perfil_page(msg="", ok=False, edit_user=None):
         def _puntos_campo():
             # «Puntos que ve» (2026-10-22): todos, o solo los marcados (campo puntos_modo y casillas
             # name=puntos, value=pid). Las casillas solo se ven con «Solo estos puntos»; con rol
-            # administrador no aplica: ve todos
+            # administrador tambien (fase 1 de permisos): limitado, no toca lo global
             if _pts:
                 cas = "".join(
                     f"<label class=chk><input type=checkbox name=puntos value='{esc(p['pid'])}'>"
@@ -12509,7 +12520,8 @@ def perfil_page(msg="", ok=False, edit_user=None):
             else:
                 cas = "<div class=hint>Todavía no hay puntos dados de alta.</div>"
             return ("<div class='field ptsf'><label>Puntos que ve</label>"
-                    "<div class='hint ptsadm' hidden>El administrador ve todos los puntos.</div>"
+                    "<div class='hint ptsadm' hidden>Un administrador con «Solo estos puntos» gestiona solo esos; "
+                    "los ajustes, los usuarios y las actualizaciones quedan para un administrador con todos.</div>"
                     "<div class=ptsbox>"
                     "<label class=chk><input type=radio name=puntos_modo value=todos checked "
                     "onchange='ptsSync(this.form)'>Todos los puntos</label>"
@@ -12872,11 +12884,11 @@ def perfil_page(msg="", ok=False, edit_user=None):
               "var fi=document.getElementById(p+'file');if(fi)fi.value='';}"
               "var ROLD=" + json.dumps(ROL_DESC) + ";"
               "function rolHint(sel,h){var e=document.getElementById(h);if(e&&sel)e.textContent=ROLD[sel.value]||'';}"
-              # «Puntos que ve»: con rol administrador no aplica; las casillas, solo con «Solo estos»
+              # «Puntos que ve»: tambien para el administrador (con aviso); las casillas, solo con «Solo estos»
               "function ptsSync(f){if(!f)return;var r=f.querySelector('select[name=nrole],select[name=role]'),"
               "adm=!!r&&r.value==='admin',a=f.querySelector('.ptsadm'),b=f.querySelector('.ptsbox'),"
               "l=f.querySelector('.ptslist'),s=f.querySelector('input[name=puntos_modo][value=solo]');"
-              "if(a)a.hidden=!adm;if(b)b.hidden=adm;if(l)l.hidden=adm||!(s&&s.checked);}"
+              "if(a)a.hidden=!adm;if(l)l.hidden=!(s&&s.checked);}"
               "function ptsPoner(f,modo,lista){var v=(lista||'').split(',');"
               "var rs=f.querySelectorAll('input[name=puntos_modo]');for(var i=0;i<rs.length;i++)"
               "rs[i].checked=rs[i].value===(modo==='solo'?'solo':'todos');"
@@ -13374,7 +13386,7 @@ def update_box():
     """Recuadro con el estado de las reglas y el boton de actualizacion manual (solo admin)."""
     ult = ultima_actualizacion_reglas()
     ult_txt = ult.strftime("%d/%m/%Y %H:%M") if ult else "desconocida"
-    es_admin = getattr(CTX, "role", None) == "admin"
+    es_admin = es_admin_ctx()
     if UPDATE["running"]:
         h = datetime.fromtimestamp(UPDATE["started"], TZ_EC).strftime("%H:%M:%S")
         estado = (f'<div style="background:#eda100;color:#fff;padding:9px 13px;border-radius:8px;'
@@ -19500,7 +19512,8 @@ class H(BaseHTTPRequestHandler):
         return self._sesion().get("role")
     def _admin(self):
         # solo un admin con sesion. Ya no existe el modo sin autenticacion (rol None).
-        return self._sesion_ok() and self._rol() == "admin"
+        # desde la fase 1 de permisos, un admin limitado a unos puntos no toca lo global
+        return self._sesion_ok() and self._rol() == "admin" and not nodos.limitado()
     def _operador(self):
         # puede gestionar cuarentenas/incidentes: admin u operador, con sesion.
         return self._sesion_ok() and self._rol() in ("admin", "operador")
@@ -19865,7 +19878,7 @@ class H(BaseHTTPRequestHandler):
             wsel = ""
             pendiente = False   # mientras se genera otra ventana la pagina pregunta por
                                 # /ventana-estado y se recarga UNA vez al terminar
-            if getattr(CTX, "role", None) == "admin":
+            if es_admin_ctx():
                 va = ventana_actual()
                 opts = "".join(f"<option value={v}{' selected' if v == va else ''}>{t}</option>"
                                for v, t in VENTANAS)
@@ -21525,7 +21538,7 @@ class H(BaseHTTPRequestHandler):
             salt, h = _hash_pw(npw)
             nuevo = {"user": nu, "salt": salt, "hash": h, "role": nrole,
                      "nombre": nombre, "correo": correo, "activo": True, "avatar": foto}
-            if pmodo == "solo" and nrole != "admin":
+            if pmodo == "solo":
                 nuevo["puntos"] = puntos_marcados(q.get("puntos", []))
             us.append(nuevo)
             try:
@@ -21540,12 +21553,12 @@ class H(BaseHTTPRequestHandler):
         if accion == "del_user":
             objetivo = q.get("user", [""])[0]
             us = cargar_usuarios()
-            admins = [r for r in us if r.get("role") == "admin"]
+            admins = [r for r in us if admin_total(r) and r.get("activo", True)]
             obj = next((r for r in us if r.get("user") == objetivo), None)
             if not obj:
                 return self._html(perfil_page("Ese usuario no existe.", ok=False))
-            if obj.get("role") == "admin" and len(admins) <= 1:
-                return self._html(perfil_page("No puedes borrar el único administrador.", ok=False))
+            if admin_total(obj) and obj.get("activo", True) and len(admins) <= 1:
+                return self._html(perfil_page("No puedes borrar el único administrador con todos los puntos.", ok=False))
             if objetivo == yo:
                 return self._html(perfil_page("No puedes eliminar tu propia cuenta: pide a otro administrador "
                                               "que lo haga.", ok=False))
@@ -21566,15 +21579,14 @@ class H(BaseHTTPRequestHandler):
             if nrole not in ROLES:
                 return self._html(perfil_page("Rol inválido.", ok=False))
             us = cargar_usuarios()
-            admins = [r for r in us if r.get("role") == "admin"]
+            admins = [r for r in us if admin_total(r) and r.get("activo", True)]
             obj = next((r for r in us if r.get("user") == objetivo), None)
             if not obj:
                 return self._html(perfil_page("Ese usuario no existe.", ok=False))
-            if obj.get("role") == "admin" and nrole != "admin" and len(admins) <= 1:
-                return self._html(perfil_page("No puedes quitar el rol al único administrador.", ok=False))
+            if admin_total(obj) and obj.get("activo", True) and nrole != "admin" and len(admins) <= 1:
+                return self._html(perfil_page("No puedes quitar el rol al único administrador con todos "
+                                              "los puntos.", ok=False))
             obj["role"] = nrole
-            if nrole == "admin":
-                obj.pop("puntos", None)      # el administrador ve siempre todos los puntos
             try:
                 guardar_usuarios(us)
             except OSError as ex:
@@ -21602,12 +21614,15 @@ class H(BaseHTTPRequestHandler):
             if pmodo not in ("", "todos", "solo"):
                 return self._html(perfil_page("Puntos que ve: opción no válida.", ok=False))
             us = cargar_usuarios()
-            admins = [r for r in us if r.get("role") == "admin"]
+            admins = [r for r in us if admin_total(r) and r.get("activo", True)]
             obj = next((r for r in us if r.get("user") == objetivo), None)
             if not obj:
                 return self._html(perfil_page("Ese usuario no existe.", ok=False))
-            if obj.get("role") == "admin" and nrole != "admin" and len(admins) <= 1:
-                return self._html(perfil_page("No puedes quitar el rol al único administrador.", ok=False))
+            # salvaguarda: siempre queda un administrador activo con todos los puntos
+            if (admin_total(obj) and obj.get("activo", True) and len(admins) <= 1
+                    and (nrole != "admin" or pmodo == "solo")):
+                return self._html(perfil_page("No puedes quitar el rol ni limitar los puntos del único "
+                                              "administrador con todos los puntos.", ok=False))
             foto = q.get("avatar", [""])[0]
             if npw:
                 if len(npw) < CLAVE_MIN:
@@ -21620,10 +21635,10 @@ class H(BaseHTTPRequestHandler):
                     return self._html(perfil_page("La foto no es una imagen válida o pesa demasiado.", ok=False))
                 obj["avatar"] = foto
             obj["nombre"] = nombre; obj["correo"] = correo; obj["role"] = nrole
-            # `todos` o rol admin: se borra la lista (ve todos); `solo`: los marcados que existen
+            # `todos`: se borra la lista (ve todos); `solo`: los marcados que existen
             # (ninguno = no ve ninguno). Sin el campo (formulario de antes) no se toca lo que tenia.
             # Vale en su siguiente peticion: sesion_de relee el usuario, no hace falta echarle
-            if nrole == "admin" or pmodo == "todos":
+            if pmodo == "todos":
                 obj.pop("puntos", None)
             elif pmodo == "solo":
                 obj["puntos"] = puntos_marcados(q.get("puntos", []))
@@ -21653,10 +21668,11 @@ class H(BaseHTTPRequestHandler):
             if objetivo == yo:
                 return self._html(perfil_page("No puedes desactivar tu propia cuenta: pide a otro administrador "
                                               "que lo haga.", ok=False))
-            act_admins = [r for r in us if r.get("role") == "admin" and r.get("activo", True)]
+            act_admins = [r for r in us if admin_total(r) and r.get("activo", True)]
             va_desactivar = obj.get("activo", True)
-            if va_desactivar and obj.get("role") == "admin" and len(act_admins) <= 1:
-                return self._html(perfil_page("No puedes desactivar el único administrador activo.", ok=False))
+            if va_desactivar and admin_total(obj) and len(act_admins) <= 1:
+                return self._html(perfil_page("No puedes desactivar el único administrador activo con todos "
+                                              "los puntos.", ok=False))
             obj["activo"] = not va_desactivar
             try:
                 guardar_usuarios(us)

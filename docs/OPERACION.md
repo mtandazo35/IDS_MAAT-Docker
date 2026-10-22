@@ -577,7 +577,18 @@ puntos no se tocan.
 La columna «Puntos» de la tabla de usuarios dice qué ve cada uno. El cambio vale en la siguiente
 petición del usuario, sin cerrarle la sesión. En el servidor es el campo opcional `puntos` de
 `/srv/ids/panel/conf/usuarios.json` ([DATOS.md](DATOS.md) §3.2): sin el campo ve todos, con `[]`
-ninguno, y el rol `admin` ve siempre todos.
+ninguno.
+
+**Administradores limitados** (fase 1 de permisos, 2026-10-22). Un administrador también puede
+tener «Solo estos puntos»: entonces ve y gestiona solo esos, como un operador de esos puntos, y lo
+global (ajustes, usuarios, exclusiones, actualizaciones) queda para un administrador con todos los
+puntos. Salvaguarda: siempre queda al menos un administrador activo con todos los puntos; al único
+no se le pueden limitar los puntos, quitar el rol, borrar ni desactivar.
+
+**Permisos a la carta** (en curso, por fases): `permisos.py` tiene ya el catálogo por secciones
+(Resumen, Cuarentena, Reputación, Puntos, Usuarios, Ajustes) y los roles de siempre como plantillas.
+Cada fase pasa una sección a pedir su permiso concreto y la muestra en el acordeón de Usuarios;
+mientras tanto, lo que aún no ha pasado decide por rol.
 
 **Qué ve un usuario limitado:**
 

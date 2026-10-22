@@ -64,7 +64,7 @@ punto (`punto_id NULL` = toda la empresa).
 | `vpn_usuario` | P | `(punto_id, usuario)`, creado, rotado | el hash vive en el fichero del orquestador |
 | `mikrotik` | P (1:1) | `cert_fp`, usuario, `clave_cifrada` (`enc1:`, sin `kid`: §6), `identidad`, `sw_id`, `version_ros`, listas, TTL, `envio_habilitado` (0 por defecto) | el destino es el relé del punto; no hay host configurable |
 | `usuario`, `rol` | G | `login` inmutable; roles `admin` / `operador` / `lectura` | — |
-| puntos que ve cada usuario | G | campo opcional `puntos` (lista de pids) de cada usuario en `conf/usuarios.json` | sin el campo, todos; lista vacía, ninguno; el rol `admin` ve siempre todos (§3.2). Desde 2026-10-22 sustituye a la tabla `visibilidad` del diseño, que nunca llegó al código |
+| puntos que ve cada usuario | G | campo opcional `puntos` (lista de pids) de cada usuario en `conf/usuarios.json` | sin el campo, todos; lista vacía, ninguno; desde la fase 1 de permisos también un `admin` se limita (§3.2). Desde 2026-10-22 sustituye a la tabla `visibilidad` del diseño, que nunca llegó al código |
 | `sesion` | G | `token_sha256`, `csrf`, expira, ip, `punto_sel` | nunca se guarda el token |
 | `abonado`, `abonado_hist` | P | `(punto_id, ip)` | el mapa se pide a cada router por separado |
 | `alerta` | P | `(punto_id, ts)`, `cpe_ip`, `sid`, `dir` | en `eventos.db` |
