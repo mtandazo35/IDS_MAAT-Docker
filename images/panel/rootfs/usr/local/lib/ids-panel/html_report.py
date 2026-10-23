@@ -6,9 +6,18 @@ Muestra: puertos de destino atacados, IPs origen (atacantes), IPs destino
 IP:puerto con firma, protocolo, primera/ultima hora y duracion. Autocontenido
 (sin dependencias externas): se abre en el navegador o se imprime a PDF.
 
-Uso: html_report.py [ventana_min] (--nodo pNNN | --todos)   (ventana por defecto 1440)
+Uso: html_report.py [ventana_min] (--nodo pNNN | --todos | --grupo pNNN,pNNN[,...])
+     (ventana por defecto 1440)
+  --nodo pNNN     el informe de un punto.
+  --todos         el acumulado de todos los puntos (nodos/_todos/).
+  --grupo LISTA   «Todos mis puntos» de un usuario limitado (bloque C): el acumulado SOLO de
+                  esos puntos, en su carpeta nodos/_g<12 hex> (nodos.grupo_id de los que
+                  existen). Excluye a --nodo y --todos. Un pid mal formado sale con 2; menos de
+                  nodos.GRUPO_MIN puntos pedidos, 2; menos de GRUPO_MIN que existan, 3. En
+                  ningun caso se escribe nada ni se cae a nodos/_todos.
 Lee los eventos de cada punto (nodos.ficheros_eventos: DATOS/<pid>/eve.json*, dns.json*).
-Salida: nodos.dir_salida(nodo)/report-AAAAMMDD-HHMM.html (PANEL/nodos/<pid>/ o nodos/_todos/)
+Salida: nodos.dir_salida(nodo)/report-AAAAMMDD-HHMM.html (PANEL/nodos/<pid>/, nodos/_todos/
+o nodos/_g<huella>/)
 """
 import glob, gzip, io, json, os, re, sys, html, time
 import array, struct, bisect, argparse
@@ -31,17 +40,42 @@ except Exception:                       # sin tzdata: offset fijo (Ecuador no ti
     TZ_EC = (timezone(timedelta(hours=-5)) if IDS_TZ == "America/Guayaquil"
              else timezone(timedelta(seconds=time.localtime().tm_gmtoff)))
 
-# --- Que nodo se genera: exactamente uno de --nodo pNNN o --todos. Se valida ANTES de
-# escribir nada: un id mal formado o que no existe sale con error, nunca se amplia a todos.
+# --- Que nodo se genera: exactamente uno de --nodo pNNN, --todos o --grupo LISTA. Se valida
+# ANTES de escribir nada: un id mal formado o que no existe sale con error, nunca se amplia a todos.
 _ap = argparse.ArgumentParser(prog="html_report.py")
 _ap.add_argument("ventana_min", nargs="?", type=int, default=1440)
 _g = _ap.add_mutually_exclusive_group(required=True)
 _g.add_argument("--nodo")
 _g.add_argument("--todos", action="store_true")
+_g.add_argument("--grupo")      # pNNN,pNNN[,...]: «Todos mis puntos» (bloque C)
 _args = _ap.parse_args()
+# Modo grupo: el mismo alcance y el mismo modo que pone el panel en la peticion del usuario.
+# Con eso TODO lo que lee el generador (ficheros_eventos, pids, puntos, punto, nodos_de) se
+# queda en esos puntos y dir_salida(TODOS) es nodos/<grupo_id>, nunca nodos/_todos.
+GRUPO = None
+if _args.grupo is not None:
+    _gp = _args.grupo.split(",")
+    _malos = [p for p in _gp if not nodos.pid_valido(p)]
+    if _malos:
+        print("html_report: --grupo con un punto mal formado: %r (se espera pNNN,pNNN)"
+              % _malos[0], file=sys.stderr)
+        sys.exit(2)
+    if len(set(_gp)) < nodos.GRUPO_MIN:
+        print("html_report: --grupo necesita al menos %d puntos distintos (recibido %r)"
+              % (nodos.GRUPO_MIN, _args.grupo), file=sys.stderr)
+        sys.exit(2)
+    nodos.poner_alcance(_gp)
+    nodos.poner_todos_grupo(True)
 try:
     if _args.todos:
         NODO = nodos.TODOS
+    elif _args.grupo is not None:
+        # validar_nodo(TODOS) solo pasa si quedan >= GRUPO_MIN puntos del grupo que EXISTEN
+        # (todos_visible -> grupo_actual); si no, NodoInexistente y se sale sin escribir nada
+        NODO = nodos.validar_nodo(nodos.TODOS)
+        GRUPO = nodos.grupo_actual()
+        if not GRUPO:                               # defensa: nunca escribir en nodos/_todos
+            raise nodos.NodoInexistente(nodos.TODOS)
     elif _args.nodo == nodos.TODOS:
         raise nodos.NodoInvalido(_args.nodo)        # --nodo pide un punto; lo acumulado es --todos
     else:
@@ -50,7 +84,11 @@ except nodos.NodoInvalido:
     print("html_report: nodo mal formado: %r (se espera pNNN o --todos)" % _args.nodo, file=sys.stderr)
     sys.exit(2)
 except nodos.NodoInexistente:
-    print("html_report: punto inexistente: %s" % _args.nodo, file=sys.stderr)
+    if _args.grupo is not None:
+        print("html_report: --grupo %s: existen menos de %d de esos puntos; no se genera"
+              % (_args.grupo, nodos.GRUPO_MIN), file=sys.stderr)
+    else:
+        print("html_report: punto inexistente: %s" % _args.nodo, file=sys.stderr)
     sys.exit(3)
 
 # Extraccion por regex (mucho mas rapida que json.loads por linea sobre cientos de MB).
@@ -286,14 +324,15 @@ def campos(line):
         return m.group(1) if m else ""
     return g
 
-# Salidas de este nodo (o de la vista acumulada): PANEL/nodos/<pid>/ o PANEL/nodos/_todos/.
+# Salidas de este nodo (o de la vista acumulada): PANEL/nodos/<pid>/ o PANEL/nodos/_todos/
+# (con --grupo, PANEL/nodos/_g<huella>/: dir_salida lo resuelve con el alcance puesto arriba).
 # Los eventos se leen de DATOS/<pid>/ (solo lectura) con nodos.ficheros_eventos.
 # Se crea despues de tomar el candado.
 OUTDIR = nodos.dir_salida(NODO, crear=False)
 
 # --- De que MikroTik es cada alerta ---
 # Del fichero de donde sale: DATOS/<pid>/ es el espejo de UN punto. Un punto = un router
-# del multi-nodo viejo (id = pid). En --todos se ven varios: van los chips de nodo.
+# del multi-nodo viejo (id = pid). En --todos (y --grupo) se ven varios: van los chips de nodo.
 MULTI_ROUTER = NODO == nodos.TODOS
 
 def nombre_router(rid):
@@ -1259,6 +1298,8 @@ def dur(a, b):
     return f"{s//3600}h{(s%3600)//60:02d}m"
 
 host = nodos.nombre(NODO)               # el nombre del punto (o "Todos los nodos"), no el del contenedor
+if GRUPO:
+    host = "Todos mis puntos"           # el acumulado de un limitado no es el de todos los nodos
 gen = datetime.now(TZ_EC).strftime("%Y-%m-%d %H:%M")
 
 # La ventana del reporte SIEMPRE es de HOURS (24 por defecto): la linea de tiempo

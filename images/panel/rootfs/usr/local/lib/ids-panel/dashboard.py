@@ -865,6 +865,14 @@ def logdir(nodo=None):
     «Todos». Los eventos (de solo lectura) NO estan aqui: nodos.ficheros_eventos()."""
     return nodos.dir_salida(nodo)
 
+def nombre_vista():
+    """Nombre del nodo que se mira para titulos: «Todos mis puntos» si es el acumulado de un
+    usuario limitado (bloque C), nunca «Todos los nodos», que no es lo que ve."""
+    n = nodos.nodo_actual()
+    if n == nodos.TODOS and nodos.limitado():
+        return "Todos mis puntos"
+    return nodos.nombre(n)
+
 def cuarentena_json(nodo=None):
     """Ruta de cuarentena.json del nodo que se mira (o del dado)."""
     return nodos.salida("cuarentena.json", nodo)
@@ -3181,7 +3189,23 @@ def cargar_acciones(nodo=None):
     d = _leer_acciones()
     if nodo is None:
         nodo = nodos.nodo_actual() if nodos.hay_nodo() else nodos.TODOS
-    if nodo == nodos.TODOS:
+    if nodo == nodos.TODOS and nodos.limitado():
+        # «Todos mis puntos» (bloque C): la suma de las cuentas de SUS puntos, nunca el total de
+        # la empresa
+        dias = {}
+        por = d.get("nodos") if isinstance(d.get("nodos"), dict) else {}
+        for p in nodos.pids():
+            suyos = por.get(p)
+            for dia, acc in (suyos.items() if isinstance(suyos, dict) else ()):
+                if not isinstance(acc, dict):
+                    continue
+                suma = dias.setdefault(dia, {})
+                for a, n in acc.items():
+                    try:
+                        suma[a] = suma.get(a, 0) + int(n)
+                    except (TypeError, ValueError):
+                        pass
+    elif nodo == nodos.TODOS:
         dias = d.get("dias")
     elif "nodos" not in d and not nodos.limitado() and nodos.pids() == [nodo]:
         # acciones.json de antes y un solo punto: es todo suyo. No para un usuario limitado: su
@@ -4521,7 +4545,10 @@ def abonado_de(ip, rid="", mapa=None):
         return v if v is not None else {}
     # sin punto (vista «Todos»): solo si la IP es de UN unico punto; con la misma IP en
     # dos puntos no se elige uno al azar, que es dar el nombre del abonado equivocado
-    halladas = [datos for k, datos in mapa.items() if ip_de(k) == ip]
+    # Un limitado en «Todos mis puntos» (bloque C): solo entre SUS puntos; el abonado de un punto
+    # ajeno no se ve ni se cuenta
+    halladas = [datos for k, datos in mapa.items()
+                if ip_de(k) == ip and (not nodos.limitado() or nodos.puede_ver(rid_de(k)))]
     return halladas[0] if len(halladas) == 1 else {}
 
 def _mk_ips_listas_en(s_, listas):
@@ -6471,10 +6498,13 @@ def podar_reportes():
     """Borra los reportes HTML de mas de REPORTES_RETENCION_DIAS dias, conservando SIEMPRE
     el mas nuevo de cada nodo (En vivo sirve ese archivo, no debe quedarse sin ninguno).
     Recorre el directorio de salida de cada punto y el de «Todos»; los eventos de datos/
-    no se tocan nunca (son de solo lectura y los rota el orquestador)."""
+    no se tocan nunca (son de solo lectura y los rota el orquestador). Tambien las carpetas de
+    «Todos mis puntos» (nodos/_g*, bloque C); corre en el fondo, sin alcance."""
     corte = time.time() - REPORTES_RETENCION_DIAS * 86400
-    for nodo in nodos.pids() + [nodos.TODOS]:
-        fs = glob.glob(os.path.join(nodos.dir_salida(nodo, crear=False), "report-*.html"))
+    dirs = [nodos.dir_salida(nodo, crear=False) for nodo in nodos.pids() + [nodos.TODOS]]
+    dirs += [_dir_grupo(g) for g in _carpetas_grupo()]
+    for d in dirs:
+        fs = glob.glob(os.path.join(d, "report-*.html"))
         if not fs:
             continue
         nuevo = max(fs, key=lambda p: os.path.getmtime(p) if os.path.exists(p) else 0)
@@ -6542,8 +6572,9 @@ def estado_ventana(nodo=None):
     (si hay un resumen nuevo que pintar)."""
     va = ventana_actual()
     vg = ventana_generada(nodo)
-    # un usuario limitado cuenta solo sus puntos (pids_activos ya sale con su alcance): «Todos»
-    # no lo puede abrir, y la consulta acababa en 404 cada 20 s
+    # un usuario limitado cuenta solo sus puntos (pids_activos ya sale con su alcance) y, si tiene
+    # grupo, su «Todos mis puntos» (ventana_generada(TODOS) lee su carpeta _g*, bloque C); sin
+    # grupo «Todos» no se cuenta: no lo puede abrir y la consulta acababa en 404 cada 20 s
     todos = pids_activos() + ([] if not nodos.todos_visible() else [nodos.TODOS])
     listos = sum(1 for n in todos if ventana_generada(n) == va)
     return {"elegida": va, "generada": vg, "pendiente": bool(vg and vg != va),
@@ -9920,17 +9951,108 @@ def generar_reporte(nodo, vmin):
         args = ["--todos"]
     else:
         args = ["--nodo", nodos.exigir_pid(nodo)]
-    cmd = ["nice", "-n", "15", sys.executable, GEN, str(int(vmin))] + args
+    return _correr_generador(vmin, args, nodo)
+
+def _correr_generador(vmin, args, etiqueta):
+    """El generador como subproceso (nice, tope de memoria y de tiempo), de uno en uno."""
+    cmd = ["nice", "-n", "15", sys.executable, GEN, str(int(vmin))] + list(args)
     t0 = time.time()
     with _GEN_LOCK:
         try:
             subprocess.run(cmd, timeout=GEN_TIMEOUT, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                            preexec_fn=_limitar_generador if os.name == "posix" else None)
         except subprocess.TimeoutExpired:
-            sys.stderr.write("generador %s: mas de %d s, se corta\n" % (nodo, GEN_TIMEOUT))
+            sys.stderr.write("generador %s: mas de %d s, se corta\n" % (etiqueta, GEN_TIMEOUT))
         except OSError as e:
-            sys.stderr.write("generador %s: %s\n" % (nodo, e))
+            sys.stderr.write("generador %s: %s\n" % (etiqueta, e))
     return time.time() - t0
+
+# --- «Todos mis puntos» (bloque C, 2026-10-23) ---------------------------------------------
+# Un usuario limitado con GRUPO_MIN o mas puntos ve como «Todos» el acumulado de los suyos, que
+# el generador escribe con --grupo en nodos/_g<huella> (nodos.grupo_id). Se generan solo los
+# grupos EN USO (los de los usuarios activos con el permiso resumen.todos), cada ciclo, despues
+# de «Todos»; las carpetas de grupos que ya nadie usa se borran. El fondo no tiene alcance: las
+# rutas de un grupo salen de _dir_grupo, nunca de nodos.dir_salida(TODOS) (que daria _todos).
+
+def _args_grupo(pids_g):
+    """Argumentos del generador para el acumulado de esos puntos (lo unico que cambia si cambia
+    la forma de la llamada de html_report.py)."""
+    return ["--grupo", ",".join(sorted(pids_g))]
+
+_GRUPO_INTENTO = {}   # grupo_id -> cuando se intento generar por ultima vez (freno de fallos)
+
+def generar_grupo(pids_g, vmin):
+    """Corre el generador para el acumulado de esos puntos (nodos/<grupo_id>). Lo que tardo (s)."""
+    _GRUPO_INTENTO[nodos.grupo_id(pids_g)] = time.time()
+    return _correr_generador(vmin, _args_grupo(pids_g), nodos.grupo_id(pids_g))
+
+def _dir_grupo(gid):
+    """Carpeta de un grupo (solo ids que casan con nodos.RE_GRUPO; nunca otra cosa)."""
+    if not isinstance(gid, str) or not nodos.RE_GRUPO.match(gid):
+        raise nodos.NodoInvalido(gid)
+    return os.path.join(nodos.NODOS, gid)
+
+def grupos_en_uso():
+    """{grupo_id: [pids]} de los grupos que hay que generar: por cada usuario activo con lista
+    `puntos` y el permiso resumen.todos, sus puntos que existen, si son GRUPO_MIN o mas. Dos
+    usuarios con los mismos puntos comparten grupo. Los pids son los mismos que ve el usuario
+    con su alcance (nodos.pids), asi la huella coincide con la de nodos.grupo_actual()."""
+    try:
+        cargar_roles()
+    except Exception:
+        pass
+    vivos = set(nodos.pids_todos())
+    out = {}
+    for r in cargar_usuarios():
+        if r.get("activo", True) is False or r.get("role") not in ROLES:
+            continue
+        lista = puntos_de_usuario(r)
+        if lista is None:
+            continue                      # sin limite: ve «Todos» de verdad (nodos/_todos)
+        if "resumen.todos" not in permisos.de_usuario(r):
+            continue
+        suyos = sorted(set(p for p in lista if nodos.pid_valido(p) and p in vivos))
+        if len(suyos) < nodos.GRUPO_MIN:
+            continue
+        out.setdefault(nodos.grupo_id(suyos), suyos)
+    return out
+
+def _newest_report_dir(d):
+    fs = glob.glob(os.path.join(d, "report-*.html"))
+    fs = sorted(fs, key=lambda p: os.path.getmtime(p) if os.path.exists(p) else 0, reverse=True)
+    return fs[0] if fs else None
+
+def _ventana_dir(d):
+    """Ventana con la que se genero el resumen de esa carpeta (cuarentena.json), 0 si no hay."""
+    try:
+        with open(os.path.join(d, "cuarentena.json"), encoding="utf-8") as f:
+            return int((json.load(f) or {}).get("ventana_min") or 0)
+    except (OSError, ValueError, TypeError, AttributeError):
+        return 0
+
+def _carpetas_grupo():
+    """ids de las carpetas de grupo que hay en nodos/ (solo las que casan con RE_GRUPO)."""
+    try:
+        return [n for n in os.listdir(nodos.NODOS)
+                if nodos.RE_GRUPO.match(n) and os.path.isdir(os.path.join(nodos.NODOS, n))]
+    except OSError:
+        return []
+
+def limpiar_grupos(en_uso):
+    """Borra las carpetas nodos/_g* de grupos que ya nadie usa. Con el cerrojo del generador:
+    nunca mientras se escribe una. Solo nombres que casan con nodos.RE_GRUPO."""
+    import shutil
+    borrados = []
+    with _GEN_LOCK:
+        for gid in _carpetas_grupo():
+            if gid in en_uso:
+                continue
+            try:
+                shutil.rmtree(_dir_grupo(gid), ignore_errors=True)
+                borrados.append(gid)
+            except nodos.NodoInvalido:
+                continue
+    return borrados
 
 def _por_nodo(fn, pids, *args, cerrojo="fondo"):
     """Llama fn(pid) para cada punto con el contexto de ese punto puesto. Un fallo de un
@@ -10104,6 +10226,19 @@ def _vuelta_refrescador(estado):
     # «Todos» se rehace y deja de enseñar sus datos.
     _va = ventana_actual()
     _vg = ventana_generada(nodos.TODOS)
+    # «Todos mis puntos» (bloque C): los grupos en uso se generan como «Todos», y cuentan igual
+    # para la ventana pendiente y para «toca regenerar»
+    try:
+        grupos = grupos_en_uso()
+    except Exception as _e:
+        sys.stderr.write("grupos_en_uso: %s\n" % _e)
+        grupos = {}
+    if not (_vg and _vg != _va):
+        for _gid in grupos:
+            _vgg = _ventana_dir(_dir_grupo(_gid))
+            if _vgg and _vgg != _va:
+                _vg = _vgg
+                break
     if _vg and _vg != _va:
         _ult_v, _ult_t = estado.get("vpend", (0, 0.0))
         if _va != _ult_v or time.time() - _ult_t >= REGEN_MIN_SECS:
@@ -10118,6 +10253,18 @@ def _vuelta_refrescador(estado):
             stale = (nr is None) or (time.time() - os.path.getmtime(nr) >= REFRESH_SECS)
         except OSError:
             stale = True       # se borro entre medias (baja de un punto): toca regenerar (A-10)
+    for _gid in grupos:
+        if stale:
+            break
+        # un grupo cuya generacion fallo hace poco (sin informe aun) espera al ciclo normal: si no,
+        # un fallo rapido (memoria, candado) forzaba regenerar todos los puntos cada vuelta
+        if time.time() - _GRUPO_INTENTO.get(_gid, 0) < REFRESH_SECS:
+            continue
+        nr = _newest_report_dir(_dir_grupo(_gid))
+        try:
+            stale = (nr is None) or (time.time() - os.path.getmtime(nr) >= REFRESH_SECS)
+        except OSError:
+            stale = True
     # FRENO: si una corrida tardo mas que el propio ciclo, esperar al menos lo que
     # tardo antes de lanzar la siguiente. Sin esto, en una caja donde generar lleva
     # 9 minutos y el ciclo son 5, se encadenan una tras otra y queda un nucleo al
@@ -10148,6 +10295,30 @@ def _vuelta_refrescador(estado):
         _por_nodo(_ciclo_nodo, pids, vmin)
         if not _PARAR.is_set():
             generar_reporte(nodos.TODOS, vmin)   # la vista acumulada, al final y sola
+        # «Todos mis puntos» de cada usuario limitado (bloque C): un grupo por conjunto de puntos
+        # en uso, de uno en uno tras «Todos». La lista se recalcula aqui: la generacion de los
+        # puntos tarda y entre medias pudo cambiar un usuario o darse de baja un punto.
+        try:
+            grupos = grupos_en_uso()
+        except Exception as _e:
+            sys.stderr.write("grupos_en_uso: %s\n" % _e)
+            grupos = None
+        for _gid, _pg in sorted((grupos or {}).items()):
+            if _PARAR.is_set():
+                break
+            try:
+                generar_grupo(_pg, vmin)
+            except Exception as _e:
+                sys.stderr.write("generador %s: %s\n" % (_gid, _e))
+        # carpetas de grupos que ya nadie usa (usuario borrado, desactivado, sin el permiso, con
+        # menos puntos...). No si no se pudo saber cuales estan en uso o no se leen los usuarios:
+        # mejor una carpeta de mas que borrar la de alguien por un fallo de lectura
+        if grupos is not None and not _PARAR.is_set() and cargar_usuarios():
+            try:
+                for _gid in limpiar_grupos(grupos):
+                    sys.stderr.write("grupo %s sin usar: carpeta borrada\n" % _gid)
+            except Exception as _e:
+                sys.stderr.write("limpiar_grupos: %s\n" % _e)
         ult_dur = time.time() - _t_gen
         ult_fin = time.time()
         if ult_dur > REFRESH_SECS:
@@ -10256,15 +10427,17 @@ def _selector_nodo(active):
     """Selector de nodo de la barra: «Todos los nodos (acumulado)» y cada punto con el estado de
     su salud por etapas. Formulario GET con name=nodo: el servidor valida (400/404) y lo guarda.
 
-    Un usuario limitado (2026-10-22) mira un punto a la vez: sin «Todos» (sus ficheros mezclan
-    los puntos de todos) y solo con los suyos; con uno solo, su nombre y nada que elegir."""
+    Un usuario limitado (2026-10-22) ve solo los suyos; con uno solo, su nombre y nada que elegir.
+    Con 2 o mas (bloque C, 2026-10-23) tiene «Todos mis puntos (acumulado)»: el acumulado de los
+    suyos (nodos/_g<huella>), nunca el de todos (nodos/_todos)."""
     if not active or active in _NAV_SIN_NODO or active.startswith("/puntos") or not nodos.hay_nodo():
         return ""
     actual = nodos.nodo_actual()
     fn = globals().get("salud_punto")
-    lim = not nodos.todos_visible()    # limitado, o sin el permiso de la vista «Todos»
-    ops = [] if lim else ['<option value="%s"%s>Todos los nodos (acumulado)</option>'
-                          % (nodos.TODOS, " selected" if actual == nodos.TODOS else "")]
+    lim = not nodos.todos_visible()    # limitado con un solo punto, o sin el permiso de la vista «Todos»
+    _txt_todos = "Todos mis puntos (acumulado)" if nodos.limitado() else "Todos los nodos (acumulado)"
+    ops = [] if lim else ['<option value="%s"%s>%s</option>'
+                          % (nodos.TODOS, " selected" if actual == nodos.TODOS else "", _txt_todos)]
     color = ""; sal_txt = ""
     pts = nodos.puntos()
     for p in pts:
@@ -12717,7 +12890,8 @@ def perfil_page(msg="", ok=False, edit_user=None):
                     + ("checked " if nodos.limitado() else "")
                     + "onchange='ptsSync(this.form)'>Solo estos puntos</label>"
                     f"<div class=ptslist hidden>{cas}"
-                    "<div class=hint>Ve sus puntos uno a uno (sin la vista «Todos») y nada de lo que es "
+                    "<div class=hint>Ve solo sus puntos (con dos o más, «Todos mis puntos», el acumulado de los "
+                    "suyos) y nada de lo que es "
                     "de toda la instalación. Sin ninguno marcado no ve ningún punto y no puede usar el "
                     "panel hasta que le asignes uno.</div></div></div></div>")
 
@@ -13735,9 +13909,10 @@ filas</b>, cada una con la etiqueta de su nodo: son dos abonados distintos y nun
 va en la dirección (<code>?nodo=</code>), así que un enlace copiado abre lo mismo en otra pestaña; sin
 elegir, vale el último de tu sesión y, si no hay, «Todos». Un nodo mal escrito da error (no se cambia
 por «Todos»). No sale en Ajustes, Puntos, Registro ni Documentación, que no dependen del nodo.
-Un usuario con <b>puntos asignados</b> mira un punto a la vez: su selector no trae «Todos» (esa vista
-mezcla los datos de todos los puntos) y solo lista los suyos; con uno solo, sale su nombre sin
-desplegable. Un punto que no es suyo no existe para él (la dirección da «Punto inexistente»).</td></tr>
+Un usuario con <b>puntos asignados</b> solo ve los suyos. Con dos o más, en lugar de «Todos los nodos»
+tiene <b>Todos mis puntos (acumulado)</b>: lo mismo, pero solo con sus puntos (nunca los datos de los
+demás), y es lo que abre por defecto. Con uno solo, sale su nombre sin desplegable. Un punto que no es
+suyo no existe para él (la dirección da «Punto inexistente»).</td></tr>
 <tr><td><b>Tu usuario</b> (arriba a la derecha)</td><td>Tu foto (o tus iniciales) y tu nombre; al tocarlo se
 abre un menú con tu rol y: <b>Mi cuenta</b> (el administrador, su ficha de usuario: nombre, correo,
 foto; operador y solo lectura, su <b>Perfil</b>: foto y clave), <b>Cambiar contraseña</b>,
@@ -15135,7 +15310,7 @@ uno en <b>Ajustes &rarr; Usuarios</b> (lo que puede cada rol, en <b>Roles y perm
 servidor</b>: no basta con ocultar un botón, y cambiar el nodo en la dirección no da más permisos.</p>
 <h3>Permisos de cada usuario</h3>
 <p><b>Roles y permisos</b> (Ajustes) dice qué puede hacer cada rol: Operador y Lectura se editan con el acordeón y el cambio vale para todos sus usuarios; Administrador es fijo, con todo. En <b>Usuarios</b> se elige el rol y los puntos de cada uno. Un usuario con permisos propios (de antes) los conserva hasta marcar «Usar los permisos de su rol».</p>
-<p>Cada rol tiene un acordeón <b>Permisos</b> por secciones (Resumen, Cuarentena, Reputación, Puntos, Usuarios y Ajustes) con «Activos X/Y» y una casilla por permiso. Se editan en <b>Roles y permisos</b>; <b>Valores de fábrica</b> repone los de origen. Cada página, pestaña y botón sale solo con su permiso y el servidor rechaza el resto. Los marcados <b>global</b> (los de Ajustes, la vista «Todos», crear y borrar puntos, desbanear, destinos de confianza y denunciar) solo valen si el usuario ve todos los puntos. Quien gestiona usuarios sin ser administrador con todos los puntos solo ve y edita a quien no tiene más que él y nunca da más de lo suyo. Siempre queda al menos un administrador activo con todos los puntos y todos los permisos.</p>
+<p>Cada rol tiene un acordeón <b>Permisos</b> por secciones (Resumen, Cuarentena, Reputación, Puntos, Usuarios y Ajustes) con «Activos X/Y» y una casilla por permiso. Se editan en <b>Roles y permisos</b>; <b>Valores de fábrica</b> repone los de origen. Cada página, pestaña y botón sale solo con su permiso y el servidor rechaza el resto. Los marcados <b>global</b> (los de Ajustes, crear y borrar puntos, desbanear, destinos de confianza y denunciar) solo valen si el usuario ve todos los puntos. Quien gestiona usuarios sin ser administrador con todos los puntos solo ve y edita a quien no tiene más que él y nunca da más de lo suyo. Siempre queda al menos un administrador activo con todos los puntos y todos los permisos.</p>
 <h3>Puntos que ve cada usuario</h3>
 <p>Al crear o editar un usuario, <b>Puntos que ve</b> tiene dos opciones: <b>Todos los puntos</b> (lo de
 siempre: un usuario creado antes de esta opción ve todos) o <b>Solo estos puntos</b>, con una casilla por
@@ -15145,8 +15320,15 @@ ninguno marcado el usuario no ve datos («Sin puntos asignados»; solo su Perfil
 asignes uno. El cambio vale en su siguiente clic, sin cerrarle la sesión.</p>
 <p>Un usuario con puntos asignados trabaja como si tuviera <b>su propio panel</b>:</p>
 <ul>
-<li>Mira <b>un punto a la vez</b>: no tiene la vista «Todos» (mezcla los datos de todos los puntos); el
-selector de nodo solo trae los suyos y, si tiene uno solo, enseña su nombre sin desplegable.</li>
+<li>El selector de nodo solo trae <b>sus puntos</b>; si tiene uno solo, enseña su nombre sin desplegable.
+Nunca ve «Todos los nodos» (mezcla los datos de todos los puntos).</li>
+<li>Con <b>dos o más puntos</b> y el permiso «Vista «Todos»», tiene <b>Todos mis puntos (acumulado)</b>:
+el resumen, el Top, el Histórico, la Cuarentena y el Reporte de sus puntos juntos, y es lo que abre por
+defecto. El panel lo genera aparte para cada combinación de puntos en uso (dos usuarios con los mismos
+puntos comparten uno), en cada ciclo después de «Todos»: cada combinación cuesta una generación más,
+así que en una caja justa de CPU conviene no repartir muchas combinaciones distintas. La de un usuario
+que se borra, se desactiva, pierde el permiso o se queda con un solo punto se borra sola. Tras asignar
+los puntos, su acumulado aparece en el siguiente ciclo (unos minutos).</li>
 <li>Un punto que no es suyo <b>no existe</b> para él: ni sus datos, ni su ficha de evidencia, ni sus
 CPEs; cualquier dirección o formulario con ese punto da «Punto inexistente» y no hace nada.</li>
 <li>Como <b>operador</b>, envía y quita de la cuarentena solo CPEs de sus puntos, bloquea un destino de
@@ -17659,7 +17841,7 @@ def informe_datos(dias, usuario=""):
                      "que_hacer": g[1], "color": g[2], "gravedad": g[3], "abonados": abon})
     cortar = sum(len(c["abonados"]) for c in cats if c["clave"] in ("botnet", "escaneo", "fuerza"))
     return {"empresa": cargar_empresa().get("nombre", ""),
-            "nodo": nodos.nombre(nodos.nodo_actual()) if nodos.hay_nodo() else "",
+            "nodo": nombre_vista() if nodos.hay_nodo() else "",
             "desde": ahora - dias * 86400, "hasta": ahora, "dias": dias, "generado": ahora,
             "usuario": usuario, "zona": TZ_EC,
             "totales": {"abonados": len(filas), "alertas": sum(f["alertas"] for f in filas),
@@ -18345,7 +18527,7 @@ def _ficha_elegir_nodo(ip, claves, embed=False):
     _e = "&embed=1" if embed else ""
     filas = "".join(
         "<li><a href='/cuarentena/ficha?ip=%s%s&nodo=%s'>%s</a> <span class=rowmeta>en %s</span></li>"
-        # el nodo que se mira (aqui «Todos»), nunca uno fijo: un limitado no tiene «Todos»
+        # el nodo que se mira (aqui «Todos», o «Todos mis puntos» de un limitado), nunca uno fijo
         % (_up.quote(k, safe=""), _e, _up.quote(nodos.nodo_actual() if nodos.hay_nodo() else nodos.TODOS, safe=""),
            esc(ip_de(k)), esc(nodos.nombre(rid_de(k))))
         for k in claves)
@@ -18375,10 +18557,11 @@ def ficha_page(ip, embed=False):
             elif _cl:
                 return _ficha_elegir_nodo(ip, _cl, embed)
     _pid = rid_de(ip)
-    if nodos.limitado():
-        # un usuario limitado solo ve las fichas de SUS puntos (2026-10-22): un pid ajeno, mal
-        # escrito o ninguno es 404/400 como un punto que no existe, antes de leer nada (ni el
-        # registro global de enviados ni el abonado, que no van por punto)
+    if nodos.limitado() and (_pid or "|" in ip):
+        # un usuario limitado solo ve las fichas de SUS puntos (2026-10-22): un pid ajeno o mal
+        # escrito es 404/400 como un punto que no existe, antes de leer nada (ni el registro global
+        # de enviados ni el abonado, que no van por punto). Con la IP sola en su acumulado (bloque C)
+        # y en ninguno de sus puntos, no hay pid: sale «sin evidencia», sin leer nada de nadie
         nodos.exigir_pid(_pid)
     try:
         _dir = nodos.dir_salida(nodos.exigir_pid(_pid) if _pid else None)
@@ -18395,7 +18578,10 @@ def ficha_page(ip, embed=False):
                 c = x; categoria = lbl; break
         if c:
             break
-    env = cargar_enviados(MK_SENT); envd = cargar_enviados(MK_SENT_DNS)
+    if nodos.limitado() and not _pid:
+        env = envd = {}        # sin punto: nada del registro global, que no va por punto (auditoria C)
+    else:
+        env = cargar_enviados(MK_SENT); envd = cargar_enviados(MK_SENT_DNS)
     ent = env.get(ip) or envd.get(ip)
     en_lista = bool(ent)
     def _fecha(t):
@@ -19450,7 +19636,8 @@ def _enviar_confirmados(nodo_form, tipo):
         if not mk_listo(dr):
             partes.append("%s: nada (MikroTik sin habilitar)" % nom)    # ese nodo esta en dry-run
             continue
-        # el de «Todos» no lo abre un usuario limitado (mezcla los puntos de todos)
+        # el de «Todos»: para un limitado con grupo, el de SUS puntos (nodos.dir_salida da su
+        # carpeta _g*, bloque C); sin grupo no lo abre (mezcla los puntos de todos)
         cq_pid = [_cargar_cuarentena(pid)] + ([] if not nodos.todos_visible() else [_cargar_cuarentena(nodos.TODOS)])
         ok_n = err_n = 0; ult_err = ""
         nuevas = {}
@@ -19783,6 +19970,10 @@ class H(BaseHTTPRequestHandler):
         nodos.poner_alcance(s.get("puntos") if s else [])
         # sin el permiso de la vista «Todos» (fase 4 de permisos), como un limitado para esa vista
         nodos.poner_sin_todos(bool(s) and "resumen.todos" not in (s.get("permisos") or ()))
+        # «Todos mis puntos» (bloque C, 2026-10-23): para un limitado con 2 o mas puntos, «Todos» es
+        # el acumulado de los suyos (nodos/_g<huella>, lo genera el refrescador); nunca nodos/_todos.
+        # _limpiar_ctx lo quita con nodos.quitar_alcance().
+        nodos.poner_todos_grupo(True)
         if not nodos.todos_visible() and not nodos.pids():
             # Sin ningun punto (bloque B, 2026-10-23): solo su cuenta. Ajustes con la tarjeta de
             # Perfil (cambiar su clave y su foto), su foto y la documentacion; sin ningun permiso, asi
@@ -19802,7 +19993,8 @@ class H(BaseHTTPRequestHandler):
             return False
         # El nodo que se MIRA (CONTRATO-F2 §10.1): ?nodo= de la URL (y se recuerda en la
         # sesion); sin parametro, el de la sesion; si no, la vista «Todos» (para un usuario
-        # limitado, su primer punto: «Todos» mezcla los de todos). Un nodo mal formado es 400 y
+        # limitado con 2 o mas puntos, «Todos mis puntos», el acumulado de los suyos; con uno solo
+        # o sin el permiso resumen.todos, su primer punto). Un nodo mal formado es 400 y
         # uno que no existe (o es de otro) 404 (NodoInvalido/NodoInexistente, que _seguro
         # convierte): NUNCA se amplia a «Todos». El destino de una ACCION no sale de aqui.
         defecto = nodos.pids()[0] if not nodos.todos_visible() else nodos.TODOS
@@ -20175,7 +20367,7 @@ class H(BaseHTTPRequestHandler):
                     "<header class='pageh'><div>"
                     "<h1>Resumen</h1>"
                     "<p class='ph-sub'>Panel IDS Suricata &middot; "
-                    + html.escape(nodos.nombre(nodos.nodo_actual())) + " &middot; alertas graves salientes &middot; "
+                    + html.escape(nombre_vista()) + " &middot; alertas graves salientes &middot; "
                     f"actualizado {hact} (hora local) "
                     "<span class='ph-live'><span class='dotlive'></span>en vivo"
                     f"</span></p></div>{wsel}</header>")
@@ -20183,7 +20375,7 @@ class H(BaseHTTPRequestHandler):
             else:
                 cabecera = (
                     "<header class='pageh'><div><h1>Resumen</h1>"
-                    "<p class='ph-sub'>Panel IDS Suricata &middot; " + html.escape(nodos.nombre(nodos.nodo_actual()))
+                    "<p class='ph-sub'>Panel IDS Suricata &middot; " + html.escape(nombre_vista())
                     + f" &middot; actualizado {hact} (hora local)</p></div>{wsel}</header>")
                 resumen = (cabecera + "<main style='padding:8px 28px 24px'><p style='color:#52514e'>El resumen se "
                            "está generando en segundo plano; aparecerá aquí en unos minutos.</p></main>")

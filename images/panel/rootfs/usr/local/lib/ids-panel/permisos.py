@@ -22,7 +22,7 @@ CATALOGO = (
         ("resumen.conducta_generar", "Generar el reporte de Conducta ahora", False),
         ("resumen.informe", "Informe PDF", False),
         ("resumen.eventos", "Eventos", False),
-        ("resumen.todos", "Vista «Todos» (acumulado de todos los puntos)", True),
+        ("resumen.todos", "Vista «Todos» (acumulado de los puntos que ve)", False),
     )),
     ("cuarentena", "Cuarentena", (
         ("cuarentena.ver", "Ver candidatos, enviados y destinos", False),

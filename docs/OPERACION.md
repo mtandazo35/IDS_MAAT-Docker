@@ -630,8 +630,16 @@ mientras tanto, lo que aún no ha pasado decide por rol.
 
 **Qué ve un usuario limitado:**
 
-- un punto a la vez: no tiene la vista «Todos», porque sus ficheros mezclan todos los puntos. Con un
-  solo punto no ve el selector;
+- solo sus puntos: nunca la vista «Todos los nodos» (`nodos/_todos/`), porque sus ficheros mezclan
+  todos los puntos. Con un solo punto no ve el selector;
+- con dos o más puntos y el permiso `resumen.todos` (bloque C, 2026-10-23), **Todos mis puntos
+  (acumulado)**: el acumulado de SUS puntos, en su propia carpeta `nodos/_g<12 hex>` (huella de la
+  lista ordenada de pids, `nodos.grupo_id`). Es su vista por defecto. El refrescador genera cada
+  combinación de puntos en uso (usuarios activos con lista `puntos`, el permiso y ≥ 2 puntos que
+  existen; dos usuarios con los mismos puntos comparten carpeta) en cada ciclo, después de «Todos»,
+  con `html_report.py <vmin> --grupo p001,p003`. Coste: una generación más por combinación y ciclo,
+  solo de las que están en uso. Las carpetas `_g*` que ya nadie usa se borran tras cada ciclo y la
+  poda diaria de reportes también las recorre;
 - un punto ajeno no existe para él: en la URL o en un formulario da 404, igual que uno que no
   existe;
 - sin ningún punto asignado, el panel le dice «Sin puntos asignados» y solo le deja su cuenta:

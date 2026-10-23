@@ -29,6 +29,7 @@ acción sale de la propia operación (`pid|ip` o el pid del formulario), validad
 
 import contextlib
 import glob
+import hashlib
 import json
 import os
 import re
@@ -196,7 +197,8 @@ def validar_nodo(nodo):
 
 def nombre(pid):
     if pid == TODOS:
-        return "Todos los nodos"
+        # un usuario limitado mira el acumulado de SUS puntos (bloque C), no «Todos los nodos»
+        return "Todos mis puntos" if limitado() else "Todos los nodos"
     p = punto(pid)
     return (p or {}).get("nombre") or pid
 
@@ -258,6 +260,35 @@ def poner_alcance(pids_usuario=None):
 def quitar_alcance():
     _CTX.alcance = None
     _CTX.sin_todos = False
+    _CTX.todos_grupo = False
+
+
+# «Todos mis puntos» (bloque C, 2026-10-23): para un usuario limitado con 2 o mas puntos, la vista
+# «Todos» es el acumulado de SUS puntos, que el generador escribe en su propia carpeta
+# (nodos/_g<huella>), nunca la de todos (nodos/_todos). El generador, con --grupo, pone el mismo
+# alcance y este modo, asi escribe y lee en la misma carpeta que mira el usuario.
+GRUPO_MIN = 2
+RE_GRUPO = re.compile(r"\A_g[0-9a-f]{12}\Z")
+
+
+def grupo_id(pids_grupo):
+    """Carpeta del acumulado de esos puntos: _g + 12 hex de la huella de la lista ordenada."""
+    clave = ",".join(sorted(set(pids_grupo)))
+    return "_g" + hashlib.sha256(clave.encode("utf-8")).hexdigest()[:12]
+
+
+def poner_todos_grupo(valor=True):
+    """En esta peticion (o en el generador con --grupo), «Todos» de un limitado es su grupo."""
+    _CTX.todos_grupo = bool(valor)
+
+
+def grupo_actual():
+    """El id del grupo de la vista «Todos» de un limitado (sus puntos existentes), o None si no
+    tiene grupo: sin modo grupo, sin limite, o menos de GRUPO_MIN puntos."""
+    if not limitado() or not getattr(_CTX, "todos_grupo", False):
+        return None
+    ps = pids()
+    return grupo_id(ps) if len(ps) >= GRUPO_MIN else None
 
 
 def poner_sin_todos(valor=True):
@@ -267,8 +298,11 @@ def poner_sin_todos(valor=True):
 
 
 def todos_visible():
-    """La vista «Todos» se puede mirar en esta peticion: ni usuario limitado ni sin su permiso."""
-    return not limitado() and not getattr(_CTX, "sin_todos", False)
+    """La vista «Todos» se puede mirar en esta peticion: con su permiso y, si el usuario esta
+    limitado, solo como el acumulado de sus puntos (grupo_actual; bloque C)."""
+    if getattr(_CTX, "sin_todos", False):
+        return False
+    return not limitado() or grupo_actual() is not None
 
 
 def alcance():
@@ -347,12 +381,14 @@ def ficheros_eventos(nodo=None, patrones=("eve.json*", "dns.json*")):
 def dir_salida(nodo=None, crear=True):
     """Salidas del nodo (o de la vista acumulada): report-*.html, cuarentena.json..."""
     nodo = nodo if nodo is not None else nodo_actual()
+    carpeta = nodo
     if nodo == TODOS:
         if not todos_visible():                    # «Todos» mezcla los puntos de todos
             raise NodoInexistente(TODOS)
+        carpeta = grupo_actual() or TODOS          # un limitado: el acumulado de SUS puntos
     else:
         _pid_ruta(nodo)                            # formato y alcance
-    d = os.path.join(NODOS, nodo)
+    d = os.path.join(NODOS, carpeta)
     # solo se crea para la vista acumulada o un punto que existe: una tarea de fondo tardia no
     # resucita nodos/<pid> de un punto dado de baja (auditoria A-09)
     if crear and (nodo == TODOS or nodo in pids()):

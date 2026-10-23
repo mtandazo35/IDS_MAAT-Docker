@@ -49,6 +49,7 @@ RES_AJENO = "RESUMEN-AJENO-KQ"
 RES_TODOS = "RESUMEN-TODOS-KQ"
 RES_PROPIO = "RESUMEN-PROPIO-KQ"
 RES_ESTE = "RESUMEN-ESTE-KQ"
+RES_GRUPO = "RESUMEN-GRUPO-KQ"   # (bloque C 2026-10-23) «Todos mis puntos» de dora: nodos/<grupo_id(p001,p003)>
 DST_AJENO = "198.51.100.201"     # destino que solo aparece en los eventos de p002
 PUB_AJENA = "192.0.2.201"        # publica declarada de p002
 IP_PROPIA = "10.0.0.5"           # p001, ya en cuarentena
@@ -527,6 +528,10 @@ class Base(unittest.TestCase):
         p.cuarentena("p002", ajenos)
         p.cuarentena("p003", este)
         p.cuarentena(self.n.TODOS, propios + ajenos + este)
+        # (bloque C 2026-10-23) el acumulado de los puntos de dora (p001+p003), como lo deja el
+        # generador con --grupo: solo lo de sus puntos, en su propia carpeta
+        self.grupo_dora = self.n.grupo_id(["p001", "p003"])
+        p.cuarentena(self.grupo_dora, propios + este)
         ahora = int(time.time())
 
         def env(pid, lista, firma):
@@ -549,7 +554,7 @@ class Base(unittest.TestCase):
         d.guardar_publicas({"p001": ["192.0.2.101"], "p002": [PUB_AJENA]})
         d.mk_log("ENVIADO", IP_AJENA, "ana", "lista=clientes-botnet nodo=p002")
         for nodo, marca in (("p001", RES_PROPIO), ("p002", RES_AJENO + " " + FIRMA_AJENA), ("p003", RES_ESTE),
-                            (self.n.TODOS, RES_TODOS + " " + FIRMA_AJENA)):
+                            (self.n.TODOS, RES_TODOS + " " + FIRMA_AJENA), (self.grupo_dora, RES_GRUPO)):
             dd = os.path.join(self.raiz, "panel", "nodos", nodo)
             os.makedirs(dd, exist_ok=True)
             with open(os.path.join(dd, "report-20261022-000000.html"), "w", encoding="utf-8") as f:
@@ -621,28 +626,33 @@ class VistasLimitado(Base):
     RUTAS = ("/", "/top", "/detalle", "/cuarentena", "/conducta", "/historico", "/eventos", "/reputacion")
 
     def test_nodo_ajeno_o_todos_es_404(self):
-        """Capacidad nueva: un limitado (operador o lectura) que pide un punto ajeno o «Todos» por
-        la URL recibe 404, sin nada de ese punto en la respuesta."""
+        """Capacidad nueva: un limitado (operador o lectura) que pide un punto ajeno por la URL recibe
+        404, sin nada de ese punto en la respuesta; con un solo punto, «Todos» tambien es 404.
+        (bloque C 2026-10-23) dora (2 puntos) si abre «Todos»: es SU acumulado (nodos/<grupo>),
+        200 y sin nada del punto ajeno ni de nodos/_todos (RES_TODOS esta en MARCAS_AJENAS)."""
         for quien in LIMITADOS:
             for ruta in self.RUTAS:
                 for nodo in ("p002", "_todos"):
                     with self.subTest(quien=quien, ruta=ruta, nodo=nodo):
                         r = self.get("%s?nodo=%s" % (ruta, nodo), quien)
-                        self.assertEqual(r.status, 404, plano(r.texto))
-                        self.sin_ajenos(r.texto, ruta)
+                        self.assertEqual(r.status, 200 if (quien, nodo) == ("dora", "_todos") else 404,
+                                         plano(r.texto))
+                        self.sin_ajenos(r.texto, ruta, extra=(IP_AJENA, IP_AJENA_CAND))
 
     def test_sin_nodo_abre_su_primer_punto(self):
-        """Capacidad nueva: sin ?nodo= un limitado abre su primer punto (por pid), nunca «Todos»; y
-        si elige otro de los suyos, la sesion lo recuerda."""
+        """Capacidad nueva: sin ?nodo= un limitado con un punto abre ese punto, nunca «Todos»; y si
+        elige otro de los suyos, la sesion lo recuerda. (bloque C 2026-10-23) con 2 o mas puntos
+        abre su acumulado «Todos mis puntos» (nodos/<grupo>), nunca el «Todos» real."""
         r = self.get("/", "olga")
         self.assertEqual(r.status, 200, plano(r.texto))
         self.esta(RES_PROPIO, r.texto)
         self.sin_ajenos(r.texto, "/ olga")
         self.assertEqual(selector(r.texto)[1] or "p001", "p001")
-        r = self.get("/", "dora")                     # su lista dice [p003, p001]: el primero es p001
+        r = self.get("/", "dora")                     # su lista dice [p003, p001]: su acumulado
         self.assertEqual(r.status, 200, plano(r.texto))
-        self.esta(RES_PROPIO, r.texto)
-        self.assertEqual(selector(r.texto)[1], "p001")
+        self.esta(RES_GRUPO, r.texto)
+        self.sin_ajenos(r.texto, "/ dora (acumulado)")
+        self.assertEqual(selector(r.texto)[1], "_todos")
         self.esta(RES_ESTE, self.get("/?nodo=p003", "dora").texto)
         r = self.get("/", "dora")
         self.esta(RES_ESTE, r.texto)
@@ -666,20 +676,24 @@ class VistasLimitado(Base):
         self.assertEqual(selector(r.texto)[1] or "p001", "p001")
 
     def test_selector_solo_con_sus_puntos(self):
-        """Capacidad nueva: el selector de nodo de un limitado no trae «Todos» ni los puntos ajenos
-        (ni su nombre); con dos puntos trae exactamente los dos."""
+        """Capacidad nueva: el selector de nodo de un limitado no trae los puntos ajenos (ni su
+        nombre) ni el «Todos los nodos» real; con un punto, ninguna vista acumulada. (bloque C
+        2026-10-23) con dos puntos trae los dos y «Todos mis puntos (acumulado)»."""
         for quien, suyos in (("olga", ["p001"]), ("luis", ["p001"]), ("dora", ["p001", "p003"])):
             for ruta in ("/", "/cuarentena", "/eventos"):
                 with self.subTest(quien=quien, ruta=ruta):
                     r = self.get(ruta, quien)
                     self.assertEqual(r.status, 200, plano(r.texto))
                     vals, _elegida, sel = selector(r.texto)
-                    self.assertNotIn("_todos", vals or [])
                     self.assertNotIn("p002", vals or [])
-                    self.no_esta("Todos", sel)
+                    self.no_esta("Todos los nodos", sel)
                     self.no_esta(AJENO, r.texto)
                     if len(suyos) > 1:
-                        self.assertEqual(sorted(vals or []), suyos)
+                        self.assertEqual(sorted(vals or []), ["_todos"] + suyos)
+                        self.esta("Todos mis puntos", sel)
+                    else:
+                        self.assertNotIn("_todos", vals or [])
+                        self.no_esta("Todos", sel)
 
     def test_ninguna_pagina_ensena_datos_ajenos(self):
         """Capacidad nueva: en ninguna pagina de un limitado aparece nada del punto ajeno ni de la
@@ -812,15 +826,22 @@ class AccionesLimitado(Base):
 
     def test_envio_masivo_de_otro_punto_o_de_todos(self):
         """Capacidad nueva: «Enviar todos» (CnC y DNS) con el nodo de la lista de un punto ajeno o de
-        «Todos» no manda nada. Control: el admin, con el mismo formulario, si."""
+        «Todos» no manda nada. Control: el admin, con el mismo formulario, si.
+        (bloque C 2026-10-23) el «Todos» de dora es SU acumulado: puede mandar a SUS routers (p001,
+        p003), pero nunca nada a p002 ni lo de nodos/_todos."""
         for quien in ("olga", "dora"):
             for ruta in ("/cuarentena/enviar-todos", "/cuarentena/dns/enviar-todos"):
                 for nodo in ("p002", "_todos"):
                     with self.subTest(quien=quien, ruta=ruta, nodo=nodo):
+                        n0 = len(self.p.mk)
                         r = self.post(ruta, {"nodo": nodo}, quien)
                         self.assertNotEqual(r.status, 500, plano(r.texto))
-                        self.assertEqual(self.p.mk, [])
+                        self.assertEqual(self.mk_a("p002"), [])
+                        if (quien, nodo) != ("dora", "_todos"):
+                            self.assertEqual(self.p.mk[n0:], [])
+                        self.assertEqual([x for x in self.p.mk if x[2] not in ("p001", "p003")], [])
         self.assertNotIn("p002|" + IP_AJENA_CAND, self.d.cargar_enviados(self.d.MK_SENT))
+        self.p.mk.clear()
         self.post("/cuarentena/enviar-todos", {"nodo": "p002"}, "ana")
         self.assertIn(("add", IP_AJENA_CAND, "p002"), self.p.mk)
 
