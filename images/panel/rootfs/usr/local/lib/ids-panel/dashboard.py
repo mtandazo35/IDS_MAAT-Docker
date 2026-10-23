@@ -20129,7 +20129,7 @@ class H(BaseHTTPRequestHandler):
                                             msg=rep_aviso_tomar(_qc.get("msg", [""])[0])[0],
                                             pag=_pg,
                                             por=_qc.get("n", [""])[0],
-                                            es_operador=self._operador()))
+                                            es_operador=self._puede("resumen.conducta_generar")))
         if path == "/informe.pdf":
             # el informe de verdad (el user, 2026-10-13): antes «Generar reporte» solo imprimia
             # la pagina. reportlab va en la imagen (python3-reportlab de Debian); sin el se dice
@@ -21110,7 +21110,8 @@ class H(BaseHTTPRequestHandler):
                 return self._json({"ok": True, "corriendo": feeds_corriendo()})
             return self._html(perfil_page("Actualizando feeds en segundo plano; recarga en un momento para ver el estado.", ok=True))
         if ruta == "/conducta/refrescar":
-            if not self._operador() or not self._puede("resumen.conducta"):
+            # su propio permiso (antes, ademas, el rol operador): lectura no lo trae en su plantilla
+            if not self._puede("resumen.conducta_generar"):
                 return self._prohibido()
             # No se genera dentro de la peticion: recorrer 3 dias de logs puede tardar
             # minutos y el navegador cortaria por timeout. Lo hace el hilo de fondo.

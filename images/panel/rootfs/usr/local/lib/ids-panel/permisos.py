@@ -19,6 +19,7 @@ CATALOGO = (
         ("resumen.ver", "En vivo, Top y Detalle", False),
         ("resumen.historico", "Histórico", False),
         ("resumen.conducta", "Conducta de abonados (y su CSV)", False),
+        ("resumen.conducta_generar", "Generar el reporte de Conducta ahora", False),
         ("resumen.informe", "Informe PDF", False),
         ("resumen.eventos", "Eventos", False),
         ("resumen.todos", "Vista «Todos» (acumulado de todos los puntos)", True),
@@ -78,6 +79,7 @@ GLOBALES = frozenset(p for _g, _t, ps in CATALOGO for p, _e, gl in ps if gl)
 _LECTURA = ("resumen.ver", "resumen.historico", "resumen.conducta", "resumen.informe", "resumen.eventos",
             "resumen.todos", "cuarentena.ver", "reputacion.ver")
 _OPERADOR = _LECTURA + (
+    "resumen.conducta_generar",
     "cuarentena.enviar", "cuarentena.graduada", "cuarentena.dns", "cuarentena.masivo",
     "cuarentena.destinos", "cuarentena.confianza", "reputacion.consultar", "reputacion.denunciar",
     "puntos.ver", "puntos.api", "puntos.prefijos", "puntos.vpn_ver", "puntos.vpn_regenerar",

@@ -319,6 +319,16 @@ class ResumenPorPermiso(A.Base):
                     h = self.get("/cuarentena", "pepe").texto
                     self.no_esta('href="%s" class="tab' % tab, h, "menú sin " + perm)
 
+    def test_generar_conducta_su_permiso(self):
+        """Generar el reporte de Conducta tiene su permiso: lectura no lo trae (403), con él marcado sí
+        (303); un operador sin él, tampoco."""
+        self.assertEqual(self.post("/conducta/refrescar", {}, "luis").status, 403)
+        self.poner_permisos("luis", sorted(permisos.PLANTILLAS["lectura"] | {"resumen.conducta_generar"}))
+        self.assertEqual(self.post("/conducta/refrescar", {}, "luis").status, 303)
+        self.sin("pepe", "resumen.conducta_generar")
+        self.assertEqual(self.post("/conducta/refrescar", {}, "pepe").status, 403)
+        self.assertNotIn("<button class='b pri'>Generar ahora</button>", self.get("/conducta", "pepe").texto)
+
     def test_sin_en_vivo_va_a_lo_primero_que_puede(self):
         """Capacidad nueva: sin «En vivo» la portada lleva a la primera página que sí puede ver."""
         self.sin("pepe", "resumen.ver")

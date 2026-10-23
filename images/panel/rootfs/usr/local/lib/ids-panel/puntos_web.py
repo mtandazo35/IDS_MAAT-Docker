@@ -185,7 +185,10 @@ PERMISO_ACCION = {"borrar": "puntos.borrar", "desbanear": "puntos.desbanear",
 
 
 def _es_admin(h):
-    return bool(h._admin())
+    """Administrador con todo (todos los puntos y todos los permisos, es_admin_ctx del nucleo): solo
+    decide la limpieza de bajas desde la peticion y la pista de la orden de consola del servidor."""
+    f = getattr(_dash(h), "es_admin_ctx", None)
+    return bool(f()) if callable(f) else bool(h._admin())
 
 
 def _puede(h, permiso):
