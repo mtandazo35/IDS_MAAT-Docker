@@ -1012,6 +1012,11 @@ function papiModal(j){var p=j.prueba;if(!p)return '<p>'+pjEsc(j.mensaje||j.error
 function phueConf(f){pjAbrir('Confirmar la huella',pjEspera('Volviendo a leer la huella que presenta el router…'),' ','');
  pjPost(f,{},function(j){pjAbrir(j.ok?'Huella confirmada':'No se confirmó la huella','<p>'+pjEsc(j.mensaje||j.error||'')+'</p>');pjHuella(1);},
   function(m){pjAbrir('No se pudo','<p>'+pjEsc(m)+'</p>');});return false;}
+var PTGTIT={guardar:'Chat de Telegram del punto',probar:'Probar el chat',quitar:'Quitar el chat del punto'};
+function ptg(b,acc){var f=b.form,t=PTGTIT[acc]||'Telegram';pjAbrir(t,pjEspera(acc==='probar'?'Mandando el mensaje de prueba…':'Guardando…'),' ','');
+ pjPost(f,{accion:acc},function(j){var ok=!!j.ok,txt='<p>'+pjEsc(j.mensaje||j.error||'')+'</p>';
+  pjAbrir(ok?t:'No se pudo',txt,(ok&&acc!=='probar')?"<button type=button class=btn onclick='location.reload()'>Cerrar</button>":'');},
+  function(m){pjAbrir('No se pudo','<p>'+pjEsc(m)+'</p>');});return false;}
 function pdesban(f){pjAbrir('Desbanear IP del MikroTik',pjEspera('Pidiendo el desbaneo al servidor…'),' ','');
  pjPost(f,{},function(j){pjAbrir(j.ok?'Desbanear IP del MikroTik':'No se desbaneó','<p>'+pjEsc(j.mensaje||j.error||'')+'</p>');},
   function(m){pjAbrir('No se pudo','<p>'+pjEsc(m)+'</p>');});return false;}
@@ -3393,10 +3398,13 @@ def telegram_html(d, pid):
     sin_bot = "" if bot else aviso(
         "El panel no tiene bot de Telegram configurado (Ajustes del informe): puedes guardar el chat, pero no "
         "llegará nada hasta que lo configure el administrador.", "amb")
-    probar = ("<button class='btn sec' type=submit name=accion value=probar>Probar</button>" if bot else "")
-    quitar = ("<button class='btn sec' type=submit name=accion value=quitar onclick=\"return ask(this,"
+    # el resultado sale en un modal (pjPost/pjAbrir, como Desbanear): sin recargar la ficha con un aviso
+    probar = ("<button class='btn sec' type=submit name=accion value=probar onclick=\"return ptg(this,'probar')\">"
+              "Probar</button>" if bot and chat else "")
+    quitar = ("<button class='btn sec' type=submit name=accion value=quitar onclick=\"if(ask(this,"
               "'Quitar el chat del punto','Este punto deja de mandar sus avisos a ese chat. El chat del "
-              "administrador sigue recibiendo todo.','Quitar','danger')\">Quitar</button>" if chat else "")
+              "administrador sigue recibiendo todo.','Quitar','danger'))ptg(this,'quitar');return false;\">"
+              "Quitar</button>" if chat else "")
     return (
         "<p class=hint style='margin-top:0'>El cliente agrega el bot del panel a su grupo o chat y aquí se pone "
         "su <b>Chat ID</b>: un número (los grupos empiezan por <code>-100</code>) o <code>@canal</code>. Lo de "
@@ -3406,10 +3414,11 @@ def telegram_html(d, pid):
         "<label class=l for=ptg_chat>Chat ID de Telegram</label>"
         "<input class=t name=chat id=ptg_chat value='%s' maxlength=40 autocomplete=off "
         "placeholder='-1001234567890 o @canal'>"
-        "<div class=acciones><button class=btn type=submit name=accion value=guardar>Guardar</button>%s%s</div>"
+        "<div class=acciones><button class=btn type=submit name=accion value=guardar "
+        "onclick=\"return ptg(this,'guardar')\">Guardar</button>%s%s</div>"
         "</form><p class=hint>%s%s</p>"
         % (sin_bot, esc(pid), campo_token(), esc(chat), probar, quitar, estado,
-           " «Probar» manda un mensaje de prueba (solo el nombre del punto, sin datos) al chat escrito arriba."
+           " «Probar» manda un mensaje de prueba (solo el nombre del punto, sin datos) al chat guardado."
            if bot else ""))
 
 

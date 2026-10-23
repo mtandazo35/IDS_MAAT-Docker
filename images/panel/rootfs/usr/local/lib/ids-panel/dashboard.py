@@ -5401,13 +5401,19 @@ def notificar_cuarentena(clave, tipo, lista, quien=""):
             return
     pid, ip = rid_de(clave), ip_de(clave)
     now = time.time()
+    # cada chat lleva su registro (el global con la clave, el del punto con «clave|tg»): si uno
+    # falla, se reintenta ese sin repetir el que ya salio. «clave|tg» empieza por «pid|», asi la
+    # baja del punto (purgar_punto) lo limpia igual
+    k_punto = clave + "|tg"
     with _NOTIF_LOCK:
         try:
             d = json.load(open(NOTIF_CUAR_FILE, encoding="utf-8"))
         except Exception:
             d = {}
-        if now - d.get(clave, 0) < 6 * 3600:
-            return
+        pend_g = now - d.get(clave, 0) >= 6 * 3600
+        pend_p = bool(telegram_chat_de(pid)) and now - d.get(k_punto, 0) >= 6 * 3600
+    if not (pend_g or pend_p):
+        return
     ab = abonado_de(ip, pid)
     cliente = f"{ab.get('nombre')} ({ip})" if ab.get("nombre") else ip
     conf = ""; ev = ""
@@ -5421,22 +5427,24 @@ def notificar_cuarentena(clave, tipo, lista, quien=""):
     base = conf_dash_get("PANEL_URL", "").rstrip("/")
     q = urllib.parse.urlencode({"ip": nodos.clave(pid, ip), "nodo": pid})   # la identidad, no la IP sola
     link = f"{base}/cuarentena/ficha?{q}" if base else f"panel -> Cuarentena -> Ver evidencia ({ip})"
-    txt = (f"\U0001f6a8 Cuarentena [{_hostname()} / {nodos.nombre(pid)}]: {cliente}\n"
+    cab = (f"\U0001f6a8 Cuarentena [{_hostname()} / {nodos.nombre(pid)}]: {cliente}\n"
            f"Acción: enviado a lista '{lista}' ({tipo})" + (f" | confianza {conf}" if conf else "") + "\n"
-           + (f"Evidencia: {ev}\n" if ev else "")
-           + (f"Por: {quien}\n" if quien else "")
-           + f"Ficha: {link}")
-    # global (admin) + el chat propio del punto: el texto es solo de este CPE de este punto.
-    # Dedupe si salio por cualquiera de los dos (sin global configurado, el del punto vale igual).
-    _ok_g = enviar_telegram(txt)
-    _ok_p = enviar_telegram_punto(pid, txt)
+           + (f"Evidencia: {ev}\n" if ev else ""))
+    # global (admin): con quien lo hizo. El chat propio del punto (el del cliente): el mismo aviso,
+    # solo de este CPE de este punto, sin el usuario del panel que actuo
+    txt = cab + (f"Por: {quien}\n" if quien else "") + f"Ficha: {link}"
+    _ok_g = enviar_telegram(txt) if pend_g else False
+    _ok_p = enviar_telegram_punto(pid, cab + f"Ficha: {link}") if pend_p else False
     if _ok_g or _ok_p:
         with _NOTIF_LOCK:
             try:
                 d = json.load(open(NOTIF_CUAR_FILE, encoding="utf-8"))
             except Exception:
                 d = {}
-            d[clave] = int(now)
+            if _ok_g:
+                d[clave] = int(now)
+            if _ok_p:
+                d[k_punto] = int(now)
             d = {k: v for k, v in d.items() if now - v < 7 * 86400}
             try:
                 tmp = "%s.%d.tmp" % (NOTIF_CUAR_FILE, os.getpid())
@@ -19722,14 +19730,14 @@ def _avisar_masivo_puntos_fondo(por_punto, titulo):
 def _avisar_masivo_puntos(por_punto, titulo):
     """Masivo (bloque D): a cada punto con chat propio, un mensaje con SOLO sus CPE enviados.
     `por_punto` = {pid: [ip, ...]} (lo que rellena _enviar_confirmados). El global va aparte."""
-    quien = getattr(CTX, "user", "?")
     for pid, ips in sorted((por_punto or {}).items()):
         if not ips:
             continue
         lista = ", ".join(ips[:10]) + (" y %d más" % (len(ips) - 10) if len(ips) > 10 else "")
         try:
-            enviar_telegram_punto(pid, "\U0001f6a8 %s [%s / %s]: %d CPE confirmados (2+ pruebas) por %s: %s"
-                                  % (titulo, _hostname(), nodos.nombre(pid), len(ips), quien, lista))
+            # sin el usuario del panel que actuo: el chat es del cliente
+            enviar_telegram_punto(pid, "\U0001f6a8 %s [%s / %s]: %d CPE confirmados (2+ pruebas): %s"
+                                  % (titulo, _hostname(), nodos.nombre(pid), len(ips), lista))
         except Exception:
             pass
 

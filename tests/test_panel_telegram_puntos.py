@@ -53,6 +53,7 @@ class Telegrama:
 
     def __init__(self):
         self.enviados = []
+        self.caidos = set()        # chats a los que Telegram «falla» (para el reintento por chat)
         self.lock = threading.Lock()
 
     def __call__(self, url, data=None, timeout=None, **_kw):
@@ -60,6 +61,8 @@ class Telegrama:
         if "api.telegram.org" not in u:
             raise OSError("red cortada en la prueba")
         q = urllib.parse.parse_qs((data or b"").decode("utf-8"))
+        if q.get("chat_id", [""])[0] in self.caidos:
+            raise OSError("chat caido en la prueba")
         with self.lock:
             self.enviados.append((q.get("chat_id", [""])[0], q.get("text", [""])[0]))
         return io.BytesIO(b'{"ok": true, "result": {}}')
@@ -271,6 +274,32 @@ class AvisoCuarentena(_Arbol):
         sin_marcas(self, self.tg.a(CHAT_P2), (A.NOMBRES["p001"], "ABONADO-PROPIO-KQ", "EVIDENCIA-PROPIA-KQ"),
                    "chat de p002")
         self.assertEqual(self.tg.chats(), {CHAT_GLOBAL, CHAT_P1, CHAT_P2})
+
+    def test_el_chat_del_cliente_no_dice_quien_actuo(self):
+        """El aviso del global lleva «Por: <usuario del panel>»; el del chat del cliente, no."""
+        self.d.notificar_cuarentena("p001|" + A.IP_PROPIA, "Infección CnC", "clientes-botnet", quien="olga")
+        self.assertIn("Por: olga", self.tg.a(CHAT_GLOBAL)[0])
+        self.assertNotIn("olga", self.tg.a(CHAT_P1)[0])
+        self.assertNotIn("Por:", self.tg.a(CHAT_P1)[0])
+
+    def test_cada_chat_se_reintenta_por_su_lado(self):
+        """Si el global falla y el del punto sale, el global se reintenta en la siguiente llamada sin
+        repetir el del punto (cada chat con su registro); y al reves."""
+        d = self.d
+        self.tg.caidos = {CHAT_GLOBAL}
+        d.notificar_cuarentena("p001|" + A.IP_PROPIA, "Infección CnC", "clientes-botnet")
+        self.assertEqual((len(self.tg.a(CHAT_GLOBAL)), len(self.tg.a(CHAT_P1))), (0, 1))
+        self.tg.caidos = set()
+        d.notificar_cuarentena("p001|" + A.IP_PROPIA, "Infección CnC", "clientes-botnet")
+        self.assertEqual((len(self.tg.a(CHAT_GLOBAL)), len(self.tg.a(CHAT_P1))), (1, 1))
+        d.notificar_cuarentena("p001|" + A.IP_PROPIA, "Infección CnC", "clientes-botnet")
+        self.assertEqual((len(self.tg.a(CHAT_GLOBAL)), len(self.tg.a(CHAT_P1))), (1, 1))   # nada repetido
+        self.tg.caidos = {CHAT_P2}
+        d.notificar_cuarentena("p002|" + A.IP_AJENA, "Infección CnC", "clientes-botnet")
+        self.assertEqual((len(self.tg.a(CHAT_GLOBAL)), len(self.tg.a(CHAT_P2))), (2, 0))
+        self.tg.caidos = set()
+        d.notificar_cuarentena("p002|" + A.IP_AJENA, "Infección CnC", "clientes-botnet")
+        self.assertEqual((len(self.tg.a(CHAT_GLOBAL)), len(self.tg.a(CHAT_P2))), (2, 1))
 
     def test_punto_sin_chat_solo_global(self):
         """Capacidad nueva (conservacion): un punto sin chat propio solo avisa al global, como antes."""
