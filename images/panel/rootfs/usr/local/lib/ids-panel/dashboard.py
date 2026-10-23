@@ -5292,6 +5292,77 @@ def telegram_token():
         SECRETOS_AVISO[TELEGRAM_ASOC] = str(ex)
         return ""
 
+# Telegram por punto (bloque D, 2026-10-23): cada punto puede tener su propio chat (el del cliente),
+# con el MISMO bot del panel. Lo de ese punto llega a su chat ademas de al chat global (el del
+# admin), que sigue recibiendo todo. conf/telegram-puntos.json = {pid: chat_id}, 0600. El chat_id
+# no es un secreto (como TELEGRAM_CHAT_ID en report.conf); el token sigue cifrado y unico.
+TELEGRAM_PUNTOS_FILE = nodos.ruta("conf", "telegram-puntos.json")
+RE_CHAT_TELEGRAM = re.compile(r"\A(?:-?[0-9]{1,20}|@[A-Za-z][A-Za-z0-9_]{4,31})\Z")
+_TG_PUNTOS_LOCK = threading.Lock()
+
+def chat_valido(chat):
+    """Un Chat ID de Telegram: numero (con - los grupos) o @canal."""
+    return isinstance(chat, str) and bool(RE_CHAT_TELEGRAM.match(chat))
+
+def cargar_telegram_puntos(estricto=False):
+    """{pid: chat} de los puntos con chat propio; lo mal formado se ignora. Con `estricto`, un
+    fichero que existe pero no se puede leer lanza OSError (al guardar no se pisan los demas)."""
+    try:
+        with open(TELEGRAM_PUNTOS_FILE, encoding="utf-8") as f:
+            d = json.load(f)
+    except FileNotFoundError:
+        return {}
+    except (OSError, ValueError):
+        if estricto:
+            raise OSError("conf/telegram-puntos.json no se puede leer: no se toca")
+        return {}
+    if not isinstance(d, dict):
+        if estricto:
+            raise OSError("conf/telegram-puntos.json no es un objeto: no se toca")
+        return {}
+    return {k: v for k, v in d.items() if nodos.pid_valido(k) and chat_valido(v)}
+
+def guardar_telegram_punto(pid, chat):
+    """Pone (o quita, con chat vacio o None) el chat propio de un punto. Escribe sin alcance: el
+    fichero es de todos los puntos y un limitado solo toca el suyo (pid ya validado)."""
+    nodos.exigir_pid(pid)
+    if chat and not chat_valido(chat):
+        raise ValueError("Chat ID no válido: un número (los grupos empiezan por -100) o @canal")
+    with _TG_PUNTOS_LOCK, _USR_LOCK:
+        d = cargar_telegram_puntos(estricto=True)
+        if chat:
+            d[pid] = chat
+        else:
+            d.pop(pid, None)
+        os.makedirs(os.path.dirname(TELEGRAM_PUNTOS_FILE), mode=0o700, exist_ok=True)
+        tmp = "%s.%d.%d.tmp" % (TELEGRAM_PUNTOS_FILE, os.getpid(), threading.get_ident())
+        with open(tmp, "w", encoding="utf-8", newline="\n") as f:
+            json.dump(d, f, ensure_ascii=False, indent=2)
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, TELEGRAM_PUNTOS_FILE)
+    return d.get(pid, "")
+
+def telegram_chat_de(pid):
+    """El chat propio de ese punto, o "" si no tiene."""
+    return cargar_telegram_puntos().get(pid, "") if nodos.pid_valido(pid or "") else ""
+
+def enviar_telegram_chat(chat, texto):
+    """Envia `texto` a ese chat con el bot del panel. No lanza; True si Telegram lo acepto."""
+    tok = telegram_token()
+    if not (tok and chat_valido(chat)):
+        return False
+    try:
+        data = urllib.parse.urlencode({"chat_id": chat, "text": texto[:4000]}).encode()
+        urllib.request.urlopen(f"https://api.telegram.org/bot{tok}/sendMessage", data=data, timeout=15)
+        return True
+    except Exception:
+        return False
+
+def enviar_telegram_punto(pid, texto):
+    """Lo de un punto: al chat propio de ese punto, si tiene (el global va aparte, enviar_telegram)."""
+    chat = telegram_chat_de(pid)
+    return enviar_telegram_chat(chat, texto) if chat else False
+
 def enviar_telegram(texto):
     """Envia un aviso por Telegram si esta configurado en conf/report.conf (token cifrado).
     No lanza: si no hay token o falla la red, no pasa nada (el aviso igual queda en el panel)."""
@@ -5355,7 +5426,11 @@ def notificar_cuarentena(clave, tipo, lista, quien=""):
            + (f"Evidencia: {ev}\n" if ev else "")
            + (f"Por: {quien}\n" if quien else "")
            + f"Ficha: {link}")
-    if enviar_telegram(txt):
+    # global (admin) + el chat propio del punto: el texto es solo de este CPE de este punto.
+    # Dedupe si salio por cualquiera de los dos (sin global configurado, el del punto vale igual).
+    _ok_g = enviar_telegram(txt)
+    _ok_p = enviar_telegram_punto(pid, txt)
+    if _ok_g or _ok_p:
         with _NOTIF_LOCK:
             try:
                 d = json.load(open(NOTIF_CUAR_FILE, encoding="utf-8"))
@@ -5708,6 +5783,7 @@ def medir_sensor(pid=None):
         aviso = f"✅ Suricata [{donde}]: sensor recuperado ({o['titulo']})"
     if aviso:
         enviar_telegram(aviso)
+        enviar_telegram_punto(pid, aviso)     # el aviso es solo de este punto: tambien a su chat
         o["alert_estado"] = o["nivel"]; o["alert_titulo"] = o["titulo"]; o["alert_ts"] = int(now)
     try:
         tmp = "%s.%d.tmp" % (ruta_s, os.getpid())
@@ -7951,6 +8027,18 @@ def _vigilar_publicas(forzar, pares):
                                 f"Panel -> Consultar IP para ver qué abonado lo causa.")
             except Exception:
                 pass
+            # el historial va por entrada: si varios puntos declaran la misma publica, solo el
+            # primer par cruza el umbral; por eso se avisa a TODOS los que la declaran, a cada
+            # uno con su nombre y su publica (nada de otros puntos).
+            for _r in dict.fromkeys([r for r, e in pares if e == ent] or [rid]):
+                _nom_r = (router_por_id(_r) or {}).get("nombre") or _r
+                try:
+                    enviar_telegram_punto(_r, "⚠️ IP pública ensuciada [%s]: %s (%s) "
+                                              "está denunciada (%s %% de abuso). Panel -> Consultar "
+                                              "IP para ver qué abonado lo causa."
+                                              % (_hostname(), ent, _nom_r, sc))
+                except Exception:
+                    pass
             bitacora("PUBLICA-DENUNCIADA", f"{ent} score={sc} nodo={nom}", quien="auto")
     with _PUB_LOCK:
         # releido dentro del cerrojo: otra revision pudo guardar mientras; solo van las de aqui
@@ -8521,6 +8609,16 @@ def _vigilar_dnsbl(pares):
                                 f"Panel -> Consultar IP.")
             except Exception:
                 pass
+            # igual que la ensuciada: el historial va por entrada, asi que se avisa a cada punto
+            # que la declara, solo con lo suyo
+            for _r in dict.fromkeys([x for x, e in pares if e == ent] or [rid]):
+                _nom_r = (router_por_id(_r) or {}).get("nombre") or _r
+                try:
+                    enviar_telegram_punto(_r, "⛔ Lista negra [%s]: %s dirección(es) de %s (%s) "
+                                              "están en listas de bloqueo. Panel -> Consultar IP."
+                                              % (_hostname(), r["n_listadas"], ent, _nom_r))
+                except Exception:
+                    pass
             bitacora("PUBLICA-EN-LISTA-NEGRA", f"{ent} listadas={r['n_listadas']}", quien="auto")
     with _PUB_LOCK:
         # releido dentro del cerrojo: otra revision (de otras entradas) pudo guardar mientras esta
@@ -11897,6 +11995,19 @@ def purgar_punto(pid, quien=None):
                 if ks:
                     guardar_enviados(env, path)
             hecho[os.path.basename(path)] = len(ks)
+        # su chat de Telegram (bloque D): la baja no deja guardado el Chat ID del cliente
+        try:
+            with _TG_PUNTOS_LOCK, _USR_LOCK:
+                _tg = cargar_telegram_puntos(estricto=True)
+                if _tg.pop(pid, None) is not None:
+                    _tmp = "%s.%d.%d.tmp" % (TELEGRAM_PUNTOS_FILE, os.getpid(), threading.get_ident())
+                    with open(_tmp, "w", encoding="utf-8", newline="\n") as f:
+                        json.dump(_tg, f, ensure_ascii=False, indent=2)
+                    os.chmod(_tmp, 0o600)
+                    os.replace(_tmp, TELEGRAM_PUNTOS_FILE)
+                    hecho["telegram-puntos.json"] = 1
+        except OSError:
+            pass
         for path in (NOTIF_CUAR_FILE, POL_NOTIF, THRESHOLD_ENVIADO, DIAG_FILE):
             try:
                 d = json.load(open(path, encoding="utf-8"))
@@ -15339,7 +15450,7 @@ toda la empresa).</li>
 asignados: la lista de <b>destinos de confianza</b> (excluir destino), <b>denunciar</b> a AbuseIPDB, y lo
 que ya era de administrador (ajustes, feeds, IA, Telegram, DNS, empresa, MikroTik común, exclusiones,
 Registro, actualizaciones, ventana, usuarios e IPs de confianza). Un usuario limitado ni lo ve ni lo toca.</li>
-<li>Los avisos de Telegram y las tareas de fondo no cambian: siguen cubriendo todos los puntos.</li>
+<li>Las tareas de fondo no cambian: siguen cubriendo todos los puntos. El chat global de Telegram recibe lo de todos; el chat propio de cada punto (ficha del punto), solo lo suyo.</li>
 <li>Cuando un punto se da de baja, sale de la lista de cada usuario. Quien se queda sin ninguno no pasa a
 ver todos: se queda sin puntos hasta que le asignes otro.</li>
 </ul>
@@ -15491,6 +15602,21 @@ personal es un número (<code>1234567890</code>); un grupo empieza por <code>-</
 no, no se guarda. El token se guarda <b>cifrado</b> y no se vuelve a mostrar; <b>Comprobar</b> lo prueba
 sin guardar, y para quitarlo se escribe <code>BORRAR</code>. Para que el enlace a la ficha sea
 clicable, el servidor tiene que declarar la URL pública del panel (<code>IDS_PANEL_URL</code>).</p>
+<h3>Chat propio de cada punto</h3>
+<p>Cada punto puede tener además <b>su propio chat</b> (el del cliente de ese punto), con el
+<b>mismo bot</b> del panel: no hace falta otro bot ni otro token. Se pone en la <b>ficha del punto</b>
+(su Chat ID; para un grupo, se añade el bot al grupo y se usa su ID, que empieza por <code>-100</code>).
+Vacío, el punto no tiene chat propio.</p>
+<ul class=doc>
+<li>El <b>chat global</b> (el de Ajustes) sigue recibiendo <b>todo</b>, como siempre. El del punto
+recibe, además, solo lo de ese punto: las cuarentenas de sus CPE, los avisos de su sensor
+(caído, pérdidas, sin tráfico, recuperado), sus públicas ensuciadas o en lista negra y, en un envío
+masivo, un mensaje con <b>solo sus CPE</b>; y el <b>informe diario</b> de las 07:30 con solo su sección. Nunca le llega nada de otro punto.</li>
+<li>Una pública que declaran varios puntos avisa a cada uno con lo suyo.</li>
+<li>Si el chat global no está puesto pero el token sí, el chat del punto recibe igual sus avisos.</li>
+<li><b>Detectar Chat ID</b> es solo del administrador: el bot ve los mensajes de <b>todos</b> los
+grupos en los que está, así que mostrarlo a otro usuario le enseñaría los chats de otros clientes.</li>
+</ul>
 
 <!--CAT:Mantenimiento--><h2>Versión, actualizaciones y recuperación</h2>
 <p>El panel avisa solo cuando hay una versión nueva, como la notificación de una app. Al administrador
@@ -19580,7 +19706,34 @@ def _destino_ok(clave):
     pid, sep, _ip = (clave or "").partition("|")
     return bool(sep) and _router_de_pid(pid) is not None
 
-def _enviar_confirmados(nodo_form, tipo):
+def _avisar_masivo_puntos_fondo(por_punto, titulo):
+    """Lo mismo, en un hilo aparte: con varios puntos con chat, cada envio puede tardar hasta el
+    timeout y la peticion del envio masivo no debe esperarlos (auditoria D, B2)."""
+    quien = getattr(CTX, "user", "?")
+
+    def _correr():
+        CTX.user = quien
+        try:
+            _avisar_masivo_puntos(por_punto, titulo)
+        except Exception as ex:
+            sys.stderr.write("aviso masivo por punto: %s\n" % ex)
+    threading.Thread(target=_correr, name="tg-masivo", daemon=True).start()
+
+def _avisar_masivo_puntos(por_punto, titulo):
+    """Masivo (bloque D): a cada punto con chat propio, un mensaje con SOLO sus CPE enviados.
+    `por_punto` = {pid: [ip, ...]} (lo que rellena _enviar_confirmados). El global va aparte."""
+    quien = getattr(CTX, "user", "?")
+    for pid, ips in sorted((por_punto or {}).items()):
+        if not ips:
+            continue
+        lista = ", ".join(ips[:10]) + (" y %d más" % (len(ips) - 10) if len(ips) > 10 else "")
+        try:
+            enviar_telegram_punto(pid, "\U0001f6a8 %s [%s / %s]: %d CPE confirmados (2+ pruebas) por %s: %s"
+                                  % (titulo, _hostname(), nodos.nombre(pid), len(ips), quien, lista))
+        except Exception:
+            pass
+
+def _enviar_confirmados(nodo_form, tipo, por_punto=None):
     """Envio masivo de los CONFIRMADOS (2+ pruebas) de la lista que se vio (un nodo o «Todos»),
     repartido por nodo: cada CPE va al router de SU nodo (pid|ip) y un router que no responde
     solo corta los envios de su nodo. Devuelve (enviados, resultado por nodo en texto).
@@ -19589,7 +19742,10 @@ def _enviar_confirmados(nodo_form, tipo):
     que comparten las pestanas (auditoria A-11). Un candidato sin `router` solo vale en la
     vista de un punto. Antes de enviar se mira que la evidencia sea reciente (§10.4): los de
     evidencia vieja se omiten y se listan (auditoria A-06). El registro se anota releyendolo
-    dentro del cerrojo, por punto, nunca con una foto de antes (auditoria A-03)."""
+    dentro del cerrojo, por punto, nunca con una foto de antes (auditoria A-03).
+
+    `por_punto` (dict, opcional) se rellena con {pid: [ip enviada, ...]} para el aviso de
+    Telegram de cada punto (bloque D): cada chat de punto recibe solo lo suyo."""
     dns = tipo == "dns"
     if not (nodo_form or "").strip():
         return 0, "Falta el nodo de la lista: no se envió nada (recarga la página)."
@@ -19702,6 +19858,8 @@ def _enviar_confirmados(nodo_form, tipo):
                         # demas se siguen mandando
                         mk_log("ERROR-ENVIO", ip, quien, f"lista={_lst} {err}" + _suf_nodo(clave)); err_n += 1; ult_err = err
                 _registrar_enviados(reg, nuevas, [])
+            if por_punto is not None and nuevas:
+                por_punto[pid] = [ip_de(k) for k in nuevas]
         except OperacionEnCurso as ex:
             partes.append("%s: nada (%s)" % (nom, ex))
             continue
@@ -21684,10 +21842,12 @@ class H(BaseHTTPRequestHandler):
             if not (q.get("nodo", [""])[0] or "").strip():
                 return self._html(_pagina_error("Falta el nodo", "El formulario no dice de que nodo es la "
                                                 "lista: no se envió nada. Recarga la página."), 400)
-            ok_n, resumen = _enviar_confirmados(q.get("nodo", [""])[0], "cuar")
+            _pp = {}
+            ok_n, resumen = _enviar_confirmados(q.get("nodo", [""])[0], "cuar", _pp)
             if ok_n:
                 enviar_telegram(f"\U0001f6a8 Cuarentena masiva [{_hostname()}]: {ok_n} CPE confirmados (2+ pruebas) "
                                 f"por {getattr(CTX, 'user', '?')}. {resumen}")
+                _avisar_masivo_puntos_fondo(_pp, "Cuarentena masiva")   # a cada punto, solo sus CPE
             return self._redirect(cuar_aviso_url(resumen))
         if ruta == "/cuarentena/quitar":
             if not self._puede('cuarentena.enviar'):
@@ -21891,10 +22051,12 @@ class H(BaseHTTPRequestHandler):
             if not (q.get("nodo", [""])[0] or "").strip():
                 return self._html(_pagina_error("Falta el nodo", "El formulario no dice de que nodo es la "
                                                 "lista: no se envió nada. Recarga la página."), 400)
-            ok_n, resumen = _enviar_confirmados(q.get("nodo", [""])[0], "dns")
+            _pp = {}
+            ok_n, resumen = _enviar_confirmados(q.get("nodo", [""])[0], "dns", _pp)
             if ok_n:
                 enviar_telegram(f"\U0001f6a8 DNS sospechoso masivo [{_hostname()}]: {ok_n} CPE confirmados (2+ pruebas) "
                                 f"por {getattr(CTX, 'user', '?')}. {resumen}")
+                _avisar_masivo_puntos_fondo(_pp, "DNS sospechoso masivo")   # a cada punto, solo sus CPE
             return self._redirect(cuar_aviso_url(resumen))
         return self._html("<h1>No encontrado</h1>", 404)
 

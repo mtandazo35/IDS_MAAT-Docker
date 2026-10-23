@@ -663,7 +663,10 @@ la lista global de destinos de confianza y denunciar a AbuseIPDB.
 
 **Lo que no cambia:**
 
-- **Telegram** es un único chat global, el del admin, que recibe los avisos de todos los puntos;
+- **Telegram**: el chat global, el del admin, recibe los avisos de todos los puntos. Desde 2026-10-23
+  cada punto puede tener además su propio chat (ficha del punto › Avisos por Telegram, con el
+  permiso «Avisos por Telegram del punto» y el mismo bot), que recibe solo lo suyo: cuarentenas,
+  sensor, públicas, su parte de los envíos masivos y su sección del informe diario;
 - los procesos de fondo (informes, políticas, sincronización con los routers) trabajan con todos los
   puntos;
 - la baja de un punto lo quita de la lista `puntos` de cada usuario; quien se queda sin ninguno ve

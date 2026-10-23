@@ -181,7 +181,9 @@ def _bit(d, accion, pid="", objetivo="", resultado="", extra="", quien=None, ip=
 PERMISO_ACCION = {"borrar": "puntos.borrar", "desbanear": "puntos.desbanear",
                   "regenerar": "puntos.vpn_regenerar", "arrancar": "puntos.arrancar",
                   "parar": "puntos.arrancar", "reiniciar": "puntos.arrancar",
-                  "ajustar": "puntos.prefijos", "api": "puntos.api"}
+                  "ajustar": "puntos.prefijos", "api": "puntos.api",
+                  # bloque D (2026-10-23): el chat de Telegram propio del punto (no global)
+                  "telegram": "puntos.telegram"}
 
 
 def _es_admin(h):
@@ -2677,6 +2679,7 @@ def ficha(h, pid, mensaje="", codigo=200, ok=False, extra_espejo=""):
     admin = _es_admin(h)
     puede_baja = _puede(h, "puntos.borrar")
     puede_servicio = _puede(h, "puntos.arrancar")
+    puede_tg = _puede(h, "puntos.telegram")      # chat de Telegram propio del punto (bloque D)
     p = nodos.punto(pid) or {}
     nombre = p.get("nombre") or pid
     ahora = time.time()
@@ -2893,7 +2896,7 @@ def ficha(h, pid, mensaje="", codigo=200, ok=False, extra_espejo=""):
         "<div class=ptit><h1>%s <span class=hint>%s</span></h1><a class='btn sec' href='/puntos'>Volver a "
         "Puntos</a></div>%s%s%s"
         "<nav class=secnav><a href='#resumen'>Resumen</a><a href='#vpn'>%s</a><a href='#api'>API</a>"
-        "<a href='#prefijos'>Prefijos</a>%s"
+        "<a href='#prefijos'>Prefijos</a>%s%s"
         "%s</nav>"
         "<section class=card id=resumen><h2>Resumen</h2><div class=datos>%s</div>%s"
         "<h3 style='font-size:14px'>Salud por etapas</h3>%s</section>"
@@ -2902,17 +2905,21 @@ def ficha(h, pid, mensaje="", codigo=200, ok=False, extra_espejo=""):
         "<section class=card id=api><h2>API del MikroTik</h2>%s</section>"
         "%s"
         "<section class=card id=prefijos><h2>Prefijos adicionales</h2>%s</section>"
-        "%s%s"
+        "%s%s%s"
         % (esc(nombre), esc(pid), aviso(mensaje, "ok" if ok else "err"), caja_error,
            "" if p else aviso("El punto aún no aparece en el estado del orquestador (se actualiza cada 15 s).", "info"),
            "Conexión" if directo else "VPN",
+           "<a href='#telegram'>Telegram</a>" if puede_tg else "",
            ("<a href='/puntos/%s/logs?parte=vpn'>Logs</a>" % esc(pid)) if _puede(h, "puntos.logs") else "",
            "<a href='#baja'>Baja</a>" if puede_baja else "",
            datos, cobertura_html(cobertura_prefijos(pid, p, ahora)),
            salud_etapas_html(sal), serv, desbanear_html(p, pid) if _puede(h, "puntos.desbanear") else "",
            "Conexión directa: datos para el MikroTik" if directo else "VPN: comandos para el MikroTik",
            vpn_html, api_html, extra_espejo,
-           pref_html, ("<div id=baja>%s</div>" % baja) if puede_baja else "",
+           pref_html,
+           ("<section class=card id=telegram><h2>Avisos por Telegram</h2>%s</section>" % telegram_html(d, pid))
+           if puede_tg else "",
+           ("<div id=baja>%s</div>" % baja) if puede_baja else "",
            _retomar_html(d, pid)))
     # lleva la clave de la VPN: ni el navegador ni un proxy la guardan (como la pagina de la operacion)
     return _html_privado(h, pagina(d, nombre, cuerpo), codigo)
@@ -3343,6 +3350,121 @@ def accion_desbanear(h, pid, form, ajax=False):
         return ("%s no estaba baneada en la VPN (jaula ids-vpn): si el MikroTik no conecta, la causa es otra "
                 "(mira los logs de la VPN del punto)." % ip, 200, True, "")
     return _con_token(h, pid, "desbanear", form, hacer, validar, ajax=ajax)
+
+
+# --------------------------------------------------------------------------------------------
+# Avisos por Telegram del punto (bloque D, 2026-10-23)
+# --------------------------------------------------------------------------------------------
+# Cada punto puede tener su propio chat (el del cliente) con el MISMO bot del panel: lo de ese punto
+# le llega ademas de al chat global del administrador, que sigue recibiendo todo. El chat_id no es
+# un secreto (como TELEGRAM_CHAT_ID en report.conf): va entero al Registro para saber a donde salen
+# los avisos de cada punto. El token del bot nunca sale de dashboard.
+def _tg(d, nombre):
+    """La funcion de Telegram del nucleo (None si el nucleo es de antes del bloque D)."""
+    f = getattr(d, nombre, None)
+    return f if callable(f) else None
+
+
+def _tg_chat(d, pid):
+    f = _tg(d, "telegram_chat_de")
+    try:
+        return (f(pid) or "") if f else ""
+    except Exception:
+        return ""
+
+
+def _tg_bot(d):
+    """Hay bot configurado (token presente y descifrable)."""
+    f = _tg(d, "telegram_token")
+    try:
+        return bool(f()) if f else False
+    except Exception:
+        return False
+
+
+def telegram_html(d, pid):
+    """La seccion «Avisos por Telegram» de la ficha (solo con puntos.telegram: lo decide ficha)."""
+    if _tg(d, "guardar_telegram_punto") is None:
+        return "<p class=hint>Este panel no admite todavía un chat de Telegram por punto.</p>"
+    chat = _tg_chat(d, pid)
+    bot = _tg_bot(d)
+    estado = (("Ahora los avisos de este punto llegan también a <b>%s</b>." % esc(chat)) if chat
+              else "Este punto no tiene chat propio: sus avisos solo llegan al chat del administrador.")
+    sin_bot = "" if bot else aviso(
+        "El panel no tiene bot de Telegram configurado (Ajustes del informe): puedes guardar el chat, pero no "
+        "llegará nada hasta que lo configure el administrador.", "amb")
+    probar = ("<button class='btn sec' type=submit name=accion value=probar>Probar</button>" if bot else "")
+    quitar = ("<button class='btn sec' type=submit name=accion value=quitar onclick=\"return ask(this,"
+              "'Quitar el chat del punto','Este punto deja de mandar sus avisos a ese chat. El chat del "
+              "administrador sigue recibiendo todo.','Quitar','danger')\">Quitar</button>" if chat else "")
+    return (
+        "<p class=hint style='margin-top:0'>El cliente agrega el bot del panel a su grupo o chat y aquí se pone "
+        "su <b>Chat ID</b>: un número (los grupos empiezan por <code>-100</code>) o <code>@canal</code>. Lo de "
+        "este punto (cuarentenas, avisos del sensor, IPs públicas, los envíos masivos con lo suyo y el informe "
+        "diario) le llega a ese chat; el chat del administrador sigue recibiendo todo.</p>%s"
+        "<form method=post action='/puntos/%s/telegram' id=ptg_form>%s"
+        "<label class=l for=ptg_chat>Chat ID de Telegram</label>"
+        "<input class=t name=chat id=ptg_chat value='%s' maxlength=40 autocomplete=off "
+        "placeholder='-1001234567890 o @canal'>"
+        "<div class=acciones><button class=btn type=submit name=accion value=guardar>Guardar</button>%s%s</div>"
+        "</form><p class=hint>%s%s</p>"
+        % (sin_bot, esc(pid), campo_token(), esc(chat), probar, quitar, estado,
+           " «Probar» manda un mensaje de prueba (solo el nombre del punto, sin datos) al chat escrito arriba."
+           if bot else ""))
+
+
+def accion_telegram(h, pid, form, ajax=False):
+    """POST /puntos/<pid>/telegram con accion=guardar|probar|quitar. Un solo uso por formulario.
+    «Probar» manda al chat del formulario (o al guardado si viene vacio) un mensaje sin datos, solo
+    con el nombre del punto, y dice si Telegram lo acepto; no guarda nada."""
+    d = _dash(h)
+    acc = form.get("accion") or "guardar"
+    chat = (form.get("chat") or "").strip()
+    valido = _tg(d, "chat_valido")
+    guardar = _tg(d, "guardar_telegram_punto")
+
+    def validar():
+        if acc not in ("guardar", "probar", "quitar"):
+            return "Acción de Telegram desconocida.", 400, False, ""
+        if guardar is None or valido is None:
+            return "Este panel no admite todavía un chat de Telegram por punto.", 501, False, ""
+        if acc == "guardar" and not chat:
+            return "Escribe el Chat ID (o pulsa «Quitar» para dejar el punto sin chat propio).", 400, False, ""
+        if acc in ("guardar", "probar") and chat and not valido(chat):
+            return ("Chat ID no válido: un número (los grupos empiezan por -100) o @canal.", 400, False, "")
+        if acc == "probar" and not _tg_bot(d):
+            return "El panel no tiene bot de Telegram configurado: no hay con qué probar.", 409, False, ""
+        if acc == "probar" and not _tg_chat(d, pid):
+            # solo al chat GUARDADO (auditoria D, B3): el bot no escribe a chats escritos a mano
+            return "Guarda primero el Chat ID y luego pruébalo.", 400, False, ""
+        return None
+
+    def hacer():
+        if acc == "probar":
+            destino = _tg_chat(d, pid)
+            nombre = (nodos.punto(pid) or {}).get("nombre") or pid
+            enviar = _tg(d, "enviar_telegram_chat")
+            ok = bool(enviar and enviar(destino, "Prueba del panel IDS: este chat recibirá los avisos del "
+                                                 "punto «%s»." % nombre))
+            _bit(d, "PUNTO-TELEGRAM", pid=pid, objetivo=destino, resultado="prueba-ok" if ok else "prueba-fallo")
+            if ok:
+                return ("Telegram aceptó el mensaje de prueba para %s: mira que haya llegado al chat." % destino,
+                        200, True, "")
+            return ("Telegram no aceptó el mensaje para %s. Comprueba que el bot del panel esté en ese grupo o "
+                    "chat (y que alguien le haya escrito antes, si es un chat privado) y que el Chat ID sea el "
+                    "correcto." % destino, 502, False, "")
+        try:
+            guardar(pid, chat if acc == "guardar" else "")
+        except ValueError as e:
+            return str(e)[:200], 400, False, ""
+        except Exception as e:
+            return "No se pudo guardar: %s" % str(e)[:160], 500, False, ""
+        if acc == "quitar":
+            _bit(d, "PUNTO-TELEGRAM", pid=pid, resultado="quitado")
+            return ("Chat quitado: los avisos de este punto solo llegan al chat del administrador.", 200, True, "")
+        _bit(d, "PUNTO-TELEGRAM", pid=pid, objetivo=chat, resultado="guardado")
+        return ("Chat guardado: los avisos de este punto llegan también a %s." % chat, 200, True, "")
+    return _con_token(h, pid, "telegram-" + acc, form, hacer, validar, ajax=ajax)
 
 
 # Como dice el nucleo (dashboard._mk_tls_wrap) que fallo el saludo TLS de la API-SSL: el router que
@@ -3796,7 +3918,8 @@ def post(h, ruta, form):
             crear(h, form)
         return True
     m = RE_RUTA_PID.match(ruta)
-    acciones = ("borrar", "regenerar", "arrancar", "parar", "reiniciar", "ajustar", "api", "desbanear")
+    acciones = ("borrar", "regenerar", "arrancar", "parar", "reiniciar", "ajustar", "api", "desbanear",
+                "telegram")
     if not m or m.group(2) not in acciones:
         h._html("<h1>No encontrado</h1>", 404)
         return True
@@ -3876,4 +3999,6 @@ def post(h, ruta, form):
         accion_api(h, pid, form, ajax=ajax)
     elif acc == "desbanear":
         accion_desbanear(h, pid, form, ajax=ajax)
+    elif acc == "telegram":
+        accion_telegram(h, pid, form, ajax=ajax)
     return True

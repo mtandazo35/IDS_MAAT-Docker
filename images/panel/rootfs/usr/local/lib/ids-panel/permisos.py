@@ -46,6 +46,7 @@ CATALOGO = (
         ("puntos.vpn_regenerar", "Regenerar la clave de la VPN", False),
         ("puntos.arrancar", "Arrancar, parar y reiniciar", False),
         ("puntos.logs", "Logs", False),
+        ("puntos.telegram", "Avisos por Telegram del punto (su chat)", False),
         ("puntos.crear", "Crear puntos", True),
         ("puntos.borrar", "Borrar puntos (libera su puerto y su firewall)", True),
         ("puntos.desbanear", "Desbanear una IP (fail2ban, global)", True),
@@ -83,7 +84,7 @@ _OPERADOR = _LECTURA + (
     "cuarentena.enviar", "cuarentena.graduada", "cuarentena.dns", "cuarentena.masivo",
     "cuarentena.destinos", "cuarentena.confianza", "reputacion.consultar", "reputacion.denunciar",
     "puntos.ver", "puntos.api", "puntos.prefijos", "puntos.vpn_ver", "puntos.vpn_regenerar",
-    "puntos.arrancar", "puntos.logs")
+    "puntos.arrancar", "puntos.logs", "puntos.telegram")
 PLANTILLAS = {
     "lectura": frozenset(_LECTURA),
     "operador": frozenset(_OPERADOR),

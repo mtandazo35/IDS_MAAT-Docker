@@ -12,8 +12,14 @@ Sin argumentos (como lo lanza el panel, en un subproceso, a las 07:30 en IDS_TZ)
 puntos, un mensaje de Telegram (si esta configurado) y el texto por stdout. Al ser subproceso, el
 tope de memoria (RLIMIT_AS 1 GiB) es del informe y no del servidor. --sin-enviar: solo imprime.
 El token de Telegram va cifrado en conf/report.conf (secretos.py, asociado "report:TELEGRAM_TOKEN").
+
+Bloque D (Telegram por punto): conf/telegram-puntos.json = {pid: chat_id} (lo escribe el panel). El
+chat global (TELEGRAM_CHAT_ID) recibe el informe completo, como siempre; cada punto con chat propio
+recibe ademas un informe con SOLO su seccion (ningun dato de otro punto). El codigo de salida sigue
+el contrato: RC_TELEGRAM solo si falla el envio GLOBAL; un fallo en el chat de un punto se anota en
+stderr y no corta los demas envios. Todo envio pasa por enviar_telegram(tok, chat, texto).
 """
-import argparse, gzip, io, json, os, stat, sys, time, urllib.request, urllib.parse, urllib.error
+import argparse, gzip, io, json, os, re, stat, sys, time, urllib.request, urllib.parse, urllib.error
 from collections import Counter, defaultdict
 from datetime import datetime
 
@@ -23,6 +29,8 @@ import secretos  # noqa: E402
 
 CONF = os.path.join(nodos.CONF, "report.conf")
 EXCL_FILE = os.path.join(nodos.CONF, "exclusiones.json")
+PUNTOS_TG_FILE = os.path.join(nodos.CONF, "telegram-puntos.json")   # {pid: chat_id} (bloque D)
+RE_CHAT = re.compile(r"\A(?:-?[0-9]{1,20}|@[A-Za-z][A-Za-z0-9_]{4,31})\Z")
 HOURS = 24
 MAX_LINES = 20_000_000
 TELEGRAM_MAX = 4000
@@ -251,6 +259,17 @@ def guardar(pid, texto, ahora):
 
 def informe(nodo=nodos.TODOS, ahora=None):
     """Texto del informe del nodo (o de todos, una seccion por nodo). Guarda el de cada nodo."""
+    cab, secciones, _por_pid = informe_completo(nodo, ahora)
+    return cab, secciones
+
+def cabecera_punto(pid, ahora):
+    """Cabecera del informe que va al chat propio de un punto: su nombre y la fecha."""
+    empresa = os.environ.get("IDS_EMPRESA") or "IDS"
+    fecha = time.strftime("%Y-%m-%d", time.localtime(ahora))
+    return f"IDS {empresa} - {nodos.nombre(pid)} ({pid}) - resumen de {HOURS}h del {fecha}"
+
+def informe_completo(nodo=nodos.TODOS, ahora=None):
+    """Como informe(), y ademas {pid: seccion} de los puntos que salieron (bloque D)."""
     ahora = time.time() if ahora is None else ahora
     cutoff = ahora - HOURS * 3600
     try:
@@ -259,6 +278,7 @@ def informe(nodo=nodos.TODOS, ahora=None):
         umbral = 3
     excl = cargar_exclusiones()
     secciones = []
+    por_pid = {}
     for pid in nodos.nodos_de(nodos.validar_nodo(nodo)):
         try:
             texto = seccion(pid, analizar(pid, excl, cutoff, umbral))
@@ -268,11 +288,37 @@ def informe(nodo=nodos.TODOS, ahora=None):
             print("informe: %s ya no existe; se salta" % pid, file=sys.stderr)
             continue
         secciones.append(texto)
+        por_pid[pid] = texto
     empresa = os.environ.get("IDS_EMPRESA") or "IDS"
     cab = f"IDS {empresa} - resumen de {HOURS}h"
     if not secciones:
         secciones = ["Sin nodos dados de alta."]
-    return cab, secciones
+    return cab, secciones, por_pid
+
+def chats_puntos():
+    """{pid: chat} de conf/telegram-puntos.json, solo entradas validas (pid con formato y que
+    existe; chat numerico, grupo -100... o @canal). Fichero ausente o roto = {}."""
+    try:
+        with open(PUNTOS_TG_FILE, encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    try:
+        existentes = set(nodos.pids())
+    except Exception:
+        return {}
+    res = {}
+    for pid, chat in data.items():
+        if not nodos.pid_valido(pid) or pid not in existentes:
+            continue
+        if isinstance(chat, bool) or not isinstance(chat, (str, int)):
+            continue
+        chat = str(chat)
+        if RE_CHAT.match(chat):
+            res[pid] = chat
+    return res
 
 def mensajes(cab, secciones, maximo=TELEGRAM_MAX):
     """Un mensaje con todas las secciones; si no cabe en el limite de Telegram, se parte por
@@ -300,24 +346,44 @@ def token_telegram(c):
         print("Telegram: el token no se puede descifrar (%s): no se envia" % e, file=sys.stderr)
         return ""
 
-def enviar(textos):
-    """True si se envio todo; False si Telegram esta configurado y algo fallo (o el token no se
-    puede descifrar); None si Telegram no esta configurado (no hay nada que enviar)."""
-    c = conf()
-    if not (c.get("TELEGRAM_TOKEN") and c.get("TELEGRAM_CHAT_ID")):
-        return None
-    tok, chat = token_telegram(c), c.get("TELEGRAM_CHAT_ID")
-    if not tok:
-        return False
+def enviar_telegram(tok, chat, texto):
+    """UN mensaje a UN chat. Unico punto de salida a la red (las pruebas lo sustituyen). Lanza
+    excepcion si falla."""
+    data = urllib.parse.urlencode({"chat_id": chat, "text": texto[:TELEGRAM_MAX]}).encode()
+    urllib.request.urlopen(f"https://api.telegram.org/bot{tok}/sendMessage", data=data, timeout=20)
+
+def _enviar_chat(tok, chat, textos, quien="global"):
+    """Todos los trozos a un chat; True si llegaron todos. Un fallo no corta los siguientes."""
     ok = True
     for texto in textos:
         try:
-            data = urllib.parse.urlencode({"chat_id": chat, "text": texto[:TELEGRAM_MAX]}).encode()
-            urllib.request.urlopen(f"https://api.telegram.org/bot{tok}/sendMessage", data=data, timeout=20)
+            enviar_telegram(tok, chat, texto)
         except Exception as ex:
             # el error de urllib puede llevar la URL (con el token): solo el tipo
-            print("Telegram fallo: %s" % type(ex).__name__, file=sys.stderr)
+            print("Telegram fallo: %s" % type(ex).__name__ if quien == "global"
+                  else "Telegram fallo (chat del punto %s): %s" % (quien, type(ex).__name__),
+                  file=sys.stderr)
             ok = False
+    return ok
+
+def enviar(textos, por_punto=None):
+    """Envio global y, si se pasan, los de cada punto: por_punto = {pid: (chat, [textos])}.
+    Devuelve el estado del envio GLOBAL: True si llego todo; False si el chat global esta
+    configurado y algo fallo, o si el token no se puede descifrar; None si no hay chat global (o
+    no hay token). Los fallos de los chats de punto solo se anotan en stderr."""
+    c = conf()
+    chat = c.get("TELEGRAM_CHAT_ID")
+    por_punto = por_punto or {}
+    if not c.get("TELEGRAM_TOKEN") or not (chat or por_punto):
+        return None
+    tok = token_telegram(c)
+    if not tok:
+        return False
+    ok = _enviar_chat(tok, chat, textos) if chat else None
+    for pid, (pchat, ptextos) in por_punto.items():
+        if chat and str(pchat) == str(chat):
+            continue                         # ese chat ya recibe el informe completo
+        _enviar_chat(tok, pchat, ptextos, quien=pid)
     return ok
 
 def main(argv=None):
@@ -334,7 +400,8 @@ def main(argv=None):
     except Exception:
         pass
     try:
-        cab, secciones = informe(a.nodo if a.nodo else nodos.TODOS)
+        ahora = time.time()
+        cab, secciones, por_pid = informe_completo(a.nodo if a.nodo else nodos.TODOS, ahora)
     except nodos.NodoInvalido:
         print("nodo mal formado: %r" % a.nodo, file=sys.stderr)
         return 2
@@ -343,8 +410,12 @@ def main(argv=None):
         return 3
     textos = mensajes(cab, secciones)
     rc = 0
-    if not a.sin_enviar and enviar(textos) is False:
-        rc = RC_TELEGRAM                 # el informe esta hecho, pero no ha llegado (A-25)
+    if not a.sin_enviar:
+        # bloque D: a cada punto de ESTE informe con chat propio, solo su seccion
+        por_punto = {pid: (chat, mensajes(cabecera_punto(pid, ahora), [por_pid[pid]]))
+                     for pid, chat in chats_puntos().items() if pid in por_pid}
+        if enviar(textos, por_punto) is False:
+            rc = RC_TELEGRAM             # el informe esta hecho, pero no ha llegado (A-25)
     print("\n\n".join(textos))
     return rc
 
