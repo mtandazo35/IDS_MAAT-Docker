@@ -10224,6 +10224,8 @@ _NAV_LINKS = [("/", "En vivo"), ("/top", "Top orígenes"), ("/detalle", "Detalle
 # Ajustes y el menu del usuario): se abre desde Ajustes -> Puntos, y la ven el administrador y el
 # operador (cada uno sus puntos; puntos_web filtra y comprueba el permiso), no solo lectura
 _NAV_SOLO_ADMIN = ("/exclusiones",)
+# lo que abre un usuario sin ningun punto asignado (bloque B): su cuenta y la documentacion
+RUTAS_SIN_PUNTOS = ("/ajustes", "/perfil", "/mi-foto", "/documentacion")
 # permiso de cada pestana y de cada pagina de datos (fase 4 de permisos): sin el, ni la pestana ni la
 # pagina (403); «/» sin el suyo lleva a la primera pagina que el usuario si puede ver
 NAV_PERMISO = {"/": "resumen.ver", "/top": "resumen.ver", "/detalle": "resumen.ver",
@@ -15139,7 +15141,7 @@ servidor</b>: no basta con ocultar un botón, y cambiar el nodo en la dirección
 siempre: un usuario creado antes de esta opción ve todos) o <b>Solo estos puntos</b>, con una casilla por
 punto. El <b>administrador ve siempre todos</b>: para él la opción no aplica. La columna <b>Puntos</b> de la
 tabla dice qué ve cada uno: «Todos», los nombres de sus puntos o «Ninguno». Con «Solo estos puntos» y
-ninguno marcado el usuario no ve nada y no puede usar el panel («Sin puntos asignados») hasta que le
+ninguno marcado el usuario no ve datos («Sin puntos asignados»; solo su Perfil, para cambiar su clave y su foto, y la Documentación) hasta que le
 asignes uno. El cambio vale en su siguiente clic, sin cerrarle la sesión.</p>
 <p>Un usuario con puntos asignados trabaja como si tuviera <b>su propio panel</b>:</p>
 <ul>
@@ -19757,7 +19759,10 @@ class H(BaseHTTPRequestHandler):
         # desde la fase 1 de permisos, un admin limitado a unos puntos no toca lo global
         return self._sesion_ok() and self._rol() == "admin" and not nodos.limitado()
     def _puede(self, permiso):
-        # permisos a la carta (permisos.py): sesion valida y ese permiso entre los suyos
+        # permisos a la carta (permisos.py): sesion valida y ese permiso entre los suyos. Sin ningun
+        # punto asignado, ninguno (bloque B: solo su cuenta)
+        if getattr(CTX, "sin_puntos", False):
+            return False
         return self._sesion_ok() and permiso in (self._sesion().get("permisos") or ())
     def _operador(self):
         # puede gestionar cuarentenas/incidentes: admin u operador, con sesion.
@@ -19779,8 +19784,21 @@ class H(BaseHTTPRequestHandler):
         # sin el permiso de la vista «Todos» (fase 4 de permisos), como un limitado para esa vista
         nodos.poner_sin_todos(bool(s) and "resumen.todos" not in (s.get("permisos") or ()))
         if not nodos.todos_visible() and not nodos.pids():
+            # Sin ningun punto (bloque B, 2026-10-23): solo su cuenta. Ajustes con la tarjeta de
+            # Perfil (cambiar su clave y su foto), su foto y la documentacion; sin ningun permiso, asi
+            # que el servidor rechaza todo lo demas (H._puede) y el menu no ensena ninguna pestaña.
+            CTX.sin_puntos = True
+            CTX.permisos = frozenset()
+            _ruta = urllib.parse.urlsplit(self.path).path
+            if _ruta in RUTAS_SIN_PUNTOS:
+                return True
+            if _ruta in ("/", "/index.html") and self.command == "GET":
+                self._redirect("/ajustes")   # al entrar, a su cuenta en vez de chocar con el 403
+                return False
             self._html(_pagina_error("Sin puntos asignados", "Tu usuario todavía no tiene ningún punto "
-                                     "asignado. Pídele a un administrador que te asigne los tuyos."), 403)
+                                     "asignado. Pídele a un administrador que te asigne los tuyos. "
+                                     "Mientras, puedes cambiar tu clave y tu foto en Ajustes › Perfil "
+                                     "(/ajustes)."), 403)
             return False
         # El nodo que se MIRA (CONTRATO-F2 §10.1): ?nodo= de la URL (y se recuerda en la
         # sesion); sin parametro, el de la sesion; si no, la vista «Todos» (para un usuario
@@ -19859,7 +19877,7 @@ class H(BaseHTTPRequestHandler):
     def _limpiar_ctx(self):
         # El hilo se reutiliza entre peticiones de la misma conexion (keep-alive): nada del
         # usuario ni del nodo de la peticion anterior puede quedar puesto.
-        for k in ("user", "role", "ip", "peer", "exp", "nodo", "form", "permisos"):
+        for k in ("user", "role", "ip", "peer", "exp", "nodo", "form", "permisos", "sin_puntos"):
             setattr(CTX, k, None)
         nodos.quitar_nodo()
         nodos.quitar_alcance()
@@ -21690,6 +21708,8 @@ class H(BaseHTTPRequestHandler):
 
     def _post_perfil(self, q):
         accion = q.get("accion", ["mi_clave"])[0]
+        if getattr(CTX, "sin_puntos", False) and accion not in ("mi_clave", "mi_foto"):
+            return self._prohibido()          # sin puntos: solo su clave y su foto (bloque B)
         yo = CTX.user
         # --- cambiar MI clave (cualquier usuario) ---
         if accion == "mi_clave":

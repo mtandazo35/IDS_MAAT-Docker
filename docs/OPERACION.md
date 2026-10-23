@@ -634,7 +634,8 @@ mientras tanto, lo que aún no ha pasado decide por rol.
   solo punto no ve el selector;
 - un punto ajeno no existe para él: en la URL o en un formulario da 404, igual que uno que no
   existe;
-- sin ningún punto asignado, el panel le dice «Sin puntos asignados» y no le enseña nada más.
+- sin ningún punto asignado, el panel le dice «Sin puntos asignados» y solo le deja su cuenta:
+  Ajustes › Perfil (cambiar su clave y su foto), la Documentación y Salir (2026-10-23).
 
 **Qué puede cada rol dentro de sus puntos:**
 

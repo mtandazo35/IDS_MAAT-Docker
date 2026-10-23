@@ -1085,7 +1085,7 @@ class UsuariosEnAjustes(Base):
         self.assertEqual(self.get("/?nodo=p002", "nuevo1").status, 404)
         self.assertEqual(self.get("/?nodo=p003", "nuevo1").status, 200)
         self.assertEqual(self.get("/?nodo=p002", "nuevo2").status, 200)
-        self.assertEqual(self.get("/", "nuevo4").status, 403)
+        self.assertEqual(self.get("/eventos", "nuevo4").status, 403)
 
     def test_edicion_cambia_sus_puntos(self):
         """Capacidad nueva: editar un usuario cambia su lista: «todos» la borra, «solo» la fija
@@ -1194,13 +1194,18 @@ class SinPuntos(Base):
         """Capacidad nueva: con lista vacia, mal formada o solo de puntos que no existen no se ve
         nada: 403 «Sin puntos asignados» en cualquier pagina y ninguna accion llega al router."""
         for quien in ("vera", "tito", "fede"):
-            for ruta in ("/", "/cuarentena?nodo=p001", "/eventos", "/?nodo=_todos"):
+            for ruta in ("/cuarentena?nodo=p001", "/eventos", "/top"):
                 with self.subTest(quien=quien, ruta=ruta):
                     r = self.get(ruta, quien)
                     self.assertEqual(r.status, 403, plano(r.texto))
                     self.sin_ajenos(r.texto, ruta, extra=(RES_PROPIO, NOMBRES["p001"]))
-            r = self.get("/", quien)
+            r = self.get("/eventos", quien)
             self.esta("Sin puntos asignados", r.texto)
+            # (bloque B) la portada lleva a su cuenta
+            for ruta in ("/", "/?nodo=_todos"):
+                r = self.get(ruta, quien)
+                self.assertEqual(r.status, 303, plano(r.texto))
+                self.assertTrue((r.cab("Location") or "").startswith("/ajustes"), r.cab("Location"))
             r = self.post("/cuarentena/enviar", {"ip": "p001|" + IP_PROPIA_CAND, "score": "80",
                                                  "confirmar_vieja": "1"}, quien)
             self.assertEqual(r.status, 403)
@@ -1215,7 +1220,7 @@ class SinPuntos(Base):
         a ver todo; quien conserva otro abre ese, y el admin sigue viendo los demas."""
         with open(os.path.join(self.n.ESTADO, "bajas-purgadas.json"), "w", encoding="utf-8") as f:
             json.dump({"p001": {"cuando": int(time.time())}}, f)
-        r = self.get("/", "olga")
+        r = self.get("/eventos", "olga")
         self.assertEqual(r.status, 403, plano(r.texto))
         r = self.get("/", "dora")
         self.assertEqual(r.status, 200, plano(r.texto))

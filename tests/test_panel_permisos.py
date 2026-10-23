@@ -729,5 +729,45 @@ class PublicaAjena(A.Base):
         self.assertIn(ajena, todas)
 
 
+# --------------------------------------------------------------------------------------------
+# Bloque B (2026-10-23): sin ningún punto asignado, al menos su cuenta (clave y foto)
+# --------------------------------------------------------------------------------------------
+class SinPuntosSuCuenta(A.Base):
+    """vera es operador con puntos=[] (montaje de test_panel_alcance); la clave es la de _dash_p."""
+
+    def test_abre_su_perfil_y_nada_mas(self):
+        """Capacidad nueva: abre Ajustes con su tarjeta de Perfil, sin pestañas de datos ni tarjetas de
+        gestión, y la Documentación; lo demás sigue en 403."""
+        r = self.get("/ajustes", "vera")
+        self.assertEqual(r.status, 200, A.plano(r.texto))
+        self.esta("name=accion value=mi_clave", r.texto, "perfil")
+        for no in (">En vivo</a>", ">Cuarentena</a>", "value=add_user", "/puntos'", "accion value=rol_permisos"):
+            self.no_esta(no, r.texto, "ajustes vera")
+        self.assertEqual(self.get("/documentacion", "vera").status, 200)
+        for ruta in ("/puntos", "/cuarentena", "/eventos", "/reputacion"):
+            with self.subTest(ruta=ruta):
+                self.assertEqual(self.get(ruta, "vera").status, 403)
+        r = self.get("/", "vera")                 # la portada lleva a su cuenta
+        self.assertEqual(r.status, 303)
+        self.assertTrue((r.cab("Location") or "").startswith("/ajustes"), r.cab("Location"))
+        self.sin_ajenos(self.get("/ajustes", "vera").texto, "ajustes vera")
+
+    def test_cambia_su_clave(self):
+        """Capacidad nueva: cambia su propia clave; el resto de /perfil (crear usuarios, editarse) es 403."""
+        antes = self.usuario("vera")["hash"]
+        r = self.post("/perfil", {"accion": "mi_clave", "actual": "clave-de-prueba-1",
+                                  "nueva": "otra-clave-larga-1", "nueva2": "otra-clave-larga-1"}, "vera")
+        self.assertEqual(r.status, 200, A.plano(r.texto))
+        self.assertNotEqual(self.usuario("vera")["hash"], antes)
+        for form in ({"accion": "add_user", "nuser": "intruso", "npass": "clave-larga-de-prueba", "nrole": "lectura",
+                      "puntos_modo": "solo"},
+                     {"accion": "edit_user", "user": "vera", "nombre": "", "correo": "", "role": "operador",
+                      "puntos_modo": "todos"}):
+            with self.subTest(accion=form["accion"]):
+                self.assertEqual(self.post("/perfil", form, "vera").status, 403)
+        self.assertIsNone(self.usuario("intruso"))
+        self.assertEqual(self.usuario("vera").get("puntos"), [])
+
+
 if __name__ == "__main__":
     unittest.main()
