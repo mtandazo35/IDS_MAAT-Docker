@@ -10,6 +10,7 @@ hasta para los administradores poder filtrar los puntos»).
 Con el panel real de _dash_p (montaje de test_panel_alcance)."""
 
 import importlib
+import ipaddress
 import os
 import sys
 import unittest
@@ -676,6 +677,56 @@ class RolesEditables(A.Base):
         self.assertEqual(self.post("/puntos/p001/arrancar", {}, "olga").status, 403)
 
     poner_permisos = PuntosPorPermiso.poner_permisos
+
+
+# --------------------------------------------------------------------------------------------
+# Bloque A (2026-10-23): la pública declarada de otro cliente no se delata al enviar a cuarentena
+# --------------------------------------------------------------------------------------------
+class PublicaAjena(A.Base):
+    def setUp(self):
+        super().setUp()
+        # modo POST-NAT: las públicas cuentan como redes de abonados (si no, el envío se para antes)
+        self.d.mis_redes = lambda: [ipaddress.ip_network("10.0.0.0/8"), ipaddress.ip_network("192.0.2.0/24")]
+
+    def respuesta(self, ruta, ip, quien):
+        form = {"ip": ip, "score": "80", "ajax": "1", "confirmar_vieja": "1"}   # solo frena lo que se prueba
+        return self.post(ruta, form, quien).texto
+
+    def test_limitado_no_sabe_de_quien_es(self):
+        """Un limitado (olga, p001) que manda la pública de p002 recibe EXACTAMENTE lo mismo que con una
+        IP de fuera (203.0.113.9): ni la red, ni el motivo, ni un texto propio de este caso; nada llega
+        al router. Con una pública de SU punto sí se le dice el motivo, y al admin también."""
+        for ruta in ("/cuarentena/enviar", "/cuarentena/graduada"):
+            with self.subTest(ruta=ruta):
+                ajena = self.respuesta(ruta, "p001|" + A.PUB_AJENA, "olga")
+                fuera = self.respuesta(ruta, "p001|203.0.113.9", "olga")
+                self.assertTrue(ajena.startswith("ERR"), ajena[:200])
+                self.assertEqual(ajena.replace(A.PUB_AJENA, "X"), fuera.replace("203.0.113.9", "X"))
+                self.no_esta("(" + A.PUB_AJENA + ")", ajena, ruta)
+        self.assertEqual(self.p.mk, [])
+        for ruta in ("/cuarentena/enviar", "/cuarentena/graduada"):
+            with self.subTest(ruta=ruta, caso="propia"):
+                self.esta("TUS públicas", self.respuesta(ruta, "p001|192.0.2.101", "olga"), "propia")
+                self.esta("TUS públicas", self.respuesta(ruta, "p002|" + A.PUB_AJENA, "ana"), "admin")
+        self.assertEqual(self.p.mk, [])
+
+    def test_bloquear_destino_no_la_delata(self):
+        """Para un limitado (alcance p001), sus «públicas propias» son solo las de su punto: la de otro
+        cliente cuenta como de fuera también al bloquear un destino (destino_bloqueable no da el aviso
+        de «tus IPs públicas» por ella). Sin alcance (admin, procesos de fondo), las de todos."""
+        n = self.d.nodos
+        ajena = ipaddress.ip_network(A.PUB_AJENA)
+        propia = ipaddress.ip_network("192.0.2.101")
+        n.poner_alcance(["p001"])
+        try:
+            redes = self.d._redes_publicas_propias()
+        finally:
+            n.quitar_alcance()
+        self.assertIn(propia, redes)
+        self.assertNotIn(ajena, redes)
+        todas = self.d._redes_publicas_propias()
+        self.assertIn(propia, todas)
+        self.assertIn(ajena, todas)
 
 
 if __name__ == "__main__":

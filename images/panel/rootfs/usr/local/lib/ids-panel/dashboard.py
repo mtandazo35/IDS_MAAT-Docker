@@ -3842,7 +3842,10 @@ def _redes_publicas_propias():
     es_publica_declarada() relee el disco en cada llamada: en un bucle eso costaba 3,8 s por
     apertura de Cuarentena, medido."""
     propias = []
+    lim = nodos.limitado()
     for _rid, _ents in cargar_publicas().items():
+        if lim and not nodos.puede_ver(_rid):
+            continue              # de otro cliente: para un limitado es una IP de fuera (bloque A)
         for _e in _ents:
             try:
                 propias.append(ipaddress.ip_network(_e, strict=False))
@@ -3867,10 +3870,7 @@ def destino_bloqueable(ip, propias=None):
     if es_mi_cpe(ip):
         return False, "es de tus redes"
     if _en_redes(o, _redes_publicas_propias() if propias is None else propias):
-        # a un limitado no se le dice por qué: las públicas declaradas son de todos los puntos y
-        # así no sabría si esa IP es de otro cliente (el freno se mantiene)
-        return False, ("no se puede bloquear ese destino" if nodos.limitado()
-                       else "es una de tus IPs públicas declaradas")
+        return False, "es una de tus IPs públicas declaradas"
     return True, ""
 
 def destinos_malos(solo_confiables=True):
@@ -7715,6 +7715,26 @@ def guardar_publicas(d, origen=None):
             json.dump({"nodos": d, "origen": origen}, f, ensure_ascii=False, indent=1)
         os.replace(tmp, PUBLICAS_CONF)
     return d
+
+def publica_ajena(ip):
+    """Para un usuario limitado (bloque A, 2026-10-23): la IP es una publica declarada de un punto que
+    NO ve. El envio se frena igual (cortaria a todo un NAT), pero sin decirle por que: si no, sabria
+    que esa IP es la publica de otro cliente."""
+    if not nodos.limitado():
+        return False
+    try:
+        o = ipaddress.ip_address(ip)
+    except ValueError:
+        return False
+    for rid, entradas in cargar_publicas().items():
+        for e in entradas:
+            try:
+                dentro = (o in ipaddress.ip_network(e, strict=False)) if "/" in e else str(o) == e
+            except ValueError:
+                continue
+            if dentro and not nodos.puede_ver(rid):
+                return True
+    return False
 
 def es_publica_declarada(ip):
     """La IP es una de las publicas que declaraste (o cae en una de sus redes)?
@@ -21242,7 +21262,9 @@ class H(BaseHTTPRequestHandler):
                 return _fin(False, "IP inválida")
             if not _destino_ok(clave):
                 return _fin(False, "destino no válido: hace falta el nodo de la IP (nodo|IP) y que ese punto exista")
-            if not es_mi_cpe(ip):
+            # la publica de otro cliente, igual que una IP de fuera (auditoria del bloque A): ni el
+            # texto ni el orden de las comprobaciones dicen de quien es
+            if not es_mi_cpe(ip) or publica_ajena(ip):
                 # una IP de internet no es un abonado: la cuarentena de CPEs no la frena
                 return _fin(False, f"{ip} no es de tus redes: es un atacante externo, "
                                    f"se corta en el firewall de borde, no en la cuarentena de CPEs")
@@ -21382,11 +21404,13 @@ class H(BaseHTTPRequestHandler):
                 return _fin_g(False, "IP inválida")
             if not _destino_ok(clave):
                 return _fin_g(False, "destino no válido: hace falta el nodo de la IP (nodo|IP) y que ese punto exista")
-            if not es_mi_cpe(ip):
+            # la publica de otro cliente, igual que una IP de fuera (auditoria del bloque A): ni el
+            # texto ni el orden de las comprobaciones dicen de quien es
+            if not es_mi_cpe(ip) or publica_ajena(ip):
                 return _fin_g(False, f"{ip} no es de tus redes")
+            _pub = es_publica_declarada(ip)
             if nunca_bloquear(clave):
                 return _fin_g(False, f"{ip} está en la lista 'Nunca bloquear'")
-            _pub = es_publica_declarada(ip)
             if _pub:
                 return _fin_g(False, f"{ip} es una de TUS públicas ({_pub}): cortarla "
                                      f"dejaría sin servicio a todos los abonados de ese NAT")

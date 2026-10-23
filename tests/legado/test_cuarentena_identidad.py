@@ -156,6 +156,7 @@ def llamar(ns, mk, ruta, campos, operador=True):
                 "pedir_regen": lambda *a, **k: None,
                 "es_mi_cpe": lambda ip: ip.startswith("10."),
                 "es_publica_declarada": lambda ip: "",
+                "publica_ajena": lambda ip: False,     # (adaptada, bloque A 2026-10-23)
                 "categoria_cpe": lambda k: "botnet",
                 "lista_de_categoria": lambda c: "clientes-botnet",
                 "nombre_categoria": lambda c: "Botnet / CnC",
