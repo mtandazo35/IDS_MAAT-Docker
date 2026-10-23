@@ -91,6 +91,7 @@ def main():
 
     # (adaptada, permisos fase 5) quien edita es un administrador con todos los puntos
     ns["es_admin_ctx"] = lambda: True
+    ns["cargar_roles"] = lambda: None      # (adaptada, roles 2026-10-23) sin roles editados: los de fábrica
 
     class Yo(object):
         def _admin(self):

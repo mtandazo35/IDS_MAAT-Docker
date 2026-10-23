@@ -596,5 +596,87 @@ class AcordeonUsuarios(A.Base):
         self.assertNotIn("permisos", self.usuario("np2"))
 
 
+# --------------------------------------------------------------------------------------------
+# Roles en su apartado (2026-10-23, opción 1): los permisos se editan por rol, no por usuario
+# --------------------------------------------------------------------------------------------
+class RolesEditables(A.Base):
+    def guardar_rol(self, rol, perm, quien="ana"):
+        return self.post("/perfil", {"accion": "rol_permisos", "role": rol, "perm": list(perm)}, quien)
+
+    def test_la_ventana_del_usuario_no_trae_permisos(self):
+        """Capacidad nueva: la ventana de editar usuario ya no lleva el acordeón (está en Roles); la
+        tarjeta Roles lista los tres con su recuento y solo operador y lectura se editan."""
+        h = self.get("/ajustes", "ana").texto
+        i, j = h.index("id=ovlEdit"), h.index("id=ovlRol")
+        self.assertNotIn("name=perm ", h[i:j] if i < j else h[i:])
+        self.esta("Roles y permisos", h, "tile")
+        self.esta("data-rol='operador'", h, "roles")
+        self.esta("data-rol='lectura'", h, "roles")
+        self.no_esta("data-rol='admin'", h, "roles")
+        self.esta("name=accion value=rol_permisos", h, "roles")
+
+    def test_cambiar_un_rol_cambia_a_sus_usuarios(self):
+        """Capacidad nueva: quitar «Arrancar» al rol Operador se lo quita a todos sus operadores sin
+        lista propia en su siguiente petición; volver a los de fábrica lo devuelve."""
+        sin = sorted(permisos.PLANTILLAS["operador"] - {"puntos.arrancar"})
+        r = self.guardar_rol("operador", sin)
+        self.assertEqual(r.status, 200, A.plano(r.texto))
+        self.assertEqual(self.post("/puntos/p001/arrancar", {}, "olga").status, 403)
+        self.assertEqual(self.post("/puntos/p001/arrancar", {}, "pepe").status, 403)
+        self.guardar_rol("operador", sorted(permisos.PLANTILLAS["operador"]))
+        self.assertEqual(self.post("/puntos/p001/arrancar", {}, "olga").status, 303)
+
+    def test_dar_a_lectura_un_permiso(self):
+        """Capacidad nueva: marcar «Ver la ficha» en el rol Lectura deja entrar en Puntos a sus usuarios."""
+        self.assertEqual(self.get("/puntos", "luis").status, 403)
+        self.guardar_rol("lectura", sorted(permisos.PLANTILLAS["lectura"] | {"puntos.ver"}))
+        self.assertEqual(self.get("/puntos", "luis").status, 200)
+
+    def test_admin_no_se_edita_y_solo_el_admin_con_todo(self):
+        """El rol administrador no se edita; los roles solo los cambia un administrador con todo (un
+        admin limitado o un operador: 403) y nada cambia."""
+        r = self.guardar_rol("admin", ["resumen.ver"])
+        self.esta("no se edita", r.texto, "rol admin")
+        self.assertEqual(self.post("/puntos/p001/arrancar", {}, "ana").status, 303)
+        for quien in ("adela", "olga", "pepe"):
+            with self.subTest(quien=quien):
+                self.assertEqual(self.guardar_rol("lectura", sorted(permisos.TODOS), quien).status, 403)
+        self.assertEqual(self.get("/puntos", "luis").status, 403)
+
+    def test_quitar_permisos_propios(self):
+        """Capacidad nueva: quien tiene permisos propios sale marcado en la tabla y «Usar los permisos
+        de su rol» se los quita."""
+        self.poner_permisos("olga", ["puntos.ver", "resumen.ver"])
+        h = self.get("/ajustes", "ana").texto
+        self.esta(">propios</span>", h, "tabla")
+        self.esta("data-propios='1'", h, "tabla")
+        self.post("/perfil", {"accion": "edit_user", "user": "olga", "nombre": "", "correo": "",
+                              "role": "operador", "usar_rol": "1"}, "ana")
+        self.assertNotIn("permisos", self.usuario("olga"))
+        self.assertEqual(self.post("/puntos/p001/arrancar", {}, "olga").status, 303)
+
+    def test_bajar_de_rol_quita_los_propios(self):
+        """Auditoría H1: pasar a otro rol desde la ventana de editar quita los permisos propios (como el
+        cambio de rol de la tabla): olga, operador con propios, pasa a lectura y ya no arranca."""
+        self.poner_permisos("olga", sorted(permisos.PLANTILLAS["operador"]))
+        self.post("/perfil", {"accion": "edit_user", "user": "olga", "nombre": "", "correo": "",
+                              "role": "lectura"}, "ana")
+        r = self.usuario("olga")
+        self.assertEqual(r["role"], "lectura")
+        self.assertNotIn("permisos", r)
+        self.assertEqual(self.post("/puntos/p001/arrancar", {}, "olga").status, 403)
+
+    def test_roles_json_ilegible_no_vuelve_a_fabrica(self):
+        """Auditoría H3: un roles.json corrupto conserva los roles cargados (no vuelve en silencio a los
+        de fábrica, que pueden ser más permisos)."""
+        self.guardar_rol("operador", sorted(permisos.PLANTILLAS["operador"] - {"puntos.arrancar"}))
+        self.assertEqual(self.post("/puntos/p001/arrancar", {}, "olga").status, 403)
+        with open(self.d.ROLES_FILE, "w", encoding="utf-8") as f:
+            f.write("{ roto")
+        self.assertEqual(self.post("/puntos/p001/arrancar", {}, "olga").status, 403)
+
+    poner_permisos = PuntosPorPermiso.poner_permisos
+
+
 if __name__ == "__main__":
     unittest.main()

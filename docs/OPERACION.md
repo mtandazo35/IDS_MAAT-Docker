@@ -620,6 +620,13 @@ mientras tanto, lo que aún no ha pasado decide por rol.
   actualización salen con su permiso. Cuarentena enseña cada bloque con el suyo. Salvaguarda: no se
   guarda un cambio que deje sin ningún administrador activo con todos los puntos y todos los
   permisos. Con esto todas las secciones deciden por permiso; el rol queda como plantilla.
+- **Roles y Usuarios separados** (2026-10-23). Ajustes › **Roles y permisos** lista los tres roles con cuántos
+  usuarios tiene cada uno y sus permisos; Operador y Lectura se editan con el acordeón y el cambio vale para
+  todos sus usuarios en su siguiente clic («Valores de fábrica» los repone). Administrador es fijo,
+  con todo. Solo los edita un administrador con todo. Se guardan en `conf/roles.json` (solo los
+  que difieren de fábrica). La ventana de **Usuarios** queda con nombre, correo, rol, puntos, clave
+  y foto, sin acordeón. Quien tenía permisos propios los conserva (sale marcado «propios» en la
+  tabla) hasta que se marque «Usar los permisos de su rol».
 
 **Qué ve un usuario limitado:**
 

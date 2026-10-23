@@ -90,6 +90,30 @@ PLANTILLAS = {
     "admin": frozenset(TODOS),
 }
 
+# Roles editables (2026-10-23, el dueño: «roles en un apartado y usuarios en otro», opción 1): los
+# permisos de operador y lectura se cambian en Ajustes › Roles y valen para todos sus usuarios. El
+# administrador es fijo, con todo (es la salvaguarda). PLANTILLAS son los valores de fábrica.
+ROLES_EDITABLES = ("operador", "lectura")
+_ROLES = {}
+
+
+def poner_roles(d):
+    """Carga los permisos guardados de los roles editables (conf/roles.json): {rol: [permisos]}.
+    Lo que no es un rol editable ni una lista se ignora (ese rol queda con los de fábrica). Se
+    reasigna un dict nuevo de una vez: otro hilo nunca ve uno a medio llenar (auditoría, H2)."""
+    global _ROLES
+    nuevo = {}
+    for k in ROLES_EDITABLES:
+        v = (d or {}).get(k) if isinstance(d, dict) else None
+        if isinstance(v, list):
+            nuevo[k] = frozenset(x for x in v if x in TODOS)
+    _ROLES = nuevo
+
+
+def plantilla(rol):
+    """Los permisos de un rol: los editados en Roles o, si no, los de fábrica."""
+    return _ROLES.get(rol, PLANTILLAS.get(rol, frozenset()))
+
 
 def de_usuario(r):
     """Los permisos de un usuario: su lista `permisos` (solo claves del catálogo) o, sin lista, los
@@ -101,7 +125,7 @@ def de_usuario(r):
         p = r.get("permisos")
         efectivos = frozenset(x for x in p if x in TODOS) if isinstance(p, list) else frozenset()
     else:
-        efectivos = PLANTILLAS.get(r.get("role"), frozenset())
+        efectivos = plantilla(r.get("role"))
     if "puntos" in r:
         efectivos = efectivos - GLOBALES
     return efectivos
@@ -119,7 +143,7 @@ def crudos(r):
     if "permisos" in r:
         p = r.get("permisos")
         return frozenset(x for x in p if x in TODOS) if isinstance(p, list) else frozenset()
-    return PLANTILLAS.get(r.get("role"), frozenset())
+    return plantilla(r.get("role"))
 
 
 def del_formulario(grupos, marcados, rol):
@@ -130,7 +154,7 @@ def del_formulario(grupos, marcados, rol):
     if not grupos:
         return None
     marcados = set(marcados)
-    salida = set(PLANTILLAS.get(rol, frozenset()))
+    salida = set(plantilla(rol))
     for g, _t, ps in CATALOGO:
         if g in grupos:
             for p, _e, _gl in ps:
