@@ -13117,8 +13117,8 @@ def perfil_page(msg="", ok=False, edit_user=None):
             else:
                 acc = "<span class=hint>fijo</span>"
             _filas_r.append(
-                f"<tr><td>{_rol_badge(k)}</td><td class=hint>{esc(ROL_DESC[k])}</td>"
-                f"<td class=num>{n_us}{(' <span class=hint>(' + str(n_prop) + ' con propios)</span>') if n_prop else ''}</td>"
+                f"<tr><td>{_rol_badge(k)}</td><td class=rdesc>{esc(ROL_DESC[k])}</td>"
+                f"<td class=num>{n_us}{('<span class=rprop>' + str(n_prop) + ' con propios</span>') if n_prop else ''}</td>"
                 f"<td class=num>{len(pk)}/{len(permisos.TODOS)}</td><td class=acts>{acc}</td></tr>")
         modal_rol = (
             "<div id=ovlRol class=ovl hidden onmousedown=\"this._dn=event.target\" onclick=\"if(event.target===this&&this._dn===this){cerrar('ovlRol')}\">"
@@ -13133,7 +13133,7 @@ def perfil_page(msg="", ok=False, edit_user=None):
             "<p class=hint>Cada usuario tiene un rol; lo que puede hacer lo dicen los permisos de su rol. "
             "Cambiar un rol vale para todos sus usuarios en su siguiente clic. El administrador tiene "
             "siempre todo y no se edita. Qué puntos ve cada uno se elige en Usuarios.</p>"
-            "<div class=twrap><table class=ut><thead><tr><th>Rol</th><th>Qué hace</th><th class=num>Usuarios</th>"
+            "<div class=twrap><table class='ut rolt'><thead><tr><th>Rol</th><th>Qué hace</th><th class=num>Usuarios</th>"
             f"<th class=num>Permisos</th><th></th></tr></thead><tbody>{''.join(_filas_r)}</tbody></table></div>"
             "</section>" + modal_rol)
     # --- tarjeta: IPs de confianza + bloqueos por fallos (solo admin) ---
@@ -13349,6 +13349,17 @@ def perfil_page(msg="", ok=False, edit_user=None):
         ".usrs .tools .primary{white-space:nowrap}"
         "@media(max-width:640px){.usrs .tools{width:100%}.usrs .search{flex:1;width:auto;min-width:0}}"
         "#ovlNew .modal,#ovlEdit .modal{max-width:560px}"
+        # Roles: la descripcion se parte en lineas (sin barra horizontal) y el modal del rol cabe en
+        # la pantalla con los permisos abiertos (cabecera y botones fijos, el cuerpo hace scroll)
+        ".aptmodal .aptbox.plano.roles2{max-width:760px}"
+        ".rolt{white-space:normal}.rolt th,.rolt td{white-space:nowrap}"
+        ".rolt td.rdesc{white-space:normal;width:100%;min-width:200px;color:#6b6a66;font-size:12.5px;line-height:1.45}"
+        ".rolt td.num,.rolt th.num{text-align:right}"
+        ".rolt .rprop{display:block;color:#9a9a95;font-size:11px}"
+        "#ovlRol .modal{max-width:640px;max-height:calc(100vh - 36px);display:flex;flex-direction:column}"
+        "#ovlRol form{display:flex;flex-direction:column;min-height:0;flex:1}"
+        "#ovlRol .mbody{overflow:auto;min-height:0}"
+        "@media(max-width:600px){.rolt td.rdesc{min-width:150px}}"
         ".pwrow{display:flex;gap:8px}.pwrow input{flex:1;min-width:0}"
         ".pwb{padding:0 12px;border:1px solid #d7d6d2;border-radius:8px;background:#fff;color:#52514e;"
         "font:600 12.5px system-ui;cursor:pointer;white-space:nowrap}.pwb:hover{background:#f4f4f2}"
@@ -13526,7 +13537,7 @@ def perfil_page(msg="", ok=False, edit_user=None):
                 f"<div class=aptscroll>{contenido}</div></div></div>")
     def _mcard(sid, card, clase=""):
         return _modal(sid, card, clase) if card else ""
-    modals = (_mcard("perfil", card_pw) + _mcard("empresa", card_empresa, "chico") + _mcard("usuarios", card_users, "plano") + _mcard("roles", card_roles, "plano")
+    modals = (_mcard("perfil", card_pw) + _mcard("empresa", card_empresa, "chico") + _mcard("usuarios", card_users, "plano") + _mcard("roles", card_roles, "plano roles2")
               + _mcard("acceso", card_acceso, "plano medio") + _mcard("mikrotik", card_mk)
               + _mcard("dns", card_dns) + _mcard("feeds", card_feeds)
               + _mcard("update", card_update))
