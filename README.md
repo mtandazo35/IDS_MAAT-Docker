@@ -27,9 +27,11 @@ curl -fsSL --retry 5 --retry-all-errors https://raw.githubusercontent.com/mtanda
 ```
 
 El instalador sale siempre de `main`, así que una instalación nueva lleva sus últimos arreglos sin
-esperar a una release. Instala la última release (imágenes firmadas, `VERSION_DEFECTO`); el panel y el
-orquestador se ponen al día con `main` desde el botón «Actualizar». Para fijar una versión concreta:
-`--version vX.Y.Z`, o el `install.sh` de su etiqueta (`.../vX.Y.Z/install.sh`).
+esperar a una release. Instala la última release (imágenes firmadas, `VERSION_DEFECTO`) y, al
+terminar, pone el panel y el orquestador al día con `main`, lo mismo que el botón «Actualizar»: recién
+instalado no queda nada pendiente. Si eso falla, la instalación queda buena en la release y se repite
+desde el panel. Para quedarse en la release: `--solo-release`. Para fijar una versión concreta:
+`--version vX.Y.Z` (no se pone al día con `main`), o el `install.sh` de su etiqueta (`.../vX.Y.Z/install.sh`).
 
 Si la red corta conexiones a GitHub (errores de curl `35`/`56`, «unexpected eof»), el instalador
 reintenta cada descarga, la verificación de firmas y cada `docker pull`, y avisa en pantalla de cada

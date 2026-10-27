@@ -169,7 +169,12 @@ que actualice el **panel y el orquestador**, sin tocar los puntos, y que salga d
    `actualizacion.json`, en su log y en `orq.jsonl`.
 
 A mano, desde la consola: `ids-orq actualizar <commit>` (pasa por la cola). Volver a ejecutar
-`install.sh` con una release deja otra vez las imágenes firmadas de esa release.
+`install.sh` con `--version` (o `--solo-release`) deja otra vez las imágenes firmadas de esa release.
+
+`install.sh` sin `--version` hace esto mismo al terminar (decisión del dueño 2026-10-27,
+`al_dia_con_main`): si el último commit de `main` no es el de la etiqueta de la release, llama a
+`ids-actualizar.sh <commit> install.sh` y el resumen dice «panel y orquestador main-<sha7>». Si falla, la
+instalación queda en la release con un aviso y se repite desde el panel.
 
 ### 4.2 Diseño completo (pendiente): release firmada, con canario
 

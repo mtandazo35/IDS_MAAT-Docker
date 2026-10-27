@@ -590,6 +590,75 @@ p_version_del_instalador_es_la_de_la_release() {   # VERSION_DEFECTO = ORQ_VERSI
   return 0
 }
 
+# al_dia_con_main: git ls-remote simulado (main y la etiqueta) y un ids-actualizar.sh falso que
+# apunta con qué commit lo llamaron y sale con ACT_RC
+SHA_MAIN=1111111111111111111111111111111111111111
+SHA_TAG=2222222222222222222222222222222222222222
+al_dia_preparar() {   # $1 = commit de main que da GitHub
+  local lib="$IDS_RAIZ/usr/local/lib/ids-orq"
+  mkdir -p "$lib"
+  printf '#!/bin/bash\necho "$*" >> "%s/actualizar"\nexit ${ACT_RC:-0}\n' "$T" > "$lib/ids-actualizar.sh"
+  : > "$T/actualizar"
+  GIT_MAIN="$1"
+  git() {
+    [ "$1" = ls-remote ] || return 1
+    printf '%s\trefs/heads/main\n%s\trefs/tags/v0.1.0\n%s\trefs/tags/v0.1.0^{}\n' \
+      "$GIT_MAIN" 3333333333333333333333333333333333333333 "$SHA_TAG"
+  }
+  VERSION=v0.1.0 DEV=false VERSION_DADA=0 SOLO_RELEASE=0 AL_DIA="" LOG_INSTALL="$T/log_install"
+}
+
+p_al_dia_main_por_delante() {   # sin --version y main por delante: se actualiza a main
+  al_dia_preparar "$SHA_MAIN"
+  al_dia_con_main > "$T/salida_al_dia" 2>&1 || return 1
+  [ "$(cat "$T/actualizar")" = "$SHA_MAIN install.sh" ] || { cat "$T/actualizar"; return 2; }
+  [ "$AL_DIA" = main-1111111 ] || return 3
+  ip() { echo "192.0.2.1 via 203.0.113.1 dev eth0 src 203.0.113.10 uid 0"; }
+  parsear_args "${V[@]}" && validar_args || return 5
+  orq_falso
+  TS=20261011T120000Z PANEL_ESTADO=existente
+  resumen_texto "" > "$T/resumen" 2>&1
+  grep -qF "panel y orquestador main-1111111" "$T/resumen" || { cat "$T/resumen"; return 4; }
+  return 0
+}
+
+p_al_dia_main_es_la_release() {   # main = commit de la etiqueta (anotada): nada que hacer
+  al_dia_preparar "$SHA_TAG"
+  al_dia_con_main > /dev/null 2>&1 || return 1
+  [ -s "$T/actualizar" ] && return 2
+  [ "$AL_DIA" = release ] || return 3
+  return 0
+}
+
+p_al_dia_no_con_version_ni_solo_release_ni_lab() {
+  al_dia_preparar "$SHA_MAIN"
+  VERSION_DADA=1 al_dia_con_main || return 1
+  VERSION_DADA=0 SOLO_RELEASE=1 al_dia_con_main || return 2
+  SOLO_RELEASE=0 DEV=true al_dia_con_main || return 3
+  [ -s "$T/actualizar" ] && { cat "$T/actualizar"; return 4; }
+  parsear_args --solo-release && [ "$SOLO_RELEASE" = 1 ] || return 5
+  parsear_args --version v0.1.0 && [ "$VERSION_DADA" = 1 ] || return 6
+  return 0
+}
+
+p_al_dia_falla_no_rompe_la_instalacion() {   # el actualizador falla: aviso y queda en la release
+  al_dia_preparar "$SHA_MAIN"
+  ACT_RC=1 al_dia_con_main > "$T/salida_al_dia" 2>&1 || return 1
+  [ "$AL_DIA" = release ] || return 2
+  grep -qF "queda en la release v0.1.0" "$T/salida_al_dia" || { cat "$T/salida_al_dia"; return 3; }
+  return 0
+}
+
+p_al_dia_sin_github_no_rompe() {   # ls-remote sin respuesta: aviso, sin llamar al actualizador
+  al_dia_preparar "$SHA_MAIN"
+  git() { return 128; }
+  REINTENTOS=1
+  al_dia_con_main > "$T/salida_al_dia" 2>&1 || return 1
+  [ -s "$T/actualizar" ] && return 2
+  grep -qF "no se pudo leer main" "$T/salida_al_dia" || { cat "$T/salida_al_dia"; return 3; }
+  return 0
+}
+
 p_resumen_abierto() {
   ip() { echo "192.0.2.1 via 203.0.113.1 dev eth0 src 203.0.113.10 uid 0"; }
   parsear_args && validar_args || return 1
@@ -1169,6 +1238,11 @@ esperar 0 "acceso abierto sin --gestion ni --proxy"      en_instalador p_acceso_
 esperar 0 "reinstalación: conserva acceso y nombre"      en_instalador p_reinstalacion_conserva_acceso_y_nombre
 esperar 0 "sin --nombre: IP pública, la del NAT o la privada" en_instalador p_nombre_por_defecto_ip_publica
 esperar 0 "versión del instalador = release = README"    en_instalador p_version_del_instalador_es_la_de_la_release
+esperar 0 "al día con main: main por delante, se actualiza" en_instalador p_al_dia_main_por_delante
+esperar 0 "al día con main: main = release, nada"         en_instalador p_al_dia_main_es_la_release
+esperar 0 "al día con main: no con --version/--solo-release/lab" en_instalador p_al_dia_no_con_version_ni_solo_release_ni_lab
+esperar 0 "al día con main: si falla, queda en la release" en_instalador p_al_dia_falla_no_rompe_la_instalacion
+esperar 0 "al día con main: sin GitHub, aviso y sigue"    en_instalador p_al_dia_sin_github_no_rompe
 esperar 0 "resumen con el acceso abierto"                en_instalador p_resumen_abierto
 esperar 0 "reinstalación: IPS_PROXY ancho pasa a REDES_PANEL" en_instalador p_reinstalacion_mueve_proxy_ancho_a_panel
 esperar 0 "--panel cierra un panel abierto (y --proxy)"  en_instalador p_panel_cierra_lo_abierto

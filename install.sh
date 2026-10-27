@@ -5,7 +5,9 @@
 #        -o /root/ids-maat-install.sh && bash /root/ids-maat-install.sh
 #
 # Las instalaciones nuevas salen de main (decisión del dueño 2026-10-19), que instala la última release
-# (VERSION_DEFECTO); el install.sh de una etiqueta (.../vX.Y.Z/install.sh) instala la suya.
+# (VERSION_DEFECTO) y al terminar pone el panel y el orquestador al día con main, lo mismo que el
+# botón «Actualizar» (decisión del dueño 2026-10-27: recién instalado, nada pendiente); el
+# install.sh de una etiqueta (.../vX.Y.Z/install.sh) instala la suya.
 #
 # Sin opciones instala todo (la release de este instalador, reglas, timers y panel) con el nombre =
 # la IP pública del VPS, la zona America/Guayaquil y el acceso ABIERTO: SSH y panel desde cualquier
@@ -20,7 +22,9 @@
 #        --imagenes vpn=<ref>,suricata=<ref>,panel=<ref> [--nombre …] [--gestion …] [--panel …]
 #
 # Opciones (todas opcionales; en una reinstalación, la que falta conserva lo que ya había):
-#   --version          release vX.Y.Z; por defecto la de este instalador
+#   --version          release vX.Y.Z; por defecto la de este instalador. Con --version se queda en
+#                      esa release; sin ella, al terminar se pone al día con main (como «Actualizar»)
+#   --solo-release     sin --version: instala la release y NO se pone al día con main
 #   --nombre           nombre DNS (o IP) con el que los MikroTik llegan al VPS; por defecto la IP
 #                      pública: la de la ruta por defecto o, si es privada (detrás de NAT), la que
 #                      se averigua por internet; si no se averigua, la privada (MikroTik de la red)
@@ -67,6 +71,7 @@ R="${R%/}"
 GESTION_ABIERTA=0 PROXY_ABIERTO=0 NOMBRE_AUTO=0 IP_LOCAL=""
 VERSION="" NOMBRE="" GESTION="" PROXY="" PANEL="" TUN_BASE="100.64" TUN_BASE_DADO=0 DUENO=""
 DESDE_REPO="" IMAGENES="" SOLO_VALIDAR=0 CONFIRMAR=0 SIN_REVERSION=0 FORZAR_ACCESO=0
+SOLO_RELEASE=0 VERSION_DADA=0 AL_DIA=""
 HOST_DIR="" IMG_VPN="" IMG_SUR="" IMG_PANEL="" DEV=false TS="" T0_REVERSION="" ZONA=""
 USUARIO_PANEL=admin PANEL_ESTADO="" CLAVE_PANEL="" LOG_INSTALL=""
 PANEL_IP=10.210.255.2      # IP fija del panel en la red ids-core (túnel SSH de emergencia)
@@ -154,6 +159,7 @@ parsear_args() {
       --confirmar) CONFIRMAR=1; shift; continue ;;
       --sin-reversion) SIN_REVERSION=1; shift; continue ;;
       --forzar-acceso) FORZAR_ACCESO=1; shift; continue ;;
+      --solo-release) SOLO_RELEASE=1; shift; continue ;;
       -h|--help) uso; exit 0 ;;
       --version|--nombre|--gestion|--proxy|--panel|--tun-base|--dueno-ip|--desde-repo|--imagenes|--zona)
         if [ -z "$val" ]; then
@@ -164,7 +170,7 @@ parsear_args() {
       *) fallar "opción desconocida: $op (--help)" ;;
     esac
     case "$op" in
-      --version) VERSION="$val" ;;
+      --version) VERSION="$val"; VERSION_DADA=1 ;;
       --nombre) NOMBRE="$val" ;;
       --gestion) GESTION="$val" ;;
       --proxy) PROXY="$val" ;;
@@ -1104,6 +1110,44 @@ panel() {
   esac
 }
 
+# Al día con main (decisión del dueño 2026-10-27): la release trae las imágenes firmadas, pero main
+# suele ir por delante y el panel lo ofrecería enseguida como «Actualización disponible». Si main no
+# es la release, se hace aquí lo mismo que el botón «Actualizar» (ids-actualizar.sh: panel y
+# orquestador al último commit de main, con respaldo y vuelta atrás; los puntos no se tocan). Con
+# --version, --solo-release o en laboratorio se queda en la release. Si falla, la instalación sigue
+# buena en la release y se avisa: se repite desde el panel.
+al_dia_con_main() {
+  local refs main tag script
+  if [ "$DEV" = true ] || [ "$VERSION_DADA" = 1 ] || [ "$SOLO_RELEASE" = 1 ]; then
+    return 0
+  fi
+  script="${R}/usr/local/lib/ids-orq/ids-actualizar.sh"
+  [ -f "$script" ] || { aviso "sin ids-actualizar.sh: queda en la release $VERSION (actualiza desde el panel)"; return 0; }
+  refs=$(con_reintentos git ls-remote "https://github.com/${OWNER}/${REPO}.git" refs/heads/main \
+           "refs/tags/${VERSION}" "refs/tags/${VERSION}^{}") || refs=""
+  main=$(awk '$2 == "refs/heads/main" {print $1}' <<<"$refs")
+  tag=$(awk -v t="refs/tags/${VERSION}^{}" '$2 == t {print $1}' <<<"$refs")
+  [ -n "$tag" ] || tag=$(awk -v t="refs/tags/${VERSION}" '$2 == t {print $1}' <<<"$refs")
+  if ! [[ "$main" =~ ^[0-9a-f]{40}$ ]]; then
+    aviso "no se pudo leer main en GitHub: queda en la release $VERSION (actualiza desde el panel)"
+    AL_DIA="release"
+    return 0
+  fi
+  if [ "$main" = "$tag" ]; then
+    log "main = release $VERSION: nada que poner al día"
+    AL_DIA="release"
+    return 0
+  fi
+  log "al día con main (${main:0:7}): panel y orquestador, como «Actualizar» (construye el panel: unos minutos)"
+  if bash "$script" "$main" install.sh >>"${LOG_INSTALL:-/dev/null}" 2>&1; then
+    log "panel y orquestador en main ${main:0:7}"
+    AL_DIA="main-${main:0:7}"
+  else
+    aviso "no se pudo poner al día con main (detalle en /root/ids-maat/actualizar/*.log): queda en la release $VERSION; repítelo desde el panel («Actualizar»)"
+    AL_DIA="release"
+  fi
+}
+
 ip_publica() {   # IP de origen de la ruta por defecto (sin enviar nada); vacío si no hay
   ip -4 route get 192.0.2.1 2>/dev/null | sed -n 's/.* src \([0-9.]*\).*/\1/p' || true
 }
@@ -1119,6 +1163,9 @@ resumen_texto() {   # resumen_texto <clave tal como se muestra>
   esac
   echo
   echo "==> ids-maat $VERSION instalado$([ "$DEV" = true ] && echo ' (LABORATORIO, sin firmas)')"
+  case "$AL_DIA" in
+    main-*) echo "  panel y orquestador ${AL_DIA}   (al día con main: nada pendiente en «Actualizar»)" ;;
+  esac
   echo "  nombre DNS        $NOMBRE$nota"
   if [ "$NOMBRE_AUTO" = 2 ]; then
     echo "                    el NAT tiene que pasar a $IP_LOCAL los puertos 1194+N-1/tcp (VPN) y $PUERTO_PANEL/tcp (panel)"
@@ -1225,7 +1272,8 @@ principal() {
   imagenes                   # 11
   arrancar                   # 12
   panel                      # F1b: núcleo ids-core y primer admin
-  resumen                    # 13 (URL, usuario y clave del panel)
+  al_dia_con_main            # panel y orquestador al último commit de main (como «Actualizar»)
+  resumen                   # 13 (URL, usuario y clave del panel)
 }
 
 if [ "${IDS_INSTALL_SOLO_FUNCIONES:-0}" != 1 ]; then
