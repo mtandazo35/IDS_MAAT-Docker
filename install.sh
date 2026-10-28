@@ -63,7 +63,7 @@ POOL_DOCKER=10.210.0.0/16
 VENTANA_REVERSION=300
 UNIDAD_REVERSION=ids-maat-revertir-acceso
 ZONA_DEFECTO=America/Guayaquil   # zona del servidor y del panel sin --zona (los clientes son ISP de Ecuador)
-VERSION_DEFECTO=v0.1.14          # la release de este instalador (sin --version); = ORQ_VERSION de su etiqueta
+VERSION_DEFECTO=v0.1.15          # la release de este instalador (sin --version); = ORQ_VERSION de su etiqueta
 ABIERTO=0.0.0.0/0                # gestión o panel sin --gestion/--panel/--proxy: cualquier IP
 R="${IDS_RAIZ:-}"            # prefijo de rutas para las pruebas; vacío en producción
 R="${R%/}"
