@@ -2246,6 +2246,14 @@ def reglas_de_accion(cat, accion, lista, params=None):
     # `_arriba`: va delante de todo en su cadena (place-before=0). Solo lo llevan las
     # reglas que lo necesitan: el jump/drop de prerouting y el dst-nat.
     wan = {"in-interface-list": "!" + p["wan"]} if p.get("wan") else {}
+    if accion == "cortar-entrada":
+        # «Cortar atacantes de internet» (2026-10-28, ATAC_ACCION; literal por las pruebas heredadas
+        # que sacan esta funcion por ast): en filter y con connection-state=new, nunca en raw
+        # (tiraria tambien las respuestas a lo que pidio tu abonado); arriba de su cadena
+        return [(T_FILTER, {"chain": "forward", "action": "drop", "connection-state": "new",
+                            "src-address-list": lista, "_arriba": "1", "_desc": "Atacantes de internet"}),
+                (T_FILTER, {"chain": "input", "action": "drop", "connection-state": "new",
+                            "src-address-list": lista, "_arriba": "1", "_desc": "Atacantes contra el router"})]
     if accion == "cortar":
         return [(T_RAW, {"chain": "prerouting", "action": "drop", "src-address-list": lista, "_arriba": "1",
                          "_desc": "Cortar todo"})]
@@ -4087,6 +4095,491 @@ def blocklist_reglas(lista=BL_LISTA):
         'add chain=input connection-state=new src-address-list=%s action=drop '
         'comment="Suricata: atacantes contra el router"' % ros_lista(lista),
     ])
+
+# ---------------------------------------------------------------------------------
+# Cortar atacantes de internet POR LA API (el user, 2026-10-28)
+# ---------------------------------------------------------------------------------
+# /blocklist.rsc hay que pegarlo a mano. Esto lo manda el panel al MikroTik de CADA punto por la
+# API, como la cuarentena: las IPs de blocklist_borde() de ESE punto (las que atacan a sus
+# abonados, de su entrantes.json) a la address-list suricata-atacantes con caducidad de 1 dia, y
+# las dos reglas de filter (forward e input, connection-state=new) con el mecanismo de las
+# politicas: respaldo antes del primer cambio, idempotente y solo lo nuestro (comentario
+# «Suricata:atacantes:NN»). Por punto: apagado (por defecto), automatico (cada 15 min, en el ciclo
+# del punto) o solo a mano (boton). Una IP que sigue atacando se reenvia cuando le quedan menos de
+# 12 h en el router (renueva su caducidad); la que deja de atacar caduca sola al dia.
+ATAC_CONF = nodos.ruta("conf", "atacantes.json")              # {pid: {"modo", "quien", "cuando"}}
+ATAC_SENT = nodos.ruta("estado", "atacantes-enviados.json")   # {"pid|ip": {"ts", "hasta", "por"}}
+ATAC_CAT = "atacantes"            # las reglas: comentario «Suricata:atacantes:NN»
+ATAC_ACCION = "cortar-entrada"    # la plantilla de reglas_de_accion
+ATAC_TTL, ATAC_TTL_S = "1d", 86400
+ATAC_RENOVAR_S = 12 * 3600        # se reenvia (renueva) si le queda menos que esto en el router
+ATAC_TOPE = 500                   # por envio y punto, las de mas alertas primero (RAM del router)
+ATAC_CADA_S = 900                 # el automatico, cada 15 min
+ATAC_ESPERA_MAX_S = 4 * 3600      # si el router falla, espera el doble cada vez hasta esto
+ATAC_MODOS = ("auto", "manual")
+ATAC_COMENTARIO = "Suricata atacante"   # comentario de cada entrada que pone el panel
+_ATAC_LOCK = threading.RLock()
+_ATAC_PROX = {}                   # pid -> (cuando toca el siguiente automatico, fallos seguidos)
+
+
+def _atac_leer(path):
+    try:
+        with open(path, encoding="utf-8") as f:
+            d = json.load(f)
+    except (OSError, ValueError):
+        return {}
+    return d if isinstance(d, dict) else {}
+
+
+def _atac_escribir(path, d):
+    os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
+    tmp = "%s.%d.%d.tmp" % (path, os.getpid(), threading.get_ident())
+    with open(tmp, "w", encoding="utf-8", newline="\n") as f:
+        json.dump(d, f, ensure_ascii=False, indent=1)
+    os.chmod(tmp, 0o600)
+    os.replace(tmp, path)
+
+
+def atacantes_modo(pid):
+    """"auto", "manual" o "" (apagado, lo de fabrica) para ese punto."""
+    v = _atac_leer(ATAC_CONF).get(pid)
+    m = v.get("modo") if isinstance(v, dict) else ""
+    return m if m in ATAC_MODOS else ""
+
+
+def guardar_atacantes_modo(pid, modo, quien="?"):
+    """Guarda el modo de ese punto ("" lo apaga). Solo el fichero: quitar lo puesto en el router es
+    atacantes_apagar (antes de apagar)."""
+    if modo not in ("",) + ATAC_MODOS:
+        raise ValueError("modo no válido: %r" % (modo,))
+    nodos.exigir_pid(pid)
+    with _ATAC_LOCK:
+        d = {k: v for k, v in _atac_leer(ATAC_CONF).items() if nodos.pid_valido(k)}
+        if modo:
+            d[pid] = {"modo": modo, "quien": str(quien or "?")[:64], "cuando": int(time.time())}
+        else:
+            d.pop(pid, None)
+        _atac_escribir(ATAC_CONF, d)
+    _ATAC_PROX.pop(pid, None)
+
+
+def atacantes_enviados(pid=None):
+    """{"pid|ip": {"ts", "hasta", "por"}} de lo que el panel tiene puesto y aun no ha caducado en el
+    router (de ese punto, o de todos sin `pid`)."""
+    ahora = time.time()
+    out = {}
+    for k, v in _atac_leer(ATAC_SENT).items():
+        if not isinstance(v, dict) or (pid is not None and not k.startswith(pid + "|")):
+            continue
+        try:
+            if float(v.get("hasta") or 0) > ahora:
+                out[k] = v
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
+def _atac_olvidar(pid, conf=False):
+    """Saca ese punto del registro de enviados (y, con `conf`, su modo). {fichero: cuantas}."""
+    pref = pid + "|"
+    hecho = {}
+    with _ATAC_LOCK:
+        d = _atac_leer(ATAC_SENT)
+        ks = [k for k in d if k.startswith(pref)]
+        if ks:
+            for k in ks:
+                d.pop(k, None)
+            _atac_escribir(ATAC_SENT, d)
+        hecho[os.path.basename(ATAC_SENT)] = len(ks)
+        if conf:
+            c = _atac_leer(ATAC_CONF)
+            if c.pop(pid, None) is not None:
+                _atac_escribir(ATAC_CONF, c)
+                hecho[os.path.basename(ATAC_CONF)] = 1
+    _ATAC_PROX.pop(pid, None)
+    return hecho
+
+
+def _atac_ips_excluidas():
+    """IPs que nunca se cortan aunque ataquen (auditoria M8): la IP publica desde la que conecta el
+    MikroTik de CADA punto (detras puede haber todo un cliente con NAT: cortarla dejaria a ese punto
+    sin VPN) y la del panel (host de PANEL_URL si es una IP)."""
+    out = set()
+    for p in nodos.pids_todos():
+        try:
+            ip, _cuando = puntos_web.ip_mikrotik(nodos.punto(p) or {"pid": p})
+        except Exception:
+            ip = ""
+        if ip:
+            out.add(ip)
+    try:
+        host = urllib.parse.urlsplit(conf_dash_get("PANEL_URL", "") or "").hostname or ""
+        out.add(str(ipaddress.ip_address(host)))
+    except ValueError:
+        pass
+    return out
+
+
+def atacantes_de_punto(pid, tope=None):
+    """Lo que se le manda al router de ESE punto: blocklist_borde() con los datos del punto (su
+    entrantes.json), SIN el alcance de la peticion (asi las publicas declaradas de todos los puntos
+    quedan fuera: la de otro cliente tampoco se corta), solo IPv4, sin las de «Nunca bloquear» de ese
+    punto ni las IPs WAN de los MikroTik de los puntos ni la del panel (_atac_ips_excluidas), las de
+    mas alertas primero y como mucho `tope`."""
+    tope = ATAC_TOPE if tope is None else tope
+    with nodos.sin_alcance(), nodos.contexto(pid):
+        filas = blocklist_borde()
+        fuera = _atac_ips_excluidas()
+    out = []
+    for f in filas:
+        try:
+            if ipaddress.ip_address(f["ip"]).version != 4:
+                continue                  # la address-list de IPv4 no admite otra cosa (M6)
+        except ValueError:
+            continue
+        if f["ip"] in fuera or nunca_bloquear(f["ip"], pid):
+            continue
+        out.append(f)
+    return out[:max(0, int(tope))]
+
+
+def atacantes_api_lista(pid, r=None):
+    """El router de ese punto tiene usuario y clave de la API USABLES (la clave descifrada, no solo
+    guardada: una ilegible no sirve). Lo usan el nucleo y la ficha (mismo criterio, M4)."""
+    if r is None:
+        r = router_por_id(pid)
+    return bool(r and r.get("USER") and r.get("PASS") and not r.get("_PASS_ILEGIBLE"))
+
+
+def _atac_reglas_en(s_, router, encender, quien):
+    """(ok, mensaje): pone (encender) o quita nuestras dos reglas de filter en ese router, sobre la
+    conexion abierta. Es _aplicar_en de las politicas: respaldo antes del primer cambio, nada si ya
+    estan, y solo lo de comentario «Suricata:atacantes:»."""
+    ok, msg, _plan = _aplicar_en(s_, router, ATAC_CAT, ATAC_ACCION if encender else "nada", quien,
+                                 _mk_globales())
+    return ok, msg
+
+
+def _atac_leer_lista_en(s_):
+    """{ip: [entrada]} de suricata-atacantes en ese router (una lectura; .id, address, comment,
+    timeout). ErrorLecturaMK si no se puede leer."""
+    _mk_send(s_, ["/ip/firewall/address-list/print", "=.proplist=.id,address,comment,timeout",
+                  "?list=" + BL_LISTA])
+    ok, frases, err = _mk_reply(s_)
+    if not ok or any(f and f[0] in ("!trap", "!fatal") for f in frases):
+        raise ErrorLecturaMK("no se pudo leer la lista %s: %s" % (BL_LISTA, err or "rechazado"))
+    out = {}
+    for f in frases:
+        if not (f and f[0] == "!re"):
+            continue
+        e = dict(a[1:].split("=", 1) for a in f[1:] if a.startswith("=") and "=" in a[1:])
+        if e.get(".id"):
+            out.setdefault((e.get("address") or "").split("/", 1)[0], []).append(e)
+    return out
+
+
+def _atac_nuestra(e):
+    """Una entrada de suricata-atacantes es del panel: lleva su comentario y caducidad. Lo puesto a
+    mano (sin ese comentario o sin timeout: estatica) no se toca nunca (M2)."""
+    t = (e.get("timeout") or "").strip()
+    return (e.get("comment") or "").startswith(ATAC_COMENTARIO) and t not in ("", "0s", "00:00:00", "none")
+
+
+def _atac_add_en(s_, ip, comentario, entradas):
+    """Anade (o renueva) una IP en suricata-atacantes. `entradas`: las que ya tiene el router para esa
+    IP (de _atac_leer_lista_en). Devuelve "puesta" | "renovada" | "ajena" (ya estaba puesta a mano:
+    no se toca, M2) o lanza ValueError con el rechazo del router (solo esa IP, M6). Un !fatal o un
+    fallo del socket se lanza como IOError (corta el envio)."""
+    def _orden(palabras):
+        _mk_send(s_, palabras)
+        ok_o, frases_o, err_o = _mk_reply(s_)
+        if any(f and f[0] == "!fatal" for f in frases_o):
+            raise IOError("el router cerró la API: %s" % (err_o or "!fatal"))
+        return ok_o, err_o or ""
+    if entradas:
+        nuestras = [e for e in entradas if _atac_nuestra(e)]
+        if len(nuestras) != len(entradas) or not nuestras:
+            return "ajena"
+        for e in nuestras:
+            ok, err = _orden(["/ip/firewall/address-list/set", "=.id=" + e[".id"], "=timeout=" + ATAC_TTL])
+            if not ok:
+                raise ValueError(err or "rechazada")
+        return "renovada"
+    ok, err = _orden(["/ip/firewall/address-list/add", "=list=" + BL_LISTA, "=address=" + ip,
+                      "=timeout=" + ATAC_TTL, "=comment=" + comentario[:120]])
+    if ok:
+        return "puesta"
+    if "already have such entry" in err.lower():
+        return "ajena"                    # aparecio entre la lectura y el add: no es nuestra
+    raise ValueError(err or "rechazada")
+
+
+def _atac_vaciar_en(s_):
+    """Quita de suricata-atacantes las entradas que puso el panel (_atac_nuestra; lo que se importo a
+    mano con /blocklist.rsc no se toca). (quitadas, [errores])."""
+    ids = [e[".id"] for ents in _atac_leer_lista_en(s_).values() for e in ents if _atac_nuestra(e)]
+    errores = []
+    for _id in ids:
+        _mk_send(s_, ["/ip/firewall/address-list/remove", "=.id=" + _id])
+        ok_r, _fr, err_r = _mk_reply(s_)
+        if not ok_r and "no such item" not in (err_r or "").lower():
+            errores.append(err_r or "rechazado")
+    return len(ids) - len(errores), errores
+
+
+def _atac_comentario(f):
+    por = ", ".join(f.get("fuentes") or ([f["fuente"]] if f.get("fuente") else [])) or (
+        "%d alertas a %d destinos" % (f.get("alertas", 0), f.get("destinos", 0)))
+    return ATAC_COMENTARIO + ": " + re.sub(r"[^A-Za-z0-9 ._:/(),-]", " ", por)[:80]
+
+
+def atacantes_enviar(pid, quien="?", forzar=False):
+    """Manda al MikroTik de ese punto sus atacantes (atacantes_de_punto) y se asegura de que estan
+    las dos reglas. Antes lee UNA vez la lista del router (M3): lo que falta se manda aunque el
+    registro diga que esta (router reiniciado, lista vaciada) y el registro se corrige con lo leido;
+    lo que esta con mas de ATAC_RENOVAR_S por delante no se reenvia (salvo `forzar`); lo puesto a
+    mano no se toca (M2). El modo se relee DENTRO del cerrojo del punto (M1: un apagado que llego
+    mientras tanto gana) y el registro se escribe dentro del mismo cerrojo.
+    Nunca lanza: {"ok", "pid", "mensaje", "enviadas", "renovadas", "al_dia", "ajenas", "fallos",
+    "reglas", "corte" (fallo de conexion o de reglas: cuenta para la espera), "en_curso"}."""
+    res = {"ok": False, "pid": pid, "mensaje": "", "enviadas": 0, "renovadas": 0, "al_dia": 0,
+           "ajenas": 0, "fallos": 0, "reglas": "", "corte": False, "en_curso": False}
+    try:
+        nodos.exigir_pid(pid)
+    except (nodos.NodoInvalido, nodos.NodoInexistente):
+        res["mensaje"] = "ese punto no existe"
+        return res
+    if not atacantes_modo(pid):
+        res["mensaje"] = "este punto no tiene activado «Cortar atacantes de internet»"
+        return res
+    r = router_por_id(pid)
+    if not atacantes_api_lista(pid, r):
+        res["mensaje"] = ("falta el usuario y la clave de la API del MikroTik (o la clave guardada no se puede "
+                          "leer): configúralos en la ficha del punto (API del MikroTik)")
+        return res
+    if str(r.get("ENABLED", "0")) != "1":
+        res["mensaje"] = ("el envío al MikroTik de este punto está en «no / solo sugerencias» (ficha › API del "
+                          "MikroTik): el panel no le manda nada hasta que lo actives ahí")
+        return res
+    try:
+        filas = atacantes_de_punto(pid)
+    except Exception as ex:
+        res["mensaje"] = "no se pudo leer la lista de atacantes del punto: %s" % (str(ex)[:160] or type(ex).__name__)
+        return res
+    hechos = {}          # ip -> "puesta" | "renovada"
+    err_ult = ""
+    corte = ""
+    try:
+        with cerrojo_operacion(pid, "atacantes", espera=5):
+            if not atacantes_modo(pid):
+                # se apago mientras se esperaba (M1): no se pone nada
+                res["mensaje"] = "se apagó «Cortar atacantes» en este punto mientras tanto: no se mandó nada"
+                return res
+            with mk_sesion(r) as (s_, _d):
+                ok_r, msg_r = _atac_reglas_en(s_, r, True, quien)
+                res["reglas"] = msg_r
+                if not ok_r:
+                    corte = "no se pudieron poner las reglas en el router (%s): no se mandó ninguna IP" % msg_r
+                else:
+                    en_router = _atac_leer_lista_en(s_)
+                    ahora = time.time()
+                    reg = atacantes_enviados(pid)
+                    for f in filas:
+                        ip = f["ip"]
+                        ents = en_router.get(ip) or []
+                        if ents and not all(_atac_nuestra(e) for e in ents):
+                            res["ajenas"] += 1          # puesta a mano: no se toca (M2)
+                            continue
+                        e = reg.get(pid + "|" + ip)
+                        if ents and e and not forzar and float(e.get("hasta") or 0) - ahora >= ATAC_RENOVAR_S:
+                            res["al_dia"] += 1
+                            continue
+                        try:
+                            hechos[ip] = _atac_add_en(s_, ip, _atac_comentario(f), ents)
+                        except ValueError as ex:
+                            res["fallos"] += 1          # rechazo de esa IP: se dice, sin espera (M6)
+                            err_ult = "%s: %s" % (ip, str(ex)[:120])
+                            continue
+                        if hechos[ip] == "ajena":
+                            res["ajenas"] += 1
+                            del hechos[ip]
+                    # el registro, corregido con lo leido (M3) y dentro del cerrojo (M1)
+                    with _ATAC_LOCK:
+                        d = _atac_leer(ATAC_SENT)
+                        ah = time.time()
+                        pref = pid + "|"
+                        for k in [k for k in d if k.startswith(pref)]:
+                            ip = k[len(pref):]
+                            if ip not in hechos and not any(_atac_nuestra(x) for x in en_router.get(ip) or []):
+                                d.pop(k, None)          # ya no esta en el router
+                        for ip in hechos:
+                            d[pref + ip] = {"ts": int(ah), "hasta": int(ah + ATAC_TTL_S), "por": str(quien or "?")[:64]}
+                        vivos = {}
+                        for k, v in d.items():
+                            try:
+                                if isinstance(v, dict) and float(v.get("hasta") or 0) > ah:
+                                    vivos[k] = v
+                            except (TypeError, ValueError):
+                                continue
+                        _atac_escribir(ATAC_SENT, vivos)
+    except PuntoEnBaja as ex:
+        corte = str(ex)
+    except OperacionEnCurso:
+        res["en_curso"] = True
+        corte = "ya hay un envío de atacantes en curso para este punto; vuelve a intentarlo en un minuto"
+    except Exception as ex:
+        corte = "falló hablando con el router: %s" % (str(ex)[:200] or type(ex).__name__)
+    res["renovadas"] = sum(1 for v in hechos.values() if v == "renovada")
+    res["enviadas"] = len(hechos) - res["renovadas"]
+    res["corte"] = bool(corte) and not res["en_curso"]
+    res["ok"] = not corte and not res["fallos"]
+    partes = []
+    if res["enviadas"] or res["renovadas"]:
+        partes.append("%d IP(s) nuevas y %d renovadas en %s (caducan en 1 día)"
+                      % (res["enviadas"], res["renovadas"], BL_LISTA))
+    if res["al_dia"]:
+        partes.append("%d ya estaban en el router" % res["al_dia"])
+    if res["ajenas"]:
+        partes.append("%d ya estaban puestas a mano en %s (no se tocan)" % (res["ajenas"], BL_LISTA))
+    if not filas:
+        partes.append("ninguna IP de internet cumple ahora el criterio para cortarla")
+    if res["fallos"]:
+        partes.append("%d rechazada(s) por el router (la última, %s)" % (res["fallos"], err_ult))
+    if corte:
+        partes.insert(0, corte)
+    elif res["reglas"]:
+        partes.append("reglas: " + res["reglas"].split(". Respaldo")[0])
+    res["mensaje"] = "; ".join(partes) + "."
+    hubo = (res["enviadas"] or res["renovadas"] or res["fallos"] or corte
+            or not res["reglas"].startswith("sin cambios"))
+    if hubo:
+        bitacora("ATACANTES-ENVIO" if res["ok"] else "ATACANTES-ENVIO-FALLO",
+                 "punto=%s nuevas=%d renovadas=%d al_dia=%d a_mano=%d fallos=%d %s" % (
+                     pid, res["enviadas"], res["renovadas"], res["al_dia"], res["ajenas"], res["fallos"],
+                     (corte or err_ult or "")[:200]),
+                 quien=quien)
+    return res
+
+
+def atacantes_apagar(pid, quien="?", sin_limpiar=False):
+    """Apaga «Cortar atacantes» en ese punto. Antes quita del router lo que puso el panel (las dos
+    reglas y sus entradas de suricata-atacantes), y el modo pasa a apagado DENTRO del mismo cerrojo
+    que los envios (M1: un automatico en marcha no vuelve a poner nada despues). (ok, mensaje).
+    Si el router no responde, (False, motivo) y no se olvida nada. Sin API usable y con algo puesto o
+    activado, tampoco (M4): hay que configurarla o pedir `sin_limpiar` (apagar sin tocar el router;
+    lo puesto se quita a mano)."""
+    try:
+        nodos.exigir_pid(pid)
+    except (nodos.NodoInvalido, nodos.NodoInexistente):
+        return False, "ese punto no existe"
+    r = router_por_id(pid)
+    api = atacantes_api_lista(pid, r)
+    if not sin_limpiar and not api:
+        if atacantes_enviados(pid) or atacantes_modo(pid):
+            return False, ("sin la API del MikroTik (usuario y clave usables) no se puede quitar lo que el panel "
+                           "puso en el router: configúrala en «API del MikroTik» o quítalo a mano (las dos reglas "
+                           "«Suricata:atacantes» y las entradas «%s» de %s) y marca «Apagar sin limpiar el "
+                           "router»" % (ATAC_COMENTARIO, BL_LISTA))
+    try:
+        with cerrojo_operacion(pid, "atacantes", espera=30):
+            n = 0
+            if not sin_limpiar and api:
+                with mk_sesion(r) as (s_, _d):
+                    ok_r, msg_r = _atac_reglas_en(s_, r, False, quien)
+                    if not ok_r:
+                        return False, "no se pudieron quitar las reglas del router: %s" % msg_r
+                    n, errores = _atac_vaciar_en(s_)
+                if errores:
+                    return False, ("reglas quitadas, pero %d entrada(s) de %s no se pudieron quitar (%s)"
+                                   % (len(errores), BL_LISTA, errores[0][:120]))
+            guardar_atacantes_modo(pid, "", quien)
+            _atac_olvidar(pid)
+    except PuntoEnBaja as ex:
+        return False, str(ex)
+    except OperacionEnCurso:
+        return False, "hay un envío de atacantes en curso para este punto; vuelve a intentarlo en un minuto"
+    except Exception as ex:
+        return False, "falló hablando con el router: %s" % (str(ex)[:200] or type(ex).__name__)
+    if sin_limpiar:
+        bitacora("ATACANTES-APAGADO-SIN-LIMPIAR", "punto=%s (lo puesto en el router se quita a mano)" % pid,
+                 quien=quien)
+        return True, "apagado sin tocar el router: si el panel le había puesto algo, quítalo a mano"
+    if not api:
+        return True, "el panel no tenía nada puesto en ese router"
+    bitacora("ATACANTES-APAGADO", "punto=%s reglas quitadas y %d IP(s) fuera de %s" % (pid, n, BL_LISTA),
+             quien=quien)
+    return True, "quitadas del router las dos reglas y %d IP(s) de la lista %s" % (n, BL_LISTA)
+
+
+def _atac_entrantes_frescos(pid):
+    """entrantes.json del punto es de las ultimas EVIDENCIA_MAX_HORAS (campo `generado`; sin el, la
+    fecha del fichero). Con datos viejos el automatico no manda nada (B3)."""
+    ruta = nodos.salida(ENTRANTES_FILE, pid)
+    try:
+        with open(ruta, encoding="utf-8") as f:
+            gen = (json.load(f) or {}).get("generado")
+        gen = float(gen) if gen else os.path.getmtime(ruta)
+    except (OSError, ValueError, TypeError, AttributeError):
+        return False
+    return time.time() - gen <= evidencia_max_s()
+
+
+def atacantes_auto(pid):
+    """Paso del ciclo de fondo de cada punto (_ciclo_nodo): con el modo automatico, un envio cada
+    ATAC_CADA_S, solo con datos frescos (B3). Si falla la conexion o las reglas, espera el doble cada
+    vez (hasta ATAC_ESPERA_MAX_S); un rechazo de una IP no cuenta (M6) y un envio en curso (otro hilo
+    o el boton) solo hace reintentar en la vuelta siguiente (B2). Corre en el hilo de fondo."""
+    if atacantes_modo(pid) != "auto":
+        return None
+    ahora = time.time()
+    prox, fallos = _ATAC_PROX.get(pid, (0, 0))
+    if ahora < prox:
+        return None
+    if not _atac_entrantes_frescos(pid):
+        _ATAC_PROX[pid] = (ahora + ATAC_CADA_S, fallos)
+        return None
+    res = atacantes_enviar(pid, quien="panel (automático)")
+    if res.get("en_curso"):
+        _ATAC_PROX[pid] = (ahora + 60, fallos)
+    elif res.get("corte"):
+        fallos += 1
+        _ATAC_PROX[pid] = (ahora + min(ATAC_CADA_S * (2 ** fallos), ATAC_ESPERA_MAX_S), fallos)
+    else:
+        _ATAC_PROX[pid] = (ahora + ATAC_CADA_S, 0)
+    return res
+
+
+def atacantes_enviar_varios(pids, quien="?"):
+    """«Enviar al MikroTik ahora» de Histórico en «Todos»/grupo (B2): en segundo plano, punto a punto;
+    cada resultado queda en el Registro (ATACANTES-ENVIO...) y en la columna «En el router»."""
+    def _correr():
+        for p in pids:
+            try:
+                atacantes_enviar(p, quien=quien)
+            except Exception as ex:
+                sys.stderr.write("atacantes_enviar(%s): %s\n" % (p, ex))
+    t = threading.Thread(target=_correr, name="atac-envio", daemon=True)
+    t.start()
+    return t
+
+
+_JS_ATAC = """<div id=atacov class=ovl style='display:none;position:fixed;inset:0;background:rgba(11,11,11,.45);align-items:center;justify-content:center;z-index:100;padding:18px' onmousedown="this._dn=event.target" onclick="if(event.target===this&&this._dn===this){atacCerrar()}">
+<div style='background:#fff;border-radius:14px;max-width:560px;width:100%;padding:18px 22px;box-shadow:0 20px 55px rgba(0,0,0,.32)' role=dialog aria-modal=true aria-labelledby=atact>
+<h3 id=atact style='margin:0 0 8px;font-size:16px'></h3><div id=atacc style='font-size:13.5px;color:#33322f'></div>
+<div style='text-align:right;margin-top:14px'><button type=button class=btn onclick='atacCerrar(1)'>Cerrar</button></div></div></div>
+<script>
+var ATACHECHO=0;
+function atacCerrar(r){document.getElementById('atacov').style.display='none';if(r&&ATACHECHO)location.reload();}
+function atacPinta(t,txt){document.getElementById('atact').textContent=t;var c=document.getElementById('atacc');c.innerHTML='';
+ var p=document.createElement('p');p.style.whiteSpace='pre-line';p.style.margin='0';p.textContent=txt;c.appendChild(p);
+ document.getElementById('atacov').style.display='flex';}
+function atacEnviar(b){b.disabled=true;atacPinta('Enviar al MikroTik','Mandando las IPs al MikroTik de cada punto…');
+ fetch(b.getAttribute('data-url'),{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'ajax=1'})
+ .then(function(r){var ct=(r.headers&&r.headers.get('content-type'))||'';if(r.redirected||ct.indexOf('json')<0)throw 'login';return r.json();})
+ .then(function(j){ATACHECHO=1;b.disabled=false;atacPinta(j.fondo?'Enviando en segundo plano':(j.ok?'Enviado al MikroTik':'No se pudo enviar todo'),j.mensaje||'');})
+ .catch(function(e){b.disabled=false;atacPinta('No se pudo',e==='login'?'La sesión caducó: vuelve a entrar.':'No se pudo hablar con el panel. Vuelve a intentarlo.');});}
+</script>"""
+
 def _mk_print(s_, cmd, props):
     """Un print de la API como lista de diccionarios."""
     filas = []
@@ -5128,6 +5621,11 @@ CAT_OTROS = ("otros", "Otros", [], "clientes-otros")
 def lista_de_categoria(cat):
     """Nombre de la address-list de esa categoria. Se puede cambiar en MK_CONF con
     LISTA_<CATEGORIA>=nombre, por si el ISP ya tiene su propia nomenclatura."""
+    # «Cortar atacantes de internet» (ATAC_CAT): la lista de /blocklist.rsc (BL_LISTA). Literales: las
+    # pruebas heredadas sacan esta funcion por ast sin esas constantes (test_panel_atacantes_api
+    # comprueba que casan)
+    if cat == "atacantes":
+        return "suricata-atacantes"
     for c, _nom, _cats, por_defecto in CAT_CPE + [CAT_OTROS]:
         if c == cat:
             return (_mk_globales().get("LISTA_" + c.upper(), "") or por_defecto).strip()
@@ -10204,7 +10702,7 @@ def _ciclo_nodo(pid, vmin):
     """Lo que en el heredado era el ciclo principal, para UN punto: generar su reporte y,
     con el reporte nuevo, reconciliar, evaluar y aplicar politicas SOLO sobre sus claves."""
     dur = generar_reporte(pid, vmin)
-    for paso in (reconciliar_cuarentena, evaluar_bloqueos, aplicar_politicas):
+    for paso in (reconciliar_cuarentena, evaluar_bloqueos, aplicar_politicas, atacantes_auto):
         try:
             paso(pid)
         except Exception as _e:
@@ -11806,6 +12304,7 @@ def _pendientes_router(pid):
     """Cuantas IPs tiene el panel apuntadas en el router de ese punto (cuarentenas y destinos)."""
     n = sum(1 for path in (MK_SENT, MK_SENT_DNS, MK_SENT_GRAD)
             for k, v in cargar_enviados(path).items() if _rid_entrada(k, v) == pid)
+    n += len(atacantes_enviados(pid))              # «Cortar atacantes» (2026-10-28, auditoria M5)
     return n + sum(1 for v in cargar_enviados(MK_SENT_DST).values() if pid in ((v or {}).get("puntos") or []))
 
 def _quitar_de_router(s_, pid, m, quien, acum, avance=None):
@@ -11873,6 +12372,25 @@ def _quitar_de_router(s_, pid, m, quien, acum, avance=None):
                     env.pop(ip, None)
                 guardar_enviados(env, MK_SENT_DST)
         mk_log("DESTINO-QUITADO-BAJA", ip, quien, "(baja del punto) nodo=%s" % pid, pid=pid)
+    # «Cortar atacantes» (2026-10-28, auditoria M5): sus dos reglas y lo que puso el panel en
+    # suricata-atacantes, en la misma conexion. Solo si el punto lo tenia (modo o algo apuntado).
+    if atacantes_modo(pid) or atacantes_enviados(pid):
+        try:
+            ok_r, msg_r = _atac_reglas_en(s_, router_por_id(pid), False, quien)
+            if not ok_r:
+                acum["fallos"].append((BL_LISTA, "reglas Suricata:atacantes: %s" % msg_r[:160]))
+                return
+            n_q, errs = _atac_vaciar_en(s_)
+        except Exception as ex:          # timeout o conexion rota: no se sigue (H2)
+            raise IOError("%s: %s" % (BL_LISTA, str(ex)[:160] or type(ex).__name__))
+        acum["quitadas"] += n_q
+        for e in errs:
+            acum["fallos"].append((BL_LISTA, e))
+        if not errs:
+            _atac_olvidar(pid)
+        _contar()
+        mk_log("ATACANTES-QUITADO-BAJA", "-", quien, "(baja del punto) %d IP(s) y sus reglas nodo=%s"
+               % (n_q, pid), pid=pid)
 
 def baja_limpiar_router(pid, usuario=None, op=None, avance=None):
     """Antes de dar de baja un punto (auditoria A-21(5)): saca de las address-lists de su
@@ -12014,6 +12532,11 @@ def purgar_punto(pid, quien=None):
                     os.chmod(_tmp, 0o600)
                     os.replace(_tmp, TELEGRAM_PUNTOS_FILE)
                     hecho["telegram-puntos.json"] = 1
+        except OSError:
+            pass
+        # «Cortar atacantes» (2026-10-28): su modo y lo que el panel tenia apuntado en su router
+        try:
+            hecho.update(_atac_olvidar(pid, conf=True))
         except OSError:
             pass
         for path in (NOTIF_CUAR_FILE, POL_NOTIF, THRESHOLD_ENVIADO, DIAG_FILE):
@@ -14434,6 +14957,34 @@ tuyos o más.</li>
 </ul>
 <p>Debajo de la tabla se explica <b>qué es cada feed</b> que aparece en ella: qué mete en su lista,
 cuántas IPs trae, cuándo se bajó por última vez y el enlace a su web.</p>
+<h3>Mandarlas al MikroTik por la API</h3>
+<p>En la ficha de cada punto (<b>Puntos &rarr; ficha &rarr; Cortar atacantes de internet</b>, con el
+permiso <i>Cortar atacantes</i>) se activa que el panel mande esas IPs <b>él solo</b> al MikroTik del
+punto, por la misma API que la cuarentena. Viene <b>apagado</b>. Hay dos modos:</p>
+<ul>
+<li><b>Automático</b>: cada 15 minutos, en la vuelta de fondo del punto.</li>
+<li><b>Solo a mano</b>: con <b>Enviar ahora</b> en la ficha o <b>Enviar al MikroTik ahora</b> debajo
+de esta tabla (en «Todos», a cada punto que tenga el corte activado, cada uno con <b>sus</b>
+atacantes).</li>
+</ul>
+<p>Cada punto recibe solo las IPs que atacan a <b>sus</b> abonados (como mucho 500 por envío, las de más
+alertas primero) en la address-list <code>suricata-atacantes</code>, con caducidad de <b>1 día</b>: la
+que sigue atacando se renueva cuando le quedan menos de 12 h y la que deja de atacar sale sola. El
+panel pone además dos reglas en <code>/ip firewall filter</code> (forward e input,
+<code>connection-state=new</code>, comentario <code>Suricata:atacantes</code>), arriba de su cadena y
+con respaldo del firewall antes del primer cambio. La columna <b>En el router</b> dice si cada IP ya
+está en el MikroTik (&#10004; y la hora del envío) o va en el próximo (<i>pendiente</i>); «&mdash;» si
+ningún punto de los que miras lo tiene activado, y <i>no va</i> si esa IP no se le manda a ningún
+punto. Nunca entran tus redes, tus públicas declaradas (las de todos los puntos), las de <b>Nunca
+bloquear</b>, la IP pública desde la que conecta el MikroTik de cualquier punto (detrás puede estar
+todo un cliente con NAT), la del panel ni lo que no sea IPv4. Antes de cada envío el panel lee la lista
+del router: lo que falta (router reiniciado, lista vaciada a mano) se vuelve a mandar, y lo que alguien
+puso <b>a mano</b> en esa lista no se toca. Hace falta que la API del punto esté en <b>Enviar: sí</b>.
+En «Todos», el botón lo hace en segundo plano y cada resultado queda en el Registro. El automático no
+manda nada si los datos del punto son de hace más de <code>EVIDENCIA_MAX_HORAS</code>. Al
+<b>apagarlo</b> se quitan del router las dos reglas y las entradas que puso el panel; si el router no
+responde, sigue activado y se dice; sin API usable hay que configurarla o marcar <b>Apagar sin limpiar
+el router</b> y quitarlo a mano. La baja del punto también lo quita.</p>
 
 <h2>Consultar IP o red: qué ataques se le denuncian</h2>
 <p>La pestaña <b>Consultar IP</b> responde algo que los feeds no responden: no solo <i>si</i> una IP
@@ -14699,6 +15250,10 @@ Meterle miles de entradas una a una por la API tardaría horas.</li>
 </ul>
 <p>Nunca entran en la lista tus propias redes ni las de <b>Nunca bloquear</b>, y cada importación
 <b>reemplaza</b> la lista entera, así que lo que deja de atacar desaparece solo.</p>
+<p>Sin pegar nada: desde el 2026-10-28 el panel puede mandar la lista y las dos reglas al MikroTik de
+cada punto <b>por la API</b>, en automático cada 15 minutos o con un botón (ver <b>Mandarlas al
+MikroTik por la API</b>, más arriba). El script <code>/blocklist.rsc</code> sigue para quien prefiera
+importarlo a mano; al apagar el corte por la API, el panel solo quita las entradas que puso él.</p>
 
 <h2>Reportes e informe diario</h2>
 <ul>
@@ -18357,6 +18912,22 @@ def historico_page(dias_n=7):
     bl = blocklist_borde()
     bl_html = ""
     hay_pend = False
+    atac_js = ""
+    # «En el router» y «Enviar al MikroTik ahora» (2026-10-28): lo que el panel ya mando por la API a
+    # los puntos que se miran con «Cortar atacantes» activado
+    try:
+        _nodo_h = nodos.nodo_actual() if nodos.hay_nodo() else nodos.TODOS
+    except Exception:
+        _nodo_h = nodos.TODOS
+    _pids_h = list(nodos.pids()) if nodos.es_todos(_nodo_h) else [_nodo_h]
+    _atac_act = [p for p in _pids_h if atacantes_modo(p)]
+    _atac_reg = atacantes_enviados() if _atac_act else {}
+    _atac_va = {}                 # pid -> IPs que se le mandan (filtros de atacantes_de_punto: B1)
+    for _p in _atac_act:
+        try:
+            _atac_va[_p] = {f["ip"] for f in atacantes_de_punto(_p)}
+        except Exception:
+            _atac_va[_p] = set()
     if bl:
         con_feed = sum(1 for x in bl if x["fuente"])
         vistas = bl[:BL_VISTAS]
@@ -18448,17 +19019,54 @@ def historico_page(dias_n=7):
                        f"{esc(host)}</a>" if url else "")
                     + "</li>")
 
+        def _en_router(ip):
+            if not _atac_act:
+                return ("<td><span class=hint title='Ningún punto de los que miras tiene activado «Cortar "
+                        "atacantes de internet» (ficha del punto)'>&mdash;</span></td>")
+            va = [p for p in _atac_act if ip in _atac_va.get(p, ())]
+            if not va:
+                return ("<td><span class=hint title='No se manda al MikroTik: «Nunca bloquear», la IP de un "
+                        "MikroTik de los puntos o del panel, no es IPv4 o queda fuera del tope de 500'>no va"
+                        "</span></td>")
+            en = [p for p in va if (p + "|" + ip) in _atac_reg]
+            if not en:
+                return ("<td><span class='obadge pend' title='Todavía no está en el MikroTik: va en el "
+                        "próximo envío'>pendiente</span></td>")
+            ts = max(int(_atac_reg[p + "|" + ip].get("ts") or 0) for p in en)
+            hasta = max(int(_atac_reg[p + "|" + ip].get("hasta") or 0) for p in en)
+            txt = "&#10004; " + time.strftime("%H:%M", time.localtime(ts))
+            if len(va) > 1 or len(en) < len(va):
+                txt += " (%d/%d)" % (len(en), len(va))
+            return ("<td title='En la lista %s del MikroTik hasta el %s'><span class='obadge ok'>%s</span></td>"
+                    % (esc(BL_LISTA), time.strftime("%d/%m %H:%M", time.localtime(hasta)), txt))
+
         top = "".join(
             f"<tr><td class=mono>{esc(x['ip'])}</td><td>{_dueno(x['ip'])}</td>"
             f"<td>{esc(x['pais'])}</td><td>{_hizo(x)}</td>"
             f"<td class=num>{x['alertas']:,}</td><td class=num>{x['destinos']:,}</td>"
-            f"{_ultima(x.get('ultima'))}<td>{_feeds(x)}</td></tr>" for x in vistas)
+            f"{_ultima(x.get('ultima'))}<td>{_feeds(x)}</td>{_en_router(x['ip'])}</tr>" for x in vistas)
         _usados = list(dict.fromkeys(k for x in vistas for k in (x.get("fuentes") or [])))
         ley = "".join(_leyenda(k) for k in _usados)
         if any(not x.get("fuentes") for x in vistas):
             ley += (f"<li><b>ninguno</b>: no está en ningún feed; entra en la lista por lo que hizo, "
                     f"{BL_MIN_ALERTAS} alertas o más contra {BL_MIN_DESTINOS} equipos tuyos o más.</li>")
         hay_pend = "data-dueno=" in top
+        atac_btn = ""
+        if puede_ctx("puntos.atacantes"):
+            if _atac_act:
+                _n_auto = sum(1 for p in _atac_act if atacantes_modo(p) == "auto")
+                _url = "/atacantes/enviar?nodo=" + urllib.parse.quote(_nodo_h, safe="")
+                atac_btn = ("<div style='display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin:10px 0 2px'>"
+                            "<button type=button class=btn data-url='%s' onclick='atacEnviar(this)'>Enviar al "
+                            "MikroTik ahora</button><span class=hint>%s</span></div>" % (
+                                esc(_url),
+                                ("El panel las manda solo cada 15 min a %d punto(s); " % _n_auto if _n_auto else "")
+                                + "a la lista %s, con caducidad de 1 día (la que deja de atacar sale sola)."
+                                % esc(BL_LISTA)))
+                atac_js = _JS_ATAC
+            else:
+                atac_btn = ("<p class=hint style='margin:10px 0 2px'>Para que el panel las mande solo al MikroTik, "
+                            "activa <b>Cortar atacantes de internet</b> en la ficha del punto (Puntos).</p>")
         bl_html = (
             "<section class='card cardp'><h2 style='font-size:15px;margin:0 0 4px'>"
             "Cortar a los que te atacan desde internet</h2>"
@@ -18473,8 +19081,9 @@ def historico_page(dias_n=7):
             "<div class=tablewrap><table class=tcentro><thead><tr><th>IP</th><th>Dueño</th>"
             "<th>País</th><th>Qué hizo</th>"
             "<th class=num>Alertas</th><th class=num>Destinos</th><th>Última vez</th>"
-            "<th>Feed</th></tr></thead>"
+            "<th>Feed</th><th>En el router</th></tr></thead>"
             f"<tbody>{top}</tbody></table></div>"
+            + atac_btn
             + (f"<p class=hint>Las {BL_VISTAS} peores de {len(bl):,}.</p>" if len(bl) > BL_VISTAS else "")
             # que es cada feed de la tabla: «cins» a secas no le decia nada a nadie
             + (f"<p class=hint style='margin:10px 0 2px'>Qué es cada feed de la tabla:</p>"
@@ -18568,6 +19177,7 @@ def historico_page(dias_n=7):
             + "</main>"
             # los dueños que aun no estan en la cache se piden al abrir (como en Top origenes)
             + (_JS_DUENOS if hay_pend else "")
+            + atac_js
             + "</body></html>")
     return wrap(body, refresh=False, active="/historico")
 
@@ -21245,6 +21855,34 @@ class H(BaseHTTPRequestHandler):
                 bitacora("CONSULTA-ABUSEIPDB", f"{len(res)} entrada(s)")
             return self._html(reputacion_page(res=res, texto=texto, msg=aviso, ok=not aviso,
                                               es_admin=self._puede("ajustes.publicas")))
+        if ruta == "/atacantes/enviar":
+            # «Enviar al MikroTik ahora» de Histórico (2026-10-28): a cada punto que se mira (uno, o
+            # en «Todos» los suyos) con «Cortar atacantes» activado, solo SUS atacantes. JSON para el
+            # modal de la pagina.
+            if not self._puede("puntos.atacantes"):
+                return self._json({"ok": False, "mensaje": "Tu usuario no tiene el permiso «Cortar atacantes»."}, 403)
+            _nodo = nodos.nodo_actual() if nodos.hay_nodo() else nodos.TODOS
+            _pids = list(nodos.pids()) if nodos.es_todos(_nodo) else [_nodo]
+            _pids = [p for p in _pids if nodos.puede_ver(p) and atacantes_modo(p)]
+            if not _pids:
+                return self._json({"ok": False, "mensaje": "Ningún punto de los que miras tiene activado «Cortar "
+                                   "atacantes de internet» (se activa en la ficha de cada punto)."}, 409)
+            _quien = getattr(CTX, "user", "?") or "?"
+            if nodos.es_todos(_nodo):
+                # varios puntos: en segundo plano (B2); cada resultado, al Registro y a la columna
+                atacantes_enviar_varios(_pids, _quien)
+                return self._json({"ok": True, "fondo": True, "puntos": [{"pid": p} for p in _pids],
+                                   "mensaje": "Enviando en segundo plano al MikroTik de %d punto(s): %s. El "
+                                   "resultado de cada uno queda en el Registro y en la columna «En el router» "
+                                   "(recarga la página en un minuto)." % (
+                                       len(_pids), ", ".join(nodos.nombre(p) for p in _pids))})
+            _res = [atacantes_enviar(p, quien=_quien) for p in _pids]
+            _ok = all(x["ok"] for x in _res)
+            return self._json({"ok": _ok,
+                               "mensaje": "\n".join("%s: %s" % (nodos.nombre(x["pid"]), x["mensaje"]) for x in _res),
+                               "puntos": [{"pid": x["pid"], "ok": x["ok"], "enviadas": x["enviadas"],
+                                           "renovadas": x["renovadas"], "fallos": x["fallos"]} for x in _res]},
+                              200 if _ok else 502)
         if ruta == "/reputacion/denunciar":
             # permiso global: a un limitado no le vale nunca (sale el ERR de abajo, que lee el boton)
             if not self._puede("reputacion.denunciar") and self._sin_limite():

@@ -183,7 +183,9 @@ PERMISO_ACCION = {"borrar": "puntos.borrar", "desbanear": "puntos.desbanear",
                   "parar": "puntos.arrancar", "reiniciar": "puntos.arrancar",
                   "ajustar": "puntos.prefijos", "api": "puntos.api",
                   # bloque D (2026-10-23): el chat de Telegram propio del punto (no global)
-                  "telegram": "puntos.telegram"}
+                  "telegram": "puntos.telegram",
+                  # 2026-10-28: mandar al MikroTik del punto los que lo atacan desde internet
+                  "atacantes": "puntos.atacantes"}
 
 
 def _es_admin(h):
@@ -1016,6 +1018,13 @@ var PTGTIT={guardar:'Chat de Telegram del punto',probar:'Probar el chat',quitar:
 function ptg(b,acc){var f=b.form,t=PTGTIT[acc]||'Telegram';pjAbrir(t,pjEspera(acc==='probar'?'Mandando el mensaje de prueba…':'Guardando…'),' ','');
  pjPost(f,{accion:acc},function(j){var ok=!!j.ok,txt='<p>'+pjEsc(j.mensaje||j.error||'')+'</p>';
   pjAbrir(ok?t:'No se pudo',txt,(ok&&acc!=='probar')?"<button type=button class=btn onclick='location.reload()'>Cerrar</button>":'');},
+  function(m){pjAbrir('No se pudo','<p>'+pjEsc(m)+'</p>');});return false;}
+var PATTIT={guardar:'Cortar atacantes de internet',enviar:'Enviar al MikroTik'};
+function patac(b,acc){var f=b.form,t=PATTIT[acc]||'Cortar atacantes';
+ if(acc==='guardar'&&f.getAttribute('data-activo')==='1'){var m=f.querySelector('input[name=modo]:checked'),sl=f.querySelector('input[name=sin_limpiar]');
+  if(m&&!m.value&&!ask(b,'Apagar «Cortar atacantes»',(sl&&sl.checked)?'Se apaga SIN tocar el router: las dos reglas «Suricata:atacantes» y las IPs que puso el panel en suricata-atacantes se quitan a mano.':'Se quitan del MikroTik las dos reglas y las IPs que puso el panel. Si el router ya no existe o no tiene API, marca antes «Apagar sin limpiar el router».','Apagar','danger'))return false;}pjAbrir(t,pjEspera(acc==='enviar'?'Mandando las IPs al MikroTik…':'Guardando y aplicando en el MikroTik…'),' ','');
+ pjPost(f,{accion:acc},function(j){var ok=!!j.ok,txt='<p>'+pjEsc(j.mensaje||j.error||'')+'</p>';
+  pjAbrir(ok?t:'No se pudo',txt,"<button type=button class=btn onclick='location.reload()'>Cerrar</button>");},
   function(m){pjAbrir('No se pudo','<p>'+pjEsc(m)+'</p>');});return false;}
 function pdesban(f){pjAbrir('Desbanear IP del MikroTik',pjEspera('Pidiendo el desbaneo al servidor…'),' ','');
  pjPost(f,{},function(j){pjAbrir(j.ok?'Desbanear IP del MikroTik':'No se desbaneó','<p>'+pjEsc(j.mensaje||j.error||'')+'</p>');},
@@ -2685,6 +2694,7 @@ def ficha(h, pid, mensaje="", codigo=200, ok=False, extra_espejo=""):
     puede_baja = _puede(h, "puntos.borrar")
     puede_servicio = _puede(h, "puntos.arrancar")
     puede_tg = _puede(h, "puntos.telegram")      # chat de Telegram propio del punto (bloque D)
+    puede_atac = _puede(h, "puntos.atacantes")   # cortar atacantes por la API (2026-10-28)
     p = nodos.punto(pid) or {}
     nombre = p.get("nombre") or pid
     ahora = time.time()
@@ -2901,7 +2911,7 @@ def ficha(h, pid, mensaje="", codigo=200, ok=False, extra_espejo=""):
         "<div class=ptit><h1>%s <span class=hint>%s</span></h1><a class='btn sec' href='/puntos'>Volver a "
         "Puntos</a></div>%s%s%s"
         "<nav class=secnav><a href='#resumen'>Resumen</a><a href='#vpn'>%s</a><a href='#api'>API</a>"
-        "<a href='#prefijos'>Prefijos</a>%s%s"
+        "<a href='#prefijos'>Prefijos</a>%s%s%s"
         "%s</nav>"
         "<section class=card id=resumen><h2>Resumen</h2><div class=datos>%s</div>%s"
         "<h3 style='font-size:14px'>Salud por etapas</h3>%s</section>"
@@ -2910,10 +2920,11 @@ def ficha(h, pid, mensaje="", codigo=200, ok=False, extra_espejo=""):
         "<section class=card id=api><h2>API del MikroTik</h2>%s</section>"
         "%s"
         "<section class=card id=prefijos><h2>Prefijos adicionales</h2>%s</section>"
-        "%s%s%s"
+        "%s%s%s%s"
         % (esc(nombre), esc(pid), aviso(mensaje, "ok" if ok else "err"), caja_error,
            "" if p else aviso("El punto aún no aparece en el estado del orquestador (se actualiza cada 15 s).", "info"),
            "Conexión" if directo else "VPN",
+           "<a href='#atacantes'>Atacantes</a>" if puede_atac else "",
            "<a href='#telegram'>Telegram</a>" if puede_tg else "",
            ("<a href='/puntos/%s/logs?parte=vpn'>Logs</a>" % esc(pid)) if _puede(h, "puntos.logs") else "",
            "<a href='#baja'>Baja</a>" if puede_baja else "",
@@ -2922,6 +2933,8 @@ def ficha(h, pid, mensaje="", codigo=200, ok=False, extra_espejo=""):
            "Conexión directa: datos para el MikroTik" if directo else "VPN: comandos para el MikroTik",
            vpn_html, api_html, extra_espejo,
            pref_html,
+           ("<section class=card id=atacantes><h2>Cortar atacantes de internet</h2>%s</section>"
+            % atacantes_html(d, pid)) if puede_atac else "",
            ("<section class=card id=telegram><h2>Avisos por Telegram</h2>%s</section>" % telegram_html(d, pid))
            if puede_tg else "",
            ("<div id=baja>%s</div>" % baja) if puede_baja else "",
@@ -3476,6 +3489,142 @@ def accion_telegram(h, pid, form, ajax=False):
     return _con_token(h, pid, "telegram-" + acc, form, hacer, validar, ajax=ajax)
 
 
+# --------------------------------------------------------------------------------------------
+# «Cortar atacantes de internet» (2026-10-28): el panel manda por la API al MikroTik del punto las
+# IPs de internet que lo atacan (las de Histórico) y pone las dos reglas que las cortan. Apagado
+# por defecto; automatico (cada 15 min) o solo a mano. Lo hace el nucleo (dashboard.atacantes_*).
+# --------------------------------------------------------------------------------------------
+ATAC_MODOS_TXT = (("", "Apagado"), ("auto", "Automático: el panel las manda cada 15 min"),
+                  ("manual", "Solo a mano: con «Enviar ahora» (aquí o en Histórico)"))
+
+
+def _atac(d, nombre):
+    f = getattr(d, nombre, None)
+    return f if callable(f) else None
+
+
+def _router_de(d, pid):
+    try:
+        return next((x for x in d.cargar_routers() if x.get("id") == pid), None) or {}
+    except Exception:
+        return {}
+
+
+def _api_puesta(d, pid):
+    """El punto tiene usuario y clave de la API USABLES: el mismo criterio que el nucleo
+    (atacantes_api_lista: una clave guardada que no se puede descifrar no sirve; auditoria M4)."""
+    f = _atac(d, "atacantes_api_lista")
+    if f is not None:
+        return bool(f(pid, _router_de(d, pid) or None))
+    r = _router_de(d, pid)
+    return bool(r.get("USER") and r.get("PASS") and not r.get("_PASS_ILEGIBLE"))
+
+
+def _envio_activo(d, pid):
+    """La API del punto esta en «Enviar: sí» (ENABLED): si no, el panel no le manda nada (M7)."""
+    return str(_router_de(d, pid).get("ENABLED", "0")) == "1"
+
+
+def atacantes_html(d, pid):
+    """La seccion «Cortar atacantes de internet» de la ficha (solo con puntos.atacantes)."""
+    modo_f = _atac(d, "atacantes_modo")
+    if modo_f is None:
+        return "<p class=hint>Este panel no admite todavía cortar atacantes por la API.</p>"
+    modo = modo_f(pid)
+    reg = (_atac(d, "atacantes_enviados") or (lambda p: {}))(pid)
+    lista = esc(getattr(d, "BL_LISTA", "suricata-atacantes"))
+    if modo:
+        ult = max((int((v or {}).get("ts") or 0) for v in reg.values()), default=0)
+        estado = ("Activado (%s). Ahora hay <b>%d</b> IP(s) del panel en <code>%s</code> de este MikroTik%s."
+                  % ("automático, cada 15 min" if modo == "auto" else "solo a mano", len(reg), lista,
+                     (", la última enviada a las %s" % time.strftime("%d/%m %H:%M", time.localtime(ult))) if ult else ""))
+    else:
+        estado = "Apagado: el panel no manda nada a este MikroTik (lo de fábrica)."
+    if not _api_puesta(d, pid):
+        sin_api = aviso("Este punto no tiene usuario y clave de la API usables (sección «API del MikroTik»): sin "
+                        "ellos no se puede activar ni quitar lo puesto en el router.", "amb")
+    elif not _envio_activo(d, pid):
+        sin_api = aviso("La API de este punto está en «Enviar: no / solo sugerencias»: el panel no le manda nada "
+                        "hasta que la pongas en «sí» (sección «API del MikroTik»).", "amb")
+    else:
+        sin_api = ""
+    limpiar = ("<label class=l style='font-weight:400'><input type=checkbox name=sin_limpiar value=1> Apagar sin "
+               "limpiar el router (si ya no existe o no tiene API: lo puesto se quita a mano)</label>" if modo else "")
+    radios = "".join(
+        "<label class=l style='font-weight:400'><input type=radio name=modo value='%s'%s> %s</label>"
+        % (v, " checked" if v == modo else "", esc(t)) for v, t in ATAC_MODOS_TXT)
+    enviar = ("<button class='btn sec' type=submit name=accion value=enviar onclick=\"return patac(this,'enviar')\">"
+              "Enviar ahora</button>" if modo else "")
+    return (
+        "<p class=hint style='margin-top:0'>Manda al MikroTik de este punto, por la API, las IPs de internet que "
+        "atacan a sus abonados (las de <b>Histórico › Cortar a los que te atacan desde internet</b>): van a la "
+        "address-list <code>%s</code> con caducidad de <b>1 día</b> (la que deja de atacar sale sola; la que "
+        "sigue, se renueva) y como mucho 500 por envío. El panel pone además dos reglas en "
+        "<code>/ip firewall filter</code> (forward e input, solo conexiones <b>nuevas</b>, comentario "
+        "<code>Suricata:atacantes</code>) con respaldo antes. Nunca entran tus redes, tus públicas declaradas "
+        "ni las de «Nunca bloquear». Al apagarlo se quitan del router las dos reglas y lo que puso el panel.</p>%s"
+        "<form method=post action='/puntos/%s/atacantes' id=patac_form data-activo='%s'>%s%s%s"
+        "<div class=acciones><button class=btn type=submit name=accion value=guardar "
+        "onclick=\"return patac(this,'guardar')\">Guardar</button>%s</div>"
+        "</form><p class=hint>%s</p>"
+        % (lista, sin_api, esc(pid), "1" if modo else "", campo_token(), radios, limpiar, enviar, estado))
+
+
+def accion_atacantes(h, pid, form, ajax=False):
+    """POST /puntos/<pid>/atacantes con accion=guardar (modo: ""|auto|manual) o enviar. Un solo uso
+    por formulario. Activarlo manda ya el primer envio (pone las reglas); apagarlo quita antes del
+    router lo que puso el panel (si el router no responde, sigue activado y se dice)."""
+    d = _dash(h)
+    acc = form.get("accion") or "guardar"
+    modo = (form.get("modo") or "").strip()
+
+    def validar():
+        if acc not in ("guardar", "enviar"):
+            return "Acción desconocida.", 400, False, ""
+        if _atac(d, "atacantes_enviar") is None:
+            return "Este panel no admite todavía cortar atacantes por la API.", 501, False, ""
+        if acc == "guardar" and modo not in ("", "auto", "manual"):
+            return "Modo no válido.", 400, False, ""
+        if acc == "enviar" and not d.atacantes_modo(pid):
+            return "Actívalo primero (automático o solo a mano) y guarda.", 409, False, ""
+        if (acc == "enviar" or modo) and not _api_puesta(d, pid):
+            return ("Falta el usuario y la clave de la API del MikroTik de este punto (o la clave guardada no se "
+                    "puede leer): guárdalos antes en «API del MikroTik».", 409, False, "")
+        if (acc == "enviar" or modo) and not _envio_activo(d, pid):
+            return ("La API de este punto está en «Enviar: no / solo sugerencias»: ponla en «sí» en «API del "
+                    "MikroTik» para que el panel le mande algo.", 409, False, "")
+        return None
+
+    def hacer():
+        quien = _usuario(d)
+        if acc == "enviar":
+            res = d.atacantes_enviar(pid, quien=quien)
+            _bit(d, "PUNTO-ATACANTES", pid=pid, objetivo="enviar", resultado="ok" if res["ok"] else "fallo")
+            return res["mensaje"], 200 if res["ok"] else 502, bool(res["ok"]), ""
+        antes = d.atacantes_modo(pid)
+        if not modo:
+            nota = "Ya estaba apagado."
+            if antes or (_atac(d, "atacantes_enviados") or (lambda p: {}))(pid):
+                ok, msg = d.atacantes_apagar(pid, quien=quien, sin_limpiar=bool(form.get("sin_limpiar")))
+                if not ok:
+                    _bit(d, "PUNTO-ATACANTES", pid=pid, objetivo="apagar", resultado="fallo")
+                    return ("No se apagó: %s. Sigue activado." % msg, 502, False, "")
+                nota = "Apagado: %s." % msg
+            d.guardar_atacantes_modo(pid, "", quien)
+            _bit(d, "PUNTO-ATACANTES", pid=pid, objetivo="modo", resultado="apagado")
+            return nota, 200, True, ""
+        d.guardar_atacantes_modo(pid, modo, quien)
+        _bit(d, "PUNTO-ATACANTES", pid=pid, objetivo="modo", resultado=modo)
+        res = d.atacantes_enviar(pid, quien=quien)
+        txt = "Activado (%s). " % ("automático, cada 15 min" if modo == "auto" else "solo a mano")
+        if res["ok"]:
+            return txt + "Primer envío: " + res["mensaje"], 200, True, ""
+        return (txt + "Quedó guardado, pero el primer envío falló: " + res["mensaje"] + (
+            " El panel lo reintenta solo." if modo == "auto" else " Pulsa «Enviar ahora» cuando el router responda."),
+            502, False, "")
+    return _con_token(h, pid, "atacantes-" + acc, form, hacer, validar, ajax=ajax)
+
+
 # Como dice el nucleo (dashboard._mk_tls_wrap) que fallo el saludo TLS de la API-SSL: el router que
 # cierra sin contestar (hay RouterOS 7 que sin certificado no aceptan la API-SSL) o ningun cifrado vale
 _FALLO_SALUDO_TLS = ("cerró la API-SSL sin contestar al saludo TLS", "TLS handshake falló")
@@ -3928,7 +4077,7 @@ def post(h, ruta, form):
         return True
     m = RE_RUTA_PID.match(ruta)
     acciones = ("borrar", "regenerar", "arrancar", "parar", "reiniciar", "ajustar", "api", "desbanear",
-                "telegram")
+                "telegram", "atacantes")
     if not m or m.group(2) not in acciones:
         h._html("<h1>No encontrado</h1>", 404)
         return True
@@ -4010,4 +4159,6 @@ def post(h, ruta, form):
         accion_desbanear(h, pid, form, ajax=ajax)
     elif acc == "telegram":
         accion_telegram(h, pid, form, ajax=ajax)
+    elif acc == "atacantes":
+        accion_atacantes(h, pid, form, ajax=ajax)
     return True

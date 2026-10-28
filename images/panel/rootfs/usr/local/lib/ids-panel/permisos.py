@@ -47,6 +47,8 @@ CATALOGO = (
         ("puntos.arrancar", "Arrancar, parar y reiniciar", False),
         ("puntos.logs", "Logs", False),
         ("puntos.telegram", "Avisos por Telegram del punto (su chat)", False),
+        # 2026-10-28: mandar por la API al MikroTik del punto los que lo atacan desde internet
+        ("puntos.atacantes", "Cortar atacantes (mandarlos al MikroTik del punto)", False),
         ("puntos.crear", "Crear puntos", True),
         ("puntos.borrar", "Borrar puntos (libera su puerto y su firewall)", True),
         ("puntos.desbanear", "Desbanear una IP (fail2ban, global)", True),
@@ -84,7 +86,7 @@ _OPERADOR = _LECTURA + (
     "cuarentena.enviar", "cuarentena.graduada", "cuarentena.dns", "cuarentena.masivo",
     "cuarentena.destinos", "cuarentena.confianza", "reputacion.consultar", "reputacion.denunciar",
     "puntos.ver", "puntos.api", "puntos.prefijos", "puntos.vpn_ver", "puntos.vpn_regenerar",
-    "puntos.arrancar", "puntos.logs", "puntos.telegram")
+    "puntos.arrancar", "puntos.logs", "puntos.telegram", "puntos.atacantes")
 PLANTILLAS = {
     "lectura": frozenset(_LECTURA),
     "operador": frozenset(_OPERADOR),

@@ -146,7 +146,11 @@ def main():
                       "duenos": type("D", (), {"cargar": staticmethod(lambda: {}),
                                                "vigente": staticmethod(lambda e: bool(e)),
                                                "consultable": staticmethod(lambda ip: True)}),
-                      "mis_redes": lambda: ["10.0.0.0/8"]})
+                      "mis_redes": lambda: ["10.0.0.0/8"],
+                      # (adaptada, 2026-10-28) «Cortar atacantes» por la API: ningun punto lo tiene
+                      # activado y sin el permiso (la columna «En el router» sale con «—»)
+                      "atacantes_modo": lambda pid: "", "atacantes_enviados": lambda pid=None: {},
+                      "puede_ctx": lambda permiso: False, "_JS_ATAC": "", "urllib": __import__("urllib.parse")})
     # CONTRATO-F2 §3: acciones.json es global (PANEL/estado); metricas.json, cuarentena.json
     # y entrantes.json son salidas del generador DEL PUNTO (PANEL/nodos/<pid>/)
     check("las acciones van al estado global del panel",

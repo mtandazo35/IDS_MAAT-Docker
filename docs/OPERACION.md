@@ -528,6 +528,24 @@ rsync -a --chmod=F600 'root@ids.empresa.example:/root/backups/ids-maat-install-*
 | Llevar un punto a la configuración y las imágenes actuales | `ids-orq punto reconfigurar <pid>` en el servidor (§1.6; el botón del panel está pendiente) |
 | Ver los logs de un punto | `ids-orq punto logs <pid>` (OpenVPN) o `ids-orq punto logs <pid> --parte suricata`; `--lineas N` (≤ 500) |
 
+**Cortar atacantes de internet por la API (2026-10-28).** En la ficha del punto, sección «Cortar
+atacantes de internet» (permiso `puntos.atacantes`): apagado (por defecto), automático (cada 15 min)
+o solo a mano («Enviar ahora» ahí o en Histórico). El panel manda al MikroTik del punto las IPs de
+internet que atacan a sus abonados (las de Histórico, como mucho 500 por envío) a la address-list
+`suricata-atacantes` con `timeout=1d` (comentario `Suricata atacante: …`) y pone dos reglas en
+`/ip firewall filter`, forward e input, `connection-state=new src-address-list=suricata-atacantes
+action=drop`, arriba de su cadena (comentario `Suricata:atacantes:01` y `:02`), con respaldo del
+firewall en `/srv/ids/panel/respaldos/mikrotik/` antes del primer cambio. Lo enviado queda en
+`/srv/ids/panel/estado/atacantes-enviados.json` y el modo de cada punto en
+`/srv/ids/panel/conf/atacantes.json`; en el Registro, `ATACANTES-ENVIO`, `ATACANTES-ENVIO-FALLO` y
+`ATACANTES-APAGADO`. Al apagarlo se quitan del router las dos reglas y las entradas con ese
+comentario (lo importado a mano con `/blocklist.rsc` no se toca); sin API usable hay que configurarla
+o marcar «Apagar sin limpiar el router» (y quitarlo a mano). La baja del punto quita también las dos
+reglas y esas entradas, y olvida su modo y su registro. Antes de cada envío se lee la lista del router
+(lo que falta se reenvía; lo puesto a mano no se toca). Nunca se manda la IP WAN desde la que conecta
+el MikroTik de ningún punto, la del panel, ni nada que no sea IPv4; hace falta «Enviar: sí» en la API
+del punto, y el automático no manda con datos de más de `EVIDENCIA_MAX_HORAS`.
+
 **Cuándo banea `ids-vpn` y cómo desbanear.** La jaula cuenta solo las líneas
 `<ip>:<puerto> ovpn-auth: rechazado … motivo=formato` y `… motivo=usuario`, una por intento fallido de
 quien **no conoce el usuario** (un escáner: el usuario VPN no es público, solo está en el router y en

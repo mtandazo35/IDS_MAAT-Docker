@@ -33,7 +33,8 @@ class Catalogo(unittest.TestCase):
             for p, _e, _gl in ps:
                 self.assertTrue(p.startswith(g + "."), p)
         self.assertEqual(permisos.activos(permisos.TODOS, "ajustes"), (12, 12))
-        self.assertEqual(permisos.activos(permisos.PLANTILLAS["lectura"], "puntos"), (0, 11))   # bloque D: + Telegram
+        # bloque D: + Telegram; 2026-10-28: + Cortar atacantes
+        self.assertEqual(permisos.activos(permisos.PLANTILLAS["lectura"], "puntos"), (0, 12))
         self.assertTrue(all(p.startswith("ajustes.") for p in permisos.GLOBALES if p.startswith("ajustes")))
 
     def test_plantillas_reproducen_los_roles(self):
@@ -544,7 +545,7 @@ class AcordeonUsuarios(A.Base):
         self.esta("class=pgrp data-g='cuarentena'", h, "ajustes")
         self.esta("class=pgrp data-g='reputacion'", h, "ajustes")
         self.esta("class=pgrp data-g='puntos'", h, "ajustes")
-        self.esta("Activos <b class=pgn>0</b>/11", h, "ajustes")
+        self.esta("Activos <b class=pgn>0</b>/12", h, "ajustes")     # 2026-10-28: + Cortar atacantes
         for p in sorted(PUNTOS_TODOS):
             self.esta("name=perm value='%s'" % p, h, "ajustes")
         self.esta("data-permisos='", h, "ajustes")
