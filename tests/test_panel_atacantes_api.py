@@ -11,6 +11,11 @@ automatico (cada 15 min) o solo a mano.
   operador [p003, p001]): la seccion de la ficha y su POST con el permiso puntos.atacantes y solo en
   sus puntos; «Enviar al MikroTik ahora» de Histórico; la columna «En el router» (B1, B2).
 
+- Ajustes > MikroTik (el user, 2026-10-28: «en el apartado de mikrotik asi mismo se cree una lista»):
+  la lista «Atacantes de internet» junto a las de cada categoria, con su accion (cortar sus conexiones
+  nuevas o solo la lista), Ver / Aplicar / Quitar reglas y su estado, y la tabla «Atacantes de
+  internet por punto» que activa cada punto sin ir a su ficha.
+
 Tipo: capacidad nueva (todas). Datos RFC 5737 (auditoria B4): los rangos de documentacion no son
 globales y blocklist_borde los descarta; aqui se tratan como de internet parcheando is_global.
 """
@@ -397,6 +402,51 @@ class Nucleo(unittest.TestCase):
         d._ciclo_nodo("p001", 5)
         self.assertEqual(sorted(self.lista(self.r1)), self.todas())
 
+    # ---- Ajustes > MikroTik: la accion de la lista (2026-10-28) ----
+    def con_accion(self, accion):
+        orig = self.d._mk_globales
+        p = mock.patch.object(self.d, "_mk_globales", lambda: dict(orig(), ACCION_ATACANTES=accion))
+        p.start()
+        self.addCleanup(p.stop)
+
+    def test_accion_de_la_lista_de_atacantes(self):
+        ac = self.d.accion_de_clase
+        self.assertEqual(ac("atacantes", {}), "cortar-entrada")             # lo de fabrica
+        self.assertEqual(ac("atacantes", {"ACCION_ATACANTES": "nada"}), "nada")
+        self.assertEqual(ac("atacantes", {"ACCION_ATACANTES": "cortar"}), "cortar-entrada")   # no vale
+        self.assertEqual(self.d.ATAC_ACCIONES, ("cortar-entrada", "nada"))
+        self.assertNotIn("atacantes", self.d.ACCIONES_POR_CAT)             # no es una clase de CPE
+
+    def test_solo_la_lista_manda_las_ips_sin_reglas_y_quita_las_que_habia(self):
+        self.activar()
+        self.assertTrue(self.d.atacantes_enviar("p001", "ana")["ok"])
+        self.assertEqual(len(self.reglas(self.r1)), 2)
+        self.con_accion("nada")
+        res = self.d.atacantes_enviar("p001", "ana", forzar=True)
+        self.assertTrue(res["ok"], res)
+        self.assertEqual(self.reglas(self.r1), [])                         # las quito
+        self.assertEqual(sorted(self.lista(self.r1)), self.todas())        # la lista sigue
+
+    def test_solo_la_lista_desde_el_principio_no_pone_reglas(self):
+        self.con_accion("nada")
+        self.activar()
+        res = self.d.atacantes_enviar("p001", "ana")
+        self.assertTrue(res["ok"], res)
+        self.assertEqual(self.reglas(self.r1), [])
+        self.assertEqual(sorted(self.lista(self.r1)), self.todas())
+
+    def test_estado_en_el_router_incluye_atacantes(self):
+        r = next(x for x in self.d.cargar_routers() if x["id"] == "p001")
+        est = self.d.estado_reglas(r)
+        self.assertEqual(est["atacantes"]["estado"], "pendientes", est)
+        for cat in self.d.ACCIONES_POR_CAT:                                 # las demas, como antes
+            self.assertIn(cat, est)
+        self.activar()
+        self.assertTrue(self.d.atacantes_enviar("p001", "ana")["ok"])
+        self.assertEqual(self.d.estado_reglas(r)["atacantes"]["estado"], "aplicadas")
+        self.con_accion("nada")
+        self.assertEqual(self.d.estado_reglas(r)["atacantes"]["estado"], "pendientes")   # sobran las 2
+
 
 # ============================================================================================
 # Panel por HTTP (montaje de test_panel_alcance)
@@ -538,6 +588,138 @@ class Ficha(A.Base):
         self.assertEqual(r.status, 200, A.plano(r.texto))
         self.esta(">no va</span>", r.texto, "historico")
         self.no_esta(">pendiente</span>", r.texto, "historico")
+
+
+# ============================================================================================
+# Ajustes > MikroTik: la lista y la tabla por punto (2026-10-28)
+# ============================================================================================
+@unittest.skipUnless(HAY_CRYPTO, "falta cryptography (python3-cryptography en la imagen)")
+class AjustesMikrotik(unittest.TestCase):
+    def setUp(self):
+        doc_global(self)
+        self.p = Panel(http=True)
+        self.addCleanup(self.p.cerrar)
+        self.d = self.p.d
+        if not self.d.secretos.disponible():
+            self.skipTest("sin clave maestra: no se guardan los routers")
+        self.p.routers["p001"] = RouterCompleto("norte")
+        self.p.a.salida("p001", "entrantes.json", entrantes(ATQ))
+
+    def tarjeta(self):
+        st, _c, h = self.p.pedir("GET", "/ajustes")
+        self.assertEqual(st, 200)
+        ini = h.index("MikroTik &mdash; cuarentena")
+        return h[ini:h.index("</section>", ini)]
+
+    def test_la_lista_sale_con_su_accion_botones_y_estado(self):
+        card = self.tarjeta()
+        for esta in ("Atacantes de internet", 'value="suricata-atacantes" readonly', "name=accion_atacantes",
+                     "<option value='cortar-entrada' selected>", "<option value='nada'>",
+                     "reglasVer('atacantes')", "reglasPlan('atacantes')", "reglasQuitar('atacantes')",
+                     "id=accest_atacantes"):
+            self.assertIn(esta, card)
+
+    def test_la_tabla_por_punto_activa_cada_punto(self):
+        self.d.guardar_atacantes_modo("p002", "auto", "ana")
+        card = self.tarjeta()
+        self.assertIn("Atacantes de internet por punto", card)
+        for pid in ("p001", "p002"):
+            self.assertIn("action='/puntos/%s/atacantes'" % pid, card)
+            self.assertIn("href='/puntos/%s#atacantes'" % pid, card)
+        self.assertIn("<option value='auto' selected>", card)                    # p002
+        self.assertIn("mkAtac(this,'guardar')", card)
+        self.assertEqual(card.count("mkAtac(this,'enviar')"), 1)                # solo el activado
+        # la fila manda la misma orden que la ficha: activar p001 desde Ajustes
+        i = card.index("action='/puntos/p001/atacantes'")
+        j = card.index("name=op value='", i) + len("name=op value='")
+        op = card[j:card.index("'", j)]
+        st, _c, txt = self.p.pedir("POST", "/puntos/p001/atacantes",
+                                   {"op": op, "modo": "manual", "accion": "guardar", "ajax": "1"})
+        self.assertEqual(st, 200, txt)
+        self.assertEqual(self.d.atacantes_modo("p001"), "manual")
+        self.assertEqual(sorted(f["address"] for f in self.p.routers["p001"].tablas[ALIST]
+                                if f["list"] == LISTA), sorted(ip for ip, _a, _d in ATQ))
+
+    def test_guardar_la_accion(self):
+        st, _c, txt = self.p.pedir("POST", "/mikrotik", {"accion_atacantes": "nada"})
+        self.assertEqual(st, 200, txt)
+        self.assertEqual(self.d.cargar_mk().get("ACCION_ATACANTES"), "nada")
+        self.assertIn("<option value='nada' selected>", self.tarjeta())
+        self.p.pedir("POST", "/mikrotik", {"accion_atacantes": "cortar"})        # no vale: se queda
+        self.assertEqual(self.d.cargar_mk().get("ACCION_ATACANTES"), "nada")
+        self.p.pedir("POST", "/mikrotik", {"lista_botnet": "clientes-botnet"})  # formulario sin el campo
+        self.assertEqual(self.d.cargar_mk().get("ACCION_ATACANTES"), "nada")
+
+    def test_ver_plan_aplicar_y_quitar_aceptan_atacantes(self):
+        r1 = self.p.routers["p001"]
+
+        def nuestras():
+            return [f for f in r1.tablas[FILTER] if f.get("comment", "").startswith("Suricata:atacantes:")]
+        _s, _c, t = self.p.pedir("POST", "/mikrotik/reglas/ver", {"cat": "atacantes", "rid": "p001"})
+        self.assertTrue(t.startswith("OK "), t)
+        self.assertIn("suricata-atacantes", t)
+        self.assertIn("@falta", t)
+        _s, _c, t = self.p.pedir("POST", "/mikrotik/reglas/plan", {"cat": "atacantes", "rid": "p001"})
+        self.assertTrue(t.startswith("OK 2 cambio(s)"), t)
+        self.assertEqual(nuestras(), [])                                       # el plan no toca
+        # con el punto apagado, Aplicar se niega (auditoria M2: nadie las quitaria al apagar)
+        _s, _c, t = self.p.pedir("POST", "/mikrotik/reglas/aplicar", {"cat": "atacantes", "rid": "p001"})
+        self.assertTrue(t.startswith("ERR: "), t)
+        self.assertIn("no tiene activado", t)
+        self.assertEqual(nuestras(), [])
+        self.d.guardar_atacantes_modo("p001", "manual", "ana")
+        _s, _c, t = self.p.pedir("POST", "/mikrotik/reglas/aplicar", {"cat": "atacantes", "rid": "p001"})
+        self.assertTrue(t.startswith("OK "), t)
+        self.assertEqual(len(nuestras()), 2)
+        _s, _c, t = self.p.pedir("POST", "/mikrotik/reglas/quitar", {"cat": "atacantes", "rid": "p001"})
+        self.assertTrue(t.startswith("OK "), t)
+        self.assertEqual(nuestras(), [])
+        _s, _c, t = self.p.pedir("POST", "/mikrotik/reglas/ver", {"cat": "inventada", "rid": "p001"})
+        self.assertIn("clase desconocida", t)
+
+
+    def test_estado_del_punto_apagado_en_gris_y_activado_en_rojo(self):
+        """(auditoria M2) apagado y sin reglas: «apagado», no «faltan 2»; activado sin reglas: pendientes;
+        apagado con reglas que sobran: pendientes (Quitar las quita)."""
+        def estado():
+            _s, _c, t = self.p.pedir("POST", "/mikrotik/reglas/estado", {"rid": "p001"})
+            return json.loads(t)["atacantes"]["estado"]
+        self.assertEqual(estado(), "apagado")
+        self.d.guardar_atacantes_modo("p001", "manual", "ana")
+        self.assertEqual(estado(), "pendientes")
+        self.p.pedir("POST", "/mikrotik/reglas/aplicar", {"cat": "atacantes", "rid": "p001"})
+        self.assertEqual(estado(), "aplicadas")
+        self.d.guardar_atacantes_modo("p001", "", "ana")      # apagado a mano del fichero: quedan
+        self.assertEqual(estado(), "pendientes")
+
+    def test_aplicar_espera_al_envio_en_curso_del_punto(self):
+        """(auditoria M1) Aplicar/Quitar de atacantes toman el cerrojo de los envios del punto."""
+        self.d.guardar_atacantes_modo("p001", "manual", "ana")
+        dentro = threading.Event()
+        suelta = threading.Event()
+
+        def envio_largo():
+            with self.d.cerrojo_operacion("p001", "atacantes"):
+                dentro.set()
+                suelta.wait(10)
+        h = threading.Thread(target=envio_largo)
+        h.start()
+        self.addCleanup(h.join, 15)
+        self.addCleanup(suelta.set)
+        self.assertTrue(dentro.wait(5))
+        res = {}
+
+        def aplicar():
+            res["t"] = self.p.pedir("POST", "/mikrotik/reglas/aplicar", {"cat": "atacantes", "rid": "p001"})[2]
+        a = threading.Thread(target=aplicar)
+        a.start()
+        a.join(1.5)
+        self.assertTrue(a.is_alive(), res)            # espera al envio
+        self.assertEqual([f for f in self.p.routers["p001"].tablas[FILTER]
+                          if f.get("comment", "").startswith("Suricata:atacantes:")], [])
+        suelta.set()
+        a.join(15)
+        self.assertTrue(res["t"].startswith("OK "), res)
 
 
 if __name__ == "__main__":

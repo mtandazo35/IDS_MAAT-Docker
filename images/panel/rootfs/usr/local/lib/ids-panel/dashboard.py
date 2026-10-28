@@ -2185,6 +2185,8 @@ ACCIONES = {
     "limitar":       "Limitar ancho de banda",
     "cortar-mineria": "Cortar puertos de minería (stratum)",
     "propias":       "Mis reglas (pegadas en RouterOS)",
+    # solo la lista de atacantes de internet (ATAC_CAT; Ajustes > MikroTik, 2026-10-28)
+    "cortar-entrada": "Cortar sus conexiones nuevas (forward e input)",
 }
 ACCIONES_POR_CAT = {
     "botnet":  ("solo-web", "cortar", "propias", "nada"),
@@ -2234,6 +2236,10 @@ def accion_de_clase(cat, m=None):
         return "nada"
     m = m if m is not None else _mk_globales()
     v = (m.get("ACCION_" + cat.upper(), "") or "").strip()
+    if cat == "atacantes":
+        # «Atacantes de internet» (ATAC_CAT, fuera de ACCIONES_POR_CAT: no es una clase de CPE).
+        # Literales: las pruebas heredadas sacan esta funcion por ast sin ATAC_ACCIONES
+        return v if v in ("cortar-entrada", "nada") else "cortar-entrada"
     return v if v in ACCIONES_POR_CAT.get(cat, ()) else ACCION_DEFECTO.get(cat, "nada")
 
 
@@ -2888,7 +2894,7 @@ def ver_reglas(router, cat, m=None, motivo=""):
     return out
 
 
-def estado_reglas(router, m=None):
+def estado_reglas(router, m=None, apagadas=()):
     """Como esta cada clase en ESE router, sin tocar nada y con UN login (no uno por clase).
     {cat: {"estado": "aplicadas" | "pendientes" | "ninguna" | "error", "cambios": n}}
 
@@ -2896,21 +2902,26 @@ def estado_reglas(router, m=None):
     - pendientes: falta aplicar algo (o quedan reglas de una accion que ya no esta);
     - ninguna: la clase no tiene accion y en el router no queda nada nuestro;
     - error: no se pudo calcular (p. ej. no se pudo leer el router: entonces TODAS las
-      clases salen en error, nunca «pendientes» por una tabla que no se leyo)."""
+      clases salen en error, nunca «pendientes» por una tabla que no se leyo).
+    `apagadas`: clases que en ese router no se usan (la de atacantes con el punto apagado): se miran
+    con la accion 'nada', asi que sin reglas salen «ninguna» y con reglas que sobran, «pendientes»."""
     m = m if m is not None else _mk_globales()
     s_ = mk_conectar(cargar_mk_de(router))
     out = {}
     # cada tabla se lee UNA vez y se reparte entre las ocho clases: antes cada clase releia
     # las cinco tablas (unas 40 lecturas por la VPN cada vez que se abria Ajustes)
     leidas = {}
+    # mas la lista de atacantes de internet (2026-10-28): su etiqueta en Ajustes > MikroTik
+    cats = list(ACCIONES_POR_CAT) + ["atacantes"]
     try:
-        for cat in ACCIONES_POR_CAT:
+        for cat in cats:
             try:
-                p = _plan_en(s_, cat, None, m, verificar=False, leidas=leidas)
+                p = _plan_en(s_, cat, "nada" if cat in apagadas else None, m, verificar=False,
+                             leidas=leidas)
             except ErrorLecturaMK as ex:
                 # sin lectura no se sabe nada de ninguna clase; y tras un fallo de transporte la
                 # conexion puede traer respuestas atrasadas: no se le pregunta nada mas
-                for c in ACCIONES_POR_CAT:
+                for c in cats:
                     out.setdefault(c, {"estado": "error", "cambios": 0, "msg": str(ex)[:160]})
                 break
             except Exception as ex:
@@ -4110,7 +4121,8 @@ def blocklist_reglas(lista=BL_LISTA):
 ATAC_CONF = nodos.ruta("conf", "atacantes.json")              # {pid: {"modo", "quien", "cuando"}}
 ATAC_SENT = nodos.ruta("estado", "atacantes-enviados.json")   # {"pid|ip": {"ts", "hasta", "por"}}
 ATAC_CAT = "atacantes"            # las reglas: comentario «Suricata:atacantes:NN»
-ATAC_ACCION = "cortar-entrada"    # la plantilla de reglas_de_accion
+ATAC_ACCION = "cortar-entrada"    # la plantilla de reglas_de_accion (la de fabrica)
+ATAC_ACCIONES = (ATAC_ACCION, "nada")   # Ajustes > MikroTik: cortar o solo la lista (ACCION_ATACANTES)
 ATAC_TTL, ATAC_TTL_S = "1d", 86400
 ATAC_RENOVAR_S = 12 * 3600        # se reenvia (renueva) si le queda menos que esto en el router
 ATAC_TOPE = 500                   # por envio y punto, las de mas alertas primero (RAM del router)
@@ -4254,9 +4266,11 @@ def atacantes_api_lista(pid, r=None):
 def _atac_reglas_en(s_, router, encender, quien):
     """(ok, mensaje): pone (encender) o quita nuestras dos reglas de filter en ese router, sobre la
     conexion abierta. Es _aplicar_en de las politicas: respaldo antes del primer cambio, nada si ya
-    estan, y solo lo de comentario «Suricata:atacantes:»."""
-    ok, msg, _plan = _aplicar_en(s_, router, ATAC_CAT, ATAC_ACCION if encender else "nada", quien,
-                                 _mk_globales())
+    estan, y solo lo de comentario «Suricata:atacantes:». Encender pone la accion de Ajustes >
+    MikroTik (accion_de_clase): con «Nada (solo la lista)» no pone reglas y quita las que hubiera."""
+    m = _mk_globales()
+    ok, msg, _plan = _aplicar_en(s_, router, ATAC_CAT, accion_de_clase(ATAC_CAT, m) if encender else "nada",
+                                 quien, m)
     return ok, msg
 
 
@@ -4447,6 +4461,9 @@ def atacantes_enviar(pid, quien="?", forzar=False):
         partes.append("%d rechazada(s) por el router (la última, %s)" % (res["fallos"], err_ult))
     if corte:
         partes.insert(0, corte)
+    elif accion_de_clase(ATAC_CAT) == "nada":
+        partes.append("sin reglas (Ajustes › MikroTik: «Nada, solo la lista»)" + (
+            "; quitadas las que había" if not res["reglas"].startswith("sin cambios") else ""))
     elif res["reglas"]:
         partes.append("reglas: " + res["reglas"].split(". Respaldo")[0])
     res["mensaje"] = "; ".join(partes) + "."
@@ -12748,6 +12765,27 @@ def _card_listas(m):
                               cat, cat, ops, extra, cat, cat, esc(nom), cat, cat, cat,
                               cat, cat, "block" if acc == "propias" else "none", esc(propias),
                               cat, "block" if acc == "propias" else "none", cat))
+    # «Atacantes de internet» (el user, 2026-10-28: «en el apartado de mikrotik asi mismo se cree una
+    # lista»): la lista de los que atacan desde fuera (Histórico), con los mismos botones que las
+    # clases. Su envio es por punto (tabla de abajo, o ficha del punto). Literales: las pruebas
+    # heredadas sacan esta funcion por ast sin ATAC_CAT
+    acc_a = accion_de_clase("atacantes", m)
+    ops_a = "".join("<option value='%s'%s>%s</option>" % (v, " selected" if v == acc_a else "", esc(ACCIONES[v]))
+                    for v in ("cortar-entrada", "nada"))
+    filas += ("<div class=field><label>Atacantes de internet</label>"
+              "<input type=text value=\"%s\" readonly title='La lista la pone el panel; no se cambia'>"
+              "<div class=accrow><select name=accion_atacantes onchange=\"accCambio(this,'atacantes')\">%s</select></div>"
+              "<div class=accrow><button type=button class=cancelbtn onclick=\"reglasVer('atacantes')\">Ver reglas</button>"
+              "<button type=button class=cancelbtn onclick=\"reglasPlan('atacantes')\">Aplicar reglas</button>"
+              "<button type=button class=cancelbtn onclick=\"if(ask(this,'Quitar del router las reglas de Atacantes de internet',"
+              "'Se quitan SOLO las dos reglas que puso el panel (comment Suricata:atacantes:*). La address-list y sus IPs "
+              "se quedan. Si algún punto está en Automático, su siguiente envío las vuelve a poner: para no usarlas, "
+              "elige «Nada (solo la lista)» y guarda.','Quitar',''))reglasQuitar('atacantes')\">Quitar reglas</button></div>"
+              "<div class=accestrow><span class=acclbl>Estado en el router:</span><span class=accest id=accest_atacantes></span></div>"
+              "<div class=hint>Las IPs de internet que atacan a tus abonados (<b>Histórico &rsaquo; Cortar a los que te "
+              "atacan desde internet</b>), con caducidad de 1 día. Las reglas van en <code>/ip firewall filter</code> y "
+              "cortan solo sus conexiones <b>nuevas</b>. Qué puntos las mandan, abajo en <b>Atacantes de internet "
+              "por punto</b>.</div></div>" % ("suricata-atacantes", ops_a))
     # a que router (punto) se le miran/aplican las reglas: SIEMPRE explicito (el rid va en
     # cada peticion; sin el no se toca ningun router). Preseleccionado el nodo que se mira.
     sel_router = ""
@@ -12792,6 +12830,7 @@ def _card_listas(m):
         "if(j._error||!e||e.estado==='error'){_accEt(cat,'gris','Sin comprobar: '+(j._error||(e&&e.msg)||'el router no contesta'));}"
         "else if(e.estado==='aplicadas'){_accEt(cat,'ok','Aplicadas');}"
         "else if(e.estado==='pendientes'){_accEt(cat,'pend','No aplicadas \u00b7 faltan '+e.cambios+' cambio(s)');}"
+        "else if(e.estado==='apagado'){_accEt(cat,'gris','Apagado en este punto: sin reglas');}"
         "else{_accEt(cat,'gris','Sin reglas: esta acci\u00f3n no pone ninguna');}}})"
         ".catch(function(){for(var i=0;i<bs.length;i++){_accEt(bs[i].id.slice(7),'gris','Sin comprobar: el panel no contesta');}});}"
         "function _accRid(){var s=document.getElementById('accrid');return s?s.value:'';}"
@@ -13390,6 +13429,69 @@ def perfil_page(msg="", ok=False, edit_user=None):
         ) if rs_mk else (
             "<p class=sub2><b>Todavía no hay puntos.</b> Da de alta el primer MikroTik en "
             "<a href='/puntos'>Puntos</a>; su conexión (API) se configura en su ficha.</p>")
+        # «Atacantes de internet por punto» (el user, 2026-10-28): el modo de cada punto y «Enviar
+        # ahora» sin ir a su ficha. Cada fila manda a POST /puntos/<pid>/atacantes (la misma orden y
+        # el mismo permiso que la ficha); el resultado sale en la ventana de las reglas (_accBox)
+        atac_pts = ""
+        if puede_ctx("puntos.atacantes") and rs_mk:
+            import uuid as _uuid          # el token de un solo uso de cada fila (como la ficha)
+            _modos = (("", "Apagado"), ("auto", "Automático (cada 15 min)"), ("manual", "Solo a mano"))
+
+            def _fila_atac(r):
+                pid = r.get("id", "")
+                modo = atacantes_modo(pid)
+                if not atacantes_api_lista(pid, r):
+                    api = "<span class='mkcx-no'>falta usuario o clave</span>"
+                elif str(r.get("ENABLED", "0")) != "1":
+                    api = "<span class='mkcx-no'>Enviar: no</span>"
+                else:
+                    api = "<span class='mkcx-ok'>lista</span>"
+                n = len(atacantes_enviados(pid))
+                sel = "".join("<option value='%s'%s>%s</option>" % (v, " selected" if v == modo else "", t)
+                              for v, t in _modos)
+                env = ("<button type=button class=cancelbtn onclick=\"mkAtac(this,'enviar')\">Enviar ahora</button>"
+                       if modo else "")
+                return ("<tr><td><b>%s</b> <span class=mkcx-u>%s</span></td><td>%s</td>"
+                        "<td><form method=post action='/puntos/%s/atacantes' class=mkatf data-activo='%s' "
+                        "onsubmit='return false'><input type=hidden name=op value='%s'>"
+                        "<select name=modo>%s</select> "
+                        "<button type=button class=cancelbtn onclick=\"mkAtac(this,'guardar')\">Guardar</button> %s"
+                        "</form></td><td style='text-align:right'>%s</td>"
+                        "<td style='text-align:right'><a href='/puntos/%s#atacantes'>Ficha &rarr;</a></td></tr>"
+                        % (esc(r.get("nombre") or pid), esc(pid), api, esc(pid), "1" if modo else "",
+                           str(_uuid.uuid4()), sel, env, ("%d IP(s)" % n) if n else "&mdash;", esc(pid)))
+            atac_pts = (
+                "<h3 style='margin:22px 0 2px;font-size:15px'>Atacantes de internet por punto</h3>"
+                "<p class=sub2 style='margin:0 0 8px'>Qué punto manda a su MikroTik la lista "
+                "<code>%s</code>. <b>Automático</b>: el panel manda sus atacantes cada 15 min; <b>Solo a mano</b>: "
+                "cuando pulsas <i>Enviar ahora</i> (aquí o en Histórico). Activarlo manda ya el primer envío y pone "
+                "las reglas de arriba (salvo con «Nada (solo la lista)»); <b>Apagado</b> quita del router lo que "
+                "puso el panel. Hace falta la API del "
+                "punto con <b>Enviar: sí</b>.</p>"
+                "<table class=mkcx><tr><th>Nodo</th><th>API</th><th>Modo</th><th style='text-align:right'>En el router</th>"
+                "<th></th></tr>" % esc(BL_LISTA)
+                + "".join(_fila_atac(r) for r in rs_mk) + "</table>"
+                "<script>function mkAtac(b,acc){var f=b.form;"
+                "if(acc==='guardar'&&f.getAttribute('data-activo')==='1'&&!f.modo.value&&!ask(b,'Apagar «Cortar atacantes»',"
+                "'Se quitan del MikroTik de este punto las dos reglas y las IPs que puso el panel. Si el router ya no "
+                "existe o no tiene API, apágalo desde la ficha del punto con «Apagar sin limpiar el router».','Apagar','danger'))return false;"
+                "var d=new URLSearchParams(new FormData(f));d.set('accion',acc);d.set('ajax','1');"
+                "_accBox(\"<div class='mkspin'></div><div><b>\"+(acc==='enviar'?'Mandando las IPs al MikroTik&hellip;':"
+                "'Guardando y aplicando en el MikroTik&hellip;')+\"</b></div>\");"
+                "fetch(f.action,{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/x-www-form-urlencoded'},"
+                "body:d.toString()}).then(function(r){var ct=(r.headers&&r.headers.get('content-type'))||'';"
+                "if(r.redirected||ct.indexOf('json')<0)throw 'login';return r.json();})"
+                ".then(function(j){var o=f.querySelector('[name=op]');if(o&&j.token)o.value=j.token;"
+                "if(j.ok&&acc==='guardar')f.setAttribute('data-activo',f.modo.value?'1':'');"
+                "_accBox(\"<div style='font-size:30px'>\"+(j.ok?'&#9989;':'&#9940;')+\"</div><div><b>\"+(j.ok?"
+                "(acc==='enviar'?'Enviado al MikroTik':'Guardado'):'No se pudo')+\"</b><br><span style='font-size:13px'>\"+"
+                "_accEsc(j.mensaje||j.error||'')+\"</span><div class=actions style='margin-top:10px'>"
+                "<button type=button class=cancelbtn onclick='location.reload()'>Cerrar</button></div></div>\");})"
+                ".catch(function(e){_accBox(\"<div style='font-size:30px'>&#9940;</div><div><b>No se pudo</b><br>"
+                "<span style='font-size:13px'>\"+(e==='login'?'La sesión caducó: vuelve a entrar.':"
+                "'No se pudo hablar con el panel. Vuelve a intentarlo.')+\"</span><div class=actions style='margin-top:10px'>"
+                "<button type=button class=cancelbtn onclick='_accCerrar()'>Cerrar</button></div></div>\");});"
+                "return false;}</script>")
         card_mk = (
             "<section class=card><h2>MikroTik &mdash; cuarentena</h2>"
             "<p class=sub2>Listas, acciones, caducidad y políticas de la cuarentena, <b>comunes a todos "
@@ -13412,6 +13514,7 @@ def perfil_page(msg="", ok=False, edit_user=None):
             "<div class=actions>"
             "<button class=primary type=submit>Guardar</button>"
             "</div></form>"
+            + atac_pts +
             # la ventana de espera/resultado de las acciones de reglas (_accBox: ver plan, aplicar,
             # quitar, recargar listas, verificar)
             "<div id=mkwait class=mkwait onmousedown=\"this._dn=event.target\" onclick=\"if(event.target===this&&this._dn===this){this.style.display='none'}\">"
@@ -14958,9 +15061,15 @@ tuyos o más.</li>
 <p>Debajo de la tabla se explica <b>qué es cada feed</b> que aparece en ella: qué mete en su lista,
 cuántas IPs trae, cuándo se bajó por última vez y el enlace a su web.</p>
 <h3>Mandarlas al MikroTik por la API</h3>
-<p>En la ficha de cada punto (<b>Puntos &rarr; ficha &rarr; Cortar atacantes de internet</b>, con el
-permiso <i>Cortar atacantes</i>) se activa que el panel mande esas IPs <b>él solo</b> al MikroTik del
-punto, por la misma API que la cuarentena. Viene <b>apagado</b>. Hay dos modos:</p>
+<p>En <b>Ajustes &rarr; MikroTik</b> la lista <b>Atacantes de internet</b> sale junto a las de cada
+categoría: ahí eliges qué hace el router con ella (<b>cortar sus conexiones nuevas</b>, lo de fábrica, o
+<b>nada, solo la lista</b>), con <b>Ver reglas</b>, <b>Aplicar reglas</b>, <b>Quitar reglas</b> y su estado
+en el router. Debajo, <b>Atacantes de internet por punto</b> activa en cada punto que el panel mande esas
+IPs <b>él solo</b> a su MikroTik, por la misma API que la cuarentena (también se activa en la ficha del
+punto, <b>Puntos &rarr; ficha &rarr; Cortar atacantes de internet</b>; las dos guardan lo mismo). En la
+ficha hace falta el permiso <i>Cortar atacantes</i>; en Ajustes, además, el de <i>Ajustes de
+MikroTik</i>. Con el punto apagado su estado sale en gris y <b>Aplicar reglas</b> no pone nada: las pone
+el primer envío. Viene <b>apagado</b>. Hay dos modos:</p>
 <ul>
 <li><b>Automático</b>: cada 15 minutos, en la vuelta de fondo del punto.</li>
 <li><b>Solo a mano</b>: con <b>Enviar ahora</b> en la ficha o <b>Enviar al MikroTik ahora</b> debajo
@@ -14972,7 +15081,8 @@ alertas primero) en la address-list <code>suricata-atacantes</code>, con caducid
 que sigue atacando se renueva cuando le quedan menos de 12 h y la que deja de atacar sale sola. El
 panel pone además dos reglas en <code>/ip firewall filter</code> (forward e input,
 <code>connection-state=new</code>, comentario <code>Suricata:atacantes</code>), arriba de su cadena y
-con respaldo del firewall antes del primer cambio. La columna <b>En el router</b> dice si cada IP ya
+con respaldo del firewall antes del primer cambio; con <b>Nada (solo la lista)</b> en Ajustes no las pone
+y quita las que hubiera en el próximo envío (o en el momento, con <b>Quitar reglas</b>). La columna <b>En el router</b> dice si cada IP ya
 está en el MikroTik (&#10004; y la hora del envío) o va en el próximo (<i>pendiente</i>); «&mdash;» si
 ningún punto de los que miras lo tiene activado, y <i>no va</i> si esa IP no se le manda a ningún
 punto. Nunca entran tus redes, tus públicas declaradas (las de todos los puntos), las de <b>Nunca
@@ -19066,7 +19176,9 @@ def historico_page(dias_n=7):
                 atac_js = _JS_ATAC
             else:
                 atac_btn = ("<p class=hint style='margin:10px 0 2px'>Para que el panel las mande solo al MikroTik, "
-                            "activa <b>Cortar atacantes de internet</b> en la ficha del punto (Puntos).</p>")
+                            + ("actívalo en <b>Ajustes &rsaquo; MikroTik &rsaquo; Atacantes de internet por punto</b> "
+                               "(o en la ficha del punto).</p>" if puede_ctx("ajustes.mikrotik") else
+                               "activa <b>Cortar atacantes de internet</b> en la ficha del punto (Puntos).</p>"))
         bl_html = (
             "<section class='card cardp'><h2 style='font-size:15px;margin:0 0 4px'>"
             "Cortar a los que te atacan desde internet</h2>"
@@ -21625,6 +21737,10 @@ class H(BaseHTTPRequestHandler):
                                     _av_reglas.append("%s, %s: %s" % (_nom, _v["donde"], _v["msg"]))
                     except ValueError as ex:
                         _err_reglas.append("%s: %s" % (_nom, ex))
+            # «Atacantes de internet» (2026-10-28): cortar sus conexiones nuevas o solo la lista
+            _aa = (q.get("accion_atacantes", [""])[0] or "").strip()
+            if _aa in ATAC_ACCIONES:
+                m["ACCION_ATACANTES"] = _aa
             if "accion_wan_list" in q:   # un formulario viejo sin el campo no la borra
                 _wl = (q.get("accion_wan_list", [""])[0] or "").strip()[:64]
                 # vacio se guarda como "ninguna": un valor vacio no se escribe y volveria "WAN"
@@ -21732,7 +21848,12 @@ class H(BaseHTTPRequestHandler):
                 res = {"_error": "el router no tiene usuario y clave de la API (Puntos > ficha del punto > API)"}
             else:
                 try:
-                    res = estado_reglas(r)
+                    # «Atacantes de internet» con el punto apagado (auditoria M2): no se le piden
+                    # reglas; sale «apagado» (gris) si no tiene, o «pendientes» si le sobran
+                    _apag = () if atacantes_modo(r.get("id", "")) else (ATAC_CAT,)
+                    res = estado_reglas(r, apagadas=_apag)
+                    if _apag and (res.get(ATAC_CAT) or {}).get("estado") == "ninguna":
+                        res[ATAC_CAT] = {"estado": "apagado", "cambios": 0}
                 except Exception as ex:
                     res = {"_error": "no se pudo hablar con el router: %s" % ex}
             b = json.dumps(res).encode("utf-8")
@@ -21750,7 +21871,7 @@ class H(BaseHTTPRequestHandler):
                 return self._prohibido()
             cat = (q.get("cat", [""])[0]).strip()
             rid = (q.get("rid", [""])[0]).strip()
-            if cat not in ACCIONES_POR_CAT:
+            if cat not in ACCIONES_POR_CAT and cat != "atacantes":
                 b = b"ERR: clase desconocida"
             else:
                 r = _router_de_pid(rid)
@@ -21788,7 +21909,7 @@ class H(BaseHTTPRequestHandler):
                 self.end_headers(); self.wfile.write(b)
             cat = (q.get("cat", [""])[0]).strip()
             rid = (q.get("rid", [""])[0]).strip()
-            if cat not in ACCIONES_POR_CAT:
+            if cat not in ACCIONES_POR_CAT and cat != "atacantes":
                 return _txt(False, "clase desconocida")
             r = _router_de_pid(rid)     # el nodo de la operacion, validado; nunca uno por defecto
             if not r or not (r.get("USER") and r.get("PASS")):
@@ -21810,7 +21931,17 @@ class H(BaseHTTPRequestHandler):
                 # una reconciliacion de reglas a la vez por router: con un doble clic las dos
                 # planificaban sobre el router sin cambios y las reglas salian duplicadas
                 # (auditoria A-08). La segunda espera y planifica sobre lo que dejo la primera.
-                with cerrojo_operacion(r.get("id", ""), "reglas"):
+                if cat == "atacantes" and ruta.endswith("/aplicar") and not atacantes_modo(r.get("id", "")):
+                    # (auditoria M2) reglas sin envio: nadie las quitaria al «apagar» el punto
+                    return _txt(False, "este punto no tiene activado «Cortar atacantes»: actívalo en "
+                                       "«Atacantes de internet por punto» (más abajo) y el panel pone las "
+                                       "reglas con el primer envío")
+                # la de atacantes, ademas, bajo el cerrojo de sus envios (auditoria M1: el
+                # automatico y este boton planificaban a la vez y duplicaban las reglas). Literal
+                # "atacantes" (= ATAC_CAT): las pruebas heredadas ejecutan esta ruta sin esa constante
+                _cat_lk = (cerrojo_operacion(r.get("id", ""), "atacantes") if cat == "atacantes"
+                           else contextlib.nullcontext())
+                with _cat_lk, cerrojo_operacion(r.get("id", ""), "reglas"):
                     if ruta.endswith("/aplicar"):
                         okr, msg, _p = aplicar_reglas(r, cat, quien=quien)
                     else:

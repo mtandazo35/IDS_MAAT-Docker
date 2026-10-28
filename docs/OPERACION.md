@@ -528,9 +528,15 @@ rsync -a --chmod=F600 'root@ids.empresa.example:/root/backups/ids-maat-install-*
 | Llevar un punto a la configuración y las imágenes actuales | `ids-orq punto reconfigurar <pid>` en el servidor (§1.6; el botón del panel está pendiente) |
 | Ver los logs de un punto | `ids-orq punto logs <pid>` (OpenVPN) o `ids-orq punto logs <pid> --parte suricata`; `--lineas N` (≤ 500) |
 
-**Cortar atacantes de internet por la API (2026-10-28).** En la ficha del punto, sección «Cortar
-atacantes de internet» (permiso `puntos.atacantes`): apagado (por defecto), automático (cada 15 min)
-o solo a mano («Enviar ahora» ahí o en Histórico). El panel manda al MikroTik del punto las IPs de
+**Cortar atacantes de internet por la API (2026-10-28).** En Ajustes › MikroTik, tabla «Atacantes
+de internet por punto», o en la ficha del punto, sección «Cortar atacantes de internet» (permiso
+`puntos.atacantes`, y en Ajustes además `ajustes.mikrotik`; las dos guardan lo mismo): apagado (por defecto), automático (cada 15 min) o solo a
+mano («Enviar ahora» ahí o en Histórico). En Ajustes › MikroTik la lista «Atacantes de internet» tiene
+su acción (`ACCION_ATACANTES`: `cortar-entrada`, por defecto, o `nada`, solo la lista sin reglas) y los
+botones Ver / Aplicar / Quitar reglas, como las listas de cada categoría. Con `nada` las reglas se
+quitan en el próximo envío de cada punto (o en el momento con «Quitar reglas»). Con el punto apagado su
+estado sale «apagado» y «Aplicar reglas» se niega (las pone el primer envío); Aplicar y Quitar de esta
+lista esperan a que termine un envío en curso del punto. El panel manda al MikroTik del punto las IPs de
 internet que atacan a sus abonados (las de Histórico, como mucho 500 por envío) a la address-list
 `suricata-atacantes` con `timeout=1d` (comentario `Suricata atacante: …`) y pone dos reglas en
 `/ip firewall filter`, forward e input, `connection-state=new src-address-list=suricata-atacantes

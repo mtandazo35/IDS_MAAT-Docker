@@ -93,7 +93,15 @@ def main():
                  "_mk_globales": lambda: {}})
     h = ns["_card_listas"]({"ACCION_BOTNET": "propias", "ACCION_P2P": "limitar", "ACCION_LIMITE_P2P": "2M",
                             "ACCION_DNS": "redirigir-dns", "ACCION_DNS_IP": "192.0.2.53"})
-    check("un select de accion por categoria (7, sin Otros)", h.count("<select name=accion_") == 7, h.count("<select name=accion_"))
+    # (adaptada 2026-10-28) tras las 7 clases va la lista de atacantes de internet, con sus mismos
+    # botones: los conteos por clase se hacen en el tramo de las clases (hc) y la de atacantes, aparte
+    ha = h[h.index("<label>Atacantes de internet</label>"):]
+    hc = h[:h.index("<label>Atacantes de internet</label>")]
+    check("la lista de atacantes, con su accion (de fabrica, cortar) y sus botones",
+          "<select name=accion_atacantes " in ha and "<option value='cortar-entrada' selected>" in ha
+          and "reglasQuitar('atacantes')" in ha and "id=accest_atacantes" in ha
+          and 'value="suricata-atacantes" readonly' in ha, ha[:300])
+    check("un select de accion por categoria (7, sin Otros)", hc.count("<select name=accion_") == 7, hc.count("<select name=accion_"))
     def sel(cat):   # el <select> de esa categoria (el JS tambien menciona 'accion_dns_ip')
         i = h.index("<select name=accion_%s " % cat); return h[i:h.index("</select>", i)]
     check("la accion guardada sale marcada", "<option value='propias' selected>" in sel("botnet"), sel("botnet"))
@@ -112,17 +120,17 @@ def main():
     check("el resolutor solo en DNS, visible si 'redirigir-dns'", h.count("<input type=text name=accion_dns_ip") == 1
           and 'value="192.0.2.53"' in h, "")
     # 7 clases: «Otros» ya no sale en Ajustes (el user, 2026-10-20: «saca eso de otros»)
-    check("botones de ver/aplicar y quitar por categoria", h.count("reglasPlan('") == 7 and h.count("reglasQuitar('") == 7, "")
+    check("botones de ver/aplicar y quitar por categoria", hc.count("reglasPlan('") == 7 and hc.count("reglasQuitar('") == 7, "")
     check("  y ninguno de Otros", "id=accest_otros" not in h and "name=accion_otros" not in h, "")
     # el user (2026-10-18): tres botones con nombre propio y el estado en su propia fila
     check("  se llaman «Ver reglas», «Aplicar reglas» y «Quitar reglas», uno de cada por clase",
           # (el modal de «Ver reglas» lleva otro «Aplicar reglas»: se cuentan los de la fila)
-          h.count("')\">Ver reglas</button>") == 7 and h.count("')\">Aplicar reglas</button>") == 7
-          and h.count("')\">Quitar reglas</button>") == 7 and h.count("reglasVer('") == 7
+          hc.count("')\">Ver reglas</button>") == 7 and hc.count("')\">Aplicar reglas</button>") == 7
+          and hc.count("')\">Quitar reglas</button>") == 7 and hc.count("reglasVer('") == 7
           and "Ver / aplicar en el router" not in h, "")
     check("  «Ver reglas» llama a la ruta que solo lee", "_accPost('/mikrotik/reglas/ver',cat," in h, "")
     check("  el estado va en su fila, con su etiqueta, debajo de los botones",
-          h.count("<div class=accestrow><span class=acclbl>Estado en el router:</span><span class=accest id=accest_") == 7
+          hc.count("<div class=accestrow><span class=acclbl>Estado en el router:</span><span class=accest id=accest_") == 7
           and h.index(">Quitar reglas</button>") < h.index("id=accest_botnet"), "")
     check("quitar pasa por el modal propio (ask), nunca confirm()", "ask(this,'Quitar del router" in h and "confirm(" not in h, "")
     # CONTRATO-F2 §3/§10.1: el destino va SIEMPRE explicito (rid en cada peticion, sin
@@ -251,7 +259,8 @@ def main():
     i = DASH.index('if ruta == "/mikrotik/reglas/estado":')
     tramo = DASH[i:DASH.index("self.wfile.write(b)", i)]
     check("la ruta de estado es solo de admin y contesta JSON (con _error si el router no responde)",
-          'self._puede("ajustes.mikrotik")' in tramo and "estado_reglas(r)" in tramo and '"_error"' in tramo
+          # (adaptada 2026-10-28) estado_reglas(r, apagadas=...): la de atacantes con el punto apagado
+          'self._puede("ajustes.mikrotik")' in tramo and "estado_reglas(r, apagadas=" in tramo and '"_error"' in tramo
           and "application/json" in tramo, "")
     check("se mira al abrir MikroTik (no al cargar Ajustes), al cambiar de router y tras aplicar/quitar",
           "if(id==='mikrotik'&&typeof accEstado==='function')accEstado();" in DASH

@@ -109,7 +109,8 @@ class LecturaFallidaNoDuplica(Base):
         self.rt.fallar_print = RAW + "/print"
         vistos = contar_prints(self.rt)
         e = self.d.estado_reglas(self.r, self.m)
-        self.assertEqual(set(e), set(self.d.ACCIONES_POR_CAT))
+        # (adaptada 2026-10-28) mas la lista de atacantes de internet (Ajustes > MikroTik)
+        self.assertEqual(set(e), set(self.d.ACCIONES_POR_CAT) | {"atacantes"})
         for cat, v in e.items():
             self.assertEqual(v["estado"], "error", (cat, v))
             self.assertIn("no se pudo leer el router", v["msg"])
@@ -149,7 +150,7 @@ class EstadoUnaLecturaPorTabla(Base):
         # ANTES: cada clase lee sus tablas por separado (lo que hacia estado_reglas)
         antes = {}
         with self.d.mk_sesion(self.r) as (s, _dd):
-            for cat in self.d.ACCIONES_POR_CAT:
+            for cat in list(self.d.ACCIONES_POR_CAT) + ["atacantes"]:     # (adaptada 2026-10-28)
                 antes[cat] = estado_de(self.d._plan_en(s, cat, None, self.m, verificar=False))
         n_antes = len(vistos)
         del vistos[:]
