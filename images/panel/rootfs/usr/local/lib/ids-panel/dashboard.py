@@ -7064,7 +7064,7 @@ def feeds_auth_probar(key):
     """Valida una Auth-Key contra la API de ThreatFox (abuse.ch). Devuelve (estado, msg):
     True=valida, False=invalida, None=no se pudo comprobar (sin red).
 
-    No vale descargar una lista: las descargas de URLhaus (hostfile) se sirven SIN clave, asi
+    No vale descargar una lista: las descargas de URLhaus (hostfile, hoy retiradas) se servian SIN clave, asi
     que cualquier texto (hasta la clave de AbuseIPDB) salia «valida». La API de ThreatFox si la
     exige: con una clave mala responde 403 y query_status=unknown_auth_key. Se pregunta por una
     IP de documentacion (192.0.2.1): respuesta corta y no es de nadie."""

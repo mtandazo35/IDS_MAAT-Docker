@@ -57,14 +57,27 @@ class Servidor(http.server.BaseHTTPRequestHandler):
             "/aidb": "192.0.2.30\n",
             "/et": "192.0.2.40\n",
             "/tor": "192.0.2.50\n",
-            "/tfx-api": json.dumps({"data": [{"ioc_type": "ip:port", "ioc": "192.0.2.60:4444",
-                                              "confidence_level": 90}]}),
+            "/tfx-api": json.dumps({"query_status": "ok", "data": [
+                {"ioc_type": "ip:port", "ioc": "192.0.2.60:4444", "confidence_level": 90},
+                {"ioc_type": "domain", "ioc": "C2dom.example.org", "confidence_level": 75},
+                {"ioc_type": "domain", "ioc": "dudoso.example.org", "confidence_level": 20},
+                {"ioc_type": "url", "ioc": "http://url.example.org/x", "confidence_level": 100}]}),
+            # API de URLhaus (urls/recent): solo el dominio de las que siguen en linea
+            "/urlhaus-api": json.dumps({"query_status": "ok", "urls": [
+                {"url_status": "online", "host": "vivo.example.com", "url": "http://vivo.example.com/a"},
+                {"url_status": "offline", "host": "muerto.example.com", "url": "http://muerto.example.com/b"},
+                {"url_status": "online", "host": "192.0.2.77", "url": "http://192.0.2.77/c"},
+                # plataformas compartidas: el dominio es de todos, no se marca
+                {"url_status": "online", "host": "github.com", "url": "https://github.com/x/y/raw/z.exe"},
+                {"url_status": "online", "host": "raw.githubusercontent.com", "url": "https://raw.githubusercontent.com/x"},
+                {"url_status": "online", "host": "drive.google.com", "url": "https://drive.google.com/uc?id=1"}]}),
             "/urlhaus": "127.0.0.1 malo.example.com\n",
             "/threatfox": "127.0.0.1 c2.example.net\n",
         }
         cuerpo = cuerpos.get(self.path.split("?")[0], "").encode()
         self.send_response(200)
-        self.send_header("Content-Type", "application/json" if self.path.startswith("/tfx") else "text/plain")
+        self.send_header("Content-Type", "application/json" if self.path.startswith(("/tfx", "/urlhaus-api"))
+                         else "text/plain")
         self.send_header("Content-Length", str(len(cuerpo)))
         self.end_headers()
         self.wfile.write(cuerpo)
@@ -141,6 +154,32 @@ class Feeds(unittest.TestCase):
         self.assertFalse((feeds / "domains.dataset").exists())
         self.assertEqual(sorted(p.name for p in self.dir.iterdir()), ["master_key", "panel"])
         self.assertEqual(self.meta()["sources"]["abuseipdb"]["estado"], "valido")
+
+    def test_urlhaus_y_threatfox_por_la_api(self):
+        """2026-10-28: abuse.ch quito las descargas hostfile (410 Gone). URLhaus sale de la API
+        urls/recent (dominio de las URLs en linea, sin IPs ni las caidas) y ThreatFox de get_iocs
+        (dominios con confianza >= TFX_CONFIANZA_MIN; ni URLs ni ip:port)."""
+        conf = self.panel / "conf" / "feeds.conf"
+        txt = conf.read_text(encoding="utf-8")
+        txt = txt.replace("URLHAUS_URL=%s/urlhaus\n" % self.base, "URLHAUS_URL=%s/urlhaus-api\n" % self.base)
+        txt = txt.replace("THREATFOX_URL=%s/threatfox\n" % self.base, "THREATFOX_URL=%s/tfx-api\n" % self.base)
+        conf.write_text(txt, encoding="utf-8")
+        r = self.correr()
+        self.assertEqual(r.returncode, 0, r.stderr)
+        dom = (self.panel / "feeds" / "domains.lst").read_text(encoding="utf-8").splitlines()
+        self.assertEqual(sorted(dom), ["c2dom.example.org\tthreatfox", "vivo.example.com\turlhaus"])
+        src = self.meta()["sources"]
+        self.assertEqual((src["urlhaus"]["estado"], src["urlhaus"]["count"]), ("valido", 1))
+        self.assertEqual((src["threatfox"]["estado"], src["threatfox"]["count"]), ("valido", 1))
+        # threatfox-c2 sigue igual con la misma respuesta: solo el ip:port
+        self.assertEqual((self.panel / "feeds" / "c2ports.lst").read_text(encoding="utf-8"),
+                         "192.0.2.60:4444\tthreatfox-c2\n")
+
+    def test_por_defecto_apuntan_a_la_api(self):
+        """Sin URL en feeds.conf, las dos fuentes de dominios van a la API (los hostfile dan 410)."""
+        fuente = SCRIPT.read_text(encoding="utf-8")
+        self.assertIn('"https://urlhaus-api.abuse.ch/v1/urls/recent/"', fuente)
+        self.assertNotIn("/downloads/hostfile/", fuente)
 
     def test_claves_cifradas_se_descifran_y_no_salen(self):
         """Capacidad nueva (§10.3): la clave guardada cifrada se descifra (sus fuentes se bajan, no

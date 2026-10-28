@@ -109,9 +109,15 @@ IPF = [
 # SSLBL (IPs de C2 por certificado TLS) no esta a proposito: el CSV lleva vacio desde
 # 2025-01-03 (deprecado) y los JA3 de SSLBL no se actualizan desde 2021.
 TFX_CONFIANZA_MIN = 50   # ThreatFox: confidence_level por debajo no entra (menos FP)
+# Dominios por la API de abuse.ch (2026-10-28): las descargas en archivo (downloads/hostfile,
+# export/...) responden 410 Gone, con clave o sin ella. URLhaus: las URLs recientes (1000), de las
+# que siguen en linea se toma el dominio; ThreatFox: los IOC de 7 dias de tipo dominio, con la
+# misma confianza minima que threatfox-c2. Las dos con la Auth-Key. Si feeds.conf apunta a una
+# lista en texto (hostfile), se sigue leyendo como antes.
 DOMF = [
-    ("urlhaus",   _conf("URLHAUS_URL", "https://urlhaus.abuse.ch/downloads/hostfile/"), 24, "dom", "distribucion-malware", "abusech", 60),
-    ("threatfox", _conf("THREATFOX_URL", "https://threatfox.abuse.ch/downloads/hostfile/"), 24, "dom", "c2-ioc", "abusech", 60),
+    ("urlhaus",   _conf("URLHAUS_URL", "https://urlhaus-api.abuse.ch/v1/urls/recent/"), 24, "dom", "distribucion-malware", "abusech", 60),
+    ("threatfox", _conf("THREATFOX_URL", "https://threatfox-api.abuse.ch/api/v1/"), 24, "dom", "c2-ioc", "abusech", 60,
+     {"query": "get_iocs", "days": 7}),
 ]
 
 def _fetch(url, auth="", post=None):
@@ -162,6 +168,31 @@ def _parse_ip(body):
             continue
     return out
 
+def _dom_valido(dom):
+    """El dominio normalizado (minusculas, sin punto final) o "" si no es plausible."""
+    dom = str(dom or "").strip().lower().rstrip(".")
+    if not dom or "." not in dom or dom in ("localhost", "0.0.0.0", "127.0.0.1", "::1"):
+        return ""
+    # dominio plausible: labels validos, TLD alfabetico
+    labs = dom.split(".")
+    if len(labs) < 2 or not labs[-1].isalpha() or any(not l or len(l) > 63 for l in labs):
+        return ""
+    return dom
+
+# Plataformas compartidas: el malware se aloja EN ellas (un repo, un archivo de Drive, un adjunto de
+# Discord), pero el dominio es de todos. Por la API de URLhaus las URLs recientes son sobre todo de
+# github.com y raw.githubusercontent.com (medido 2026-10-28: 715 de 1000): marcar el dominio seria
+# marcar a cualquiera que use GitHub o Drive. Se quitan el dominio y sus subdominios. Los de
+# inquilino propio (pub-xxx.r2.dev, x.trycloudflare.com, x.workers.dev) SI quedan: son del atacante.
+COMPARTIDOS = ("github.com", "githubusercontent.com", "gitlab.com", "bitbucket.org", "google.com",
+               "googleusercontent.com", "googleapis.com", "discordapp.com", "discord.com", "dropbox.com",
+               "dropboxusercontent.com", "microsoft.com", "live.com", "sharepoint.com", "onedrive.com",
+               "1drv.ms", "mediafire.com", "telegram.org", "t.me", "apple.com", "icloud.com",
+               "amazon.com", "facebook.com", "whatsapp.net", "cloudflare.com")
+
+def _compartido(dom):
+    return any(dom == c or dom.endswith("." + c) for c in COMPARTIDOS)
+
 def _parse_dom(body):
     out = set()
     for line in body.splitlines():
@@ -169,14 +200,60 @@ def _parse_dom(body):
         if not line or line[0] == "#":
             continue
         parts = line.split()
-        dom = (parts[-1] if len(parts) >= 2 else parts[0]).strip().lower().rstrip(".")
-        if not dom or "." not in dom or dom in ("localhost", "0.0.0.0", "127.0.0.1", "::1"):
+        dom = _dom_valido(parts[-1] if len(parts) >= 2 else parts[0])
+        if dom:
+            out.add(dom)
+    return out
+
+def _json_o_none(body):
+    try:
+        d = json.loads(body)
+    except ValueError:
+        return None
+    return d if isinstance(d, dict) else None
+
+def _parse_urlhaus(body):
+    """API de URLhaus (urls/recent): el dominio de cada URL que sigue en linea (las de IP ya
+    entran por las fuentes de IPs). Un texto que no es JSON se lee como hostfile."""
+    d = _json_o_none(body)
+    if d is None:
+        return _parse_dom(body)
+    out = set()
+    for it in d.get("urls") or []:
+        if not isinstance(it, dict) or it.get("url_status") != "online":
             continue
-        # dominio plausible: labels validos, TLD alfabetico
-        labs = dom.split(".")
-        if len(labs) < 2 or not labs[-1].isalpha() or any(not l or len(l) > 63 for l in labs):
+        host = str(it.get("host") or "")
+        try:
+            ipaddress.ip_address(host)
             continue
-        out.add(dom)
+        except ValueError:
+            pass
+        dom = _dom_valido(host)
+        if dom and not _compartido(dom):
+            out.add(dom)
+    return out
+
+def _parse_tfx_dom(body):
+    """API de ThreatFox (get_iocs): los IOC de tipo dominio con confianza suficiente. Un texto
+    que no es JSON se lee como hostfile."""
+    d = _json_o_none(body)
+    if d is None:
+        return _parse_dom(body)
+    out = set()
+    data = d.get("data") or []
+    if not isinstance(data, list):
+        return out
+    for it in data:
+        if not isinstance(it, dict) or it.get("ioc_type") != "domain":
+            continue
+        try:
+            if int(it.get("confidence_level") or 0) < TFX_CONFIANZA_MIN:
+                continue
+        except (TypeError, ValueError):
+            continue
+        dom = _dom_valido(it.get("ioc"))
+        if dom and not _compartido(dom):
+            out.add(dom)
     return out
 
 def _parse_ipport(body):
@@ -211,6 +288,7 @@ def _parse_ipport(body):
     return out
 
 PARSERS = {"dom": _parse_dom, "ipport": _parse_ipport}
+PARSERS_FUENTE = {"urlhaus": _parse_urlhaus, "threatfox": _parse_tfx_dom}   # las que son una API
 
 def _cargar_meta():
     try:
@@ -226,7 +304,7 @@ now = int(time.time())
 def procesar(name, url, ttl_h, tipo, cat, auth, min_min, post=None):
     prev = src_prev.get(name, {})
     estado = "error"; n = prev.get("count", 0); fv = prev.get("fetched_valid", 0)
-    parse = PARSERS.get(tipo, _parse_ip)
+    parse = PARSERS_FUENTE.get(name) or PARSERS.get(tipo, _parse_ip)
     if fv and prev.get("estado") == "valido" and (now - fv) < min_min * 60 \
             and os.path.exists(os.path.join(SRCDIR, name + ".lst")):
         estado = "valido"                   # descargado hace poco: no re-bajar (respeta el upstream)
