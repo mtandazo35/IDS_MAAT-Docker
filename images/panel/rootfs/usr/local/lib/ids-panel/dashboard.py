@@ -14267,8 +14267,22 @@ def perfil_page(msg="", ok=False, edit_user=None):
             + hub + modals + ntf + script + hubjs +
             "</main></body></html>")
 
-def exclusiones_page(msg="", ok=False, edit_idx=None):
+def huella_exclusion(r):
+    """Identidad estable de una exclusion (QA U-02, 2026-11-14): tipo, IP, puertos, firma, punto y
+    cuando se creo. Antes Editar y Eliminar iban por la POSICION en la lista: un F5 tras «Eliminar»,
+    otra persona editando a la vez o las reglas del .conf delante (la pagina las cuenta y el POST
+    no) hacian que se borrara o editara OTRA regla."""
+    clave = json.dumps([r.get("tipo") or "", r.get("ip") or "",
+                        sorted(int(x) for x in (r.get("puertos") or [])), str(r.get("sid") or ""),
+                        r.get("nodo") or "", r.get("creado") or 0], separators=(",", ":"))
+    return hashlib.sha256(clave.encode("utf-8")).hexdigest()[:16]
+
+def exclusiones_page(msg="", ok=False, edit_idx=None, edit=None):
+    """`edit`: la huella (huella_exclusion) de la regla a editar; `edit_idx`, su posicion en la lista."""
     reglas = cargar_exclusiones(incluir_vencidas=True)
+    if edit:
+        edit_idx = next((i for i, r in enumerate(reglas)
+                         if r.get("motivo") != "(conf)" and huella_exclusion(r) == edit), None)
     n_propias = sum(1 for r in reglas if r.get("motivo") != "(conf)")   # lo que borra importar
     ahora = time.time()
     def _vig_txt(r):
@@ -14308,10 +14322,11 @@ def exclusiones_page(msg="", ok=False, edit_idx=None):
         if legacy:
             accion = '<span class="muted">en .conf</span>'
         else:
+            _h = huella_exclusion(r)
             accion = (f'<div style="display:flex;gap:6px;align-items:center">'
-                      f'<a class="edit" href="/exclusiones?edit={i}">Editar</a>'
+                      f'<a class="edit" href="/exclusiones?edit={_h}">Editar</a>'
                       f'<form method=post action="/exclusiones" style="margin:0">'
-                      f'<input type=hidden name=accion value=del><input type=hidden name=idx value="{i}">'
+                      f'<input type=hidden name=accion value=del><input type=hidden name=huella value="{_h}">'
                       f'<button class="del" type=submit>Eliminar</button></form></div>')
         resalta = ' style="background:#eef4fd"' if (ed is not None and i == edit_idx) else ''
         _nod = r.get("nodo") or ""
@@ -14340,7 +14355,7 @@ def exclusiones_page(msg="", ok=False, edit_idx=None):
         vig_select = ("<select name=vigencia>"
                       + "".join(f'<option value="{v}"{" selected" if v == "0" else ""}>{t}</option>' for v, t in _vig_opts)
                       + "</select>")
-    hid_edit = f'<input type=hidden name=editar value="{edit_idx}">' if ed else ""
+    hid_edit = f'<input type=hidden name=editar value="{huella_exclusion(ed)}">' if ed else ""
     # nodo de la exclusion: vacio = todos (las IPs privadas se repiten entre puntos)
     _val_nodo = (ed or {}).get("nodo") or ""
     sel_nodo = ("<select name=nodo><option value=''>Todos los nodos</option>"
@@ -21580,13 +21595,12 @@ class H(BaseHTTPRequestHandler):
         if path == "/exclusiones":
             if not self._puede("ajustes.exclusiones"):
                 return self._prohibido()   # lectura no gestiona exclusiones
-            edit = None
-            if "?" in self.path:
-                try:
-                    edit = int(_up.parse_qs(self.path.split("?", 1)[1]).get("edit", [""])[0])
-                except (ValueError, TypeError):
-                    edit = None
-            return self._html(exclusiones_page(edit_idx=edit))
+            # ?edit=<huella> (no la posicion) y ?msg=<codigo de un solo uso> con el resultado de la
+            # accion tras el redirect (QA U-02: F5 ya no repite el POST)
+            _qe = _up.parse_qs(self.path.split("?", 1)[1]) if "?" in self.path else {}
+            _av = rep_aviso_tomar(_qe.get("msg", [""])[0])
+            return self._html(exclusiones_page(_av[0], ok=bool((_av[1] or {}).get("ok")),
+                                               edit=(_qe.get("edit", [""])[0] or None)))
         if path == "/reputacion/ficha":
             # Devuelve SOLO la ficha de una IP, para desplegarla dentro de la tabla del
             # rango sin cambiar de pagina. Se consulta a demanda, al abrir: pintar las
@@ -23302,6 +23316,15 @@ class H(BaseHTTPRequestHandler):
     def _post_exclusiones(self, q):
         import ipaddress
         accion = q.get("accion", [""])[0]
+
+        def _fin(texto, ok, edit=""):
+            # QA U-02 (2026-11-14): Post/Redirect/Get. Devolver la pagina en la respuesta del POST
+            # dejaba la URL del envio: F5 repetia «Eliminar» (y borraba la regla que hubiera quedado
+            # en esa posicion) o la edicion. El texto viaja como codigo de un solo uso.
+            url = "/exclusiones?msg=" + rep_aviso_guardar(texto, {"ok": bool(ok)})
+            if edit:
+                url += "&edit=" + edit
+            return self._redirect(url)
         if accion == "nunca":
             # «Nunca bloquear» (antes en Ajustes → MikroTik). guardar_nunca descarta lo que no es IP
             # o CIDR: se dice cuanto, para que una linea mal escrita no desaparezca sin aviso
@@ -23314,11 +23337,9 @@ class H(BaseHTTPRequestHandler):
             quedan = len(_entradas(cargar_nunca()))
             bitacora("NUNCA-BLOQUEAR", "entradas=%d antes=%d descartadas=%d" % (quedan, antes, len(pedidas) - quedan))
             if len(pedidas) > quedan:
-                return self._html(exclusiones_page(
-                    "«Nunca bloquear» guardado con %d entrada(s); %d línea(s) descartada(s) por no ser una IP "
-                    "o red válida." % (quedan, len(pedidas) - quedan),
-                    ok=False))
-            return self._html(exclusiones_page("«Nunca bloquear» guardado: %d entrada(s)." % quedan, ok=True))
+                return _fin("«Nunca bloquear» guardado con %d entrada(s); %d línea(s) descartada(s) por no ser una IP "
+                    "o red válida." % (quedan, len(pedidas) - quedan), False)
+            return _fin("«Nunca bloquear» guardado: %d entrada(s)." % quedan, True)
         # trabajar solo con las reglas propias (no las legacy del .conf); incluir vencidas
         # para que los indices coincidan con lo que muestra exclusiones_page.
         propias = [r for r in cargar_exclusiones(incluir_vencidas=True) if r.get("motivo") != "(conf)"]
@@ -23326,9 +23347,9 @@ class H(BaseHTTPRequestHandler):
             try:
                 data = json.loads(q.get("json", [""])[0])
             except Exception:
-                return self._html(exclusiones_page("El archivo no es JSON válido.", ok=False))
+                return _fin("El archivo no es JSON válido.", False)
             if not isinstance(data, list):
-                return self._html(exclusiones_page("El JSON debe ser una lista de exclusiones.", ok=False))
+                return _fin("El JSON debe ser una lista de exclusiones.", False)
             limpio = []
             for r in data:
                 if not isinstance(r, dict):
@@ -23362,36 +23383,31 @@ class H(BaseHTTPRequestHandler):
                 # QA U-01: un archivo sin ninguna exclusion valida no puede dejar el sensor sin
                 # exclusiones (volverian los falsos positivos y las cuarentenas automaticas)
                 bitacora("EXCLUSIONES-IMPORT", "rechazado: 0 validas, descartadas=%d" % descartadas)
-                return self._html(exclusiones_page(
-                    "El archivo no trae ninguna exclusión válida (%d descartada(s)): no se cambió nada."
-                    % descartadas, ok=False))
+                return _fin("El archivo no trae ninguna exclusión válida (%d descartada(s)): no se cambió nada."
+                    % descartadas, False)
             try:
                 guardar_exclusiones(limpio)
             except OSError as ex:
-                return self._html(exclusiones_page(f"No se pudo guardar: {ex}", ok=False))
+                return _fin(f"No se pudo guardar: {ex}", False)
             bitacora("EXCLUSIONES-IMPORT", "importadas=%d descartadas=%d reemplazadas=%d"
                      % (len(limpio), descartadas, len(propias)))
             if descartadas:
-                return self._html(exclusiones_page(
-                    "Importadas %d exclusiones (reemplazaron las anteriores); %d descartada(s) por no "
-                    "ser válidas (IP mal escrita o punto que no existe)." % (len(limpio), descartadas),
-                    ok=False))
-            return self._html(exclusiones_page(
-                f"Importadas {len(limpio)} exclusiones (reemplazaron las anteriores).", ok=True))
+                return _fin("Importadas %d exclusiones (reemplazaron las anteriores); %d descartada(s) por no "
+                    "ser válidas (IP mal escrita o punto que no existe)." % (len(limpio), descartadas), False)
+            return _fin(f"Importadas {len(limpio)} exclusiones (reemplazaron las anteriores).", True)
         if accion == "del":
+            h = q.get("huella", [""])[0]
+            objetivo = next((r for r in propias if huella_exclusion(r) == h), None) if h else None
+            if objetivo is None:
+                return _fin("Esa exclusión ya no está (la quitó o la cambió otra persona): no se borró "
+                            "nada.", False)
             try:
-                idx = int(q.get("idx", ["-1"])[0])
-                todas = cargar_exclusiones(incluir_vencidas=True)
-                objetivo = todas[idx]
-                if objetivo.get("motivo") == "(conf)":
-                    return self._html(exclusiones_page("Esa exclusión está en el archivo .conf; quítala allí.", ok=False))
-                propias = [r for r in propias if not (r["ip"] == objetivo["ip"] and r["tipo"] == objetivo["tipo"]
-                           and r["puertos"] == objetivo["puertos"] and r.get("sid", "") == objetivo.get("sid", "")
-                           and (r.get("nodo") or "") == (objetivo.get("nodo") or ""))]
-                guardar_exclusiones(propias)
-                return self._html(exclusiones_page("Exclusión eliminada.", ok=True))
-            except Exception:
-                return self._html(exclusiones_page("No se pudo eliminar.", ok=False))
+                guardar_exclusiones([r for r in propias if huella_exclusion(r) != h])
+            except OSError as ex:
+                return _fin(f"No se pudo eliminar: {ex}", False)
+            bitacora("EXCLUSION-BORRADA", "%s %s%s" % (objetivo.get("tipo"), objetivo.get("ip"),
+                     (" nodo=" + objetivo["nodo"]) if objetivo.get("nodo") else ""))
+            return _fin("Exclusión eliminada: %s." % objetivo.get("ip"), True)
         # agregar
         tipo = q.get("tipo", ["dst"])[0]
         ip = (q.get("ip", [""])[0]).strip()
@@ -23403,22 +23419,26 @@ class H(BaseHTTPRequestHandler):
         if tipo not in ("dst", "src"):
             tipo = "dst"
         if nodo_ex and not nodos.existe(nodo_ex):
-            return self._html(exclusiones_page("Ese nodo no existe.", ok=False), 400)
+            return _fin("Ese nodo no existe.", False)
         try:
             ipaddress.ip_address(ip)
         except ValueError:
-            return self._html(exclusiones_page("IP inválida.", ok=False))
+            return _fin("IP inválida.", False)
         if sid and not sid.isdigit():
-            return self._html(exclusiones_page("La firma (SID) debe ser un número (o vacío).", ok=False))
+            return _fin("La firma (SID) debe ser un número (o vacío).", False)
         puertos = []
         for p in pts_raw.replace(";", ",").split(","):
             p = p.strip()
             if p:
                 if not p.isdigit() or not (0 < int(p) < 65536):
-                    return self._html(exclusiones_page(f"Puerto inválido: {p}", ok=False))
+                    return _fin(f"Puerto inválido: {p}", False)
                 puertos.append(int(p))
         editar = q.get("editar", [""])[0]
-        edit_idx = int(editar) if (editar.isdigit() and int(editar) < len(propias)) else None
+        edit_idx = next((j for j, r in enumerate(propias) if huella_exclusion(r) == editar), None) if editar else None
+        if editar and edit_idx is None:
+            # la que se estaba editando ya no esta: guardar crearia una regla nueva sin que se note
+            return _fin("La exclusión que editabas ya no está (la quitó o la cambió otra persona): no "
+                        "se guardó nada.", False)
         # vigencia -> hasta (epoch). "keep" conserva la de la regla que se edita.
         ahora = int(time.time())
         if vig == "keep" and edit_idx is not None:
@@ -23457,9 +23477,8 @@ class H(BaseHTTPRequestHandler):
             if r.get("ip") == ip and r.get("tipo") == tipo:
                 dup, txt = _redundante(r.get("puertos"))
                 if dup:
-                    return self._html(exclusiones_page(
-                        f"Esa IP ya está excluida como {tlabel} en {txt}: {ip}. No se agregó para no duplicar.",
-                        ok=False, edit_idx=edit_idx))
+                    return _fin(f"Esa IP ya está excluida como {tlabel} en {txt}: {ip}. No se agregó para "
+                                f"no duplicar.", False, edit=editar if edit_idx is not None else "")
         # tambien si ya viene excluida por el archivo .conf (legacy, no editable aqui)
         for r in cargar_exclusiones():
             if sid:                                      # una regla por-firma no choca con las del .conf (globales)
@@ -23467,8 +23486,7 @@ class H(BaseHTTPRequestHandler):
             if r.get("motivo") == "(conf)" and r.get("ip") == ip and r.get("tipo") == tipo:
                 dup, txt = _redundante(r.get("puertos"))
                 if dup:
-                    return self._html(exclusiones_page(
-                        f"Esa IP ya está excluida por configuración (.conf) como {tlabel} en {txt}: {ip}.", ok=False))
+                    return _fin(f"Esa IP ya está excluida por configuración (.conf) como {tlabel} en {txt}: {ip}.", False)
         if edit_idx is not None:
             propias[edit_idx] = nueva
             msg_ok = f"Exclusión actualizada: {ip}."
@@ -23478,8 +23496,8 @@ class H(BaseHTTPRequestHandler):
         try:
             guardar_exclusiones(propias)
         except OSError as ex:
-            return self._html(exclusiones_page(f"No se pudo guardar: {ex}", ok=False))
-        return self._html(exclusiones_page(msg_ok, ok=True))
+            return _fin(f"No se pudo guardar: {ex}", False)
+        return _fin(msg_ok, True)
 
     def do_HEAD(self):
         # respuesta ligera para health-checks del proxy (evita el 501 y es instantanea)

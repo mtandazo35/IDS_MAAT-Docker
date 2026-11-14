@@ -41,12 +41,14 @@ class ImportarExclusiones(unittest.TestCase):
 
     def importar(self, data):
         txt = data if isinstance(data, str) else json.dumps(data)
-        return self.p.pedir("POST", "/exclusiones", {"accion": "import", "json": txt}, cookie=self.ana)
+        r = self.p.pedir("POST", "/exclusiones", {"accion": "import", "json": txt}, cookie=self.ana)
+        self.assertEqual(r.status, 303)                     # Post/Redirect/Get (QA U-02)
+        return self.p.pedir("GET", r.cab("Location"), cookie=self.ana)
 
     def test_sin_ninguna_valida_no_cambia_nada(self):
         """Corrección de defecto: un archivo sin ninguna exclusión válida no borra las actuales."""
         for data in ([], [{"ip": "no-es-ip"}, {"ip": "300.1.1.1"}], ["texto", 3]):
-            r = self.importar(data)
+            r = self.importar(data)                         # ya es el GET tras el redirect
             self.assertEqual(r.status, 200)
             self.assertIn("no se cambió nada", r.texto, data)
             self.assertEqual(self.ips(), ["192.0.2.10", "192.0.2.11"], data)

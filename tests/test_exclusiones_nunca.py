@@ -39,12 +39,14 @@ class NuncaEnExclusiones(unittest.TestCase):
         """Capacidad nueva: se guarda desde Exclusiones y dice cuántas entradas y cuántas descartó."""
         r = self.p.pedir("POST", "/exclusiones", {"accion": "nunca", "nunca": "192.0.2.10\n198.51.100.0/24\n"},
                          cookie=self.ana)
-        self.assertEqual(r.status, 200)
+        self.assertEqual(r.status, 303)                     # Post/Redirect/Get (QA U-02)
+        r = self.p.pedir("GET", r.cab("Location"), cookie=self.ana)
         self.assertIn("guardado: 2 entrada(s)", r.texto)
         self.assertEqual(self.d.cargar_nunca(), "192.0.2.10\n198.51.100.0/24\n")
         self.assertTrue(self.d.nunca_bloquear("192.0.2.10"))
         r = self.p.pedir("POST", "/exclusiones", {"accion": "nunca", "nunca": "192.0.2.10\nno-es-ip\n"},
                          cookie=self.ana)
+        r = self.p.pedir("GET", r.cab("Location"), cookie=self.ana)
         self.assertIn("1 línea(s) descartada(s)", r.texto)
         self.assertEqual(self.d.cargar_nunca(), "192.0.2.10\n")
 

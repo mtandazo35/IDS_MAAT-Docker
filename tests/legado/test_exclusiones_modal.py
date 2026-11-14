@@ -28,6 +28,8 @@ ARBOL = extraer.arbol("DASH")
 # "report.conf") en vez del literal /etc/suricata-report.conf
 PIEZAS = ("EXCL_FILE", "REPORT_CONF", "cargar_exclusiones", "guardar_exclusiones",
           "exclusiones_page",
+          # Editar y Eliminar van por la huella de la regla, no por su posicion (QA U-02, 2026-11-14)
+          "huella_exclusion",
           # «Nunca bloquear» vive en Exclusiones (2026-10-16): la pagina lee su lista
           "NUNCA_FILE", "cargar_nunca")
 
@@ -45,7 +47,8 @@ def entorno(tmp):
     import html as _h
     import json as _j
     import time as _t
-    ns = {"os": os, "json": _j, "time": _t, "html": _h, "re": re,
+    import hashlib as _hl
+    ns = {"os": os, "json": _j, "time": _t, "html": _h, "re": re, "hashlib": _hl,
           "BASE_CSS": "/*base*/", "nav": lambda r: "<div class=nav></div>"}
     # panel portado: EXCL_FILE se define con nodos.ruta(); se carga el nodos REAL sobre el
     # arbol temporal y luego se apunta al tmp como antes
@@ -83,8 +86,13 @@ def main():
     ed = ns["exclusiones_page"](edit_idx=0)
     check("editar marca el modal para abrirse solo", 'data-edit="1"' in ed, "")
     check("y trae la regla cargada", 'value="10.66.66.2"' in ed, "")
-    check("con el indice, para no crear una nueva",
-          'name=editar value="0"' in ed, "")
+    # (antes la posicion, «value="0"»; desde QA U-02 la huella: un F5 o la edicion de otra persona
+    # ya no cambian que regla se guarda)
+    _h0 = ns["huella_exclusion"](ns["cargar_exclusiones"](incluir_vencidas=True)[0])
+    check("con la huella de la regla, para no crear una nueva",
+          'name=editar value="%s"' % _h0 in ed, "")
+    check("y por la huella tambien se abre el editor",
+          'name=editar value="%s"' % _h0 in ns["exclusiones_page"](edit=_h0), "")
     check("el boton dice que se guardan cambios", "Guardar cambios" in ed, "")
 
     # --- lo que no puede pasar -----------------------------------------------------------
