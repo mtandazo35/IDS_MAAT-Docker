@@ -10546,6 +10546,47 @@ _DESPERTAR = threading.Event()      # cambio de ventana: el refrescador no esper
 LATIDO = {}                         # hilo -> ultima vuelta (epoch): la salud lo puede mirar
 _HILOS = {}                         # nombre -> (funcion, Thread) de los hilos supervisados
 SUPERVISAR_CADA = 30
+HILO_COLGADO_S = 1800               # sin latido en 30 min (3 x GEN_TIMEOUT): el hilo esta colgado
+_COLGADOS = set()                   # los ya avisados (un aviso por episodio)
+
+def latir():
+    """El hilo supervisado en curso da señal de vida (lo llama _por_nodo en cada punto, asi una
+    vuelta larga legitima, con muchos puntos, no parece colgada)."""
+    n = threading.current_thread().name
+    if n in _HILOS:
+        LATIDO[n] = time.time()
+
+def vigilar_latidos(ahora=None):
+    """QA D-07 (2026-11-14): un hilo VIVO pero colgado (una lectura o un subproceso que no vuelve)
+    paraba sus tareas sin que nada lo dijera: supervisar_hilos solo miraba is_alive(). Ahora un hilo
+    sin latido en HILO_COLGADO_S va a la bitacora (HILO-COLGADO, una vez) y su vuelta tambien
+    (HILO-RECUPERADO). Un hilo no se puede matar desde Python: el aviso es para reiniciar el panel.
+    Devuelve los nombres colgados."""
+    ahora = ahora or time.time()
+    colgados = []
+    for nombre in list(_HILOS):
+        t0 = LATIDO.get(nombre)
+        if t0 is None:
+            continue                     # hilos que no laten (informe diario: duerme hasta las 07:30)
+        if ahora - t0 > HILO_COLGADO_S:
+            colgados.append(nombre)
+            if nombre not in _COLGADOS:
+                _COLGADOS.add(nombre)
+                sys.stderr.write("panel: AVISO: el hilo de fondo '%s' no da señales desde hace %d min\n"
+                                 % (nombre, (ahora - t0) // 60))
+                try:
+                    bitacora("HILO-COLGADO", "el hilo de fondo '%s' lleva %d min sin dar señales: "
+                             "reinicia el panel si no vuelve" % (nombre, (ahora - t0) // 60), quien="panel")
+                except Exception:
+                    pass
+        elif nombre in _COLGADOS:
+            _COLGADOS.discard(nombre)
+            try:
+                bitacora("HILO-RECUPERADO", "el hilo de fondo '%s' vuelve a dar señales" % nombre,
+                         quien="panel")
+            except Exception:
+                pass
+    return colgados
 
 def lanzar_hilo(nombre, fn):
     """Arranca un hilo de fondo supervisado (ver supervisar_hilos)."""
@@ -10579,6 +10620,7 @@ def supervisor():
     while not _PARAR.wait(SUPERVISAR_CADA):
         try:
             supervisar_hilos()
+            vigilar_latidos()
         except Exception as _e:
             sys.stderr.write("supervisor: %s\n" % _e)
 
@@ -10747,6 +10789,7 @@ def _por_nodo(fn, pids, *args, cerrojo="fondo"):
     for pid in pids:
         if _PARAR.is_set():
             return
+        latir()
         # un punto dado de baja (o que ya no esta en estado.json) no se toca: sus tareas
         # volverian a crear nodos/<pid>/ despues de la purga (auditoria A-09). El cerrojo
         # (pid, "fondo") lo toma tambien purgar_punto: la baja espera a la tarea en curso.
@@ -10889,170 +10932,175 @@ def _vuelta_refrescador(estado):
         estado[k] for k in ("ult_poda", "ult_sensor", "ult_fast", "ult_dur", "ult_fin", "ult_aidb",
                             "ult_pub", "ult_diag", "ult_feeds", "ult_forzado", "ult_cond", "ult_hist",
                             "ult_bajas"))
-    # bajas terminadas que nadie abrio en Puntos: las limpia puntos_web (F2) en cada vuelta
-    _barrer_pw = getattr(puntos_web, "barrer_bajas", None)
-    if _barrer_pw is not None:
-        try: _barrer_pw(sys.modules[__name__])
-        except Exception as _e: sys.stderr.write("puntos_web.barrer_bajas: %s\n" % _e)
-    if time.time() - ult_bajas > 300:      # cada ~5 min: restos de puntos que ya no estan (CLI, reinicio)
-        ult_bajas = time.time()
-        try: barrer_bajas()
-        except Exception as _e: sys.stderr.write("barrer_bajas: %s\n" % _e)
-    pids = pids_activos()
-    # el envio inmediato (barrido_alto_rapido) y la salud del sensor (medir_sensor) van en su
-    # propio hilo, _rapido_hilo (QA D-02): aqui esperaban a todos los informes
-    if time.time() - ult_poda > 86400:     # 1x/dia: podar logs (15d) y reportes guardados (3d)
-        try: podar_logs()
-        except Exception: pass
-        try: podar_reportes()
-        except Exception: pass
-        ult_poda = time.time()
-    if time.time() - ult_feeds > FEEDS_CADA:   # cada 15 min: feeds de reputacion
-        try: actualizar_feeds_async()
-        except Exception as _e: sys.stderr.write("feeds: %s\n" % _e)
-        ult_feeds = time.time()
-    if time.time() - ult_aidb > 300:       # cada ~5 min: unos pocos destinos a AbuseIPDB
-        try: precargar_abuseipdb()
-        except Exception as _e: sys.stderr.write("precarga abuseipdb: %s\n" % _e)
-        ult_aidb = time.time()
-    # (el diagnostico de cada router cada 10 min se dejo de hacer el 2026-10-20: solo lo
-    # pintaba el cuadro «Protección en el MikroTik» de Histórico, que se quito)
-    if time.time() - ult_pub > 6 * 3600:   # cada ~6 h: reputacion de TUS IPs publicas
-        try: vigilar_publicas()
-        except Exception as _e: sys.stderr.write("vigilancia de publicas: %s\n" % _e)
-        try: vigilar_dnsbl()     # y las listas negras, que son las que de verdad banean
-        except Exception as _e: sys.stderr.write("vigilancia dnsbl: %s\n" % _e)
-        ult_pub = time.time()
-    # historial: barato porque es incremental (solo lo nuevo desde la marca).
-    # Va ANTES del informe para que el informe lea una base ya al dia. Una base por punto.
-    # la ingesta del historial va en su propio hilo (_hist_hilo): con mucho DNS, o con el atraso
-    # tras una parada, tardaba minutos y en ese tiempo no se regeneraba ningun informe (un VPS de producción,
-    # 2026-10-16: casi una hora sin informes nuevos en ningun punto)
-    # reporte de varios dias: caro (recorre los rotados), asi que espaciado; el boton
-    # de la pestana lo adelanta poniendo FORCE_CONDUCTA
-    if FORCE_CONDUCTA or (time.time() - ult_cond > CONDUCTA_CADA):
-        globals()["FORCE_CONDUCTA"] = False
-        ult_cond = time.time()
-        _por_nodo(_conducta_nodo, pids)
-    # una regeneracion FORZADA se atiende como mucho cada REGEN_MIN_SECS; la marca no
-    # se pierde, solo se agrupa (un lote de cambios = una sola generacion)
-    forzado = FORCE_REGEN and (time.time() - ult_forzado >= REGEN_MIN_SECS)
-    # Ventana pendiente: la elegida no es la del resumen que se muestra. Pasa al cambiar el
-    # selector y tambien tras un reinicio (FORCE_REGEN vive en memoria y se perdia: el aviso
-    # «generando…» seguia hasta el ciclo de 5 min). Una ventana NUEVA se genera ya, sin el
-    # minuto de REGEN_MIN_SECS (es una accion del operador y es rara); volver a intentar la
-    # MISMA si espera ese minuto, para no relanzar el generador cada 10 s si falla.
-    ventana_pend = False
-    # «Todos» se genera aunque no haya ningún punto: sin él, En vivo se quedaba para siempre en
-    # «aparecerá aquí en unos minutos» en un VPS recién instalado (el user, 2026-10-15). Con
-    # cero puntos el generador saca el resumen en ceros; y tras la baja del último punto,
-    # «Todos» se rehace y deja de enseñar sus datos.
-    _va = ventana_actual()
-    _vg = ventana_generada(nodos.TODOS)
-    # «Todos mis puntos» (bloque C): los grupos en uso se generan como «Todos», y cuentan igual
-    # para la ventana pendiente y para «toca regenerar»
+    # QA D-07 (2026-11-14): las marcas se guardan en el finally. Antes solo al final: si la vuelta
+    # reventaba a medias (la atrapa refrescador) se perdian, y la poda, los feeds o AbuseIPDB se
+    # repetian cada 10 s mientras siguiera fallando.
     try:
-        grupos = grupos_en_uso()
-    except Exception as _e:
-        sys.stderr.write("grupos_en_uso: %s\n" % _e)
-        grupos = {}
-    if not (_vg and _vg != _va):
-        for _gid in grupos:
-            _vgg = _ventana_dir(_dir_grupo(_gid))
-            if _vgg and _vgg != _va:
-                _vg = _vgg
-                break
-    if _vg and _vg != _va:
-        _ult_v, _ult_t = estado.get("vpend", (0, 0.0))
-        if _va != _ult_v or time.time() - _ult_t >= REGEN_MIN_SECS:
-            forzado = ventana_pend = True
-            estado["vpend"] = (_va, time.time())
-    stale = forzado
-    for nodo in pids + [nodos.TODOS]:
-        if stale:
-            break
-        nr = newest_report(nodo)
-        try:
-            stale = (nr is None) or (time.time() - os.path.getmtime(nr) >= REFRESH_SECS)
-        except OSError:
-            stale = True       # se borro entre medias (baja de un punto): toca regenerar (A-10)
-    for _gid in grupos:
-        if stale:
-            break
-        # un grupo cuya generacion fallo hace poco (sin informe aun) espera al ciclo normal: si no,
-        # un fallo rapido (memoria, candado) forzaba regenerar todos los puntos cada vuelta
-        if time.time() - _GRUPO_INTENTO.get(_gid, 0) < REFRESH_SECS:
-            continue
-        nr = _newest_report_dir(_dir_grupo(_gid))
-        try:
-            stale = (nr is None) or (time.time() - os.path.getmtime(nr) >= REFRESH_SECS)
-        except OSError:
-            stale = True
-    # FRENO: si una corrida tardo mas que el propio ciclo, esperar al menos lo que
-    # tardo antes de lanzar la siguiente. Sin esto, en una caja donde generar lleva
-    # 9 minutos y el ciclo son 5, se encadenan una tras otra y queda un nucleo al
-    # 100 % de forma permanente; el reporte no sale antes por eso, y la maquina que
-    # tiene que analizar el trafico se queda sin CPU. Como mucho, medio nucleo.
-    # La ventana que acaba de elegir el operador NO se frena: con el freno, tras una corrida de
-    # 9 min el cambio de ventana se quedaba otros 9 min en «generando…» (el user, 2026-10-13).
-    # Sigue acotado: la misma ventana fallida no se reintenta antes de REGEN_MIN_SECS.
-    if stale and not ventana_pend and ult_dur > REFRESH_SECS and (time.time() - ult_fin) < ult_dur:
-        stale = False
-    if stale:
-        if forzado:
-            ult_forzado = time.time()
-        try:
-            mk_sync_enviados()   # el registro del panel refleja la lista real de cada MikroTik
-        except Exception:
-            pass
-        # se limpia DESPUES del sync: lo que cambie el sync ya entra en esta misma
-        # generacion, asi no queda pidiendo otra identica para el ciclo siguiente
-        FORCE_REGEN = False
-        try:
-            refrescar_abonados()  # mapa pid|IP->abonado (PPPoE/DHCP) para la ficha de evidencia
-        except Exception:
-            pass
-        # ventana del resumen en minutos (config VENTANA_MIN; por defecto 24h)
-        vmin = ventana_actual()
-        _t_gen = time.time()
-        _por_nodo(_ciclo_nodo, pids, vmin)
-        if not _PARAR.is_set():
-            generar_reporte(nodos.TODOS, vmin)   # la vista acumulada, al final y sola
-        # «Todos mis puntos» de cada usuario limitado (bloque C): un grupo por conjunto de puntos
-        # en uso, de uno en uno tras «Todos». La lista se recalcula aqui: la generacion de los
-        # puntos tarda y entre medias pudo cambiar un usuario o darse de baja un punto.
+        # bajas terminadas que nadie abrio en Puntos: las limpia puntos_web (F2) en cada vuelta
+        _barrer_pw = getattr(puntos_web, "barrer_bajas", None)
+        if _barrer_pw is not None:
+            try: _barrer_pw(sys.modules[__name__])
+            except Exception as _e: sys.stderr.write("puntos_web.barrer_bajas: %s\n" % _e)
+        if time.time() - ult_bajas > 300:      # cada ~5 min: restos de puntos que ya no estan (CLI, reinicio)
+            ult_bajas = time.time()
+            try: barrer_bajas()
+            except Exception as _e: sys.stderr.write("barrer_bajas: %s\n" % _e)
+        pids = pids_activos()
+        # el envio inmediato (barrido_alto_rapido) y la salud del sensor (medir_sensor) van en su
+        # propio hilo, _rapido_hilo (QA D-02): aqui esperaban a todos los informes
+        if time.time() - ult_poda > 86400:     # 1x/dia: podar logs (15d) y reportes guardados (3d)
+            try: podar_logs()
+            except Exception: pass
+            try: podar_reportes()
+            except Exception: pass
+            ult_poda = time.time()
+        if time.time() - ult_feeds > FEEDS_CADA:   # cada 15 min: feeds de reputacion
+            try: actualizar_feeds_async()
+            except Exception as _e: sys.stderr.write("feeds: %s\n" % _e)
+            ult_feeds = time.time()
+        if time.time() - ult_aidb > 300:       # cada ~5 min: unos pocos destinos a AbuseIPDB
+            try: precargar_abuseipdb()
+            except Exception as _e: sys.stderr.write("precarga abuseipdb: %s\n" % _e)
+            ult_aidb = time.time()
+        # (el diagnostico de cada router cada 10 min se dejo de hacer el 2026-10-20: solo lo
+        # pintaba el cuadro «Protección en el MikroTik» de Histórico, que se quito)
+        if time.time() - ult_pub > 6 * 3600:   # cada ~6 h: reputacion de TUS IPs publicas
+            try: vigilar_publicas()
+            except Exception as _e: sys.stderr.write("vigilancia de publicas: %s\n" % _e)
+            try: vigilar_dnsbl()     # y las listas negras, que son las que de verdad banean
+            except Exception as _e: sys.stderr.write("vigilancia dnsbl: %s\n" % _e)
+            ult_pub = time.time()
+        # historial: barato porque es incremental (solo lo nuevo desde la marca).
+        # Va ANTES del informe para que el informe lea una base ya al dia. Una base por punto.
+        # la ingesta del historial va en su propio hilo (_hist_hilo): con mucho DNS, o con el atraso
+        # tras una parada, tardaba minutos y en ese tiempo no se regeneraba ningun informe (un VPS de producción,
+        # 2026-10-16: casi una hora sin informes nuevos en ningun punto)
+        # reporte de varios dias: caro (recorre los rotados), asi que espaciado; el boton
+        # de la pestana lo adelanta poniendo FORCE_CONDUCTA
+        if FORCE_CONDUCTA or (time.time() - ult_cond > CONDUCTA_CADA):
+            globals()["FORCE_CONDUCTA"] = False
+            ult_cond = time.time()
+            _por_nodo(_conducta_nodo, pids)
+        # una regeneracion FORZADA se atiende como mucho cada REGEN_MIN_SECS; la marca no
+        # se pierde, solo se agrupa (un lote de cambios = una sola generacion)
+        forzado = FORCE_REGEN and (time.time() - ult_forzado >= REGEN_MIN_SECS)
+        # Ventana pendiente: la elegida no es la del resumen que se muestra. Pasa al cambiar el
+        # selector y tambien tras un reinicio (FORCE_REGEN vive en memoria y se perdia: el aviso
+        # «generando…» seguia hasta el ciclo de 5 min). Una ventana NUEVA se genera ya, sin el
+        # minuto de REGEN_MIN_SECS (es una accion del operador y es rara); volver a intentar la
+        # MISMA si espera ese minuto, para no relanzar el generador cada 10 s si falla.
+        ventana_pend = False
+        # «Todos» se genera aunque no haya ningún punto: sin él, En vivo se quedaba para siempre en
+        # «aparecerá aquí en unos minutos» en un VPS recién instalado (el user, 2026-10-15). Con
+        # cero puntos el generador saca el resumen en ceros; y tras la baja del último punto,
+        # «Todos» se rehace y deja de enseñar sus datos.
+        _va = ventana_actual()
+        _vg = ventana_generada(nodos.TODOS)
+        # «Todos mis puntos» (bloque C): los grupos en uso se generan como «Todos», y cuentan igual
+        # para la ventana pendiente y para «toca regenerar»
         try:
             grupos = grupos_en_uso()
         except Exception as _e:
             sys.stderr.write("grupos_en_uso: %s\n" % _e)
-            grupos = None
-        for _gid, _pg in sorted((grupos or {}).items()):
-            if _PARAR.is_set():
+            grupos = {}
+        if not (_vg and _vg != _va):
+            for _gid in grupos:
+                _vgg = _ventana_dir(_dir_grupo(_gid))
+                if _vgg and _vgg != _va:
+                    _vg = _vgg
+                    break
+        if _vg and _vg != _va:
+            _ult_v, _ult_t = estado.get("vpend", (0, 0.0))
+            if _va != _ult_v or time.time() - _ult_t >= REGEN_MIN_SECS:
+                forzado = ventana_pend = True
+                estado["vpend"] = (_va, time.time())
+        stale = forzado
+        for nodo in pids + [nodos.TODOS]:
+            if stale:
                 break
+            nr = newest_report(nodo)
             try:
-                generar_grupo(_pg, vmin)
-            except Exception as _e:
-                sys.stderr.write("generador %s: %s\n" % (_gid, _e))
-        # carpetas de grupos que ya nadie usa (usuario borrado, desactivado, sin el permiso, con
-        # menos puntos...). No si no se pudo saber cuales estan en uso o no se leen los usuarios:
-        # mejor una carpeta de mas que borrar la de alguien por un fallo de lectura
-        if grupos is not None and not _PARAR.is_set() and cargar_usuarios():
+                stale = (nr is None) or (time.time() - os.path.getmtime(nr) >= REFRESH_SECS)
+            except OSError:
+                stale = True       # se borro entre medias (baja de un punto): toca regenerar (A-10)
+        for _gid in grupos:
+            if stale:
+                break
+            # un grupo cuya generacion fallo hace poco (sin informe aun) espera al ciclo normal: si no,
+            # un fallo rapido (memoria, candado) forzaba regenerar todos los puntos cada vuelta
+            if time.time() - _GRUPO_INTENTO.get(_gid, 0) < REFRESH_SECS:
+                continue
+            nr = _newest_report_dir(_dir_grupo(_gid))
             try:
-                for _gid in limpiar_grupos(grupos):
-                    sys.stderr.write("grupo %s sin usar: carpeta borrada\n" % _gid)
+                stale = (nr is None) or (time.time() - os.path.getmtime(nr) >= REFRESH_SECS)
+            except OSError:
+                stale = True
+        # FRENO: si una corrida tardo mas que el propio ciclo, esperar al menos lo que
+        # tardo antes de lanzar la siguiente. Sin esto, en una caja donde generar lleva
+        # 9 minutos y el ciclo son 5, se encadenan una tras otra y queda un nucleo al
+        # 100 % de forma permanente; el reporte no sale antes por eso, y la maquina que
+        # tiene que analizar el trafico se queda sin CPU. Como mucho, medio nucleo.
+        # La ventana que acaba de elegir el operador NO se frena: con el freno, tras una corrida de
+        # 9 min el cambio de ventana se quedaba otros 9 min en «generando…» (el user, 2026-10-13).
+        # Sigue acotado: la misma ventana fallida no se reintenta antes de REGEN_MIN_SECS.
+        if stale and not ventana_pend and ult_dur > REFRESH_SECS and (time.time() - ult_fin) < ult_dur:
+            stale = False
+        if stale:
+            if forzado:
+                ult_forzado = time.time()
+            try:
+                mk_sync_enviados()   # el registro del panel refleja la lista real de cada MikroTik
+            except Exception:
+                pass
+            # se limpia DESPUES del sync: lo que cambie el sync ya entra en esta misma
+            # generacion, asi no queda pidiendo otra identica para el ciclo siguiente
+            FORCE_REGEN = False
+            try:
+                refrescar_abonados()  # mapa pid|IP->abonado (PPPoE/DHCP) para la ficha de evidencia
+            except Exception:
+                pass
+            # ventana del resumen en minutos (config VENTANA_MIN; por defecto 24h)
+            vmin = ventana_actual()
+            _t_gen = time.time()
+            _por_nodo(_ciclo_nodo, pids, vmin)
+            if not _PARAR.is_set():
+                generar_reporte(nodos.TODOS, vmin)   # la vista acumulada, al final y sola
+            # «Todos mis puntos» de cada usuario limitado (bloque C): un grupo por conjunto de puntos
+            # en uso, de uno en uno tras «Todos». La lista se recalcula aqui: la generacion de los
+            # puntos tarda y entre medias pudo cambiar un usuario o darse de baja un punto.
+            try:
+                grupos = grupos_en_uso()
             except Exception as _e:
-                sys.stderr.write("limpiar_grupos: %s\n" % _e)
-        ult_dur = time.time() - _t_gen
-        ult_fin = time.time()
-        if ult_dur > REFRESH_SECS:
-            # que quede dicho: si tarda mas que el ciclo, el operador tiene que
-            # saberlo (suele ser un eve.json/dns.json enorme)
-            sys.stderr.write("generar los reportes tardo %d s (ciclo %d s): se espaciaran las corridas\n"
-                             % (ult_dur, REFRESH_SECS))
-    estado.update(ult_poda=ult_poda, ult_sensor=ult_sensor, ult_fast=ult_fast, ult_dur=ult_dur,
-                  ult_fin=ult_fin, ult_aidb=ult_aidb, ult_pub=ult_pub, ult_diag=ult_diag,
-                  ult_feeds=ult_feeds, ult_forzado=ult_forzado, ult_cond=ult_cond, ult_hist=ult_hist,
-                  ult_bajas=ult_bajas)
+                sys.stderr.write("grupos_en_uso: %s\n" % _e)
+                grupos = None
+            for _gid, _pg in sorted((grupos or {}).items()):
+                if _PARAR.is_set():
+                    break
+                try:
+                    generar_grupo(_pg, vmin)
+                except Exception as _e:
+                    sys.stderr.write("generador %s: %s\n" % (_gid, _e))
+            # carpetas de grupos que ya nadie usa (usuario borrado, desactivado, sin el permiso, con
+            # menos puntos...). No si no se pudo saber cuales estan en uso o no se leen los usuarios:
+            # mejor una carpeta de mas que borrar la de alguien por un fallo de lectura
+            if grupos is not None and not _PARAR.is_set() and cargar_usuarios():
+                try:
+                    for _gid in limpiar_grupos(grupos):
+                        sys.stderr.write("grupo %s sin usar: carpeta borrada\n" % _gid)
+                except Exception as _e:
+                    sys.stderr.write("limpiar_grupos: %s\n" % _e)
+            ult_dur = time.time() - _t_gen
+            ult_fin = time.time()
+            if ult_dur > REFRESH_SECS:
+                # que quede dicho: si tarda mas que el ciclo, el operador tiene que
+                # saberlo (suele ser un eve.json/dns.json enorme)
+                sys.stderr.write("generar los reportes tardo %d s (ciclo %d s): se espaciaran las corridas\n"
+                                 % (ult_dur, REFRESH_SECS))
+    finally:
+        estado.update(ult_poda=ult_poda, ult_sensor=ult_sensor, ult_fast=ult_fast, ult_dur=ult_dur,
+                      ult_fin=ult_fin, ult_aidb=ult_aidb, ult_pub=ult_pub, ult_diag=ult_diag,
+                      ult_feeds=ult_feeds, ult_forzado=ult_forzado, ult_cond=ult_cond, ult_hist=ult_hist,
+                      ult_bajas=ult_bajas)
 
 # --- Informe diario por Telegram (07:30 en IDS_TZ) ----------------------------------------
 INFORME_BIN = os.path.join(_AQUI, "informe_diario.py")
@@ -16732,7 +16780,7 @@ def _registro_tipo(accion):
     (lo que hace el panel solo: errores internos, hilos, informe) y configuracion (todo lo demas).
     «fallo» se cruza con todos: lo que salio mal."""
     a = (accion or "").upper()
-    fallo = "ERROR" in a or "FALLO" in a or a == "SIN-PERMISO"
+    fallo = "ERROR" in a or "FALLO" in a or "COLGADO" in a or a == "SIN-PERMISO"
     if a.startswith(("LOGIN", "LOGOUT", "SESION", "SIN-PERMISO", "CONFIANZA", "DESBLOQ")):
         return "accesos", fallo
     if a.startswith(("USUARIO", "CLAVE", "PERFIL", "RESTABLECER")):
@@ -17731,10 +17779,43 @@ def _hist_con(pid=None):
         primera INTEGER NOT NULL,
         ultima  INTEGER NOT NULL,
         PRIMARY KEY(dia, cpe, firma));
+      -- cuantos destinos DISTINTOS tuvo cada abonado cada dia, como bosquejo de bits (QA D-03):
+      -- el detalle se poda al top HIST_TOP, asi que contar sus filas nunca pasaba de 8 por dia
+      CREATE TABLE IF NOT EXISTS destinos_dist(
+        dia  TEXT NOT NULL,
+        cpe  TEXT NOT NULL,
+        bits BLOB NOT NULL,
+        PRIMARY KEY(dia, cpe));
       CREATE INDEX IF NOT EXISTS i_resumen_hora ON resumen(hora);
       CREATE INDEX IF NOT EXISTS i_detalle_dia  ON detalle(dia);
     """)
     return c
+
+DEST_SKETCH_BITS = 4096      # 512 bytes por abonado y dia
+
+def _dest_sketch(bits, destinos):
+    """Bosquejo de destinos distintos (conteo lineal, QA D-03, 2026-11-14): cada destino marca un bit
+    por su hash; se combinan dias y pasadas con OR y el numero de distintos sale de los bits que siguen
+    a cero (_dest_estimar). Tamaño fijo: un abonado con 20 000 destinos al dia ocupa lo mismo que uno con
+    3, y al podar el detalle (top HIST_TOP) no se pierde la cuenta. Devuelve un bytearray."""
+    import zlib as _zl
+    b = bytearray(bits) if bits is not None and len(bits) == DEST_SKETCH_BITS // 8 else \
+        bytearray(DEST_SKETCH_BITS // 8)
+    for d in destinos:
+        h = _zl.crc32(str(d).encode("utf-8")) % DEST_SKETCH_BITS
+        b[h >> 3] |= 1 << (h & 7)
+    return b
+
+def _dest_estimar(bits):
+    """Destinos distintos estimados de un bosquejo: -m*ln(ceros/m). Exacto en la practica para
+    decenas (el umbral de «muchos destinos» es 40) y con un error de pocos % hasta miles."""
+    import math as _m
+    if not bits:
+        return 0
+    ceros = DEST_SKETCH_BITS - sum(bin(x).count("1") for x in bits)
+    if ceros <= 0:
+        return DEST_SKETCH_BITS * 8          # saturado: «muchisimos»
+    return int(round(-DEST_SKETCH_BITS * _m.log(ceros / DEST_SKETCH_BITS)))
 
 def hist_marca(c, nueva=None):
     """Hasta que instante se ha ingerido ya. Es lo que hace que un reinicio no
@@ -17797,6 +17878,7 @@ def hist_ingerir(pid=None, limite_lineas=4000000):
             desde = time.time() - HIST_DIAS * 86400
         res, det, tope, leidos = {}, {}, desde, 0
         fts = {}            # (dia, cpe, firma) -> [primera, ultima]
+        dsk = {}            # (dia, cpe) -> destinos de esta pasada (para destinos_dist, QA D-03)
         offs = _hist_offsets(c)
         vistos = {}
         # QA D-01 (2026-11-14): al agotar el tope la pasada se CORTA. Antes el for seguia,
@@ -17923,6 +18005,7 @@ def hist_ingerir(pid=None, limite_lineas=4000000):
                     dst = ev.get("dest_ip")
                     if dst:
                         det[(dia, ip, "destino", dst)] = det.get((dia, ip, "destino", dst), 0) + 1
+                        dsk.setdefault((dia, ip), set()).add(dst)
                     dp = ev.get("dest_port")
                     if dp:
                         k = (dia, ip, "puerto", str(dp))
@@ -17973,6 +18056,11 @@ def hist_ingerir(pid=None, limite_lineas=4000000):
             "ON CONFLICT(dia,cpe,firma) DO UPDATE SET primera=MIN(primera,excluded.primera),"
             "ultima=MAX(ultima,excluded.ultima)",
             [(d, ip, f, int(v[0]), int(v[1])) for (d, ip, f), v in fts.items()])
+        for (d, ip), ds in dsk.items():
+            f = c.execute("SELECT bits FROM destinos_dist WHERE dia=? AND cpe=?", (d, ip)).fetchone()
+            c.execute("INSERT INTO destinos_dist(dia,cpe,bits) VALUES(?,?,?) "
+                      "ON CONFLICT(dia,cpe) DO UPDATE SET bits=excluded.bits",
+                      (d, ip, bytes(_dest_sketch(f[0] if f else None, ds))))
         hist_marca(c, tope)
         c.commit()
         hist_podar(c)
@@ -17992,6 +18080,7 @@ def hist_podar(c=None, pid=None):
         c.execute("DELETE FROM resumen WHERE hora < ?", (corte_h,))
         c.execute("DELETE FROM detalle WHERE dia < ?", (corte_d,))
         c.execute("DELETE FROM firma_ts WHERE dia < ?", (corte_d,))
+        c.execute("DELETE FROM destinos_dist WHERE dia < ?", (corte_d,))
         # el top de cada (dia, cpe, tipo) con una ventana, en una sola pasada. La version anterior
         # (rowid NOT IN una subconsulta correlacionada con ORDER BY n LIMIT) reordenaba el grupo
         # entero por cada fila: con un abonado de 21 955 destinos en un dia no terminaba nunca (470 GB
@@ -18044,6 +18133,10 @@ def hist_conducta(dias=None, pid=None):
             acc.setdefault(cpe, {}).setdefault(tipo, {})[clave] = n
         # cuando se vio cada firma real en el periodo (para «cayo en la categoria»); lo ingerido
         # antes de existir firma_ts solo tiene el dia (detalle): sale como aproximado
+        dist = {}           # cpe -> bosquejo de destinos del periodo (OR de sus dias)
+        for cpe, bits in c.execute("SELECT cpe, bits FROM destinos_dist WHERE dia >= ?", (corte_d,)):
+            prev = dist.get(cpe)
+            dist[cpe] = bytes(bits) if prev is None else bytes(a | b for a, b in zip(prev, bits))
         tsf, diaf = {}, {}
         for cpe, fir, pri, ult in c.execute(
                 "SELECT cpe, firma, MIN(primera), MAX(ultima) FROM firma_ts "
@@ -18066,7 +18159,9 @@ def hist_conducta(dias=None, pid=None):
             f["puertos"] = _cd_top(t.get("puerto", {}))
             f["dominios"] = _cd_top(t.get("dominio", {}))
             f["malos"] = _cd_top(t.get("malo", {}))
-            f["destinos_n"] = len(t.get("destino", {}))
+            # el bosquejo cuenta TODOS los destinos (el detalle esta podado); lo ingerido antes de
+            # que existiera solo tiene el detalle, por eso el mayor de los dos
+            f["destinos_n"] = max(len(t.get("destino", {})), _dest_estimar(dist.get(cpe)))
             f["puertos_n"] = len(t.get("puerto", {}))
         # solo abonados con alertas reales: los que solo navegaron llenaban «Otros — revisar a
         # mano» con 0 alertas (30 de 36 en un punto) e inflaban «abonados con actividad»

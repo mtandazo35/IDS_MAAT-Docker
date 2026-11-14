@@ -75,6 +75,8 @@ class Registro(unittest.TestCase):
         self.assertEqual(t("GEN-FALLO"), ("sistema", True))
         self.assertEqual(t("GEN-OK"), ("sistema", False))
         self.assertEqual(t("TELEGRAM-FALLO"), ("sistema", True))
+        self.assertEqual(t("HILO-COLGADO"), ("sistema", True))           # QA D-07
+        self.assertEqual(t("HILO-RECUPERADO"), ("sistema", False))
 
     def test_detalle_largo_entero_y_dentro_del_recuadro(self):
         """El user (2026-10-16, con captura): el Detalle salía cortado a la derecha. Tipo: corrección

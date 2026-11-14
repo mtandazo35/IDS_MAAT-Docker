@@ -46,6 +46,8 @@ PIEZAS = ("HIST_DB", "HIST_DIAS", "HIST_TOP", "HIST_CADA", "CONDUCTA_DIAS",
           "CONDUCTA_TOPE", "_cd_abrir", "_CD_TS", "_cd_ts", "_cd_top",
           "_hist_con", "hist_marca", "_hist_huella", "_hist_offsets", "hist_ingerir",
           "hist_podar", "hist_conducta",
+          # destinos distintos con un bosquejo de bits (QA D-03, 2026-11-14)
+          "DEST_SKETCH_BITS", "_dest_sketch", "_dest_estimar",
           # el dominio de un evento, en el formato de Suricata que sea (2026-10-15)
           "dominio_de",
           # el ruido no cuenta (ET INFO y lo no abusivo; el user, 2026-10-13)
@@ -177,6 +179,11 @@ def main():
     check("la poda acota cuantas claves guarda por CPE", n <= ns2["HIST_TOP"], n)
     check("y conserva las mas frecuentes, no las primeras que llegaron",
           "10.0.0.1" in quedan and "10.0.0.39" not in quedan, quedan)
+    # QA D-03: la poda deja HIST_TOP filas, pero la cuenta de destinos DISTINTOS no puede salir de
+    # ahi (con 8 por dia el indicio «muchos destinos», umbral 40, no salia nunca): sale del bosquejo
+    f30 = [f for f in ns2["hist_conducta"](3)["filas"] if f["ip"] == "192.168.2.30"][0]
+    check("D-03: los destinos distintos se cuentan todos aunque el detalle este podado",
+          37 <= f30["destinos_n"] <= 41, f30["destinos_n"])
 
     # --- LO QUE FALLO EN PRODUCCION: log grande, tope agotado, contador parado ------
     # Marcas de tiempo distintas, como en un log real: con todas iguales no se puede

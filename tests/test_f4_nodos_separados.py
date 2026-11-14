@@ -813,6 +813,63 @@ class HiloRapido(Base):
         self.assertGreaterEqual(time.time() - t0, 0.9)
 
 
+class Latidos(Base):
+    """QA D-07 (2026-11-14): un hilo vivo pero colgado no lo veía nadie (supervisar_hilos solo miraba
+    is_alive) y una vuelta que reventaba a medias perdía sus marcas de tiempo."""
+
+    def setUp(self):
+        super().setUp()
+        self.bita = []
+        self.d.bitacora = lambda tipo, det, **k: self.bita.append(tipo)
+        self.addCleanup(self.d._HILOS.pop, "zz-prueba", None)
+        self.addCleanup(self.d.LATIDO.pop, "zz-prueba", None)
+        self.addCleanup(self.d._COLGADOS.discard, "zz-prueba")
+
+    def test_hilo_sin_latido_avisa_una_vez_y_su_vuelta(self):
+        """Corrección de defecto: sin latido en HILO_COLGADO_S, HILO-COLGADO en la bitácora una sola vez;
+        cuando vuelve a latir, HILO-RECUPERADO. Los hilos que no laten (sin LATIDO) no cuentan."""
+        import threading
+        self.d._HILOS["zz-prueba"] = (lambda: None, threading.current_thread())
+        ahora = time.time()
+        self.d.LATIDO["zz-prueba"] = ahora - self.d.HILO_COLGADO_S - 5
+        self.assertIn("zz-prueba", self.d.vigilar_latidos(ahora))
+        self.assertIn("zz-prueba", self.d.vigilar_latidos(ahora + 30))
+        self.assertEqual(self.bita.count("HILO-COLGADO"), 1)
+        self.d.LATIDO["zz-prueba"] = ahora + 40
+        self.assertNotIn("zz-prueba", self.d.vigilar_latidos(ahora + 41))
+        self.assertEqual(self.bita, ["HILO-COLGADO", "HILO-RECUPERADO"])
+
+    def test_cada_punto_es_un_latido(self):
+        """Capacidad nueva: _por_nodo late en cada punto, así una vuelta larga con muchos puntos no
+        parece colgada (solo para hilos supervisados)."""
+        import threading
+        vistos = []
+
+        def hilo():
+            self.d._por_nodo(lambda pid: vistos.append(self.d.LATIDO.get("zz-prueba")), ["p001", "p002"])
+        t = threading.Thread(target=hilo, name="zz-prueba")
+        self.d._HILOS["zz-prueba"] = (hilo, t)
+        t.start()
+        t.join(30)
+        self.assertEqual(len(vistos), 2)
+        self.assertTrue(all(v for v in vistos), vistos)
+
+    def test_una_vuelta_que_revienta_guarda_sus_marcas(self):
+        """Corrección de defecto: si la vuelta del refrescador falla a medias, las marcas ya puestas se
+        guardan (antes la poda o los feeds se repetían cada 10 s mientras siguiera fallando)."""
+        estado = {k: 0.0 for k in ("ult_poda", "ult_sensor", "ult_fast", "ult_dur", "ult_fin", "ult_aidb",
+                                   "ult_pub", "ult_diag", "ult_feeds", "ult_forzado", "ult_cond", "ult_hist",
+                                   "ult_bajas")}
+        self.d.barrer_bajas = lambda: None
+
+        def revienta():
+            raise RuntimeError("fallo a proposito")
+        self.d.pids_activos = revienta
+        with self.assertRaises(RuntimeError):
+            self.d._vuelta_refrescador(estado)
+        self.assertGreater(estado["ult_bajas"], 0)
+
+
 class ConductaPuntoLimpio(Base):
     """QA D-04 (2026-11-14): un punto sin alertas releía 3 días de eve/dns en cada vuelta de conducta,
     porque «base vacía» y «punto limpio» se confundían."""
