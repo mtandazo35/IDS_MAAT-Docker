@@ -131,6 +131,38 @@ class TelegramMkVisto(_Base):
         self.assertTrue(o.get("esperando_mk"))
         self.assertEqual(self._de_sur(), [])
 
+    def test_telegram_caido_no_da_el_aviso_por_dado(self):
+        """Corrección de defecto (QA D-05): si Telegram falla, el aviso NO queda marcado como dado: se
+        reintenta (no antes de TG_REINTENTO_S, sin frenar el hilo) y deja una línea en la bitácora una
+        sola vez. Antes se marcaba igual y no se repetía hasta 6 h después."""
+        intentos, bita = [], []
+        self.d.enviar_telegram = lambda t: (intentos.append(t), False)[1]      # falla (False, no None)
+        self.d.bitacora = lambda tipo, det, **k: bita.append(tipo)
+        self.suricata("p002", "exited", "none")
+        o = self.d.medir_sensor("p002")
+        self.assertEqual(len(intentos), 1)
+        self.assertEqual(o["alert_estado"], "ok")                 # no se da por avisado
+        self.assertTrue(o["alert_fallido"])
+        self.d.medir_sensor("p002")                               # antes de TG_REINTENTO_S: ni lo intenta
+        self.assertEqual(len(intentos), 1)
+        self.assertEqual(bita.count("TELEGRAM-FALLO"), 1)
+        self.d.TG_REINTENTO_S = 0                                 # vence la espera y Telegram vuelve
+        self.d.enviar_telegram = lambda t: intentos.append(t) or True
+        o = self.d.medir_sensor("p002")
+        self.assertEqual(len(intentos), 2)
+        self.assertIn(o["alert_estado"], ("warn", "down"))
+        self.assertFalse(o["alert_fallido"])
+        self.assertEqual(bita.count("TELEGRAM-FALLO"), 1)
+
+    def test_sin_ningun_canal_se_da_por_dado(self):
+        """Conservación: sin Telegram configurado (None) no hay nada que reintentar: el aviso cuenta
+        como dado, como siempre."""
+        self.d.enviar_telegram = lambda t: None
+        self.suricata("p002", "exited", "none")
+        o = self.d.medir_sensor("p002")
+        self.assertIn(o["alert_estado"], ("warn", "down"))
+        self.assertFalse(o["alert_fallido"])
+
     def test_suricata_caido_avisa_aunque_espere_al_mikrotik(self):
         """Capacidad nueva (A2/B2): con el Suricata del punto parado no se calla el aviso aunque el
         MikroTik no haya conectado nunca (la salud lo da en rojo)."""

@@ -70,6 +70,11 @@ class Registro(unittest.TestCase):
         self.assertEqual(t("THRESHOLD-FALLO"), ("configuracion", True))
         self.assertEqual(t("ERROR-PANEL"), ("sistema", True))       # lo hace el panel, no una persona
         self.assertEqual(t("INFORME-DIARIO"), ("sistema", False))
+        # QA D-05/D-06 (2026-11-14): lo que el panel hace solo, y sus fallos marcados como tales
+        self.assertEqual(t("INFORME-DIARIO-FALLO"), ("sistema", True))
+        self.assertEqual(t("GEN-FALLO"), ("sistema", True))
+        self.assertEqual(t("GEN-OK"), ("sistema", False))
+        self.assertEqual(t("TELEGRAM-FALLO"), ("sistema", True))
 
     def test_detalle_largo_entero_y_dentro_del_recuadro(self):
         """El user (2026-10-16, con captura): el Detalle salía cortado a la derecha. Tipo: corrección

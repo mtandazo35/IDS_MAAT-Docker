@@ -5862,13 +5862,16 @@ def telegram_chat_de(pid):
     return cargar_telegram_puntos().get(pid, "") if nodos.pid_valido(pid or "") else ""
 
 def enviar_telegram_chat(chat, texto):
-    """Envia `texto` a ese chat con el bot del panel. No lanza; True si Telegram lo acepto."""
+    """Envia `texto` a ese chat con el bot del panel. No lanza. True si Telegram lo acepto, False si
+    fallo y None si no hay canal (sin token o chat no valido): quien reintenta los distingue (QA D-05)."""
     tok = telegram_token()
     if not (tok and chat_valido(chat)):
-        return False
+        return None
     try:
         data = urllib.parse.urlencode({"chat_id": chat, "text": texto[:4000]}).encode()
-        urllib.request.urlopen(f"https://api.telegram.org/bot{tok}/sendMessage", data=data, timeout=15)
+        with urllib.request.urlopen(f"https://api.telegram.org/bot{tok}/sendMessage", data=data,
+                                    timeout=15) as _r:
+            _r.read()
         return True
     except Exception:
         return False
@@ -5876,11 +5879,12 @@ def enviar_telegram_chat(chat, texto):
 def enviar_telegram_punto(pid, texto):
     """Lo de un punto: al chat propio de ese punto, si tiene (el global va aparte, enviar_telegram)."""
     chat = telegram_chat_de(pid)
-    return enviar_telegram_chat(chat, texto) if chat else False
+    return enviar_telegram_chat(chat, texto) if chat else None
 
 def enviar_telegram(texto):
     """Envia un aviso por Telegram si esta configurado en conf/report.conf (token cifrado).
-    No lanza: si no hay token o falla la red, no pasa nada (el aviso igual queda en el panel)."""
+    No lanza: si no hay token o falla la red, no pasa nada (el aviso igual queda en el panel).
+    True enviado, False fallo, None sin canal configurado (como enviar_telegram_chat)."""
     chat = None
     try:
         for ln in open(REPORT_CONF, encoding="utf-8"):
@@ -5888,13 +5892,15 @@ def enviar_telegram(texto):
             if ln.startswith("TELEGRAM_CHAT_ID="):
                 chat = ln.split("=", 1)[1].strip()
     except OSError:
-        return False
+        return None
     tok = telegram_token()
     if not (tok and chat):
-        return False
+        return None
     try:
         data = urllib.parse.urlencode({"chat_id": chat, "text": texto[:4000]}).encode()
-        urllib.request.urlopen(f"https://api.telegram.org/bot{tok}/sendMessage", data=data, timeout=15)
+        with urllib.request.urlopen(f"https://api.telegram.org/bot{tok}/sendMessage", data=data,
+                                    timeout=15) as _r:
+            _r.read()
         return True
     except Exception:
         return False
@@ -6266,6 +6272,7 @@ def medir_sensor(pid=None):
     o["alert_estado"] = prev.get("alert_estado", "ok")
     o["alert_titulo"] = prev.get("alert_titulo", "")
     o["alert_ts"] = prev.get("alert_ts", 0)
+    o["alert_fallido"] = prev.get("alert_fallido", 0)
     # Un punto recien creado (o creandose) que aun espera a su MikroTik no tiene trafico ni puede
     # tenerlo: avisar «Sin trafico» o «Sensor detenido» por Telegram era ruido (el user, 2026-10-14).
     # Mientras el MikroTik no haya conectado NUNCA (desde que el panel lo mira), ni avisa ni cuenta
@@ -6304,10 +6311,27 @@ def medir_sensor(pid=None):
         aviso = f"{ico} Suricata [{donde}]: {o['titulo']}" + (" (" + ", ".join(det) + ")" if det else "")
     elif era_mal and not mal and not o.get("esperando_mk"):
         aviso = f"✅ Suricata [{donde}]: sensor recuperado ({o['titulo']})"
+    # QA D-05 (2026-11-14): el aviso solo se da por dado si llego a algun canal, o si no hay ninguno
+    # configurado. Antes se marcaba aunque Telegram fallara: un «sensor caido» con la red a Telegram
+    # cortada no se repetia hasta 6 h despues, y el «recuperado» se perdia. Un fallo se reintenta en
+    # la siguiente medida, pero no antes de TG_REINTENTO_S: cada intento puede tardar 2 x 15 s y
+    # frenaria el hilo rapido de todos los puntos.
+    if aviso and o["alert_fallido"] and now - o["alert_fallido"] < TG_REINTENTO_S:
+        aviso = None
     if aviso:
-        enviar_telegram(aviso)
-        enviar_telegram_punto(pid, aviso)     # el aviso es solo de este punto: tambien a su chat
-        o["alert_estado"] = o["nivel"]; o["alert_titulo"] = o["titulo"]; o["alert_ts"] = int(now)
+        _r_g = enviar_telegram(aviso)
+        _r_p = enviar_telegram_punto(pid, aviso)     # el aviso es solo de este punto: tambien a su chat
+        if _r_g or _r_p or (_r_g is None and _r_p is None):
+            o["alert_estado"] = o["nivel"]; o["alert_titulo"] = o["titulo"]; o["alert_ts"] = int(now)
+            o["alert_fallido"] = 0
+        else:
+            if not o["alert_fallido"]:
+                try:
+                    bitacora("TELEGRAM-FALLO", "aviso de salud de %s no enviado; se reintenta cada %d min"
+                             % (pid, TG_REINTENTO_S // 60), quien="panel")
+                except Exception:
+                    pass
+            o["alert_fallido"] = int(now)
     try:
         tmp = "%s.%d.tmp" % (ruta_s, os.getpid())
         with open(tmp, "w", encoding="utf-8") as f:
@@ -6318,6 +6342,7 @@ def medir_sensor(pid=None):
     return o
 
 _NIVEL_PESO = {"down": 3, "warn": 2, "ok": 1}
+TG_REINTENTO_S = 300     # un aviso de salud que no llego a Telegram se reintenta cada 5 min como mucho
 
 def estado_sensor(pid=None):
     """Lo ultimo que midio medir_sensor() del nodo que se mira (o del dado). En «Todos», el
@@ -10574,18 +10599,55 @@ def generar_reporte(nodo, vmin):
         args = ["--nodo", nodos.exigir_pid(nodo)]
     return _correr_generador(vmin, args, nodo)
 
+GEN_FALLOS = {}      # etiqueta -> (motivo, desde, ultima vez que fue a la bitacora)
+GEN_FALLO_RECORDAR_S = 3600
+GEN_OCUPADO = 75     # html_report.py: el candado /tmp/ids-hrep.lock lo tiene otro (no es un fallo)
+
+def _gen_resultado(etiqueta, motivo):
+    """Apunta el resultado de una generacion (QA D-06, 2026-11-14). Antes el generador corria con la
+    salida a /dev/null y sin mirar el codigo de salida: un MemoryError (RLIMIT de 1 GiB), una
+    excepcion en html_report o el tiempo agotado dejaban el informe viejo sin rastro. Ahora un fallo
+    va al log del contenedor siempre y a la bitacora (GEN-FALLO) la primera vez, si cambia el motivo
+    o cada hora si sigue; la vuelta a la normalidad tambien (GEN-OK). `motivo` None = fue bien."""
+    ahora = time.time()
+    previo = GEN_FALLOS.get(etiqueta)
+    if motivo is None:
+        if previo:
+            GEN_FALLOS.pop(etiqueta, None)
+            try:
+                bitacora("GEN-OK", "%s: el informe vuelve a generarse" % etiqueta, quien="panel")
+            except Exception:
+                pass
+        return
+    sys.stderr.write("generador %s: %s\n" % (etiqueta, motivo))
+    if previo and previo[0] == motivo and ahora - previo[2] < GEN_FALLO_RECORDAR_S:
+        return
+    GEN_FALLOS[etiqueta] = (motivo, previo[1] if previo else ahora, ahora)
+    try:
+        bitacora("GEN-FALLO", "%s: %s" % (etiqueta, motivo), quien="panel")
+    except Exception:
+        pass
+
 def _correr_generador(vmin, args, etiqueta):
     """El generador como subproceso (nice, tope de memoria y de tiempo), de uno en uno."""
     cmd = ["nice", "-n", "15", sys.executable, GEN, str(int(vmin))] + list(args)
     t0 = time.time()
     with _GEN_LOCK:
+        motivo, ocupado = None, False
         try:
-            subprocess.run(cmd, timeout=GEN_TIMEOUT, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                           preexec_fn=_limitar_generador if os.name == "posix" else None)
+            r = subprocess.run(cmd, timeout=GEN_TIMEOUT, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+                               preexec_fn=_limitar_generador if os.name == "posix" else None)
+            rc = getattr(r, "returncode", 0)
+            ocupado = rc == GEN_OCUPADO
+            if rc not in (0, GEN_OCUPADO):
+                err = (getattr(r, "stderr", b"") or b"").decode("utf-8", "replace").strip().splitlines()
+                motivo = "salió con %s%s" % (rc, (": " + err[-1][:200]) if err else "")
         except subprocess.TimeoutExpired:
-            sys.stderr.write("generador %s: mas de %d s, se corta\n" % (etiqueta, GEN_TIMEOUT))
+            motivo = "más de %d s, se corta" % GEN_TIMEOUT
         except OSError as e:
-            sys.stderr.write("generador %s: %s\n" % (etiqueta, e))
+            motivo = str(e)[:200]
+        if not ocupado:              # con el candado ocupado no se sabe nada del informe: ni fallo ni OK
+            _gen_resultado(str(etiqueta), motivo)
     return time.time() - t0
 
 # --- «Todos mis puntos» (bloque C, 2026-10-23) ---------------------------------------------
@@ -11002,36 +11064,72 @@ def _proximo_informe(ahora=None):
         obj = obj + timedelta(days=1)
     return obj.timestamp()
 
+INFORME_INTENTOS = 3        # intentos del informe de un dia (el de las 07:30 y dos reintentos)
+INFORME_REINTENTO_S = 1800  # entre intento e intento
+
+def _informe_estado():
+    try:
+        d = json.load(open(INFORME_ESTADO, encoding="utf-8"))
+        return d if isinstance(d, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+def _informe_pendiente(hoy, st):
+    """El informe de HOY fallo y le quedan intentos (QA D-06: antes un fallo daba el dia por hecho)."""
+    return (st.get("dia") == hoy and not st.get("ok")
+            and int(st.get("intentos") or 1) < INFORME_INTENTOS)
+
+def informe_diario_correr(hoy):
+    """Un intento del informe de `hoy`: lo lanza, deja en la bitacora el resultado con la ultima linea
+    de su stderr si fallo, y guarda el dia, si fue bien y cuantos intentos lleva."""
+    st = _informe_estado()
+    intentos = (int(st.get("intentos") or 1) if st.get("dia") == hoy else 0) + 1
+    try:
+        r = subprocess.run(["nice", "-n", "15", sys.executable, INFORME_BIN], timeout=900,
+                           stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+        ok = r.returncode == 0
+        err = (getattr(r, "stderr", b"") or b"").decode("utf-8", "replace").strip().splitlines()
+        det = "enviado" if ok else "fallo (rc=%d)%s" % (r.returncode, (": " + err[-1][:160]) if err else "")
+    except (OSError, subprocess.TimeoutExpired) as e:
+        ok = False
+        det = "fallo: %s" % str(e)[:120]
+    if not ok:
+        det += ("; se reintenta en %d min" % (INFORME_REINTENTO_S // 60) if intentos < INFORME_INTENTOS
+                else "; sin más intentos hoy")
+    bitacora("INFORME-DIARIO" if ok else "INFORME-DIARIO-FALLO", "%s (intento %d de %d)" % (det, intentos, INFORME_INTENTOS)
+             if (intentos > 1 or not ok) else det, quien="panel")
+    try:
+        tmp = INFORME_ESTADO + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump({"dia": hoy, "ok": ok, "ts": int(time.time()), "intentos": intentos}, f)
+        os.replace(tmp, INFORME_ESTADO)
+    except OSError:
+        pass
+    return ok
+
 def informe_diario_hilo():
     """Hilo: a las 07:30 en IDS_TZ lanza informe_diario.py (un mensaje con una seccion por
-    punto). Recuerda el dia enviado, asi un reinicio a las 07:31 no lo manda dos veces."""
+    punto). Recuerda el dia enviado, asi un reinicio a las 07:31 no lo manda dos veces. Si falla,
+    lo reintenta cada INFORME_REINTENTO_S hasta INFORME_INTENTOS veces ese mismo dia."""
     while not _PARAR.is_set():
-        espera = max(1.0, _proximo_informe() - time.time())
+        hoy = datetime.now(TZ_EC).strftime("%Y-%m-%d")
+        st = _informe_estado()
+        if _informe_pendiente(hoy, st):
+            espera = max(1.0, float(st.get("ts") or 0) + INFORME_REINTENTO_S - time.time())
+        else:
+            espera = max(1.0, _proximo_informe() - time.time())
         if _PARAR.wait(min(espera, 3600)):
             return
-        if _proximo_informe() - time.time() < 23 * 3600:
-            continue                     # aun no toca (se desperto por el tope de una hora)
         hoy = datetime.now(TZ_EC).strftime("%Y-%m-%d")
-        try:
-            if (json.load(open(INFORME_ESTADO, encoding="utf-8")) or {}).get("dia") == hoy:
-                continue
-        except (OSError, ValueError, AttributeError):
-            pass
-        try:
-            r = subprocess.run(["nice", "-n", "15", sys.executable, INFORME_BIN], timeout=900,
-                               stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
-            ok = r.returncode == 0
-            bitacora("INFORME-DIARIO", "enviado" if ok else "fallo (rc=%d)" % r.returncode, quien="panel")
-        except (OSError, subprocess.TimeoutExpired) as e:
-            ok = False
-            bitacora("INFORME-DIARIO", "fallo: %s" % str(e)[:120], quien="panel")
-        try:
-            tmp = INFORME_ESTADO + ".tmp"
-            with open(tmp, "w", encoding="utf-8") as f:
-                json.dump({"dia": hoy, "ok": ok, "ts": int(time.time())}, f)
-            os.replace(tmp, INFORME_ESTADO)
-        except OSError:
-            pass
+        st = _informe_estado()
+        if _informe_pendiente(hoy, st):
+            if time.time() < float(st.get("ts") or 0) + INFORME_REINTENTO_S:
+                continue                 # aun no toca el reintento (tope de una hora)
+        elif _proximo_informe() - time.time() < 23 * 3600:
+            continue                     # aun no toca (se desperto por el tope de una hora)
+        elif st.get("dia") == hoy:
+            continue                     # el de hoy ya salio (o ya agoto sus intentos)
+        informe_diario_correr(hoy)
 
 import puntos_web   # noqa: E402  (apartado Puntos; importa nodos y idspanel, no el dashboard)
 import eventos_web  # noqa: E402  (pagina Eventos; tampoco importa el dashboard)
@@ -16635,7 +16733,7 @@ def _registro_tipo(accion):
                      "MK-PAUSA", "ERROR-ENVIO", "ERROR-DESTINO", "ERROR-GRADUADA", "DENUNCIA",
                      "PUBLICA-", "CONSULTA-ABUSEIPDB")):
         return "cuarentena", fallo
-    if a.startswith(("ERROR-PANEL", "FONDO-", "HILO-", "INFORME-DIARIO", "MIGRA")):
+    if a.startswith(("ERROR-PANEL", "FONDO-", "HILO-", "INFORME-DIARIO", "MIGRA", "GEN-", "TELEGRAM-")):
         return "sistema", fallo
     return "configuracion", fallo
 

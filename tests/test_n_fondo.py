@@ -174,6 +174,58 @@ class Generador(Base):
         self.assertEqual(llamadas[1][-2:], ["60", "--todos"])
         self.assertEqual(len(llamadas), 2)
 
+    def falso_run(self, rc, stderr=b""):
+        class R:
+            pass
+        R.returncode, R.stderr = rc, stderr
+        real = self.d.subprocess.run
+        self.d.subprocess.run = lambda cmd, **kw: R()
+        self.addCleanup(setattr, self.d.subprocess, "run", real)
+
+    def test_un_fallo_del_generador_deja_rastro(self):
+        """Corrección de defecto (QA D-06): el generador iba a /dev/null y sin mirar el código de salida:
+        un MemoryError dejaba el informe viejo sin rastro. Ahora va a la bitácora (GEN-FALLO) con la
+        última línea de su stderr, una vez mientras el motivo no cambie, y la vuelta también (GEN-OK).
+        El candado ocupado (75) no es un fallo."""
+        bita = []
+        self.d.bitacora = lambda tipo, det, **k: bita.append((tipo, det))
+        self.falso_run(1, b"Traceback...\nMemoryError\n")
+        self.d.generar_reporte("p002", 60)
+        self.d.generar_reporte("p002", 60)
+        self.assertEqual(bita, [("GEN-FALLO", "p002: salió con 1: MemoryError")])
+        self.falso_run(75)
+        self.d.generar_reporte("p002", 60)
+        self.assertEqual(len(bita), 1)
+        self.falso_run(0)
+        self.d.generar_reporte("p002", 60)
+        self.assertEqual(bita[-1][0], "GEN-OK")
+        self.d.generar_reporte("p002", 60)
+        self.assertEqual(len(bita), 2)
+
+    def test_el_informe_diario_fallido_se_reintenta(self):
+        """Corrección de defecto (QA D-06): un informe diario que falla ya no da el día por hecho: se
+        reintenta hasta INFORME_INTENTOS veces; la bitácora lleva su stderr y cuántos intentos van."""
+        bita = []
+        self.d.bitacora = lambda tipo, det, **k: bita.append(det)
+        hoy = "2026-11-14"
+        self.falso_run(1, b"sin red\n")
+        self.assertFalse(self.d.informe_diario_correr(hoy))
+        st = self.d._informe_estado()
+        self.assertEqual((st["dia"], st["ok"], st["intentos"]), (hoy, False, 1))
+        self.assertTrue(self.d._informe_pendiente(hoy, st))
+        self.assertIn("sin red", bita[-1])
+        self.assertIn("se reintenta", bita[-1])
+        self.d.informe_diario_correr(hoy)
+        self.d.informe_diario_correr(hoy)
+        st = self.d._informe_estado()
+        self.assertEqual(st["intentos"], 3)
+        self.assertFalse(self.d._informe_pendiente(hoy, st))           # sin más intentos hoy
+        self.assertIn("sin más intentos hoy", bita[-1])
+        self.assertFalse(self.d._informe_pendiente("2026-11-15", st))  # otro día: a las 07:30, como siempre
+        self.falso_run(0)
+        self.assertTrue(self.d.informe_diario_correr("2026-11-15"))
+        self.assertEqual(self.d._informe_estado()["intentos"], 1)
+
     def test_informe_a_las_0730_en_ids_tz(self):
         """Tipo: capacidad nueva. La hora del informe diario se calcula en IDS_TZ."""
         from datetime import datetime
