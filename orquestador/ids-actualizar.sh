@@ -7,7 +7,9 @@
 #   ids-actualizar.sh <commit> [quién]   lo mismo a mano, como root (la cola de ids-orq no se pausa:
 #                                        mejor desde el panel o con `ids-orq actualizar <commit>`).
 #                                        A mano sí se puede volver a un commit ANTERIOR al instalado;
-#                                        con --pedido (el panel) no: solo se avanza (QA O-01)
+#                                        con --pedido (el panel) no: solo se avanza (QA O-01).
+#                                        Siempre exige el CI «ci» de GitHub en verde para el commit;
+#                                        a mano, IDS_SIN_CI=1 lo salta (queda anotado; QA T-03)
 #
 # Lleva el PANEL y el ORQUESTADOR al commit pedido de la rama main de GitHub:
 #   1. descarga el commit en /root/ids-maat/actualizar/src y comprueba que es de main;
@@ -25,6 +27,7 @@ set -uo pipefail     # sin -e: cada paso comprueba lo suyo y decide si hay que v
 
 R="${IDS_RAIZ:-}"    # prefijo de rutas: solo las pruebas lo cambian
 REPO_URL="${IDS_REPO_URL:-https://github.com/mtandazo35/IDS_MAAT-Docker.git}"
+API_RUNS="${IDS_API_RUNS:-https://api.github.com/repos/mtandazo35/IDS_MAAT-Docker/actions/runs}"
 RAMA=main
 GUARDA="$R/root/ids-maat/actualizar"
 SRC="$GUARDA/src"
@@ -48,7 +51,41 @@ P=0
 COMMIT="" QUIEN="" ID="" DESDE="" SHA7="" IMG="" IMG_ANTES="" RESPALDO=""
 INICIO=$(date +%s)
 
-uso() { sed -n '2,23p' "$0"; }
+uso() { sed -n '2,25p' "$0"; }
+
+# QA T-03 (2026-11-14, decisión del dueño: «solo el CI de GitHub»): «Actualizar» instalaba cualquier
+# commit de main sin mirar si el CI estaba en verde. Ahora exige que la última ejecución del
+# workflow ci.yml para ese commit haya terminado bien (como scripts/lab-actualizar.sh). Imprime
+# «success», el estado («completed/failure», «in_progress/»...) o nada si no hay ejecución.
+estado_ci() {   # $1 = sha completo
+  curl -fsSL --max-time 20 -H "Accept: application/vnd.github+json" "$API_RUNS?head_sha=$1&per_page=100" \
+    | python3 -c '
+import json, sys
+runs = [r for r in json.load(sys.stdin).get("workflow_runs") or []
+        if r.get("path", "").split("@")[0] == ".github/workflows/ci.yml"]
+if runs:
+    r = max(runs, key=lambda r: (r.get("run_number") or 0, r.get("run_attempt") or 0))
+    print("success" if (r.get("status"), r.get("conclusion")) == ("completed", "success")
+          else "%s/%s" % (r.get("status"), r.get("conclusion") or ""))'
+}
+
+exigir_ci() {   # $1 = sha completo
+  local estado
+  if [ "$MODO" = manual ] && [ "${IDS_SIN_CI:-0}" = 1 ]; then
+    log "AVISO: IDS_SIN_CI=1: se instala ${1:0:7} SIN comprobar el CI de GitHub"
+    printf '%s %s %s sin-ci\n' "$TS" "$1" "$QUIEN" >> "$GUARDA/sin-ci.log"
+    return 0
+  fi
+  estado=$(estado_ci "$1") \
+    || abortar "no se pudo consultar el CI de ${1:0:7} en GitHub (¿sin salida a GitHub o límite de la API?); reintenta en unos minutos"
+  case "$estado" in
+    success) log "CI «ci» en verde para ${1:0:7}" ;;
+    "") abortar "el commit ${1:0:7} no tiene ninguna ejecución del CI de GitHub; reintenta cuando haya pasado" ;;
+    in_progress/*|queued/*|waiting/*|pending/*|requested/*)
+        abortar "el CI de GitHub de ${1:0:7} todavía está en marcha ($estado); reintenta en unos minutos" ;;
+    *) abortar "el CI de GitHub de ${1:0:7} no está en verde ($estado): no se instala" ;;
+  esac
+}
 
 log() {
   printf '%s\n' "$*"
@@ -330,6 +367,7 @@ if [ "$MODO" = pedido ] && [[ "$DESDE" =~ ^[0-9a-f]{7,40}$ ]]; then
     abortar "el commit ${COMPLETO:0:7} es anterior al instalado (${INSTALADO:0:7}): desde el panel solo se avanza; para volver atrás, en la consola del servidor: ids-actualizar.sh ${COMPLETO:0:7}"
   fi
 fi
+exigir_ci "$COMPLETO"
 git -C "$SRC" checkout -q --force --detach "$COMPLETO" >>"$LOG" 2>&1 || abortar "no se pudo preparar el commit"
 git -C "$SRC" clean -q -fdx >>"$LOG" 2>&1 || true
 COMMIT="$COMPLETO"

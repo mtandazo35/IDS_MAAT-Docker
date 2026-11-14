@@ -134,8 +134,17 @@ que actualice el **panel y el orquestador**, sin tocar los puntos, y que salga d
    - una actualización colgada solo para la cola 1 h.
 4. La unidad ejecuta `/usr/local/lib/ids-orq/ids-actualizar.sh --pedido`. Es oneshot, con
    `UMask=0022` y fuera del encierro de `ids-orq`, porque lo reinicia. Pasos:
-   1. **descargar**: `git fetch` en `/root/ids-maat/actualizar/src` y comprobación de que el
-      commit es de `main` (`merge-base --is-ancestor`);
+   1. **descargar**: `git fetch` en `/root/ids-maat/actualizar/src` y tres comprobaciones:
+      - el commit es de `main` (`merge-base --is-ancestor`);
+      - **solo se avanza**: un pedido del panel (`--pedido`) para un commit anterior al instalado
+        se rechaza. Reinstalar el mismo commit sí vale, y a mano, en la consola, se puede volver
+        atrás (QA O-01, 2026-11-14);
+      - **el CI de GitHub en verde**: la última ejecución de `ci.yml` para ese commit tiene que
+        haber terminado bien (API pública de *actions/runs*, como `scripts/lab-actualizar.sh`).
+        Con el CI en rojo, todavía en marcha, sin ejecución o sin poder consultarlo, no se instala
+        y el mensaje dice por qué. A mano, `IDS_SIN_CI=1` lo salta y queda anotado en
+        `/root/ids-maat/actualizar/sin-ci.log`; desde el panel no (decisión del dueño 2026-11-14,
+        QA T-03). Recién subido un commit, el botón falla unos minutos hasta que el CI termina;
    2. **validar**: están los ficheros que hacen falta, `ids_orq.py --help` arranca y
       `bash -n` del script;
    3. **construir** `ids-maat-panel:main-<sha7>` en el servidor, con `images/build.sh` y sin firma;
@@ -174,7 +183,8 @@ A mano, desde la consola: `ids-orq actualizar <commit>` (pasa por la cola). Volv
 `install.sh` sin `--version` hace esto mismo al terminar (decisión del dueño 2026-10-27,
 `al_dia_con_main`): si el último commit de `main` no es el de la etiqueta de la release, llama a
 `ids-actualizar.sh <commit> install.sh` y el resumen dice «panel y orquestador main-<sha7>». Si falla, la
-instalación queda en la release con un aviso y se repite desde el panel.
+instalación queda en la release con un aviso y se repite desde el panel. También se queda en la release
+si el CI de ese commit todavía no está en verde (por ejemplo, recién subido).
 
 ### 4.2 Diseño completo (pendiente): release firmada, con canario
 

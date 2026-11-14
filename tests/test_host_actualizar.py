@@ -46,6 +46,17 @@ fi
 exit 0
 """
 
+# La API de GitHub (ejecuciones del CI) simulada: CI_FALSO = "<status>/<conclusion>", «vacio» (sin
+# ejecuciones) o «error» (sin red). Por defecto en verde (QA T-03: «Actualizar» exige el CI en verde).
+FALSO_CURL = """#!/bin/bash
+echo "curl $*" >> "$LLAMADAS"
+case "${CI_FALSO:-completed/success}" in
+  error) exit 22 ;;
+  vacio) echo '{"workflow_runs": []}' ;;
+  *) printf '{"workflow_runs": [{"path": ".github/workflows/ci.yml", "status": "%s", "conclusion": "%s", "run_number": 1}]}\\n' "${CI_FALSO%%/*}" "${CI_FALSO#*/}" ;;
+esac
+"""
+
 
 def git(cwd, *args):
     return subprocess.run(["git", "-c", "user.name=Prueba", "-c", "user.email=prueba@example.invalid",
@@ -67,7 +78,8 @@ class Actualizador(unittest.TestCase):
         self._repo()
         self._raiz()
         self.falsos.mkdir()
-        for nombre, txt in (("docker", FALSO_DOCKER), ("systemctl", FALSO_SYSTEMCTL), ("ids-orq", FALSO_ORQ)):
+        for nombre, txt in (("docker", FALSO_DOCKER), ("systemctl", FALSO_SYSTEMCTL), ("ids-orq", FALSO_ORQ),
+                            ("curl", FALSO_CURL)):
             p = self.falsos / nombre
             p.write_text(txt, encoding="utf-8", newline="\n")
             p.chmod(0o755)
@@ -121,12 +133,15 @@ class Actualizador(unittest.TestCase):
             (R / d).mkdir(parents=True, exist_ok=True)
         (R / "srv/ids/panel/conf/usuarios.json").write_text("[]", encoding="utf-8")
 
-    def correr(self, *args, etiqueta=""):
-        entorno = dict(os.environ, IDS_RAIZ=str(self.R), IDS_REPO_URL=str(self.repo),
+    def correr(self, *args, etiqueta="", ci="completed/success", sin_ci=None):
+        entorno = dict(os.environ, IDS_RAIZ=str(self.R), IDS_REPO_URL=str(self.repo), CI_FALSO=ci,
                        IDS_ORQ_BIN=str(self.falsos / "ids-orq"), IDS_ESPERA_ORQ_S="2",
                        PATH="%s:%s" % (self.falsos, os.environ.get("PATH", "")),
                        LLAMADAS=str(self.llamadas), FALLOS_PANEL=str(self.fallos_panel),
                        ETIQUETA_ACTUAL=etiqueta)
+        entorno.pop("IDS_SIN_CI", None)
+        if sin_ci is not None:
+            entorno["IDS_SIN_CI"] = sin_ci
         return subprocess.run(["bash", str(SCRIPT), *args], capture_output=True, text=True,
                               timeout=180, env=entorno)
 
@@ -255,11 +270,11 @@ class Actualizador(unittest.TestCase):
         self.assertEqual((av["id"], av["quien"], av["estado"]), (OP, "panel:ana", "ok"))
         self.assertFalse(ped.exists())
 
-    def _pedido(self, commit):
+    def _pedido(self, commit, ci="completed/success"):
         ped = self.R / "srv/ids/estado/actualizar-pedido.json"
         ped.write_text(json.dumps({"commit": commit[:7], "quien": "panel:ana", "op_id": OP, "ts": 1}),
                        encoding="utf-8")
-        return self.correr("--pedido", etiqueta="main-" + commit[:7])
+        return self.correr("--pedido", etiqueta="main-" + commit[:7], ci=ci)
 
     def _instalado(self, commit):
         self.imagenes = dict(self.imagenes, commit=commit, version="main-" + commit[:7], dev=True)
@@ -294,6 +309,43 @@ class Actualizador(unittest.TestCase):
         r = self.correr(self.c1[:7], "root", etiqueta="main-" + self.c1[:7])
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertEqual(json.loads(self.leer("etc/ids-maat/imagenes.json"))["commit"], self.c1)
+
+    def test_sin_ci_en_verde_no_se_instala(self):
+        """Corrección de defecto (QA T-03, decisión del dueño 2026-11-14: «solo el CI de GitHub»): un
+        commit con el CI en rojo, en marcha, sin ejecución o sin poder consultarlo no se instala, y no
+        se toca nada. Antes «Actualizar» instalaba cualquier commit de main."""
+        for ci, texto in (("completed/failure", "no está en verde (completed/failure)"),
+                          ("in_progress/", "todavía está en marcha"),
+                          ("vacio", "no tiene ninguna ejecución del CI"),
+                          ("error", "no se pudo consultar el CI")):
+            with self.subTest(ci=ci):
+                r = self._pedido(self.c2, ci=ci)
+                self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+                av = self.avance()
+                self.assertEqual(av["estado"], "fallo", av)
+                self.assertIn(texto, av["mensaje"])
+                self.assertIn("No se cambió nada", av["mensaje"])
+                self.assertEqual(json.loads(self.leer("etc/ids-maat/imagenes.json")), self.imagenes)
+                self.assertNotIn("docker build", self.llamadas.read_text(encoding="utf-8"))
+
+    def test_el_ci_se_consulta_para_el_commit_completo(self):
+        """Capacidad nueva: la consulta va a la API de ejecuciones con el sha completo del commit."""
+        r = self.correr(self.c2[:7], "ana", etiqueta="main-" + self.c2[:7])
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("actions/runs?head_sha=%s" % self.c2, self.llamadas.read_text(encoding="utf-8"))
+
+    def test_a_mano_ids_sin_ci_lo_salta_y_lo_anota(self):
+        """Conservación (salida de emergencia): a mano, IDS_SIN_CI=1 instala sin mirar el CI y queda
+        anotado; desde el panel (--pedido) IDS_SIN_CI no vale."""
+        r = self.correr(self.c2[:7], "root", etiqueta="main-" + self.c2[:7], ci="completed/failure", sin_ci="1")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("sin-ci", self.leer("root/ids-maat/actualizar/sin-ci.log"))
+        ped = self.R / "srv/ids/estado/actualizar-pedido.json"
+        ped.write_text(json.dumps({"commit": self.c2[:7], "quien": "panel:ana", "op_id": OP, "ts": 1}),
+                       encoding="utf-8")
+        r = self.correr("--pedido", etiqueta="main-" + self.c2[:7], ci="completed/failure", sin_ci="1")
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("no está en verde", self.avance()["mensaje"])
 
     def test_ayuda_y_sintaxis(self):
         self.assertEqual(subprocess.run(["bash", "-n", str(SCRIPT)]).returncode, 0)
