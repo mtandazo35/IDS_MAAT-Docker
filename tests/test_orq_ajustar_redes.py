@@ -138,6 +138,80 @@ class PerfilHilos(Base):
         self.assertEqual(hechos, total)
 
 
+class VueltaAtras(Base):
+    """QA O-02 (2026-11-14): si punto.ajustar falla después de escribir, vuelve a los ficheros y los
+    datos de antes y los pone en marcha (REVERTIDA), como punto.reconfigurar. Antes el punto quedaba
+    con lo nuevo a medias y sin servicio."""
+
+    def fallar_una_vez(self, *trozos):
+        """La primera orden que lleva cada trozo falla; las siguientes (la vuelta atrás) van bien."""
+        orig, hechas, quedan = self.mod.ejecutar, [], list(trozos)
+
+        def una_vez(args, entrada=None, timeout=600):
+            linea = " ".join(str(a) for a in args)
+            for t in quedan:
+                if t in linea:
+                    quedan.remove(t)
+                    hechas.append(args)
+                    return self.mod.Resultado(1, "", "fallo simulado: %s" % t)
+            return orig(args, entrada, timeout)
+        self.mod.ejecutar = una_vez
+        self.addCleanup(setattr, self.mod, "ejecutar", orig)
+        return hechas
+
+    def ficheros(self):
+        b = "/srv/ids/puntos/p001/"
+        return {r: self.e.ruta(b + r).read_text(encoding="utf-8")
+                for r in ("suricata/suricata.yaml", "compose.yml", "vpn/server.conf")}
+
+    def test_perfil_que_falla_al_recrear_vuelve_a_lo_de_antes(self):
+        """Corrección de defecto: falla el recreado con el perfil nuevo -> ficheros, perfil e hilos de
+        antes, Suricata recreado otra vez con ellos y el punto sano."""
+        antes, p0 = self.ficheros(), self.orq.punto("p001")
+        hechas = self.fallar_una_vez("--force-recreate")
+        r = A.ejecutar_orden(self.orq, "punto.ajustar", {"pid": "p001", "perfil": "completo-low"})
+        self.assertEqual(r["codigo"], "REVERTIDA", A.explicar(r))
+        self.assertTrue(hechas)
+        self.assertEqual(self.ficheros(), antes)
+        p = self.orq.punto("p001")
+        self.assertEqual((p["perfil"], p["hilos"], p["estado"]), (p0["perfil"], p0["hilos"], "activo"))
+        self.assertEqual(len([a for a in self.s.llamadas if "--force-recreate" in a]), 1)   # la de vuelta
+        self.assertEqual(self.s.contenedores["ids-p001-suricata"]["estado"], "running")
+
+    def test_prefijo_publico_que_falla_al_reiniciar_vuelve_a_lo_de_antes(self):
+        """Corrección de defecto: no arranca con el HOME_NET nuevo (falla el restart y también su plan B,
+        el recreado) -> yaml y prefijos de antes, y Suricata reiniciado con ellos."""
+        antes = self.ficheros()
+        self.fallar_una_vez("docker restart", "--force-recreate")
+        r = A.ejecutar_orden(self.orq, "punto.ajustar", {"pid": "p001",
+                                                         "redes_abonados": ["10.0.0.0/24", "203.0.113.0/24"]})
+        self.assertEqual(r["codigo"], "REVERTIDA", A.explicar(r))
+        self.assertEqual(self.ficheros(), antes)
+        self.assertNotIn("203.0.113.0/24", self.yaml())
+        self.assertEqual(self.orq.punto("p001")["redes"], ["10.0.0.0/24"])
+
+    def test_menos_T_fallido_no_reinicia_nada(self):
+        """Conservación: si el -T rechaza el perfil nuevo no se ha tocado nada, así que la vuelta atrás
+        no recrea ni reinicia Suricata."""
+        antes = self.ficheros()
+        self.s.fallar["-T"] = 1
+        r = A.ejecutar_orden(self.orq, "punto.ajustar", {"pid": "p001", "perfil": "completo-low"})
+        self.assertNotEqual(r["codigo"], "OK", A.explicar(r))
+        self.assertEqual(self.ficheros(), antes)
+        self.assertFalse([a for a in self.s.llamadas if "up" in a or "restart" in a])
+        self.assertEqual(self.orq.punto("p001")["estado"], "activo")
+
+    def test_si_tampoco_vuelve_queda_en_error(self):
+        """Corrección de defecto: si lo de antes tampoco arranca, el punto queda en `error` con el motivo
+        (no «activo» sin servicio)."""
+        self.s.fallar["--force-recreate"] = 1
+        r = A.ejecutar_orden(self.orq, "punto.ajustar", {"pid": "p001", "perfil": "completo-low"})
+        self.assertNotEqual(r["codigo"], "OK", A.explicar(r))
+        p = self.orq.punto("p001")
+        self.assertEqual(p["estado"], "error")
+        self.assertIn("ajustar: falló y lo anterior tampoco", p["paso_error"])
+
+
 class Avance(Base):
     def test_total_en_las_ordenes_de_punto(self):
         for orden, params in (("punto.parar", {"pid": "p001"}), ("punto.arrancar", {"pid": "p001"}),

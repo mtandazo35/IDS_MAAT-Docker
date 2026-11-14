@@ -4215,6 +4215,55 @@ class Orquestador:
         if nuevo["hilos"] != p["hilos"]:
             nuevo["cpuset_suricata"] = cpuset_suricata(ncpu(), nuevo["hilos"], self._ocupadas(excluir=pid))
         imagen = p.get("imagen_suricata") or imgs["suricata"]
+        # QA O-02 (2026-11-14): vuelta atrás como en o_reconfigurar. Antes, si fallaba algo despues de
+        # escribir (recrear Suricata, salud, openvpn, firewall), el punto se quedaba con los ficheros y
+        # los datos nuevos a medias y sin servicio. Se guarda lo de antes y `hecho` dice que se llegó
+        # a tocar: deshacer solo repone y reinicia eso (un -T fallido no reinicia nada).
+        base = ruta("/srv/ids/puntos/%s" % pid)
+        actuales = {}
+        for nombre, rel, _ in self.FICHEROS_RECONFIGURAR:
+            try:
+                actuales[nombre] = (base / rel).read_text(encoding="utf-8")
+            except OSError:
+                actuales[nombre] = None
+        hecho = set()
+
+        def deshacer():
+            if hecho & {"ficheros", "datos"}:
+                for nombre, rel, modo in self.FICHEROS_RECONFIGURAR:
+                    if actuales[nombre] is None:
+                        if (base / rel).exists():
+                            (base / rel).unlink()
+                    else:
+                        escribir_atomico(base / rel, actuales[nombre], modo=modo)
+                with self.tx() as db:
+                    db.execute("UPDATE punto SET perfil=?, hilos=?, redes=?, compat_v6=?, ros_version=?, "
+                               "origen_ip=?, cpuset_suricata=?, actualizado=? WHERE pid=?",
+                               (p["perfil"], p["hilos"], json.dumps(p["redes"]), p["compat_v6"],
+                                p["ros_version"], p.get("origen_ip"), p.get("cpuset_suricata"), ahora(), pid))
+                ctx.registrar("vuelta atrás: ficheros y datos del punto de antes")
+            if "firewall" in hecho:
+                self.regenerar_fw()
+                ctx.registrar("vuelta atrás: firewall de antes")
+            if not activo or not hecho & {"openvpn", "suricata"}:
+                return
+            try:
+                if "openvpn" in hecho:
+                    ejecutar_ok(["docker", "exec", nombres_contenedores(pid)["vpn"], "/command/s6-svc", "-r",
+                                 "/run/service/openvpn"], timeout=60)
+                if "suricata" in hecho:
+                    if cambia_motor:
+                        ejecutar_ok(compose_args(pid, "up", "-d", "--pull", "never", "--force-recreate",
+                                                 "suricata"), timeout=600)
+                    else:
+                        self._reiniciar_suricata(pid)
+                self._esperar_tolerante(ctx, list(nombres_contenedores(pid).values()), limite_salud(None))
+            except ErrorOrden as e:
+                self._volcar_logs(ctx, pid)
+                self._marcar_error(pid, "ajustar: falló y lo anterior tampoco quedó sano: %s" % e.mensaje)
+                raise
+            ctx.registrar("lo anterior vuelve a estar en marcha")
+        ctx.deshacer = deshacer
         if cambia_motor:
             with ctx.paso("suricata.yaml + -T"):
                 info_tmpl = plantilla_suricata(imagen)
@@ -4222,6 +4271,7 @@ class Orquestador:
                 self.validar_T(imagen, "/reglas/current/%s" % PERFILES[nuevo["perfil"]]["reglas"],
                                nuevo["perfil"], info_tmpl, self.reserva_T([nuevo["perfil"]]), pid)
                 dur_T = time.monotonic() - t0
+                hecho.add("ficheros")
                 self.escribir_yaml(nuevo, imagen, info_tmpl)
             with ctx.paso("compose.yml"):
                 self.escribir_compose(nuevo, {"vpn": p.get("imagen_vpn") or imgs["vpn"], "suricata": imagen},
@@ -4229,9 +4279,11 @@ class Orquestador:
         elif cambia_home:
             # sin -T: valida con un HOME_NET fijo (validar_T) y no probaría las redes nuevas
             with ctx.paso("suricata.yaml"):
+                hecho.add("ficheros")
                 self.escribir_yaml(nuevo, imagen)
 
         def guardar():
+            hecho.add("datos")
             with self.tx() as db:
                 db.execute("UPDATE punto SET perfil=?, hilos=?, redes=?, compat_v6=?, ros_version=?, origen_ip=?, "
                            "cpuset_suricata=?, actualizado=? WHERE pid=?",
@@ -4248,19 +4300,23 @@ class Orquestador:
         guardar()
         if cambia_vpn:
             with ctx.paso("server.conf"):
+                hecho.add("ficheros")
                 escribir_atomico(ruta("/srv/ids/puntos/%s/vpn/server.conf" % pid),
                                  render_server_conf(pid, p["tun_red"], nuevo["ros_version"], nuevo["compat_v6"]),
                                  modo=0o644)
             with ctx.paso("reiniciar openvpn"):
                 if p["deseado"] == "activo":
+                    hecho.add("openvpn")
                     ejecutar_ok(["docker", "exec", nombres_contenedores(pid)["vpn"], "/command/s6-svc", "-r",
                                  "/run/service/openvpn"], timeout=60)
             recreado.append("openvpn")
         if cambia_fw:
             with ctx.paso("firewall"):
+                hecho.add("firewall")
                 self.regenerar_fw()
             recreado.append("firewall")
         if cambia_sur and activo:
+            hecho.add("suricata")
             if cambia_motor:
                 # --force-recreate: recreado de verdad aunque Docker no viera diferencias (el yaml
                 # montado no cuenta); la vpn no se toca (solo se levanta si no estuviera)
@@ -4275,6 +4331,7 @@ class Orquestador:
             with ctx.paso("esperar salud"):
                 self._salud_o_error(ctx, pid, list(nombres_contenedores(pid).values()), limite_salud(dur_T))
             recreado.append("suricata")
+        ctx.deshacer = None          # todo sano: lo de después (comandos) ya no deshace el ajuste
         datos = {"recreado": recreado}
         if cambia_vpn:
             datos["comandos"] = self.comandos(self.punto(pid), cfg.nombre_dns)
