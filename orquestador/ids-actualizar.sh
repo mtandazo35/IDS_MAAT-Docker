@@ -5,7 +5,9 @@
 #                                        ids-orq (orden sistema.actualizar) en
 #                                        /srv/ids/estado/actualizar-pedido.json
 #   ids-actualizar.sh <commit> [quién]   lo mismo a mano, como root (la cola de ids-orq no se pausa:
-#                                        mejor desde el panel o con `ids-orq actualizar <commit>`)
+#                                        mejor desde el panel o con `ids-orq actualizar <commit>`).
+#                                        A mano sí se puede volver a un commit ANTERIOR al instalado;
+#                                        con --pedido (el panel) no: solo se avanza (QA O-01)
 #
 # Lleva el PANEL y el ORQUESTADOR al commit pedido de la rama main de GitHub:
 #   1. descarga el commit en /root/ids-maat/actualizar/src y comprueba que es de main;
@@ -46,7 +48,7 @@ P=0
 COMMIT="" QUIEN="" ID="" DESDE="" SHA7="" IMG="" IMG_ANTES="" RESPALDO=""
 INICIO=$(date +%s)
 
-uso() { sed -n '2,24p' "$0"; }
+uso() { sed -n '2,23p' "$0"; }
 
 log() {
   printf '%s\n' "$*"
@@ -290,8 +292,8 @@ podar_imagenes() {   # quedan la imagen nueva y la anterior (para volver atrás 
 # ---- argumentos ------------------------------------------------------------------------------
 case "${1:-}" in
   ""|-h|--help) uso; exit 0 ;;
-  --pedido) leer_pedido ;;
-  *) COMMIT="$1"; QUIEN="${2:-root}"; ID="manual-$TS" ;;
+  --pedido) leer_pedido; MODO=pedido ;;
+  *) COMMIT="$1"; QUIEN="${2:-root}"; ID="manual-$TS"; MODO=manual ;;
 esac
 [[ "$COMMIT" =~ ^[0-9a-f]{7,40}$ ]] || { echo "commit inválido: '$COMMIT' (7 a 40 hex en minúsculas)" >&2; exit 2; }
 QUIEN=$(printf '%s' "$QUIEN" | tr -c 'A-Za-z0-9_:.@-' '_' | cut -c1-64)
@@ -316,6 +318,18 @@ git -C "$SRC" fetch -q --prune origin "+refs/heads/$RAMA:refs/remotes/origin/$RA
   || abortar "no se pudo descargar la rama $RAMA de GitHub"
 COMPLETO=$(git -C "$SRC" rev-parse -q --verify "$COMMIT^{commit}" 2>>"$LOG") || abortar "el commit $COMMIT no está en GitHub"
 git -C "$SRC" merge-base --is-ancestor "$COMPLETO" "origin/$RAMA" 2>>"$LOG" || abortar "el commit $COMMIT no es de la rama $RAMA"
+# QA O-01 (2026-11-14): lo que pide el panel solo AVANZA. Un panel comprometido (o un pedido viejo)
+# podía llevar el servidor a un commit de main anterior al instalado, con los fallos que ya se
+# arreglaron. Reinstalar el mismo commit sí vale (reparar); volver atrás, solo a mano en la consola.
+# Con una release instalada (sin commit) o un commit que ya no está en la historia no se puede
+# comparar y se deja pasar, como antes.
+if [ "$MODO" = pedido ] && [[ "$DESDE" =~ ^[0-9a-f]{7,40}$ ]]; then
+  INSTALADO=$(git -C "$SRC" rev-parse -q --verify "$DESDE^{commit}" 2>/dev/null) || INSTALADO=""
+  if [ -n "$INSTALADO" ] && [ "$INSTALADO" != "$COMPLETO" ] \
+     && git -C "$SRC" merge-base --is-ancestor "$COMPLETO" "$INSTALADO" 2>>"$LOG"; then
+    abortar "el commit ${COMPLETO:0:7} es anterior al instalado (${INSTALADO:0:7}): desde el panel solo se avanza; para volver atrás, en la consola del servidor: ids-actualizar.sh ${COMPLETO:0:7}"
+  fi
+fi
 git -C "$SRC" checkout -q --force --detach "$COMPLETO" >>"$LOG" 2>&1 || abortar "no se pudo preparar el commit"
 git -C "$SRC" clean -q -fdx >>"$LOG" 2>&1 || true
 COMMIT="$COMPLETO"

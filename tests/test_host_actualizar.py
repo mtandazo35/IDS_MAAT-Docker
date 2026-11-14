@@ -255,6 +255,46 @@ class Actualizador(unittest.TestCase):
         self.assertEqual((av["id"], av["quien"], av["estado"]), (OP, "panel:ana", "ok"))
         self.assertFalse(ped.exists())
 
+    def _pedido(self, commit):
+        ped = self.R / "srv/ids/estado/actualizar-pedido.json"
+        ped.write_text(json.dumps({"commit": commit[:7], "quien": "panel:ana", "op_id": OP, "ts": 1}),
+                       encoding="utf-8")
+        return self.correr("--pedido", etiqueta="main-" + commit[:7])
+
+    def _instalado(self, commit):
+        self.imagenes = dict(self.imagenes, commit=commit, version="main-" + commit[:7], dev=True)
+        (self.R / "etc/ids-maat/imagenes.json").write_text(json.dumps(self.imagenes), encoding="utf-8")
+
+    def test_el_panel_no_puede_volver_a_un_commit_anterior(self):
+        """Corrección de defecto (QA O-01): con c2 instalado, un pedido del panel para c1 (anterior)
+        aborta antes de tocar nada y dice cómo hacerlo a mano. Antes se instalaba."""
+        self._instalado(self.c2)
+        r = self._pedido(self.c1)
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        av = self.avance()
+        self.assertEqual(av["estado"], "fallo")
+        self.assertIn("anterior al instalado (%s)" % self.c2[:7], av["mensaje"])
+        self.assertIn("ids-actualizar.sh %s" % self.c1[:7], av["mensaje"])
+        self.assertIn("No se cambió nada", av["mensaje"])
+        self.assertEqual(json.loads(self.leer("etc/ids-maat/imagenes.json")), self.imagenes)
+        self.assertNotIn("docker build", self.llamadas.read_text(encoding="utf-8"))
+        self.assertEqual(list((self.R / "root/backups").glob("*.tar.gz")), [])
+
+    def test_el_mismo_commit_si_se_reinstala(self):
+        """Conservación: pedir desde el panel el commit que ya está instalado vale (reparar)."""
+        self._instalado(self.c2)
+        r = self._pedido(self.c2)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(self.avance()["estado"], "ok")
+
+    def test_a_mano_si_se_puede_volver_atras(self):
+        """Conservación: como root en la consola (sin --pedido) volver a un commit anterior es la
+        salida de emergencia y sigue valiendo."""
+        self._instalado(self.c2)
+        r = self.correr(self.c1[:7], "root", etiqueta="main-" + self.c1[:7])
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(json.loads(self.leer("etc/ids-maat/imagenes.json"))["commit"], self.c1)
+
     def test_ayuda_y_sintaxis(self):
         self.assertEqual(subprocess.run(["bash", "-n", str(SCRIPT)]).returncode, 0)
         r = subprocess.run(["bash", str(SCRIPT), "--help"], capture_output=True, text=True)
