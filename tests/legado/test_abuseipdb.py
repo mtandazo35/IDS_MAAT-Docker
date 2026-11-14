@@ -49,6 +49,7 @@ PIEZAS = ("FEEDS_CONF", "FEEDS_SECRETOS", "SECRETOS_AVISO", "_feeds_conf_crudo",
           "_nombres_de_comportamiento", "_TRAD",
           "aidb_ip_valida", "_aidb_pedir", "_aidb_resumen",
           "aidb_consultar", "aidb_cats_txt", "reputacion_page",
+          "aviso_modal",      # el resultado de una accion va en modal (QA U-04)
           "AIDB_CUOTA_BLOQUE", "AIDB_PREFIJO_MIN", "aidb_restantes_bloque",
           "aidb_red_valida", "_aidb_pedir_red", "_aidb_resumen_red", "aidb_consultar_red",
           "aidb_lote",

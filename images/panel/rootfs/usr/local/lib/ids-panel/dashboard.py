@@ -14448,11 +14448,9 @@ def exclusiones_page(msg="", ok=False, edit_idx=None, edit=None):
         else:
             q = f"{max(1, rest // 60)} min"
         return f"vence en {q} ({time.strftime('%d/%m %H:%M', time.localtime(h))})"
-    banner = ""
-    if msg:
-        col = "#1baf7a" if ok else "#e34948"
-        anim = "animation:fadeout 2.7s ease forwards;" if ok else ""   # exito visible ~2s y se desvanece suave
-        banner = f'<div class="banner" style="background:{col};color:#fff;padding:10px 14px;border-radius:8px;margin-bottom:16px;font-size:13px;{anim}">{html.escape(msg)}</div>'
+    # el resultado de una accion, como modal (regla del dueño; QA U-04, 2026-11-14): era una franja
+    # arriba que empujaba la lista
+    banner = aviso_modal(msg, "ok" if ok else "err")
     # regla a editar (solo si es propia, no legacy)
     ed = None
     if edit_idx is not None and 0 <= edit_idx < len(reglas) and reglas[edit_idx].get("motivo") != "(conf)":
@@ -17101,9 +17099,7 @@ def reputacion_page(res=None, texto="", msg="", ok=False, es_admin=False, volver
         aviso_js = ("<script>aviso('Tus IPs públicas'," + json.dumps(msg).replace("<", "\\u003c")
                     + ");try{history.replaceState(null,'',location.pathname);}catch(e){}</script>")
     elif msg:
-        col = "#1baf7a" if ok else "#e34948"
-        banner = (f"<div class=banner style='background:{col};color:#fff;padding:10px 14px;"
-                  f"border-radius:8px;margin-bottom:16px;font-size:13px'>{esc(msg)}</div>")
+        banner = aviso_modal(msg, "ok" if ok else "err")       # QA U-04: modal, no franja
     if not hay_clave:
         banner += ("<div class=banner style='background:#fdf0e6;color:#a15c12;border:1px solid #f2d3ad;"
                    "padding:10px 14px;border-radius:8px;margin-bottom:16px;font-size:13px'>"

@@ -313,9 +313,10 @@ está en [DATOS.md](DATOS.md) §8. No hay botón «Purgar» ni retención poster
    - borrado de la clave y el certificado de servidor y del usuario VPN (no hay CRL);
    - el puerto sale de `@puertos_vpn`;
    - borrado de sus filas en `orq.db`, salvo el enfriamiento de `N`.
-5. **Panel:** cuando el orquestador confirma, borra todas las filas con ese `punto_id` en
-   `estado.db`, `eventos.db` y `bitacora.db` (la cadena del punto), más `reportes/<pid>/` y
-   `respaldos/<pid>/`. Cada base se borra en una sola transacción.
+5. **Panel:** cuando el orquestador confirma, `purgar_punto` borra las claves `pid|…` de sus
+   registros globales (enviados, avisos, abonados, públicas, exclusiones con ese punto, su chat de
+   Telegram, su entrada de `routers.json` y el punto de la lista de cada usuario) y la carpeta
+   `nodos/<pid>/` con su `historial.db` ([DATOS.md](DATOS.md) §1 y §8).
 6. **Bitácora global:** una única línea, «punto pNNN (nombre) eliminado por <usuario> <fecha>».
    El `punto_id` no se reutiliza nunca. `N` y el puerto quedan libres a los 7 días.
 

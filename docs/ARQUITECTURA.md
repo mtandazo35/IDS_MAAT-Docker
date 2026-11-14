@@ -105,7 +105,7 @@ a su API por la red local ([RED-Y-FIREWALL.md](RED-Y-FIREWALL.md) §11).
             │   tcp 1194│   eve.json (ro)            tcp 1195│   eve.json (ro)     │
             │         │          ▼                         │         ▼             │
             │         │   ┌───── panel-web + panel-worker (misma imagen) ──────┐  │
-            │         │   │ estado.db · eventos.db · bitacora.db               │  │
+            │         │   │ JSON de conf/ y estado/ · historial.db por punto   │  │
             │         │   └───────────────┬────────────────────────────────────┘  │
             │         │                   │ socket UNIX, órdenes fijas             │
             │         │           ids-orq (systemd, host) ── docker, nft, PKI     │
@@ -143,7 +143,7 @@ aprendido en `suricata-ids-lab` y de la auditoría del diseño.
 | **(D)** Migración manual; la importación de datos es opcional y va al final (F6). | El proyecto no depende de ella. | [FASES](FASES-Y-CANARIO.md) |
 | Relé de destino fijo por punto (socket UNIX → `100.64.N.2:<puerto de la API>`, 8729 por defecto) con TLS o sin él según la casilla «Con certificado» de la ficha, y huella opcional; desde la 0.1.14 un segundo relé fijo a la API normal (`api-claro.sock` → 8728) para crear el certificado desde «Probar la conexión». | El panel no comparte red con los puntos y el destino es inmutable. | [RED](RED-Y-FIREWALL.md) §4 |
 | Sin `iroute` ni rutas hacia las LAN de abonados. | Las IP repetidas no chocan en la red; un contenedor comprometido no es un puente. | [RED](RED-Y-FIREWALL.md) §5 |
-| Tres SQLite en WAL (`estado.db`, `eventos.db`, `bitacora.db` encadenada y anclada) más el `eve.json` por instancia. | Integridad `(punto_id, ip)` y transacciones, en lugar de unos 40 JSON con cerrojos. | [DATOS](DATOS.md) |
+| Hoy: JSON con escritura atómica y cerrojo por fichero, claves `pid\|ip`, y un `historial.db` (SQLite, WAL) por punto, más el `eve.json` por instancia. Pendiente: pasarlo a SQLite (`estado.db`, `eventos.db`, `bitacora.db`). | La identidad `(punto_id, ip)` va en la clave; las bases darían `UNIQUE` y transacciones en lugar de cerrojos a mano. | [DATOS](DATOS.md) §1 y §1.2 |
 | El punto de un evento lo da la carpeta; se comprueba con el campo `host` del eve. | Detecta cableados erróneos (`EVE-MEZCLA`). | [DATOS](DATOS.md) §3 |
 | `suricata.yaml` completo generado por punto, con memcaps e hilos fijos. Perfil de reglas por punto. | Dentro del contenedor, la RAM y las CPU que se ven son las del host. | [INSTANCIA](INSTANCIA.md) §6 |
 | Sin recarga en caliente: un cambio de reglas es un reinicio **en serie** de cada instancia. | No existe el pico de doble motor; la admisión es predecible. | [INSTANCIA](INSTANCIA.md) §11 |

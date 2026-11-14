@@ -7,7 +7,6 @@ firma, punto y cuándo se creó) y toda acción responde 303 a /exclusiones?msg=
 Datos RFC 5737.
 """
 import os
-import re
 import sys
 import unittest
 
@@ -85,10 +84,13 @@ class Huella(unittest.TestCase):
         código inventado no pinta nada."""
         r = self.post({"accion": "add", "tipo": "src", "ip": "198.51.100.5", "puertos": "", "sid": "",
                        "vigencia": "0", "motivo": "x", "nodo": ""})
-        self.assertIn("Exclusión agregada: 198.51.100.5.", self.seguir(r).texto)
+        t = self.seguir(r).texto
+        self.assertIn("Exclusión agregada: 198.51.100.5.", t)
+        self.assertIn("<div id=notif class='avm ok'", t)            # en modal, no franja (QA U-04)
+        self.assertNotIn('<div class="banner"', t)
         self.assertNotIn("Exclusión agregada", self.seguir(r).texto)          # F5 sobre la página
         t = self.p.pedir("GET", "/exclusiones?msg=Inventado", cookie=self.ana).texto
-        self.assertIsNone(re.search(r'<div class="banner"', t))
+        self.assertNotIn("id=notif", t)                 # ni el modal de aviso (QA U-04)
 
     def test_un_error_tambien_redirige(self):
         """Corrección de defecto: un error de validación también es 303 (F5 no reenvía el formulario)."""

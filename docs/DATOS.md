@@ -9,46 +9,84 @@ Anexo de [ARQUITECTURA.md](ARQUITECTURA.md). Este anexo cubre:
 
 ## 1. Almacenes
 
-| Almacén | Contenido | Por qué así |
-|---|---|---|
-| `estado.db` (SQLite, WAL) | configuración, puntos, instancias, MikroTik, usuarios, roles, sesiones, abonados, cuarentenas, exclusiones, públicas, operaciones | transacciones y `UNIQUE(punto_id, ip, …)` en lugar de unos 40 JSON con cerrojos a mano; es pequeña y se respalda rápido |
-| `eventos.db` (SQLite, WAL) | alertas, agregados por hora y por día, offsets de ingesta, espejo por hora | es grande y se puede reconstruir desde los eve; va aparte para podar sin bloquear el estado |
-| `bitacora.db` (SQLite, WAL, solo se añaden filas) | auditoría e intentos de login | retención larga y cadena de hashes |
-| `eve.json` / `dns.json` por instancia | eventos crudos | fuente de verdad del crudo; solo se agrega lo que el panel consulta |
-| Ficheros de intercambio | `threshold.config` por punto, exportaciones, respaldos `.rsc` de los routers | los consumen procesos que no leen SQLite |
-| `orq.db` (host) | asignaciones, digests, cola de órdenes, `op_id` | estado propio del orquestador ([ORQUESTADOR.md](ORQUESTADOR.md)) |
-| `actualizar-pedido.json` (host, `/srv/ids/estado/`, 0600) | el commit, quién y el `op_id` de la última `sistema.actualizar` | lo deja el orquestador y lo borra `ids-actualizar.sh` al leerlo ([ACTUALIZACIONES.md](ACTUALIZACIONES.md) §4.1) |
-| `actualizacion.json` (host, `/srv/ids/run/`, 0640 root:ids-panel) | avance y resultado de la última actualización del panel y el orquestador: pasos, de qué commit a cuál, quién, `ok`/`revertida`/`fallo` | lo escribe `ids-actualizar.sh`; el panel lo lee para la página «Actualizando…» y Ajustes → Versión. Perderlo solo borra el «última actualización» de la tarjeta |
-| `actualizacion-busqueda.json` (panel, `/srv/ids/panel/estado/`, 0600) | lo último que contestó GitHub: commits nuevos de `main`, historial y error | caché del botón «Actualizar»; se rehace sola cada 30 min |
-| `alertas.json` (host, `/srv/ids/estado/`, 0600) | por punto: el último contador de alertas de Suricata (`detect.alert`) y las alertas de las últimas 24 h en cubos de 5 min | de él sale `alertas_24h` de `estado.json`; se reescribe como mucho cada minuto y, si se pierde, el recuento vuelve a empezar |
+Lo que hay hoy en el código (revisado en la QA del 2026-11-14, U-12). El panel guarda casi todo en
+**ficheros JSON** con escritura atómica (temporal `pid.hilo` + `os.replace`) y un cerrojo por
+fichero; la única base SQLite del panel es el **historial de cada punto**. El orquestador tiene la
+suya, `orq.db`. Las bases `estado.db`, `eventos.db` y `bitacora.db` de versiones anteriores de
+este anexo **no existen**: son el diseño de la sección 1.2.
 
-Ubicación:
+### Panel: global (`/srv/ids/panel/`, `nodos.ruta(...)`)
 
-| Host | Panel (`web` y `worker`) | Montaje |
+| Almacén | Contenido |
+|---|---|
+| `conf/usuarios.json` | usuarios: rol, hash de la clave, puntos que ve (`puntos`), permisos propios, foto y correo |
+| `conf/roles.json` | permisos de los roles editables (operador y lectura) |
+| `conf/exclusiones.json` | exclusiones propias (las del `.conf` heredado van aparte, en `conf/report.conf`) |
+| `conf/routers.json` | un MikroTik por punto, con la contraseña cifrada (sección 6) |
+| `conf/panel.conf`, `conf/mikrotik.conf`, `conf/report.conf`, `conf/feeds.conf` | ajustes del panel, de la cuarentena, del informe y de los feeds (claves cifradas) |
+| `conf/publicas.json`, `conf/confianza.json`, `conf/destinos-confianza.lst`, `conf/nunca-bloquear.lst`, `conf/resolutores.lst` | IPs públicas por punto, IPs de confianza del login, destinos de confianza, «Nunca bloquear» y resolutores DNS |
+| `conf/empresa.json`, `conf/telegram-puntos.json`, `conf/atacantes.json`, `conf/reglas/` | empresa (nombre y logo), chat de Telegram de cada punto, «Cortar atacantes» y reglas propias |
+| `estado/*-enviados.json` | lo que el panel tiene puesto en cada MikroTik: cuarentena, DNS, graduada, destinos y atacantes, con clave `pid\|ip` |
+| `estado/abonados.json`, `estado/abonados-hist.jsonl` | abonado de cada `pid\|ip` (PPPoE/DHCP) y su historial |
+| `estado/sesiones-dash.json` | sesiones (token en sha256) |
+| `estado/` (resto) | avisos ya enviados, reputación y DNSBL de las públicas, diagnóstico, caché de la IA, informe diario, mapa de routers para el generador… |
+| `log/bitacora.log` | auditoría: qué se hizo y quién (sección 7) |
+| `log/login.log`, `log/cuarentena.log` | intentos de entrar al panel y acciones sobre el router |
+| `feeds/` | listas de reputación que baja el panel |
+
+### Panel: por punto (`/srv/ids/panel/nodos/<pid>/`, `nodos.salida(...)`)
+
+| Almacén | Contenido |
+|---|---|
+| `historial.db` (SQLite, WAL) | `resumen` por hora y abonado, `detalle` por día (podado al top), `firma_ts`, `destinos_dist` (bosquejo de destinos distintos) y la marca y los offsets de ingesta (`estado`). Se rellena de forma incremental desde los `eve.json*`/`dns.json*` del punto |
+| `report-*.html`, `cuarentena.json` | el último resumen que generó `html_report.py` y sus candidatos |
+| `sensor.json` | la salud del sensor y el estado de los avisos de Telegram |
+| `conducta.json`, `destinos-malos.json`, `entrantes.json`, `metricas.json` | lo que pintan Conducta, Destinos maliciosos, Atacantes y las métricas |
+
+La vista acumulada «Todos» va en `nodos/_todos/` y la de cada grupo de puntos en `nodos/_g<huella>/`.
+
+### Host y orquestador
+
+| Almacén | Contenido |
+|---|---|
+| `orq.db` (`/srv/ids/estado/`, SQLite, WAL) | puntos, asignaciones, digests, cola de órdenes y `op_id` ([ORQUESTADOR.md](ORQUESTADOR.md)) |
+| `orq.jsonl` (`/srv/ids/estado/`) | resultado de cada orden, una línea por orden |
+| `estado.json` (`/srv/ids/run/`) | lo que ve el panel de cada punto y de sus contenedores; lo reescribe el orquestador cada 15 s |
+| `alertas.json`, `retencion.json` (`/srv/ids/estado/`, 0600) | contadores de alertas de las últimas 24 h y estado de la retención |
+| `actualizar-pedido.json` (`/srv/ids/estado/`, 0600) | el commit, quién y el `op_id` de la última `sistema.actualizar`; lo borra `ids-actualizar.sh` al leerlo ([ACTUALIZACIONES.md](ACTUALIZACIONES.md) sección 4.1) |
+| `actualizacion.json` (`/srv/ids/run/`, 0640 root:ids-panel) | avance y resultado de la última actualización; el panel lo lee para «Actualizando…» y Ajustes → Versión |
+| `eve.json*` / `dns.json*` (`/srv/ids/datos/<pid>/`) | eventos crudos de Suricata, rotados y comprimidos: la fuente de verdad del crudo |
+
+Ubicación (montajes de `core.yml`; dentro del contenedor las rutas son las mismas):
+
+| Host | En el panel | Montaje |
 |---|---|---|
-| `/srv/ids/panel/` | `/data/panel/` (bases, `reportes/<pid>/`, `respaldos/<pid>/`, `cache/`) | rw |
-| `/srv/ids/datos/` (padre) | `/data/puntos/datos/` → `<pid>/eve.json` | ro |
-| `/srv/ids/run/` (padre) | `/data/puntos/run/` → `<pid>/api.sock`, `<pid>/tzsp.json`, `estado.json` | ro |
-| `/etc/ids-maat/master.key` | `/run/secrets/master_key` | ro, fuera de `/data` |
+| `/srv/ids/panel/` | `/srv/ids/panel/` (`conf/`, `estado/`, `log/`, `feeds/`, `nodos/<pid>/`) | rw |
+| `/srv/ids/datos/` | `/srv/ids/datos/` → `<pid>/eve.json*`, `<pid>/dns.json*` | ro |
+| `/srv/ids/run/` | `/srv/ids/run/` → `estado.json`, `<pid>/api.sock`… | ro |
+| `/etc/ids-maat/master.key`, `/etc/ids-maat/orq_token` | `/run/secrets/master_key`, `/run/secrets/orq_token` | ro |
 
 ### 1.1 Reglas de uso de SQLite
 
-- **Ajustes:** `journal_mode=WAL`, `synchronous=NORMAL`, `foreign_keys=ON`, `busy_timeout=5000`.
-- **Transacciones:** una conexión por hilo, `BEGIN IMMEDIATE` y transacciones cortas. Escriben dos
-  procesos (`web` y `worker`) sobre un volumen local, nunca sobre NFS ni CIFS.
+Valen para `historial.db` y `orq.db`, y para cualquier base nueva:
+
+- **Ajustes:** `journal_mode=WAL` y `synchronous=NORMAL`; `timeout`/`busy_timeout` para esperar al
+  otro escritor en vez de fallar.
+- **Transacciones** cortas: los datos, la marca y los offsets de una ingesta van en la misma.
+  Sobre un volumen local, nunca sobre NFS ni CIFS.
 - **Nunca hay una transacción abierta mientras se habla con un MikroTik.** Primero se registra la
   intención, después va la red y al final se confirma.
-- **Esquema** en `PRAGMA user_version`. Las migraciones solo avanzan, una por transacción, con un
-  respaldo antes de migrar.
-- **Respaldo en caliente** con la API `backup` o con `VACUUM INTO`. **Nunca con `cp`.** El
-  orquestador lo ejecuta como el usuario del panel:
+- **Respaldo en caliente** con la API `backup` o con `VACUUM INTO`. **Nunca con `cp`**, y como el
+  usuario dueño de la base (el del panel para `historial.db`): si lo hiciera root, los `-wal` y
+  `-shm` que se creen quedarían de root y el panel dejaría de poder escribir.
 
-  ```
-  setpriv --reuid=10500 --regid=10500 --clear-groups python3 /usr/local/lib/ids-orq/respaldo_sqlite.py
-  ```
+### 1.2 Diseño pendiente: estado en SQLite
 
-  Si lo hiciera como root, los `-wal`/`-shm` que se creen quedarían de root y el panel dejaría de
-  poder escribir.
+El diseño original pasaba los JSON del panel a tres bases SQLite (WAL): `estado.db` (configuración,
+puntos, usuarios, sesiones, cuarentenas, exclusiones… con `UNIQUE(punto_id, ip, …)` en vez de
+cerrojos a mano), `eventos.db` (alertas y agregados, reconstruible desde los eve) y `bitacora.db`
+(solo añadir, con cadena de hashes). **No está hecho.** Si se hace: esquema en `PRAGMA user_version`,
+migraciones que solo avanzan, una por transacción, y respaldo antes de migrar.
 
 ## 2. Entidades
 
