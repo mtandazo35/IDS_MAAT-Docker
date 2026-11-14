@@ -18,6 +18,7 @@ import tempfile
 import threading
 import time
 import unittest
+from _tiempo import tope as tope_tiempo  # noqa: E402  (umbrales a la medida de la carga, QA T-14)
 
 RAIZ = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 LIB = os.path.join(RAIZ, "images", "panel", "rootfs", "usr", "local", "lib", "ids-panel")
@@ -65,7 +66,7 @@ class Duenos(unittest.TestCase):
         self.rdap = lambda ip: ("Operador Ejemplo", "EC")
         t = time.monotonic()
         r = self.d.resolver([IPS[0]], espera=3)
-        self.assertLess(time.monotonic() - t, 1.5)
+        self.assertLess(time.monotonic() - t, tope_tiempo(1.5))
         self.assertEqual(r[IPS[0]]["org"], "Operador Ejemplo · EC")
         self.assertEqual(r[IPS[0]]["via"], "rdap")
         with open(self.d.CACHE, encoding="utf-8") as f:
@@ -80,7 +81,7 @@ class Duenos(unittest.TestCase):
         self.ptr = lento
         t = time.monotonic()
         r = self.d.resolver(IPS[:10], espera=5)
-        self.assertLess(time.monotonic() - t, 2.0)
+        self.assertLess(time.monotonic() - t, tope_tiempo(2.0))
         self.assertEqual({e["org"] for e in r.values()}, {"Google"})
         self.assertEqual(len(r), 10)
 
@@ -93,7 +94,7 @@ class Duenos(unittest.TestCase):
         self.ptr = tarde
         t = time.monotonic()
         self.assertEqual(self.d.resolver(IPS[:3], espera=0.1), {})
-        self.assertLess(time.monotonic() - t, 0.5)
+        self.assertLess(time.monotonic() - t, tope_tiempo(0.5))
         # a que terminen las tres en vuelo (no un tiempo fijo: el runner de Windows del CI va lento)
         tope = time.monotonic() + 10
         while self.d._VUELO and time.monotonic() < tope:
@@ -147,7 +148,7 @@ class Duenos(unittest.TestCase):
         self.rdap = rdap
         t = time.monotonic()
         r = self.d.resolver([IPS[0]], espera=5)
-        self.assertLess(time.monotonic() - t, 1.5)
+        self.assertLess(time.monotonic() - t, tope_tiempo(1.5))
         self.assertEqual(r[IPS[0]]["via"], "rdap")
 
     def test_ptr_rapido_no_molesta_al_registro(self):
@@ -167,7 +168,7 @@ class Duenos(unittest.TestCase):
         self.rdap = lambda ip: ("Operador Ejemplo", "")
         t = time.monotonic()
         r = self.d.resolver(IPS[:20] + ["192.88.98.%d" % i for i in range(1, 11)], espera=5)
-        self.assertLess(time.monotonic() - t, 1.5)
+        self.assertLess(time.monotonic() - t, tope_tiempo(1.5))
         self.assertEqual(len(r), 30)
 
     def test_limite_rdap_por_registro(self):

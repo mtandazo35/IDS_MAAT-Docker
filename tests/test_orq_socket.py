@@ -44,9 +44,12 @@ class SocketPeercred(unittest.TestCase):
         self.assertEqual(r["codigo"], "INVALIDO")
 
     def test_uid_no_autorizado_se_cierra_sin_respuesta(self):
-        if os.getuid() in (0, 10500):
-            self.skipTest("la prueba necesita un uid distinto de 0 y 10500")
-        self.servir({0, 10500})
+        """Corrección de defecto (QA T-06, 2026-11-14): antes se omitía SIEMPRE (pedía un uid distinto de
+        0 y 10500 y la suite corre como root), así que una regresión de SO_PEERCRED pasaba. Ahora el
+        servicio autoriza solo a OTROS uids que el del proceso, sea quien sea el que corre la prueba."""
+        otros = {u for u in (0, 10500) if u != os.getuid()}
+        self.assertNotIn(os.getuid(), otros)
+        self.servir(otros)
         with self.assertRaises(self.mod.SinServicio):
             self.mod.llamar(A.peticion("sistema.capacidad"), ruta_sock=str(self.sock))
         self.assertEqual(self.orq.q1("SELECT COUNT(*) FROM op")[0], 0)

@@ -18,6 +18,15 @@ test_host_ficheros.LogrotateReal.*      linux   # logrotate real: rotación fech
 test_orq_pki.*                          linux   # openssl real
 test_orq_clave_vpn.*                    linux   # clave VPN cifrada en el orquestador: exige python3-cryptography
 legado.*                                linux   # pruebas heredadas de suricata-ids-lab (docs/PRUEBAS-HEREDADAS.md)
+# QA T-06/T-12 (2026-11-14): lo crítico que se podía omitir sin que nadie lo notara
+test_orq_socket.*                       linux   # SO_PEERCRED: un uid no autorizado no habla con el orquestador
+test_host_actualizar.*                  linux   # el ids-actualizar.sh real: vuelta atrás, solo avanzar, CI en verde (git, flock, tar)
+test_orq_operaciones.*                  linux   # órdenes del orquestador que siguen enlaces (symlinks)
+test_panel_atacantes_api.*              linux   # cortar atacantes por API: routers con secretos cifrados (cryptography)
+test_e2e_guarda.*                       linux   # la guarda que impide la E2E en un servidor con IDS (bash)
+test_vpn_scripts.*                      linux   # scripts de la VPN: bash y modos de fichero POSIX
+test_host_systemd.*                     linux   # unidades de systemd verificadas con systemd-analyze
+test_host_fail2ban.*                    linux   # jaulas de fail2ban probadas con fail2ban-regex
 # Casos obligatorios de CONTRATO-F2 §10.5 (auditoría B-03)
 test_eventos_busqueda.*                 todas   # §10.5 Eventos: rutas manipuladas, JSON incompleto, .gz que descomprime mucho, límites
 test_eventos_detalle.*                  linux   # §10.5 Eventos: enlaces simbólicos y rutas manipuladas (en Windows no hay symlinks)

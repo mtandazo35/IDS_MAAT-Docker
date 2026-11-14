@@ -12,6 +12,7 @@ import zlib
 from unittest import mock
 
 from test_eventos_busqueda import T0, Base, alerta, iso, linea
+from _tiempo import tope  # noqa: E402  (umbrales a la medida de la carga, QA T-14)
 
 MiB = 1024 * 1024
 
@@ -69,7 +70,7 @@ class GzPatologicos(Base):
         t = time.monotonic()
         res = self.buscar("p001")
         dur = time.monotonic() - t
-        self.assertLess(dur, 1.5)
+        self.assertLess(dur, tope(1.5))
         self.assertTrue(res["parcial"])
         self.assertTrue(any("miembros" in x[3] for x in res["omitidos"]), res["omitidos"])
         self.assertEqual(len(res["filas"]), 1)
@@ -102,7 +103,7 @@ class GzPatologicos(Base):
         self._gz("eve.json.2.gz", gzip.compress((alerta(T0 - 5000) + "\n").encode()), T0 - 3600)
         t = time.monotonic()
         desde = self.ev.disponible_desde("p001")
-        self.assertLess(time.monotonic() - t, 1.0)
+        self.assertLess(time.monotonic() - t, tope(1.0))
         self.assertEqual(desde // 1000000, T0 - 5000)
 
     def test_b08_detalle_de_un_gz_patologico_no_cuelga(self):
@@ -112,7 +113,7 @@ class GzPatologicos(Base):
         t = time.monotonic()
         with self.assertRaises(self.ev.RefInvalida):
             self.ev._linea_en("p001", "eve.json.1.gz", 10, time.monotonic())
-        self.assertLess(time.monotonic() - t, 1.5)
+        self.assertLess(time.monotonic() - t, tope(1.5))
 
 
 class FicheroIlegible(Base):

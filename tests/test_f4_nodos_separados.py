@@ -19,6 +19,7 @@ sys.path.insert(0, AQUI)
 import _dash  # noqa: E402
 from _dash_p import PanelP  # noqa: E402
 from test_hrep_nodos import Entorno  # noqa: E402
+from _tiempo import tope  # noqa: E402  (umbrales a la medida de la carga, QA T-14)
 
 IP = "10.0.0.5"
 
@@ -633,7 +634,7 @@ class HistPodar(Base):
             self.assertEqual(ns, list(range(3999, 3999 - top, -1)))          # los de mayor n
             self.assertEqual(c.execute("SELECT COUNT(*) FROM detalle WHERE cpe='10.0.0.6'").fetchone()[0], 3)
             self.assertEqual(c.execute("SELECT COUNT(*) FROM detalle WHERE tipo='firma'").fetchone()[0], top)
-            self.assertLess(dur, 3.0, "hist_podar tardó %.1f s con un grupo de 4000 filas" % dur)
+            self.assertLess(dur, tope(3.0), "hist_podar tardó %.1f s con un grupo de 4000 filas" % dur)
         finally:
             c.close()
 
@@ -780,7 +781,7 @@ class HiloRapido(Base):
         with self.d.cerrojo_operacion("p001", "fondo", espera=1):
             t0 = time.time()
             self.una_vuelta()
-            self.assertLess(time.time() - t0, 5)
+            self.assertLess(time.time() - t0, tope(5))
         self.assertIn(("barrido_alto_rapido", "p001"), hecho)
         self.assertIn(("medir_sensor", "p001"), hecho)
 

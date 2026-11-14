@@ -17,6 +17,7 @@ sys.path.insert(0, os.path.join(TESTS, "fixtures", "panel2"))
 if TESTS not in sys.path:
     sys.path.insert(0, TESTS)
 from _dash_p import CLAVE, PanelP  # noqa: E402
+from _tiempo import tope  # noqa: E402  (umbrales a la medida de la carga, QA T-14)
 
 
 
@@ -312,7 +313,7 @@ class FicherosDeEventos(_Base):
         self.p.pw._RET.clear()
         t = time.monotonic()
         ret = self.p.pw.retencion("p001", {})
-        self.assertLess(time.monotonic() - t, 1.0)
+        self.assertLess(time.monotonic() - t, tope(1.0))
         self.assertTrue(ret["desde"])
 
 

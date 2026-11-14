@@ -23,6 +23,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import _ayuda_orq as A  # noqa: E402
+from _tiempo import tope  # noqa: E402  (umbrales a la medida de la carga, QA T-14)
 
 
 def _symlinks():
@@ -183,7 +184,7 @@ class Lectores(Base):
         bomba.write_bytes(vacio * 200_000)              # ~4 MB comprimido, 0 bytes de datos
         t0 = time.time()
         self.assertIsNone(self.mod.primer_ts(bomba))
-        self.assertLess(time.time() - t0, 5)
+        self.assertLess(time.time() - t0, tope(5))
         bueno = self.datos / "dns.json-20260101-000000.gz"
         bueno.write_bytes(vacio + gzip.compress(
             b'{"timestamp":"2026-01-01T00:00:00.000000+0000","event_type":"dns"}\n'))
