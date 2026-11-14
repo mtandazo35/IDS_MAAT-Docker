@@ -185,6 +185,10 @@ class RenderNft(unittest.TestCase):
 
 class Lint(unittest.TestCase):
     @unittest.skipUnless(shutil.which("git"), "sin git")
+    # lint.py lista con `git ls-files`: en una copia sin repositorio (tar de los ficheros) no hay qué
+    # listar y fallaba como error de entorno, tapando los de verdad (QA T-02, 2026-11-14). Así queda
+    # como OMITIDA con su motivo; en un clon (como corre la suite en la VPS) se ejecuta.
+    @unittest.skipUnless((REPO / ".git").exists(), "sin .git: copia sin repositorio (en un clon sí corre)")
     def test_listas(self):
         mod = cargar("lint")
         import io

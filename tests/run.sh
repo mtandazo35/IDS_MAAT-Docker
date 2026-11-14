@@ -37,6 +37,44 @@ buscar_python() {
 PY=$(buscar_python) || { echo "no hay Python >= 3.11 (python3, python o py -3)" >&2; exit 1; }
 export PYTHONDONTWRITEBYTECODE=1
 export PYTHONUTF8=1
+
+# Dependencias de las pruebas que el host no trae (QA T-02, 2026-11-14): sin reportlab, test_informe_pdf
+# no se importaba y la suite no terminaba nunca en verde, así que un fallo nuevo pasaba como «uno más».
+# Si faltan, se instalan las de tests/requisitos-pruebas.txt (las versiones de la imagen del panel) en
+# IDS_DEPS_DIR con un contenedor python:<versión>-slim y pip --target, y se añaden a PYTHONPATH. No toca
+# los paquetes del host. IDS_DEPS=0 lo desactiva. Una carpeta ya preparada para el mismo fichero se reusa.
+preparar_deps() {
+  local req ver dir huella
+  req=tests/requisitos-pruebas.txt
+  [ "${IDS_DEPS:-1}" = 0 ] && return 0
+  [ -f "$req" ] || return 0
+  # shellcheck disable=SC2086
+  $PY -c 'import reportlab, PIL, chardet' >/dev/null 2>&1 && return 0
+  # shellcheck disable=SC2086
+  ver=$($PY -c 'import sys; print("%d.%d" % sys.version_info[:2])')
+  huella=$(sha256sum "$req" | cut -c1-12)
+  dir="${IDS_DEPS_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/ids-maat-pruebas}/py$ver-$huella"
+  if [ ! -f "$dir/.listo" ]; then
+    if ! command -v docker >/dev/null 2>&1; then
+      echo "   AVISO: faltan dependencias de las pruebas ($req) y no hay docker para instalarlas aparte" >&2
+      return 0
+    fi
+    echo "   instalando $req en $dir (python:$ver-slim, pip --target)"
+    rm -rf "$dir" && mkdir -p "$dir" || return 0
+    if docker run --rm -v "$dir:/deps" -v "$PWD/$req:/req.txt:ro" "python:$ver-slim" \
+         pip install -q --disable-pip-version-check --root-user-action=ignore --no-compile \
+         --target /deps -r /req.txt; then
+      touch "$dir/.listo"
+    else
+      echo "   AVISO: no se pudieron instalar las dependencias de las pruebas en $dir" >&2
+      return 0
+    fi
+  fi
+  export PYTHONPATH="$dir${PYTHONPATH:+:$PYTHONPATH}"
+  echo "   (dependencias de las pruebas desde $dir)"
+}
+preparar_deps
+
 FALLOS=0
 OMITIDAS=0
 PASADAS=0

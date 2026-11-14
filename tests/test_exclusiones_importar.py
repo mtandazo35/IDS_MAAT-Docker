@@ -74,7 +74,8 @@ class ImportarExclusiones(unittest.TestCase):
     # ---- navegador -----------------------------------------------------------------------
     def pagina(self):
         h = self.p.pedir("GET", "/exclusiones", cookie=self.ana).texto
-        self.assertIn('onsubmit="return excImportar(this)"', h)
+        self.assertIn('onsubmit="var m=excImportar(this);if(!m)return false;'
+                      "return ask(this,'Reemplazar las exclusiones',m,'Reemplazar','danger')\"", h)
         self.assertIn('data-n="2"', h)      # las propias que borraría importar
         return h
 
@@ -85,13 +86,12 @@ class ImportarExclusiones(unittest.TestCase):
         if not node:
             self.skipTest("sin node")
         h = self.pagina()
-        m = re.search(r"function excImportar\(f\)\{.*?'danger'\);\}", h, re.S)
+        m = re.search(r"function excImportar\(f\)\{.*?respaldo\.';\}", h, re.S)
         self.assertTrue(m, "no está excImportar")
         js = """
 var llamadas = [], valor = '';
 var document = {getElementById: function(){ return {value: valor}; }};
 function aviso(t, x){ llamadas.push(['aviso', t]); }
-function ask(e, t, x, ok, tono){ llamadas.push(['ask', t, x, ok, tono]); return false; }
 var form = {getAttribute: function(){ return '2'; }};
 %s
 var res = {};
@@ -99,7 +99,7 @@ valor = '';           res.vacio = [excImportar(form), llamadas.pop()];
 valor = '{"a":1}';    res.noLista = [excImportar(form), llamadas.pop()];
 valor = '[]';         res.cero = [excImportar(form), llamadas.pop()];
 valor = '[{"ip":"203.0.113.5"},{"ip":"203.0.113.6"},{"ip":"203.0.113.7"}]';
-res.bueno = [excImportar(form), llamadas.pop()];
+res.bueno = [excImportar(form), llamadas.pop() || null];
 console.log(JSON.stringify(res));
 """ % m.group(0)
         with tempfile.NamedTemporaryFile("w", suffix=".js", delete=False, encoding="utf-8",
@@ -112,12 +112,10 @@ console.log(JSON.stringify(res));
         self.assertEqual(res["vacio"], [False, ["aviso", "Falta el archivo"]])
         self.assertEqual(res["noLista"], [False, ["aviso", "Archivo no válido"]])
         self.assertEqual(res["cero"], [False, ["aviso", "Archivo vacío"]])
-        ok, llamada = res["bueno"]
-        self.assertFalse(ok)                  # no envía hasta confirmar en el modal
-        self.assertEqual(llamada[0], "ask")
-        self.assertEqual(llamada[4], "danger")
-        self.assertIn("Se borrarán las 2 exclusión(es) actuales", llamada[2])
-        self.assertIn("se cargarán las 3 del archivo", llamada[2])
+        texto, llamada = res["bueno"]
+        self.assertIsNone(llamada)            # sin aviso: el onsubmit pasa el texto a ask(this,...,'danger')
+        self.assertIn("Se borrarán las 2 exclusión(es) actuales", texto)
+        self.assertIn("se cargarán las 3 del archivo", texto)
 
 
 if __name__ == "__main__":

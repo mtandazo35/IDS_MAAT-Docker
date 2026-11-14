@@ -3,7 +3,7 @@
   python tests/correr.py [--procesos N] [--obligatorias linux|root] [--resumen FICHERO]
 
 - Descubre `tests/test_*.py` y `tests/legado/test_*.py` (paquete `legado`).
-- `--procesos N`: reparte los MÓDULOS de prueba entre N procesos; por defecto, los núcleos hasta 4
+- `--procesos N`: corre los MÓDULOS de prueba en hasta N procesos a la vez, uno nuevo por módulo; por defecto, los núcleos hasta 4
   (el user, 2026-10-16: la suite tardaba 16 min en un solo núcleo de los 8 del VPS; con 4, 4 min y
   la memoria dentro del tope de run.sh: ver PROCESOS_MAX). Un módulo entero va
   a un mismo proceso y sus pruebas corren en el orden de siempre, así que setUpClass y los TMP que
@@ -25,10 +25,10 @@ Sale con 0 solo si no hay fallos, ni errores, ni obligatorias omitidas o sin pru
 """
 
 import argparse
-import concurrent.futures
 import fnmatch
 import io
 import multiprocessing
+import multiprocessing.connection
 import os
 import sys
 import time
@@ -42,9 +42,10 @@ except ImportError:                          # sin Linux no hay ru_maxrss: no se
     resource = None
 
 TESTS = os.path.dirname(os.path.abspath(__file__))
-# Procesos por defecto: los núcleos, hasta 4. Medido en el .152 (2026-10-17): cada proceso acaba en
-# ~600 MB (copia lo que el padre importó) y con 4 el cgroup de run.sh llega a 2,3 GB de sus 3G; con
-# 8 el tope empezaría a matar procesos. Más con --procesos / IDS_PROCESOS.
+# Procesos por defecto: los núcleos, hasta 4. Medido en el .152 (2026-10-17): con un pool que vivía
+# toda la corrida cada proceso acababa en ~600-900 MB y 4 ya no cabían en el tope de 3G (OOM en la QA
+# del 2026-11-14). Desde entonces cada módulo corre en un hijo nuevo que suelta su memoria al acabar
+# (ver correr_en_paralelo). Más con --procesos / IDS_PROCESOS.
 PROCESOS_MAX = 4
 PLATAFORMAS =("linux", "root")       # sin Windows desde 2026-10-15 (decisión del dueño)
 # qué columnas de obligatorias.txt aplica cada plataforma («todas» siempre)
@@ -165,6 +166,19 @@ def _correr_modulo(i, verbosidad=1):
             "inesperados": [t.id() for t in r.unexpectedSuccesses]}
 
 
+def _hijo(i, verbosidad, tx):
+    """Proceso hijo de UN módulo: lo corre y manda el resultado por la tubería. Si muere a medias
+    (os._exit, una señal, sin memoria) no manda nada y el padre lo ve como EOFError."""
+    try:
+        d = _correr_modulo(i, verbosidad)
+    except BaseException:                    # fallo del reparto, no de una prueba: el padre lo cuenta
+        d = {"reparto": traceback.format_exc()}
+    try:
+        tx.send(d)
+    finally:
+        tx.close()
+
+
 def _anotar(total, tiempos, d, salida):
     total.sumar(d)
     tiempos.append((d["seg"], d["nombre"], d["mem"]))
@@ -186,23 +200,38 @@ def correr_en_paralelo(suite, procesos, verbosidad=1, salida=None):
         total, tiempos, rotos = Total(), [], []
         t0 = time.monotonic()
         ctx = multiprocessing.get_context("fork")
-        with concurrent.futures.ProcessPoolExecutor(procesos, mp_context=ctx) as ex:
-            futuros = {ex.submit(_correr_modulo, i, verbosidad): i for i in orden}
-            for f in concurrent.futures.as_completed(futuros):
-                i = futuros[f]
+        # UN PROCESO NUEVO POR MÓDULO (QA T-01, 2026-11-14), como mucho `procesos` a la vez. Antes un
+        # pool de procesos que vivían toda la corrida: cada uno iba acumulando lo que cargaba cada
+        # módulo (las pruebas del panel recargan dashboard.py entero) hasta ~900 MB, y cuatro juntos
+        # no cabían en el tope de 3G de run.sh: el kernel mataba uno en cada corrida. Ahora cada hijo
+        # parte de la memoria del padre (compartida, copy-on-write) y la suelta al acabar su módulo.
+        pendientes, activos = list(orden), {}          # tubería -> (proceso, índice)
+        while pendientes or activos:
+            while pendientes and len(activos) < procesos:
+                i = pendientes.pop(0)
+                rx, tx = ctx.Pipe(duplex=False)
+                p = ctx.Process(target=_hijo, args=(i, verbosidad, tx))   # no daemon: hay pruebas que lanzan procesos
+                p.start()
+                tx.close()                             # el padre solo lee: EOF si el hijo muere
+                activos[rx] = (p, i)
+            for rx in multiprocessing.connection.wait(list(activos)):
+                p, i = activos.pop(rx)
                 try:
-                    d = f.result()
-                except concurrent.futures.process.BrokenProcessPool:
+                    d = rx.recv()
+                except (EOFError, OSError):
+                    d = None
+                rx.close()
+                p.join()
+                if d is None:
                     rotos.append(i)
-                    continue
-                except Exception:            # fallo del reparto (no de una prueba): cuenta como error
-                    total.errors.append((_Hecha(_MODULOS[i][0]), traceback.format_exc()))
-                    continue
-                _anotar(total, tiempos, d, salida)
+                elif "reparto" in d:                   # fallo del reparto (no de una prueba): error
+                    total.errors.append((_Hecha(_MODULOS[i][0]), d["reparto"]))
+                else:
+                    _anotar(total, tiempos, d, salida)
         if rotos:
-            # Un proceso murió sin devolver nada (os._exit, una señal, sin memoria) y con él cae el
-            # pool entero: lo que quedaba se corre aquí, en serie, para no perder resultados; y la
-            # corrida falla igual, porque algo mató un proceso de pruebas.
+            # Un proceso murió sin devolver nada (os._exit, una señal, sin memoria): ese módulo se
+            # repite aquí, en serie, para no perder resultados; y la corrida falla igual, porque algo
+            # mató un proceso de pruebas.
             total.errors.append((_Hecha("correr.proceso_muerto", "un proceso de pruebas murió"),
                                  "Murió un proceso de pruebas; se repitieron en serie: %s"
                                  % ", ".join(sorted(_MODULOS[i][0] for i in rotos))))

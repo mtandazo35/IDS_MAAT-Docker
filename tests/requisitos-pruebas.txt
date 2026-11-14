@@ -1,0 +1,8 @@
+# Dependencias de Python que las pruebas necesitan y el host puede no tener (QA T-02, 2026-11-14).
+# Mismas versiones que la imagen del panel (Debian 13: python3-reportlab, python3-pil, python3-chardet):
+# se prueba contra lo que corre en producción. Si cambian en la imagen, cambiarlas aquí.
+# tests/run.sh las instala, si faltan, en una carpeta propia (IDS_DEPS_DIR) con un contenedor
+# python:<versión>-slim y pip --target: no toca los paquetes del host.
+reportlab==4.3.1
+pillow==11.1.0
+chardet==5.2.0

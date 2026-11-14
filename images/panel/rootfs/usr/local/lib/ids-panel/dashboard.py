@@ -14475,7 +14475,7 @@ sensor) o cárgalas desde uno. Al importar, <b>reemplazan</b> todas las exclusio
 <a class="ebtn exp" href="/exclusiones/export" download="exclusiones.json">&#8681;&nbsp; Exportar JSON</a>
 <span class=eximp-sep></span>
 <form class=eximp-imp method=post action="/exclusiones" data-n="{n_propias}"
- onsubmit="return excImportar(this)">
+ onsubmit="var m=excImportar(this);if(!m)return false;return ask(this,'Reemplazar las exclusiones',m,'Reemplazar','danger')">
 <input type=hidden name=accion value=import>
 <input type=hidden name=json id=impjson>
 <label class=filepick><span class=filebtn>Elegir archivo</span><span id=fname class=fname>ningún archivo</span>
@@ -14503,9 +14503,9 @@ var m=-1;try{{var d=JSON.parse(v);if(Array.isArray(d))m=d.length;}}catch(e){{}}
 if(m<0){{aviso('Archivo no válido','El archivo no es una lista de exclusiones en JSON. No se importó nada.');return false;}}
 if(m===0){{aviso('Archivo vacío','El archivo no trae ninguna exclusión. No se importó nada.');return false;}}
 var n=+f.getAttribute('data-n')||0;
-return ask(f,'Reemplazar las exclusiones',(n?'Se borrarán las '+n+' exclusión(es) actuales':'Ahora no hay exclusiones propias')+
-' y se cargarán las '+m+' del archivo. Las que no sean válidas se descartan. No se puede deshacer: exporta antes si quieres un respaldo.',
-'Reemplazar','danger');}}
+/* devuelve el texto de la confirmacion; el ask(this,...) va en el onsubmit (el elemento pulsado) */
+return (n?'Se borrarán las '+n+' exclusión(es) actuales':'Ahora no hay exclusiones propias')+
+' y se cargarán las '+m+' del archivo. Las que no sean válidas se descartan. No se puede deshacer: exporta antes si quieres un respaldo.';}}
 function leerJSON(i){{var f=i.files&&i.files[0];var n=document.getElementById('fname');
 if(!f){{if(n)n.textContent='ningún archivo';return;}}if(n)n.textContent=f.name;
 var r=new FileReader();r.onload=function(){{document.getElementById('impjson').value=r.result;}};r.readAsText(f);}}</script>

@@ -179,8 +179,13 @@ class PanelP:
     def _redirigir_rutas(self):
         """Las rutas viejas de /etc y /var del heredado (si quedan) van al directorio temporal."""
         base = os.path.join(self.tmp.name, "sistema")
+        propio = os.path.join(self.tmp.name, "")
         for k, v in list(vars(self.d).items()):
-            if isinstance(v, str) and v.startswith(("/etc/", "/var/", "/root/", "/run/")) and k.isupper():
+            # lo que ya está dentro del temporal de la prueba no se toca: con TMPDIR bajo /root (como
+            # en la VPS, /root/ids-pruebas) se redirigían también las rutas del panel de prueba y
+            # Empresa, la bitácora o los enviados se leían de un sitio y se escribían en otro (QA T-02)
+            if (isinstance(v, str) and v.startswith(("/etc/", "/var/", "/root/", "/run/")) and k.isupper()
+                    and not v.startswith(propio)):
                 setattr(self.d, k, os.path.join(base, k + "_" + os.path.basename(v.rstrip("/"))))
 
     def _sustitutos(self):
