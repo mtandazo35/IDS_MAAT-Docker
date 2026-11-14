@@ -56,7 +56,7 @@ CPES = {
                             "puertos_top": {}, "cats_top": {"Escaneo de puertos": 999}})],
 }
 
-PUBLICAS = {"r1": ["192.141.39.0/24"], "r2": ["203.0.113.0/24"]}
+PUBLICAS = {"r1": ["198.51.100.0/24"], "r2": ["203.0.113.0/24"]}
 
 
 def entorno():
@@ -89,20 +89,20 @@ def main():
 
     # --- de que nodo es la publica -------------------------------------------------------
     check("una publica se atribuye a su nodo",
-          ns["rid_de_publica"]("192.141.39.202") == "r1", ns["rid_de_publica"]("192.141.39.202"))
+          ns["rid_de_publica"]("198.51.100.202") == "r1", ns["rid_de_publica"]("198.51.100.202"))
     check("y otra al suyo", ns["rid_de_publica"]("203.0.113.9") == "r2", "")
     check("una que no esta declarada no se atribuye a ninguno",
           ns["rid_de_publica"]("8.8.8.8") == "", ns["rid_de_publica"]("8.8.8.8"))
     check("lo que no es una IP no revienta", ns["rid_de_publica"]("vaya") == "")
 
     # --- el cruce ---------------------------------------------------------------------------
-    h = ns["culpables_ficha_html"]("192.141.39.202", [[ESCANEO, 1]])
+    h = ns["culpables_ficha_html"]("198.51.100.202", [[ESCANEO, 1]])
     check("con escaneo denunciado sale el CPE que escanea",
           "192.168.4.77" in h, h[:220])
     check("y no el que solo mueve mucho trafico normal", "192.168.4.99" not in h, "")
     check("se dice por que se le senala", "Escaneo de puertos" in h, "")
 
-    h2 = ns["culpables_ficha_html"]("192.141.39.202", [[SPAM, 1]])
+    h2 = ns["culpables_ficha_html"]("198.51.100.202", [[SPAM, 1]])
     check("con spam denunciado sale otro: el que saca correo",
           "192.168.4.20" in h2 and "192.168.4.77" not in h2, h2[:220])
 
@@ -110,15 +110,15 @@ def main():
     # Los abonados de un nodo no tienen nada que ver con los de otro: buscar en todos
     # senalaria a gente de otra red por un ataque que no hizo.
     check("no se senala a un CPE de otro nodo",
-          "10.9.9.9" not in ns["culpables_ficha_html"]("192.141.39.202", [[ESCANEO, 1]]), "")
+          "10.9.9.9" not in ns["culpables_ficha_html"]("198.51.100.202", [[ESCANEO, 1]]), "")
 
     # --- la forma de las categorias --------------------------------------------------------------
     # En la ficha vienen como pares; el cruce quiere los identificadores. Si no se
     # convierten, esto fallaba por dentro y la seccion desaparecia sin decir nada.
     check("acepta las categorias como pares, que es como llegan de la ficha",
-          "192.168.4.77" in ns["culpables_ficha_html"]("192.141.39.202", [[ESCANEO, 3]]), "")
+          "192.168.4.77" in ns["culpables_ficha_html"]("198.51.100.202", [[ESCANEO, 3]]), "")
     check("y tambien sueltas, por si acaso",
-          "192.168.4.77" in ns["culpables_ficha_html"]("192.141.39.202", [ESCANEO]), "")
+          "192.168.4.77" in ns["culpables_ficha_html"]("198.51.100.202", [ESCANEO]), "")
 
     # --- honestidad ------------------------------------------------------------------------------
     check("se presentan como candidatos, no como culpables",
@@ -128,7 +128,7 @@ def main():
 
     # --- lo que no se sabe -------------------------------------------------------------------------
     check("sin categorias denunciadas no se inventa nada",
-          ns["culpables_ficha_html"]("192.141.39.202", []) == "", "")
+          ns["culpables_ficha_html"]("198.51.100.202", []) == "", "")
     vacio = ns["culpables_ficha_html"]("203.0.113.9", [[SPAM, 1]])
     # No basta con decir "no hay nadie": antes ese mismo mensaje tapaba tres
     # situaciones distintas. Aqui SI hay señal que buscar y SI se busco, asi que

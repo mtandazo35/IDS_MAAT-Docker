@@ -1075,7 +1075,7 @@ def _prohibido(h):
     if callable(f):
         return f()
     d = _dash(h)
-    return h._html(pagina(d, "Sin permiso", "<h1>Sin permiso</h1><p>Tu rol no permite esta parte del "
+    return h._html(pagina(d, "Sin permiso", "<h1>Sin permiso</h1><p>Tus permisos no incluyen esta parte del "
                           "panel. Si la necesitas, pídesela a un administrador.</p>"), 403)
 
 

@@ -29,7 +29,7 @@ ARBOL = extraer.arbol("DASH")
 PIEZAS = ("EXCL_FILE", "REPORT_CONF", "cargar_exclusiones", "guardar_exclusiones",
           "exclusiones_page",
           # Editar y Eliminar van por la huella de la regla, no por su posicion (QA U-02, 2026-11-14)
-          "huella_exclusion",
+          "huella_exclusion", "js_attr",
           # «Nunca bloquear» vive en Exclusiones (2026-10-16): la pagina lee su lista
           "NUNCA_FILE", "cargar_nunca")
 

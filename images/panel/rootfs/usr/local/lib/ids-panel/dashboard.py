@@ -3452,8 +3452,9 @@ def mk_lista_en_uso(lista, router=None):
 def _a_cidr(txt):
     """Normaliza lo que devuelve el router a algo consultable.
 
-    Acepta "190.0.2.7/29" (se queda con la RED: una sola consulta cubre el pool),
-    "190.0.2.7" y rangos "190.0.2.10-190.0.2.20" (se resumen a los CIDR que los cubren).
+    Acepta "200.0.2.7/29" (se queda con la RED: una sola consulta cubre el pool),
+    "200.0.2.7" y rangos "200.0.2.10-200.0.2.20" (se resumen a los CIDR que los cubren). Ejemplos
+    genericos PUBLICOS: las IPs de documentacion (RFC 5737) no son is_global y se descartarian (QA U-10).
     Descarta lo privado, que es justo lo que NO hay que mandar a ningun sitio."""
     txt = (txt or "").strip()
     salida = []
@@ -8333,7 +8334,7 @@ PUB_UMBRAL_AVISO = 25          # a partir de aqui la IP ya esta ensuciada: avisa
 _PUB_LOCK = threading.RLock()
 
 def cargar_publicas():
-    """{id_router: [ "200.0.0.0/24", "190.0.2.7", ... ]}"""
+    """{id_router: [ "200.0.0.0/24", "200.0.2.7", ... ]}"""
     try:
         d = json.load(open(PUBLICAS_CONF, encoding="utf-8"))
         n = d.get("nodos")
@@ -10218,7 +10219,9 @@ def buscar_usuario(user):
 
 # ---- puntos que ve cada usuario (el dueño, 2026-10-22: «multi-usuario por punto») ----
 # usuarios.json: `puntos` = lista de pids que ve ese usuario. Sin la clave ve todos (como hasta
-# ahora); el administrador ve siempre todos (se le borra la clave); una lista vacia no ve ninguno.
+# ahora); una lista vacia no ve ninguno. Tambien un administrador puede quedar limitado a unos puntos
+# (permisos a la carta, 2026-10-22): admin_total es el que tiene rol admin, todos los puntos y todos
+# los permisos, y siempre queda al menos uno activo (QA U-13: antes decia «ve siempre todos»).
 # Quien lo aplica en cada peticion es sesion_de/puntos_de_usuario y nodos.poner_alcance.
 
 def puntos_marcados(valores):
@@ -14423,7 +14426,12 @@ def exclusiones_page(msg="", ok=False, edit_idx=None, edit=None):
             _h = huella_exclusion(r)
             accion = (f'<div style="display:flex;gap:6px;align-items:center">'
                       f'<a class="edit" href="/exclusiones?edit={_h}">Editar</a>'
-                      f'<form method=post action="/exclusiones" style="margin:0">'
+                      # QA U-03 (2026-11-14): borrar una exclusion devuelve los falsos positivos de esa
+                      # IP (y con ellos, cuarentenas automaticas): se confirma, como borrar un usuario
+                      f'<form method=post action="/exclusiones" style="margin:0" '
+                      f'onsubmit="return ask(this,\'Eliminar exclusión\','
+                      f'{js_attr("Las alertas de " + r["ip"] + " vuelven a contar desde ya (y pueden mandar CPEs a cuarentena).")},'
+                      f'\'Eliminar\',\'danger\')">'
                       f'<input type=hidden name=accion value=del><input type=hidden name=huella value="{_h}">'
                       f'<button class="del" type=submit>Eliminar</button></form></div>')
         resalta = ' style="background:#eef4fd"' if (ed is not None and i == edit_idx) else ''
@@ -16267,7 +16275,7 @@ cuarentena, no entra en Puntos ni edita nada.</li>
 </ul>
 <p>Cada uno cambia su clave desde su usuario (arriba a la derecha &rarr; <b>Cambiar
 contraseña</b>); un administrador además crea/borra usuarios, cambia roles y elige los puntos que ve cada
-uno en <b>Ajustes &rarr; Usuarios</b> (lo que puede cada rol, en <b>Roles y permisos</b>). <b>Cada acción exige su rol y se comprueba en el
+uno en <b>Ajustes &rarr; Usuarios</b> (lo que puede cada rol, en <b>Roles y permisos</b>). <b>Cada acción exige su permiso y se comprueba en el
 servidor</b>: no basta con ocultar un botón, y cambiar el nodo en la dirección no da más permisos.</p>
 <h3>Permisos de cada usuario</h3>
 <p><b>Roles y permisos</b> (Ajustes) dice qué puede hacer cada rol: Operador y Lectura se editan con el acordeón y el cambio vale para todos sus usuarios; Administrador es fijo, con todo. En <b>Usuarios</b> se elige el rol y los puntos de cada uno. Un usuario con permisos propios (de antes) los conserva hasta marcar «Usar los permisos de su rol».</p>
@@ -16275,7 +16283,8 @@ servidor</b>: no basta con ocultar un botón, y cambiar el nodo en la dirección
 <h3>Puntos que ve cada usuario</h3>
 <p>Al crear o editar un usuario, <b>Puntos que ve</b> tiene dos opciones: <b>Todos los puntos</b> (lo de
 siempre: un usuario creado antes de esta opción ve todos) o <b>Solo estos puntos</b>, con una casilla por
-punto. El <b>administrador ve siempre todos</b>: para él la opción no aplica. La columna <b>Puntos</b> de la
+punto. También un <b>administrador</b> puede quedar limitado a unos puntos; siempre queda al menos un
+administrador activo con todos los puntos y todos los permisos. La columna <b>Puntos</b> de la
 tabla dice qué ve cada uno: «Todos», los nombres de sus puntos o «Ninguno». Con «Solo estos puntos» y
 ninguno marcado el usuario no ve datos («Sin puntos asignados»; solo su Perfil, para cambiar su clave y su foto, y la Documentación) hasta que le
 asignes uno. El cambio vale en su siguiente clic, sin cerrarle la sesión.</p>
@@ -20407,7 +20416,10 @@ def cuarentena_page(msg="", es_admin=False):
         dests_ok = sorted(_dest_ok_set())
         chips = ("".join(
             f"<span class=destchip><span class=mono>{esc(dp)}</span>"
-            f"<form method=post action='/cuarentena/quitar-destino' style='display:inline;margin:0'>"
+            f"<form method=post action='/cuarentena/quitar-destino' style='display:inline;margin:0' "
+            f"onsubmit=\"return ask(this,'Quitar de confiables',"
+            f"{js_attr(dp + ' vuelve a contar: sus alertas pueden mandar CPEs a cuarentena otra vez.')},"
+            f"'Quitar','danger')\">"
             f"<input type=hidden name=destino value='{esc(dp)}'>"
             f"<button class=destx title='Quitar de confiables'>&times;</button></form></span>"
             for dp in dests_ok) if dests_ok else "<span class=muted>ninguno todavía</span>")
@@ -20416,8 +20428,12 @@ def cuarentena_page(msg="", es_admin=False):
                   "<p class='sub' style='margin:0 0 10px'>Si una IP <b>destino</b> (p.ej. un DNS) dispara falsos "
                   "positivos en muchos CPEs, márcala como confiable: sus alertas dejan de contar y se "
                   "<b>liberan automáticamente</b> los CPEs que fueron a la lista por su culpa.</p>"
-                  "<form method=post action='/cuarentena/excluir-destino' style='display:flex;gap:8px;flex-wrap:wrap'>"
-                  "<input type=text name=destino placeholder='200.63.105.194' "
+                  "<form method=post action='/cuarentena/excluir-destino' style='display:flex;gap:8px;flex-wrap:wrap' "
+                  "onsubmit=\"return ask(this,'Excluir destino y liberar',"
+                  "'Sus alertas dejan de contar en todos los puntos y salen de la cuarentena los CPEs que "
+                  "entraron por su culpa.','Excluir y liberar','danger')\">"
+                  # IP de documentacion (RFC 5737), no una real (QA U-10)
+                  "<input type=text name=destino placeholder='203.0.113.53' "
                   "style='flex:1;min-width:180px;padding:8px 11px;border:1px solid #d7d6d2;border-radius:8px;"
                   "font:13px ui-monospace,Consolas,monospace'>"
                   "<button class='qbtn' style='background:#2a78d6'>Excluir y liberar</button></form>"
@@ -21311,7 +21327,7 @@ class H(BaseHTTPRequestHandler):
                                                       getattr(CTX, "role", None) or "-"))
         except Exception:
             pass
-        return self._html(_pagina_error("Sin permiso", "Tu rol no permite esta acción. Si la necesitas, "
+        return self._html(_pagina_error("Sin permiso", "Tus permisos no incluyen esta acción. Si la necesitas, "
                                         "pídesela a un administrador."), 403)
 
     def _confirmar_evidencia_vieja(self, ruta, q, ip, detalle):

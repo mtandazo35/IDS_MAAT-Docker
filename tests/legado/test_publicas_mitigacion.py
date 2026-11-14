@@ -249,13 +249,13 @@ def main():
     # Se sustituye la resolucion DNS por una tabla, asi la prueba no depende de internet.
     RESPUESTAS = {
         # una IP con problema de verdad (equipo infectado) y ademas en SpamCop
-        "226.173.224.181.zen.spamhaus.org": ["127.0.0.4"],
-        "226.173.224.181.bl.spamcop.net": ["127.0.0.2"],
+        "226.2.0.200.zen.spamhaus.org": ["127.0.0.4"],
+        "226.2.0.200.bl.spamcop.net": ["127.0.0.2"],
         # otra SOLO en la PBL: en un rango residencial eso es lo NORMAL, no un problema
-        "229.173.224.181.zen.spamhaus.org": ["127.0.0.10"],
+        "229.2.0.200.zen.spamhaus.org": ["127.0.0.10"],
         # y una lista que rechaza la consulta (resolutor publico): no es "limpia"
-        "226.173.224.181.dnsbl.sorbs.net": ["127.255.255.254"],
-        "229.173.224.181.dnsbl.sorbs.net": ["127.255.255.254"],
+        "226.2.0.200.dnsbl.sorbs.net": ["127.255.255.254"],
+        "229.2.0.200.dnsbl.sorbs.net": ["127.255.255.254"],
     }
 
     def _resolver(nombre):
@@ -266,19 +266,19 @@ def main():
     ns["socket"] = types.SimpleNamespace(gethostbyname_ex=_resolver,
                                          gaierror=__import__("socket").gaierror)
 
-    est, cods = ns["dnsbl_una"]("181.224.173.226", "zen.spamhaus.org")
+    est, cods = ns["dnsbl_una"]("200.0.2.226", "zen.spamhaus.org")
     check("una IP listada se detecta", est == "listada" and cods == ["127.0.0.4"], (est, cods))
     check("una IP limpia da NXDOMAIN y se lee como limpia",
-          ns["dnsbl_una"]("181.224.173.99", "zen.spamhaus.org")[0] == "limpia")
+          ns["dnsbl_una"]("200.0.2.99", "zen.spamhaus.org")[0] == "limpia")
     check("y una consulta RECHAZADA no se confunde con 'limpia'",
-          ns["dnsbl_una"]("181.224.173.226", "dnsbl.sorbs.net")[0] == "rechazada")
+          ns["dnsbl_una"]("200.0.2.226", "dnsbl.sorbs.net")[0] == "rechazada")
 
-    r = ns["dnsbl_revisar"]("181.224.173.224/29")
+    r = ns["dnsbl_revisar"]("200.0.2.224/29")
     check("se revisa la red entera", r and r["n_ips"] >= 6, r and r["n_ips"])
     check("cuenta como listada la que tiene problema real", r["n_listadas"] == 1, r["n_listadas"])
     check("y la que solo esta en PBL se cuenta APARTE (es normal en residencial)",
           r["n_pbl"] == 1, (r["n_pbl"], r["ips"]))
-    det = r["ips"].get("181.224.173.226", {})
+    det = r["ips"].get("200.0.2.226", {})
     check("se dice en que listas y por que",
           any("equipo infectado" in x for x in det.get("listas") or [])
           and "SpamCop" in (det.get("listas") or []), det)
@@ -286,7 +286,7 @@ def main():
           "SORBS" in (r.get("rechazadas") or []), r.get("rechazadas"))
 
     # y el aviso solo la primera vez
-    ns["cargar_publicas"] and ns["guardar_publicas_de"]("p001", "181.224.173.224/29")
+    ns["cargar_publicas"] and ns["guardar_publicas_de"]("p001", "200.0.2.224/29")
     antes = len(ns["_avisos"])
     ns["vigilar_dnsbl"]()
     check("avisa cuando aparece en una lista negra",
@@ -296,7 +296,7 @@ def main():
     check("y no repite el aviso en cada vuelta", len(ns["_avisos"]) == medio, ns["_avisos"])
     h = ns["_dnsbl_hist"]()
     check("queda la serie por dia para ver si baja",
-          bool(h.get("181.224.173.224/29", {}).get("dias")), h)
+          bool(h.get("200.0.2.224/29", {}).get("dias")), h)
 
     # --- 6) sin nada declarado no se gasta cuota ---
     tmp3 = tempfile.mkdtemp(); red3 = Red(); ns3 = entorno(tmp3, red3, pan)
