@@ -27,6 +27,15 @@ test_e2e_guarda.*                       linux   # la guarda que impide la E2E en
 test_vpn_scripts.*                      linux   # scripts de la VPN: bash y modos de fichero POSIX
 test_host_systemd.*                     linux   # unidades de systemd verificadas con systemd-analyze
 test_host_fail2ban.*                    linux   # jaulas de fail2ban probadas con fail2ban-regex
+# QA T-11: el JavaScript del panel ejecutado de verdad (node, o el shim con docker de run.sh)
+test_envivo_sin_recarga.JS.*            linux   # En vivo sin recarga entera
+test_panel_api_probar.ModalJs.*         linux   # modal de «Probar la conexión»: todo escapado
+test_panel_copiar.*                     linux   # Copiar con y sin portapapeles
+test_panel_lista_recarga.*              linux   # la lista de Puntos no recarga con un modal abierto
+test_panel_sesion_caducada.*            linux   # sesión caducada en mitad de una operación
+test_exclusiones_importar.ImportarExclusiones.test_el_formulario_pide_confirmar  linux  # importar pide confirmar
+test_confirmaciones.Confirmaciones.test_sin_confirmar_no_se_envia               linux  # no se envía sin confirmar
+test_panel_permisos.AcordeonUsuarios.test_el_javascript_de_ajustes_compila     linux  # el JS de Ajustes compila
 # Casos obligatorios de CONTRATO-F2 §10.5 (auditoría B-03)
 test_eventos_busqueda.*                 todas   # §10.5 Eventos: rutas manipuladas, JSON incompleto, .gz que descomprime mucho, límites
 test_eventos_detalle.*                  linux   # §10.5 Eventos: enlaces simbólicos y rutas manipuladas (en Windows no hay symlinks)

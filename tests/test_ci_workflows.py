@@ -278,6 +278,22 @@ class Workflows(unittest.TestCase):
                     continue
                 self.assertRegex(uso, r"^[\w.-]+/[\w.-]+@[0-9a-f]{40}$", "%s: %s" % (nombre, uso))
 
+    def test_dependabot_sube_las_acciones(self):
+        """Capacidad nueva (QA T-16, 2026-11-14): las acciones van fijadas por SHA y ci.yml dice que
+        Dependabot las sube, pero no había configuración: nadie las subía. Ahora sí, cada semana."""
+        txt = (REPO / ".github" / "dependabot.yml").read_text(encoding="utf-8")
+        self.assertRegex(txt, r"(?m)^version: 2$")
+        self.assertRegex(txt, r"(?m)^\s*-\s*package-ecosystem:\s*github-actions$")
+        self.assertRegex(txt, r"(?m)^\s*directory:\s*/$")
+        self.assertRegex(txt, r"(?m)^\s*interval:\s*weekly$")
+        try:
+            import yaml
+        except ImportError:
+            return                                   # la sintaxis completa, donde haya PyYAML (el CI)
+        d = yaml.safe_load(txt)
+        self.assertEqual(d["version"], 2)
+        self.assertIn("github-actions", [u["package-ecosystem"] for u in d["updates"]])
+
     def test_ci_solo_lint(self):
         """Decisión del dueño (2026-10-15): las pruebas se corren en la VPS, no en GitHub. El CI
         solo hace lint (~30 s) y release.yml lo exige en verde para el commit etiquetado."""

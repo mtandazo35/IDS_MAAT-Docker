@@ -1,0 +1,15 @@
+# ids-maat — Dependabot (QA T-16, 2026-11-14). ci.yml y release.yml fijan cada acción por el SHA de
+# su commit; sin esto nadie las subía cuando salía un arreglo de seguridad. Dependabot abre un PR con
+# el SHA nuevo (y su versión en el comentario) y el CI lo pasa por el lint de siempre.
+#
+# No cubre la base de las imágenes: los Dockerfile la reciben por ARG desde images/base.env
+# (debian:trixie-slim@sha256:...) y Dependabot no sigue ese fichero; se sube a mano.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "ci"

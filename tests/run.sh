@@ -75,6 +75,32 @@ preparar_deps() {
 }
 preparar_deps
 
+# node para las pruebas del JavaScript del panel (QA T-11, 2026-11-14): sin node se omitían sin que
+# nadie lo notara (la VPS no lo trae). Si falta y hay docker, un shim lo corre en un contenedor
+# (IDS_NODE_IMAGEN, node:22-alpine por defecto) con el temporal y el repo montados en la misma ruta.
+# IDS_NODE=0 lo desactiva. Las pruebas de JS son obligatorias en linux (tests/obligatorias.txt).
+preparar_node() {
+  local img dir tmp
+  [ "${IDS_NODE:-1}" = 0 ] && return 0
+  command -v node >/dev/null 2>&1 && return 0
+  command -v docker >/dev/null 2>&1 || { echo "   AVISO: sin node ni docker: las pruebas de JS se omitirán" >&2; return 0; }
+  img="${IDS_NODE_IMAGEN:-node:22-alpine}"
+  if ! docker image inspect "$img" >/dev/null 2>&1 && ! docker pull -q "$img" >/dev/null 2>&1; then
+    echo "   AVISO: no se pudo traer $img: las pruebas de JS se omitirán" >&2
+    return 0
+  fi
+  tmp="${TMPDIR:-/tmp}"
+  dir=$(mktemp -d "$tmp/ids-node-XXXXXX") || return 0
+  cat > "$dir/node" <<EOF
+#!/bin/sh
+exec docker run --rm -i -v "$tmp:$tmp" -v "$PWD:$PWD" -w "\$PWD" "$img" node "\$@"
+EOF
+  chmod +x "$dir/node"
+  export PATH="$dir:$PATH"
+  echo "   (node de las pruebas en un contenedor: $img)"
+}
+preparar_node
+
 FALLOS=0
 OMITIDAS=0
 PASADAS=0
