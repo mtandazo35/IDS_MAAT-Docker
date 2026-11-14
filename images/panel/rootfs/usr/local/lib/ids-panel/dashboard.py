@@ -10709,21 +10709,62 @@ def _hist_hilo():
         if _PARAR.wait(HIST_CADA):
             return
 
+RAPIDO_CADA = 60     # barrido de infeccion confirmada y salud del sensor, cada ~60 s
+
+def _barrido_con_politica(pid):
+    """barrido_alto_rapido con el cerrojo «politica» del punto: no corre a la vez que los pasos
+    de politica del ciclo del refrescador (evaluar_bloqueos, aplicar_politicas...), que tambien
+    mandan CPEs al router. Asi un mismo CPE no se envia dos veces desde dos hilos."""
+    with cerrojo_operacion(pid, "politica", espera=GEN_TIMEOUT):
+        barrido_alto_rapido(pid)
+
+def _rapido_hilo():
+    """Hilo propio de lo que tiene que ir rapido (QA D-02, 2026-11-14): el envio inmediato de
+    las infecciones confirmadas (barrido_alto_rapido) y la salud del sensor (medir_sensor, que
+    avisa de «sensor caido»). Antes iban en el refrescador, detras de generar el informe de
+    cada punto (hasta GEN_TIMEOUT cada uno), «Todos», los grupos y la conducta: con muchos
+    puntos, la cuarentena automatica y el aviso llegaban decenas de minutos tarde.
+    Con su propio cerrojo por punto («rapido»), que tambien espera purgar_punto."""
+    while not _PARAR.is_set():
+        LATIDO["rapido"] = time.time()
+        try:
+            pids = pids_activos()
+            _por_nodo(_barrido_con_politica, pids, cerrojo="rapido")
+            _por_nodo(medir_sensor, pids, cerrojo="rapido")
+        except Exception:
+            sys.stderr.write("rapido: vuelta fallida\n%s" % traceback.format_exc())
+        if _PARAR.wait(RAPIDO_CADA):
+            return
+
+def _hist_vacia(pid):
+    """True si la base del historial del punto no tiene ni una fila (nunca se ingirio nada)."""
+    c = _hist_con(pid)
+    try:
+        return c.execute("SELECT 1 FROM resumen LIMIT 1").fetchone() is None
+    finally:
+        c.close()
+
 def _conducta_nodo(pid):
     rep_ = hist_conducta(pid=pid)
-    if not rep_.get("filas"):
-        rep_ = conducta_recolectar(pid=pid)   # base aun vacia: primera vez
+    # QA D-04 (2026-11-14): solo se recurre a releer los logs si la base esta VACIA (primera
+    # vez). Antes bastaba con «sin filas», y un punto limpio (sin alertas) releia 3 dias de
+    # eve/dns cada CONDUCTA_CADA sin necesidad.
+    if not rep_.get("filas") and _hist_vacia(pid):
+        rep_ = conducta_recolectar(pid=pid)
     guardar_conducta(rep_, pid)
 
 def _ciclo_nodo(pid, vmin):
     """Lo que en el heredado era el ciclo principal, para UN punto: generar su reporte y,
     con el reporte nuevo, reconciliar, evaluar y aplicar politicas SOLO sobre sus claves."""
     dur = generar_reporte(pid, vmin)
-    for paso in (reconciliar_cuarentena, evaluar_bloqueos, aplicar_politicas, atacantes_auto):
-        try:
-            paso(pid)
-        except Exception as _e:
-            sys.stderr.write("%s(%s): %s\n" % (paso.__name__, pid, _e))
+    # el cerrojo «politica» solo envuelve los pasos (no la generacion): el barrido rapido del
+    # punto espera segundos, no lo que tarde el informe
+    with cerrojo_operacion(pid, "politica", espera=GEN_TIMEOUT):
+        for paso in (reconciliar_cuarentena, evaluar_bloqueos, aplicar_politicas, atacantes_auto):
+            try:
+                paso(pid)
+            except Exception as _e:
+                sys.stderr.write("%s(%s): %s\n" % (paso.__name__, pid, _e))
     return dur
 
 def refrescador():
@@ -10793,18 +10834,14 @@ def _vuelta_refrescador(estado):
         try: barrer_bajas()
         except Exception as _e: sys.stderr.write("barrer_bajas: %s\n" % _e)
     pids = pids_activos()
-    if time.time() - ult_fast > 60:        # cada ~60s: enviar YA los ALTO/infeccion confirmada
-        _por_nodo(barrido_alto_rapido, pids)
-        ult_fast = time.time()
+    # el envio inmediato (barrido_alto_rapido) y la salud del sensor (medir_sensor) van en su
+    # propio hilo, _rapido_hilo (QA D-02): aqui esperaban a todos los informes
     if time.time() - ult_poda > 86400:     # 1x/dia: podar logs (15d) y reportes guardados (3d)
         try: podar_logs()
         except Exception: pass
         try: podar_reportes()
         except Exception: pass
         ult_poda = time.time()
-    if time.time() - ult_sensor > 60:      # cada ~60s: salud del sensor de cada punto
-        _por_nodo(medir_sensor, pids)
-        ult_sensor = time.time()
     if time.time() - ult_feeds > FEEDS_CADA:   # cada 15 min: feeds de reputacion
         try: actualizar_feeds_async()
         except Exception as _e: sys.stderr.write("feeds: %s\n" % _e)
@@ -12526,8 +12563,10 @@ def purgar_punto(pid, quien=None):
     with _OPS_CERROJOS_LOCK:
         lk = _OPS_CERROJOS.setdefault((pid, "fondo"), threading.Lock())
         lk_hist = _OPS_CERROJOS.setdefault((pid, "historial"), threading.Lock())
+        lk_rap = _OPS_CERROJOS.setdefault((pid, "rapido"), threading.Lock())
     tengo = lk.acquire(timeout=20)
     tengo_hist = lk_hist.acquire(timeout=20)     # el hilo del historial escribe en nodos/<pid>/
+    tengo_rap = lk_rap.acquire(timeout=20)       # y el rapido (sensor.json, cuarentena inmediata)
     try:
         for path in (MK_SENT, MK_SENT_DNS, MK_SENT_GRAD):
             with _ENV_LOCK:
@@ -12629,6 +12668,8 @@ def purgar_punto(pid, quien=None):
             lk.release()
         if tengo_hist:
             lk_hist.release()
+        if tengo_rap:
+            lk_rap.release()
     if quien != "panel" or any(hecho.values()):
         bitacora("PUNTO-PURGADO", "punto=%s %s" % (pid, " ".join("%s=%s" % kv for kv in sorted(hecho.items()) if kv[1])),
                  quien=quien)
@@ -23507,6 +23548,7 @@ def main():
         pass
     lanzar_hilo("refrescador", refrescador)
     lanzar_hilo("historial", _hist_hilo)          # la ingesta del historial, aparte de los informes
+    lanzar_hilo("rapido", _rapido_hilo)           # cuarentena inmediata y salud, sin esperar informes
     lanzar_hilo("informe-diario", informe_diario_hilo)
     threading.Thread(target=supervisor, name="supervisor", daemon=True).start()
     sys.stderr.write("panel: escuchando en %s:%s (proxies de confianza: %s)\n" % (

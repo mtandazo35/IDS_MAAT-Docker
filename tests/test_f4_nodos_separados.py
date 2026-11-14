@@ -731,6 +731,118 @@ class HiloHistorial(Base):
         self.assertGreaterEqual(time.time() - t0, 0.9)
 
 
+class HiloRapido(Base):
+    """QA D-02 (2026-11-14): la cuarentena inmediata (barrido_alto_rapido) y la salud del sensor
+    (medir_sensor) iban en el refrescador, detras de generar todos los informes: con muchos puntos
+    llegaban decenas de minutos tarde. Van en su propio hilo, _rapido_hilo."""
+
+    def una_vuelta(self):
+        espera = self.d._PARAR.wait
+        self.d._PARAR.wait = lambda t=None: True          # una sola vuelta
+        try:
+            self.d._rapido_hilo()
+        finally:
+            self.d._PARAR.wait = espera
+
+    def anotar(self, *nombres):
+        hecho = []
+        for k in nombres:
+            setattr(self.d, k, (lambda nombre: lambda pid=None, *a, **kw: hecho.append((nombre, pid)))(k))
+        return hecho
+
+    def test_el_refrescador_ya_no_barre_ni_mide(self):
+        """Corrección de defecto: una vuelta del refrescador con todo «vencido» ya no llama a
+        barrido_alto_rapido ni a medir_sensor (son del hilo rápido)."""
+        hecho = self.anotar("barrido_alto_rapido", "medir_sensor")
+        for k in ("generar_reporte", "_conducta_nodo", "actualizar_feeds_async", "barrer_bajas"):
+            setattr(self.d, k, lambda *a, **kw: 0)
+        estado = {k: 0.0 for k in ("ult_poda", "ult_sensor", "ult_fast", "ult_dur", "ult_fin", "ult_aidb",
+                                   "ult_pub", "ult_diag", "ult_feeds", "ult_forzado", "ult_cond", "ult_hist",
+                                   "ult_bajas")}
+        try:
+            self.d._vuelta_refrescador(estado)
+        except Exception:
+            pass
+        self.assertEqual(hecho, [])
+
+    def test_el_hilo_barre_y_mide_cada_punto(self):
+        """Capacidad nueva: una vuelta de _rapido_hilo barre y mide todos los puntos activos y deja latido."""
+        hecho = self.anotar("barrido_alto_rapido", "medir_sensor")
+        self.una_vuelta()
+        self.assertEqual(sorted(p for n, p in hecho if n == "barrido_alto_rapido"), ["p001", "p002"])
+        self.assertEqual(sorted(p for n, p in hecho if n == "medir_sensor"), ["p001", "p002"])
+        self.assertIn("rapido", self.d.LATIDO)
+
+    def test_no_espera_al_informe_del_punto(self):
+        """Corrección de defecto: con el informe de p001 en marcha (cerrojo «fondo» tomado) el hilo
+        rápido no espera: barre y mide igual."""
+        hecho = self.anotar("barrido_alto_rapido", "medir_sensor")
+        with self.d.cerrojo_operacion("p001", "fondo", espera=1):
+            t0 = time.time()
+            self.una_vuelta()
+            self.assertLess(time.time() - t0, 5)
+        self.assertIn(("barrido_alto_rapido", "p001"), hecho)
+        self.assertIn(("medir_sensor", "p001"), hecho)
+
+    def test_politica_del_ciclo_y_barrido_no_se_pisan(self):
+        """Conservación: los pasos de política del ciclo (que también mandan CPEs al router) corren con el
+        cerrojo «politica» del punto, el mismo que toma el barrido rápido; la generación, no."""
+        visto = {}
+        lk = lambda: self.d._OPS_CERROJOS.get(("p001", "politica"))
+        self.d.generar_reporte = lambda pid, vmin: visto.setdefault("gen", bool(lk() and lk().locked())) and 0
+        for k in ("reconciliar_cuarentena", "evaluar_bloqueos", "aplicar_politicas", "atacantes_auto"):
+            setattr(self.d, k, (lambda nombre: lambda pid: visto.setdefault(nombre, lk().locked()))(k))
+        self.d.barrido_alto_rapido = lambda pid: visto.setdefault("barrido", lk().locked())
+        self.d._ciclo_nodo("p001", 60)
+        self.d._barrido_con_politica("p001")
+        self.assertFalse(visto["gen"])
+        for k in ("reconciliar_cuarentena", "evaluar_bloqueos", "aplicar_politicas", "atacantes_auto", "barrido"):
+            self.assertTrue(visto[k], k)
+        self.assertFalse(lk().locked())
+
+    def test_la_baja_espera_al_hilo_rapido(self):
+        """Corrección de defecto evitado: purgar_punto espera a que el hilo rápido suelte el punto (si no,
+        medir_sensor podría volver a crear nodos/<pid>/ después de borrarlo)."""
+        import threading
+        with self.d._OPS_CERROJOS_LOCK:
+            lk = self.d._OPS_CERROJOS.setdefault(("p002", "rapido"), threading.Lock())
+        lk.acquire()
+        t0 = time.time()
+        threading.Timer(1.0, lk.release).start()
+        self.d.purgar_punto("p002")
+        self.assertGreaterEqual(time.time() - t0, 0.9)
+
+
+class ConductaPuntoLimpio(Base):
+    """QA D-04 (2026-11-14): un punto sin alertas releía 3 días de eve/dns en cada vuelta de conducta,
+    porque «base vacía» y «punto limpio» se confundían."""
+
+    def preparar(self):
+        llamadas = []
+        self.d.conducta_recolectar = lambda pid=None, **k: llamadas.append(pid) or {"filas": []}
+        self.d.guardar_conducta = lambda rep_, pid: None
+        return llamadas
+
+    def test_base_vacia_recolecta(self):
+        """Conservación: la primera vez (base del historial sin filas) se reconstruye desde los logs."""
+        llamadas = self.preparar()
+        self.d._conducta_nodo("p001")
+        self.assertEqual(llamadas, ["p001"])
+
+    def test_punto_limpio_no_relee(self):
+        """Corrección de defecto: con la base ya poblada pero sin alertas no se releen los logs."""
+        llamadas = self.preparar()
+        c = self.d._hist_con("p001")
+        try:
+            c.execute("INSERT INTO resumen(hora,cpe,alertas,eventos,bytes) VALUES(?,?,?,?,?)",
+                      (int(time.time()) // 3600 * 3600, "192.168.1.20", 0, 7, 100))
+            c.commit()
+        finally:
+            c.close()
+        self.d._conducta_nodo("p001")
+        self.assertEqual(llamadas, [])
+
+
 class SoloElUltimoReporte(Entorno):
     def test_borra_las_instantaneas_viejas(self):
         """Capacidad nueva (el user quito «Reportes guardados», 2026-10-12): el generador deja solo el
