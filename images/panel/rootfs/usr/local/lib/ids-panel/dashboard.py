@@ -14228,6 +14228,7 @@ def perfil_page(msg="", ok=False, edit_user=None):
 
 def exclusiones_page(msg="", ok=False, edit_idx=None):
     reglas = cargar_exclusiones(incluir_vencidas=True)
+    n_propias = sum(1 for r in reglas if r.get("motivo") != "(conf)")   # lo que borra importar
     ahora = time.time()
     def _vig_txt(r):
         h = r.get("hasta") or 0
@@ -14432,8 +14433,8 @@ sensor) o cárgalas desde uno. Al importar, <b>reemplazan</b> todas las exclusio
 <div class=eximp-row>
 <a class="ebtn exp" href="/exclusiones/export" download="exclusiones.json">&#8681;&nbsp; Exportar JSON</a>
 <span class=eximp-sep></span>
-<form class=eximp-imp method=post action="/exclusiones"
- onsubmit="if(!document.getElementById('impjson').value){{aviso('Falta el archivo','Elige primero el archivo JSON que quieres importar.');return false;}}">
+<form class=eximp-imp method=post action="/exclusiones" data-n="{n_propias}"
+ onsubmit="return excImportar(this)">
 <input type=hidden name=accion value=import>
 <input type=hidden name=json id=impjson>
 <label class=filepick><span class=filebtn>Elegir archivo</span><span id=fname class=fname>ningún archivo</span>
@@ -14453,6 +14454,17 @@ if(m.getAttribute('data-edit')==='1'){{location.href='/exclusiones';return;}}
 m.classList.remove('on');document.body.style.overflow='';}}
 document.addEventListener('keydown',function(e){{if(e.key==='Escape'||e.key==='Esc')cerrarEx();}});
 if(document.getElementById('exmodal').getAttribute('data-edit')==='1')abrirEx();
+/* QA U-01 (2026-11-14): importar REEMPLAZA todas las exclusiones; antes se hacia sin
+   preguntar y un archivo equivocado las dejaba en cero sin aviso. */
+function excImportar(f){{var v=document.getElementById('impjson').value;
+if(!v){{aviso('Falta el archivo','Elige primero el archivo JSON que quieres importar.');return false;}}
+var m=-1;try{{var d=JSON.parse(v);if(Array.isArray(d))m=d.length;}}catch(e){{}}
+if(m<0){{aviso('Archivo no válido','El archivo no es una lista de exclusiones en JSON. No se importó nada.');return false;}}
+if(m===0){{aviso('Archivo vacío','El archivo no trae ninguna exclusión. No se importó nada.');return false;}}
+var n=+f.getAttribute('data-n')||0;
+return ask(f,'Reemplazar las exclusiones',(n?'Se borrarán las '+n+' exclusión(es) actuales':'Ahora no hay exclusiones propias')+
+' y se cargarán las '+m+' del archivo. Las que no sean válidas se descartan. No se puede deshacer: exporta antes si quieres un respaldo.',
+'Reemplazar','danger');}}
 function leerJSON(i){{var f=i.files&&i.files[0];var n=document.getElementById('fname');
 if(!f){{if(n)n.textContent='ningún archivo';return;}}if(n)n.textContent=f.name;
 var r=new FileReader();r.onload=function(){{document.getElementById('impjson').value=r.result;}};r.readAsText(f);}}</script>
@@ -17436,7 +17448,9 @@ def _cd_abrir(ruta):
     ningun otro sitio), asi que se hacen aqui y no en la cabecera."""
     if ruta.endswith(".gz"):
         import gzip as _gz, io as _io
-        return _io.TextIOWrapper(_gz.open(ruta, "rb"))
+        # utf-8 con errors="replace" como el log vivo: un byte corrupto en un rotado no puede
+        # tirar la pasada entera ni atascar el historial del punto (QA D-08, 2026-11-14)
+        return _io.TextIOWrapper(_gz.open(ruta, "rb"), encoding="utf-8", errors="replace")
     return open(ruta, encoding="utf-8", errors="replace")
 
 def dominio_de(ev):
@@ -17622,6 +17636,20 @@ def hist_ingerir(pid=None, limite_lineas=4000000):
         fts = {}            # (dia, cpe, firma) -> [primera, ultima]
         offs = _hist_offsets(c)
         vistos = {}
+        # QA D-01 (2026-11-14): al agotar el tope la pasada se CORTA. Antes el for seguia,
+        # cada archivo restante se abria, el while salia sin leer nada y se guardaba como
+        # leido entero ([tell, tamaño]); un .gz asi no se volvia a tocar jamas y se perdian
+        # horas o dias del historial sin que nada lo dijera.
+        import zlib as _zl
+        _ERR = (OSError, EOFError, ValueError, _zl.error)   # .gz truncado o corrupto
+        cortado = False
+        sin_leer = []       # marca de tiempo de lo primero que quedo pendiente en cada archivo
+
+        def _ts_de(linea):
+            try:
+                return _cd_ts((json.loads(linea) or {}).get("timestamp", "")) or None
+            except (ValueError, AttributeError, TypeError):
+                return None
 
         def _mt(p):
             try:
@@ -17649,7 +17677,10 @@ def hist_ingerir(pid=None, limite_lineas=4000000):
                     if previo[1] == st.st_size:
                         vistos[clave] = previo
                         continue
-                    pos = 0
+                    # [posicion, -1] = rotado leido A MEDIAS (el tope corto la pasada): se
+                    # sigue desde ahi. Volver a 0 gastaria el tope en lo ya contado y un .gz
+                    # mayor que el tope no terminaria nunca.
+                    pos = int(previo[0] or 0) if previo[1] == -1 else 0
                 else:
                     # mismo inodo no significa mismo contenido: si lo truncaron y lo
                     # reescribieron, la firma del arranque cambia y hay que empezar de cero
@@ -17658,21 +17689,38 @@ def hist_ingerir(pid=None, limite_lineas=4000000):
                     if st.st_size < (previo[1] or 0) or huella != (
                             previo[2] if len(previo) > 2 else None):
                         pos = 0
+                if cortado:
+                    # quedo para la pasada siguiente: su posicion se conserva tal cual (ni
+                    # se da por leido ni se olvida) y se apunta desde cuando falta
+                    if clave in offs:
+                        vistos[clave] = offs[clave]
+                    with _cd_abrir(ruta) as fp:
+                        if pos:
+                            fp.seek(pos)
+                        t0 = _ts_de(fp.readline())
+                    if t0:
+                        sin_leer.append(t0)
+                    continue
                 fh = _cd_abrir(ruta)
-            except OSError:
+            except _ERR:
                 continue
+            fin = False
             with fh:
                 if pos:
                     try:
                         fh.seek(pos)
-                    except (OSError, ValueError):
+                    except _ERR:
                         pos = 0
                         fh.seek(0)
                 while True:
                     if leidos >= limite_lineas:
                         break
-                    linea = fh.readline()   # readline y no 'for linea in fh': iterar
-                    if not linea:           # deja tell() prohibido en modo texto
+                    try:
+                        linea = fh.readline()   # readline y no 'for linea in fh': iterar
+                    except _ERR:                # deja tell() prohibido en modo texto
+                        linea = ""              # .gz truncado/corrupto: lo leido vale
+                    if not linea:
+                        fin = True
                         break
                     leidos += 1
                     try:
@@ -17717,13 +17765,30 @@ def hist_ingerir(pid=None, limite_lineas=4000000):
                         k = (dia, ip, "puerto", str(dp))
                         det[k] = det.get(k, 0) + 1
                 try:
-                    vistos[clave] = [fh.tell(), st.st_size]
+                    hasta = fh.tell()
                 except (OSError, ValueError):
-                    vistos[clave] = [pos, st.st_size]
-                if not gz:
-                    vistos[clave].append(huella)
-        # lo que no se abrio en esta pasada se olvida: son inodos que ya no existen
+                    hasta = pos
+                if gz:
+                    # el tamaño solo se guarda si se llego al final: es la señal de «leido
+                    # entero» que hace que no se vuelva a abrir
+                    vistos[clave] = [hasta, st.st_size if fin else -1]
+                else:
+                    vistos[clave] = [hasta, st.st_size, huella]
+                if not fin:
+                    cortado = True
+                    try:
+                        t0 = _ts_de(fh.readline())
+                    except _ERR:
+                        t0 = None
+                    if t0:
+                        sin_leer.append(t0)
+        # lo que no se abrio ni quedo pendiente se olvida: son inodos que ya no existen
         _hist_offsets(c, vistos)
+        if cortado and sin_leer:
+            # la marca no puede pasar por delante de lo que quedo sin leer: eve.json* y
+            # dns.json* se solapan en el tiempo, y lo pendiente con fecha anterior a la marca
+            # se descartaria al leerlo en la pasada siguiente
+            tope = max(desde, min(tope, min(sin_leer) - 1e-6))
         if not res and not det:
             # aunque no haya nada que contar hay que guardar por donde se llego, o la
             # pasada siguiente vuelve a leer lo mismo y el contador no avanza jamas
@@ -23251,10 +23316,25 @@ class H(BaseHTTPRequestHandler):
                 limpio.append({"tipo": tipo, "ip": ip, "motivo": str(r.get("motivo", ""))[:80],
                                "puertos": pts, "sid": sid, "hasta": hasta, "nodo": _nodo,
                                "autor": str(r.get("autor", ""))[:40], "creado": r.get("creado", 0)})
+            descartadas = len(data) - len(limpio)
+            if not limpio:
+                # QA U-01: un archivo sin ninguna exclusion valida no puede dejar el sensor sin
+                # exclusiones (volverian los falsos positivos y las cuarentenas automaticas)
+                bitacora("EXCLUSIONES-IMPORT", "rechazado: 0 validas, descartadas=%d" % descartadas)
+                return self._html(exclusiones_page(
+                    "El archivo no trae ninguna exclusión válida (%d descartada(s)): no se cambió nada."
+                    % descartadas, ok=False))
             try:
                 guardar_exclusiones(limpio)
             except OSError as ex:
                 return self._html(exclusiones_page(f"No se pudo guardar: {ex}", ok=False))
+            bitacora("EXCLUSIONES-IMPORT", "importadas=%d descartadas=%d reemplazadas=%d"
+                     % (len(limpio), descartadas, len(propias)))
+            if descartadas:
+                return self._html(exclusiones_page(
+                    "Importadas %d exclusiones (reemplazaron las anteriores); %d descartada(s) por no "
+                    "ser válidas (IP mal escrita o punto que no existe)." % (len(limpio), descartadas),
+                    ok=False))
             return self._html(exclusiones_page(
                 f"Importadas {len(limpio)} exclusiones (reemplazaron las anteriores).", ok=True))
         if accion == "del":

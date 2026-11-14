@@ -248,6 +248,44 @@ def main():
     check("en «Todos» la misma IP de dos puntos son dos filas con su nodo, sin sumar",
           sorted(todos) == [("p001", 60), ("p002", 2)], todos)
 
+    # --- QA D-01 (2026-11-14): el tope corta la pasada y ningun .gz se da por leido sin leer ---
+    # Antes, al agotar el tope el for seguia: cada .gz restante se abria, no se leia nada y
+    # se guardaba como leido entero; no se volvia a tocar jamas. Ademas dns.json* se solapa
+    # en el tiempo con eve.json*: la marca no puede adelantar lo que quedo pendiente.
+    import gzip
+    tmp3 = tempfile.mkdtemp()
+    ns4 = entorno(tmp3)
+    base = os.path.dirname(ruta_eve(ns4))
+    os.makedirs(base, exist_ok=True)
+    ahora = time.time()
+    rotados = [("eve.json.3.gz", "192.168.4.1", 300, 3),   # nombre, CPE, hace_min, mtime (h)
+               ("eve.json.2.gz", "192.168.4.2", 240, 2),
+               ("dns.json.1.gz", "192.168.4.3", 250, 1)]    # mas nuevo, pero empieza ANTES
+    for nombre, ip, hace, horas in rotados:
+        ruta = os.path.join(base, nombre)
+        with gzip.open(ruta, "wt", encoding="utf-8") as g:
+            g.writelines(ev(ip, hace - i * 0.5, dest_ip="8.8.8.8", dest_port=53,
+                            alert={"signature": "ET SCAN rotado"}) for i in range(25))
+        os.utime(ruta, (ahora - horas * 3600,) * 2)
+    ns4["hist_ingerir"](limite_lineas=20)
+    c = ns4["_hist_con"]()
+    try:
+        offs = ns4["_hist_offsets"](c)
+    finally:
+        c.close()
+    enteros = []
+    for nombre, _ip, _h, _m in rotados:
+        st = os.stat(os.path.join(base, nombre))
+        if (offs.get("%d:%d" % (st.st_dev, st.st_ino)) or [0, 0])[1] == st.st_size:
+            enteros.append(nombre)
+    check("D-01: tras cortar por el tope, ningun .gz queda marcado como leido entero",
+          enteros == [], (enteros, offs))
+    for _ in range(6):
+        ns4["hist_ingerir"](limite_lineas=20)
+    cuentas = [alertas_de(ns4, ip) for _n, ip, _h, _m in rotados]
+    check("D-01: con pasadas cortas se acaban contando los tres .gz, sin perder ni duplicar",
+          cuentas == [25, 25, 25], cuentas)
+
     print("\n" + ("TODO OK" if not fallos else "%d fallo(s)" % fallos))
     return 1 if fallos else 0
 
