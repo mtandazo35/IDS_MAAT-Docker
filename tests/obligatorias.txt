@@ -31,6 +31,7 @@ test_host_fail2ban.*                    linux   # jaulas de fail2ban probadas co
 test_envivo_sin_recarga.JS.*            linux   # En vivo sin recarga entera
 test_panel_api_probar.ModalJs.*         linux   # modal de «Probar la conexión»: todo escapado
 test_panel_copiar.*                     linux   # Copiar con y sin portapapeles
+test_reporte_copiar_ip.*                linux   # Reporte: clic en la IP la copia (con y sin portapapeles)
 test_panel_lista_recarga.*              linux   # la lista de Puntos no recarga con un modal abierto
 test_panel_sesion_caducada.*            linux   # sesión caducada en mitad de una operación
 test_exclusiones_importar.ImportarExclusiones.test_el_formulario_pide_confirmar  linux  # importar pide confirmar

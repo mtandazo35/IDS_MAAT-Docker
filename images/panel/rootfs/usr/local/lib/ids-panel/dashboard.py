@@ -15218,6 +15218,9 @@ hilo de fondo cada 6 horas con prioridad baja. Si se generara dentro de la petic
 navegador cortaría por timeout en cualquier caja con tráfico de verdad. La línea de arriba
 del informe dice <b>hace cuántos minutos</b> se generó, que es lo que hay que mirar para
 saber si lo que se ve está fresco.</p>
+<p>Para <b>copiar una IP</b> basta con hacer clic sobre ella, en las barras de «Abonados con más
+actividad sospechosa» o en las tablas de cada categoría: la IP dice «Copiado» un momento y ya está en
+el portapapeles. Si el navegador no deja copiar, la IP queda seleccionada y un aviso pide pulsar Ctrl+C.</p>
 <p>La barra de arriba tiene el <b>filtro</b> por IP o por firma y <b>Generar informe PDF</b>: eliges
 el periodo (1, 3, 7 o 30 días) y se descarga un PDF de uso interno del nodo que estés mirando (o de
 todos). Dice <b>qué clientes hay en cada categoría y cuándo cayeron en ella</b> (la primera y la
@@ -18498,6 +18501,14 @@ _CD_CSS = """<style>
 .cdt th.num,.cdt td.num{text-align:center;font-variant-numeric:tabular-nums}
 .cdt tr.cpe:hover td{background:color-mix(in srgb,var(--azul) 5%, transparent)}
 .cdt td.ip{font-family:ui-monospace,Menlo,Consolas,monospace;font-weight:700;color:var(--tinta);white-space:nowrap}
+/* IP con un clic: el texto se cambia por «Copiado» un momento; lo que se copia sale de
+   data-copiar, no del texto visible. En las barras .lip ya es de ancho fijo; en las tablas la
+   columna lleva un minimo del largo de una IP para que «Copiado» (mas corto) no la encoja y mueva
+   la tabla. «Copiado» no se puede seleccionar: con doble clic + Ctrl+C se copiaria esa palabra. */
+[data-copiar]{cursor:copy}
+[data-copiar]:hover{text-decoration:underline dotted;text-underline-offset:3px}
+[data-copiar].copiado{color:#1a7f37 !important;text-decoration:none;user-select:none;-webkit-user-select:none}
+.cdt td.ip[data-copiar]{min-width:16ch}
 .cdt td.mono{font-family:ui-monospace,Menlo,Consolas,monospace;white-space:nowrap}
 .cdt .rnom{font-weight:600;white-space:nowrap}
 .cdt td.ver{text-align:right;white-space:nowrap}
@@ -18723,13 +18734,17 @@ def conducta_barras(filas, titulo, n=10, sub=""):
     tope = max(f["alertas"] for f in top)
     fil = "".join(
         "<div class=row title='%s: %s alertas, %s'>"
-        "<div class=lb><span class=lip>%s</span><span class=lnodo>%s</span></div><div class=tr>"
+        "<div class=lb><span class=lip data-copiar='%s' title='%s: %s alertas, %s. Clic para copiar la IP'>"
+        "%s</span>"
+        "<span class=lnodo>%s</span></div><div class=tr>"
         "<div class=fi style='width:%.1f%%'></div></div>"
         "<div class=vl>%s</div></div>"
         % (esc(f["ip"]), "{:,}".format(f["alertas"]).replace(",", "."),
            esc(nombre_categoria(f.get("_cat", "otros")).lower()),
            # IP y nodo en columnas: con «IP · nodo» alineado a la derecha las IPs no caian
            # una debajo de otra
+           esc(f["ip"]), esc(f["ip"]), "{:,}".format(f["alertas"]).replace(",", "."),
+           esc(nombre_categoria(f.get("_cat", "otros")).lower()),
            esc(f["ip"]), esc(nodos.nombre(f["nodo"])) if f.get("nodo") else "",
            max(100.0 * f["alertas"] / tope, 1.0),
            "{:,}".format(f["alertas"]).replace(",", "."))
@@ -18770,6 +18785,40 @@ function cdCerrarAuto(){
 }
 window.addEventListener('beforeprint', cdAbrirTodo);
 window.addEventListener('afterprint', cdCerrarAuto);
+// Copiar la IP con un clic (el user, 2026-11-22). El panel va por HTTP y ahi el navegador
+// no da navigator.clipboard: se copia con textarea + execCommand en el MISMO clic; si ni
+// asi, la IP queda seleccionada y el modal dice que se pulse Ctrl+C (igual que pcopiar).
+function cdCopiarIp(ev){
+  var e = ev.target && ev.target.closest ? ev.target.closest('[data-copiar]') : null;
+  if (!e) return;
+  var t = e.getAttribute('data-copiar') || '';
+  if (!t) return;
+  function ok(){
+    if (!e.dataset.orig) e.dataset.orig = e.textContent;
+    e.textContent = 'Copiado'; e.classList.add('copiado');
+    clearTimeout(e._cpT);
+    e._cpT = setTimeout(function(){ e.textContent = e.dataset.orig; delete e.dataset.orig;
+                                    e.classList.remove('copiado'); }, 1200);
+  }
+  function viejo(){
+    var a = document.createElement('textarea'), r = false;
+    a.value = t; a.setAttribute('readonly', '');
+    a.style.position = 'fixed'; a.style.top = '0'; a.style.left = '0'; a.style.opacity = '0';
+    document.body.appendChild(a); a.focus(); a.select(); a.setSelectionRange(0, t.length);
+    try { r = document.execCommand('copy'); } catch (x) { r = false; }
+    document.body.removeChild(a); return r;
+  }
+  function mano(){
+    try { var s = window.getSelection(), g = document.createRange(); g.selectNodeContents(e);
+          s.removeAllRanges(); s.addRange(g); } catch (x) {}
+    if (typeof aviso === 'function')
+      aviso('No se pudo copiar', 'La IP quedó seleccionada: pulsa Ctrl+C para copiarla.');
+  }
+  if (window.isSecureContext && navigator.clipboard && navigator.clipboard.writeText)
+    navigator.clipboard.writeText(t).then(ok, function(){ if (viejo()) ok(); else mano(); });
+  else if (viejo()) ok(); else mano();
+}
+document.addEventListener('click', cdCopiarIp);
 </script>"""
 
 # --- Glosario ----------------------------------------------------------------------
@@ -19197,7 +19246,7 @@ def conducta_page(q="", msg="", pag=1, por=None, es_operador=True):
             # entera por abonado). Lo que hizo va debajo, plegado, en dos columnas.
             filas_t.append(
                 "<tr class=cpe>"
-                "<td class=ip>%s</td><td>%s</td>"
+                "<td class=ip data-copiar='%s' title='Clic para copiar la IP'>%s</td><td>%s</td>"
                 "<td class=num>%s</td><td class=num>%d</td><td class=mono>%s</td>"
                 "<td>%s</td>"
                 "<td class=ver><button type=button class=cdver aria-expanded=false "
@@ -19210,7 +19259,7 @@ def conducta_page(q="", msg="", pag=1, por=None, es_operador=True):
                 "<details class=tecnico><summary>Detalle técnico (para el ISP)</summary>"
                 "<div class=kv>%d destinos distintos: %s<br>"
                 "Dominios más consultados (todos): %s</div></details></td></tr>"
-                % (esc(f["ip"]),
+                % (esc(f["ip"]), esc(f["ip"]),
                    # en «Todos» cada fila es de un nodo: la misma IP en dos nodos son dos filas
                    ("<span class=rnom>%s</span>" % esc(nodos.nombre(f["nodo"]))) if f.get("nodo") else "&mdash;",
                    "{:,}".format(f["alertas"]).replace(",", "."), f["dias"],

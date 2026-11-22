@@ -242,7 +242,9 @@ def main():
     check("y el resto va en proporcion, no todas iguales",
           "width:25.0%" in barras, barras)
     check("la IP va en su propia columna, alineada (el user, 2026-10-12)",
-          "<span class=lip>192.168.1.1</span><span class=lnodo></span>" in barras, barras)
+          "<span class=lip data-copiar='192.168.1.1' title='192.168.1.1: 100 alertas, otros. "
+          "Clic para copiar la IP'>192.168.1.1</span>"
+          "<span class=lnodo></span>" in barras, barras)
     check("con la IP en una columna de ancho fijo",
           ".bars .lb .lip{flex:0 0 128px;text-align:left" in ns["_CD_CSS"], "")
     check("un CPE sin alertas no pinta barra",
@@ -562,7 +564,7 @@ def main():
           ns["conducta_page"](pag=999, por=50).count("<tr class=cpe>") == 20)
     # el ranking de arriba es global y sale en todas las paginas, asi que hay que
     # mirar las FICHAS, no la pagina entera
-    _ficha = "<td class=ip>192.168.0.0</td>"
+    _ficha = "<td class=ip data-copiar='192.168.0.0' title='Clic para copiar la IP'>192.168.0.0</td>"
     check("la ficha de la mas ruidosa esta en la primera pagina, no en la ultima",
           _ficha in pg1 and _ficha not in pg3, (_ficha in pg1, _ficha in pg3))
     check("y el ranking general se ve desde cualquier pagina",
